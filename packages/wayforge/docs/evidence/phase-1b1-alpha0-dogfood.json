@@ -1,0 +1,93 @@
+{
+  "phase": "1B.1",
+  "taskId": "alpha0-1",
+  "objective": "add a concise Alpha 0 troubleshooting section to README.md covering ownership-guard rejection and Worker/Advisor diagnostics, verified through the runtime workflow",
+  "completionCriteria": "all recorded validations pass and the before-done advisor approves",
+  "summary": {
+    "deliverable": "README.md gained an 'Alpha 0 troubleshooting' section (written by native Main in session 1, cross-checked against real failure codes in sessions 2-3).",
+    "finalTaskStatus": "cancelled (operator ended the session with the before-done advisor call still pending)",
+    "liveCompletionAchieved": false,
+    "note": "wayforge_complete success was exercised by the automated suite (test/extension-runtime.test.ts end-to-end) but never in a live session; in every live session the operator exited while the advisor call was pending or after an honest changes_requested verdict."
+  },
+  "main": {
+    "invocationId": "alpha0-1:main",
+    "observedRoute": "kimi-coding/kimi-for-coding"
+  },
+  "workers": [
+    { "session": 2, "invocationId": "worker-1", "route": "observed-worker", "status": "failed", "code": "worker_model_mismatch" },
+    { "session": 2, "invocationId": "worker-2", "route": "observed-worker", "status": "failed", "code": "worker_model_mismatch" },
+    { "session": 3, "invocationId": "worker-1", "route": "observed-worker", "status": "failed", "code": "worker_token_budget_exceeded" },
+    { "session": 3, "invocationId": "worker-2", "route": "observed-worker", "status": "failed", "code": "worker_token_budget_exceeded" },
+    { "session": 3, "invocationId": "worker-3", "route": "observed-worker", "status": "failed", "code": "worker_token_budget_exceeded" },
+    { "session": 3, "invocationId": "worker-4", "route": "observed-worker", "status": "completed" },
+    { "session": 3, "invocationId": "worker-5", "route": "observed-worker", "status": "failed", "code": "worker_token_budget_exceeded" },
+    { "session": 3, "invocationId": "worker-6", "route": "observed-worker", "status": "completed" },
+    { "session": 4, "invocationId": "worker-1", "route": "observed-worker", "status": "failed", "code": "worker_token_budget_exceeded" },
+    { "session": 4, "invocationId": "worker-2", "route": "observed-worker", "status": "completed" },
+    { "session": 5, "invocationId": "worker-1", "route": "observed-worker", "status": "completed" }
+  ],
+  "advisor": {
+    "route": "observed-advisor",
+    "liveVerdicts": [
+      { "session": 2, "verdict": "changes_requested", "reason": "core delegated review never ran (both workers failed closed)" },
+      { "session": 3, "verdict": "changes_requested", "reason": "worker review evidence incomplete at decision time" }
+    ],
+    "pendingAtExit": [4, 5]
+  },
+  "validations": [
+    { "name": "check:architecture", "ok": true, "summary": "ARCHITECTURE OK: 9 gates passed" },
+    { "name": "npm test", "ok": true, "summary": "28 test files passed, 187 tests passed" },
+    { "name": "typecheck", "ok": true, "summary": "tsc --noEmit clean" },
+    { "name": "build", "ok": true, "summary": "dist emitted, exit 0" },
+    { "name": "check:alpha0", "ok": true, "summary": "ALPHA 0 OK: isolated assisted-dogfood preconditions satisfied" }
+  ],
+  "recoveryBudget": { "retriesLeft": 1, "fallbacksLeft": 2 },
+  "findingsAndFixes": [
+    {
+      "session": 1,
+      "finding": "Isolated session loaded zero extensions with no error: Pi 1.x isExtensionFile accepts only .ts/.js, and the launcher wrote .mjs shims that were silently skipped.",
+      "fix": "scripts/pi1-dev.sh now writes wayforge.js/pi-subagents.js shims and removes stale .mjs; regression tests exercise Pi's real discoverAndLoadExtensions in both directions."
+    },
+    {
+      "session": 2,
+      "finding": "Both workers failed closed with worker_model_mismatch although the engine had not changed models: pi-subagents echoes the effective child model with a :thinking suffix (applyThinkingSuffix).",
+      "fix": "Adapter compares base models, records the full observed string, and reports expected/observed in the failure message; genuinely different or missing model evidence still fails closed."
+    },
+    {
+      "session": 2,
+      "finding": "Operators had to copy workflow state out of the TUI by hand.",
+      "fix": "WorkflowDiskSink persists redacted events (JSONL) and atomic status snapshots under <PI_CODING_AGENT_DIR>/wayforge/; wiring bug (controller referenced before assignment during the first synchronous event) was caught by the extension e2e test and fixed."
+    },
+    {
+      "sessions": [3, 4],
+      "finding": "Bounded review workers failed on worker_token_budget_exceeded: cumulative input across tool-using turns far exceeds the visible prompt (1.5k blocked 4/6 workers; 8k still blocked first-pass reviews).",
+      "fix": "Worker route budget calibrated to 32k and main invocation budget to 96k; session 5 completed a full review within budget."
+    }
+  ],
+  "events": "task_started, main_started, worker_launched, worker_finished, validation x5, advisor_triggered x2, cancellation (final session, operator exit)",
+  "changedPaths": ["README.md"],
+  "verification": {
+    "automated": [
+      "check:architecture (9 gates)",
+      "npm test (28 files, 187 tests)",
+      "typecheck (tsc --noEmit)",
+      "build (dist emitted)",
+      "check:alpha0",
+      "npm audit --omit=dev (0 vulnerabilities after undici override)"
+    ],
+    "manuallyInspected": [
+      "README troubleshooting section cross-checked against real failure codes in ownership-guard.ts, workflow-controller.ts, pi-subagent-worker-adapter.ts, pi-advisor-adapter.ts, runtime-recovery-executor.ts (worker review, sessions 3-5)",
+      "disk sink artifacts read directly from .wayforge-dev/agent/wayforge/ (no manual TUI copying)",
+      "isolated profile contains no production credentials; telemetry disabled"
+    ],
+    "inferred": [
+      "wayforge_complete success path (covered by automated e2e test; never observed live)",
+      "advisor approve verdict on live kimi route (only changes_requested observed live; approve parsing covered by tests)"
+    ]
+  },
+  "limitations": [
+    "In-process only: no restart or resume; sessions 3-5 ended in designed cancellation on exit.",
+    "Operator exited before the before-done advisor returned in sessions 4-5, so no live approve verdict exists.",
+    "Observed-model routing: worker/advisor routes are role-scoped views of the model Main already uses."
+  ]
+}

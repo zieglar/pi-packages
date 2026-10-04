@@ -116,4 +116,72 @@ describe("architecture gates over production source", () => {
     expect(result.status).not.toBe(0);
     expect(result.stdout).toContain("recovery/recovery-coordinator.ts");
   });
+  it("fails when RecoveryCoordinator is constructed outside the runtime factory", () => {
+    const dir = fixture({
+      "runtime/pi-compatibility-adapter.ts": "export const a = () => pi.setModel(m);\n",
+      "kernel/rogue-recovery.ts": "export const c = new RecoveryCoordinator();\n",
+    });
+    const result = runChecker(dir);
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain("RecoveryCoordinator");
+    expect(result.stdout).toContain("workflow/runtime-factory.ts");
+  });
+
+  it("fails when HealthRegistry or HealthProjector is constructed outside the runtime factory", () => {
+    const registry = fixture({
+      "runtime/pi-compatibility-adapter.ts": "export const a = () => pi.setModel(m);\n",
+      "recovery/rogue.ts": "export const h = new HealthRegistry();\n",
+    });
+    expect(runChecker(registry).stdout).toContain("HealthRegistry");
+    const projector = fixture({
+      "runtime/pi-compatibility-adapter.ts": "export const a = () => pi.setModel(m);\n",
+      "adapters/rogue.ts": "export const p = new HealthProjector();\n",
+    });
+    expect(runChecker(projector).stdout).toContain("HealthProjector");
+  });
+
+  it("fails when live-Pi components are constructed outside extension.ts", () => {
+    const dir = fixture({
+      "runtime/pi-compatibility-adapter.ts": "export const a = () => pi.setModel(m);\n",
+      "workflow/rogue.ts": "export const x = new PiCompatibilityAdapter(pi, ctx);\n",
+    });
+    const result = runChecker(dir);
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain("PiCompatibilityAdapter");
+    expect(result.stdout).toContain("extension.ts");
+  });
+
+  it("fails on pi-subagents imports outside the public delegation contract", () => {
+    const dir = fixture({
+      "runtime/pi-compatibility-adapter.ts": "export const a = () => pi.setModel(m);\n",
+      "adapters/rogue.ts": 'import { agents } from "pi-subagents/agents";\n',
+    });
+    const result = runChecker(dir);
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain("pi-subagents/agents");
+    expect(result.stdout).toContain("pi-subagents/delegation");
+  });
+
+  it("passes a minimal tree that respects every ownership boundary", () => {
+    const dir = fixture({
+      "runtime/pi-compatibility-adapter.ts":
+        "export class PiCompatibilityAdapter { async apply() { return pi.setModel(m); } }\n",
+      "extension.ts":
+        "import { PiCompatibilityAdapter } from \"./runtime/pi-compatibility-adapter.js\";\n" +
+        "import { MainModelController } from \"./runtime/main-model-controller.js\";\n" +
+        "const adapter = new PiCompatibilityAdapter(pi, ctx);\n" +
+        "const main = new MainModelController(adapter);\n",
+      "workflow/runtime-factory.ts":
+        "import { RecoveryCoordinator } from \"../recovery/recovery-coordinator.js\";\n" +
+        "import { HealthRegistry } from \"../recovery/health-registry.js\";\n" +
+        "import { HealthProjector } from \"../recovery/health-projector.js\";\n" +
+        "const coordinator = new RecoveryCoordinator();\n" +
+        "const health = new HealthRegistry();\n" +
+        "const projector = new HealthProjector(health);\n",
+    });
+    const result = runChecker(dir);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("9 gates passed");
+  });
+
 });
