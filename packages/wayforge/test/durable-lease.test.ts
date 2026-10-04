@@ -195,7 +195,6 @@ describe("filesystem lease persistence and process contention", () => {
     const root = temporaryRoot();
     const setup = new FilesystemDurableTaskStore(root, { now: () => 1_000 });
     await createTask(setup, "task-process");
-    execFileSync("npm", ["run", "build"], { cwd: process.cwd(), stdio: "pipe" });
 
     const first = claimant(root, "task-process", 1_000, 100);
     const second = claimant(root, "task-process", 1_000, 100);
