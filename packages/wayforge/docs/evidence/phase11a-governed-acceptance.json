@@ -1,0 +1,502 @@
+{
+  "phase": "1.1A",
+  "kind": "real-governed-workflow-acceptance",
+  "result": "complete",
+  "frozenBaseline": "14c879b8f28853e814654ca59f03775aedfe16e8",
+  "productionCodeChanges": 0,
+  "previousPhase11Failure": {
+    "primaryClassification": "UNKNOWN",
+    "recorded": [
+      "kimi-coding/kimi-for-coding performed coding",
+      "invalid_advisor_verdict",
+      "budget_exhausted",
+      "budget_exhausted",
+      "completion_gate_failed"
+    ],
+    "unrecorded": [
+      "actual Advisor model identity",
+      "exact request",
+      "raw output",
+      "token usage"
+    ],
+    "conclusion": "The historical parser reported a strict-schema mismatch, but the retained evidence cannot distinguish model malformed output from adapter/transport/contract/parser failure. Do not retroactively infer the cause from this new run."
+  },
+  "harnessSetupFailure": {
+    "beforeModelCall": true,
+    "reason": "initial driver loaded named-export dist module directly; Pi required default extension factory",
+    "resolution": "temporary default-export shim using unchanged production wayforgeExtension; same RPC protocol"
+  },
+  "observation": {
+    "extension": "temporary diagnostic extension wraps ModelRegistry.streamSimple only to observe the same request and original stream result; never substitutes model output",
+    "retained": "sanitized requests, visible text, semantic tool results, usage; no reasoning blocks or credentials",
+    "mainWorkflowAssistance": "operator sequences coding and independent validation; only the real Main model invokes normal Wayforge validation/Advisor/completion tools",
+    "policyChanged": false,
+    "budgetChanged": false,
+    "completionBypassed": false,
+    "durableStatePatched": false
+  },
+  "attempts": [
+    {
+      "number": 1,
+      "taskId": "alpha0-1",
+      "taskRevision": 3,
+      "objective": "Implement countOccurrences(haystack, needle) in src/count-occurrences.mjs: count overlapping, literal, case-sensitive string occurrences; an empty haystack returns 0; empty needle throws RangeError; non-string arguments throw TypeError. The five immutable tests in test/count-occurrences.test.mjs are the acceptance criteria. Change only src/count-occurrences.mjs, do not modify tests or package.json. Run npm test and record its actual result with wayforge_record_validation. Then pause: independent host validation will run before Advisor review. Do not request Advisor or completion in this coding turn.",
+      "coding": {
+        "provider": "kimi-coding",
+        "model": "kimi-for-coding",
+        "mode": "real Pi 1.0.2 RPC, native Main"
+      },
+      "preflight": {
+        "authentication": "isolated auth check: ready (oauth); no credentials emitted",
+        "main": "READY",
+        "nested": {
+          "provider": "kimi-coding",
+          "model": "kimi-for-coding",
+          "reasoning": "high",
+          "stopReason": "stop",
+          "text": "READY",
+          "usage": {
+            "input": 93,
+            "output": 45
+          }
+        }
+      },
+      "workspace": {
+        "identity": "581fad232f4681492b24f99eabbd50b0620a506c69e7be80de5678c8a926b6da",
+        "worktreeIdentity": "581fad232f4681492b24f99eabbd50b0620a506c69e7be80de5678c8a926b6da",
+        "root": "/private/tmp/wayforge-phase11a.dea9xj/workspace",
+        "startingHead": "ac90e08d36fb79c1d230922a4554c9bdffa61c6a",
+        "startingDigest": "493e501c31dad2337a8b27da4ee829a0e049788021c37f1082da706344c8d82e",
+        "finalHead": "ac90e08d36fb79c1d230922a4554c9bdffa61c6a",
+        "finalDigest": "3fc17d0d9380ad771cea2cf76d0eb37999c0820d8a103a466d32258d70b916db",
+        "finalFilesSHA256": {
+          "package.json": "62dc6d75e8f54654740a5ac44771dc47d53814d1ef1aae32291737e8b08b3f97",
+          "src/count-occurrences.mjs": "ea9a0efae9d8c4568e2eb2bb493b27d6fa8738f40f3432f225bdf60cad1de10f",
+          "test/count-occurrences.test.mjs": "05d602eac0a7a739440445053c6f1ce532b73ce585aa5a1800452aa8f28f351b"
+        },
+        "changedPaths": [
+          {
+            "path": "src/count-occurrences.mjs",
+            "status": "modified",
+            "indexDigest": "f1e27777c97b55eac882b94649d68d36e691f650e1426442a166a574ccc05e3e",
+            "worktreeDigest": "ea9a0efae9d8c4568e2eb2bb493b27d6fa8738f40f3432f225bdf60cad1de10f"
+          }
+        ],
+        "digestMethod": "existing captureWorkspaceCheckpoint; SHA256 of {headCommit,changedPaths}; no task state mutation"
+      },
+      "diff": "diff --git a/src/count-occurrences.mjs b/src/count-occurrences.mjs\nindex 7df4453..4efde4c 100644\n--- a/src/count-occurrences.mjs\n+++ b/src/count-occurrences.mjs\n@@ -1,4 +1,18 @@\n export function countOccurrences(haystack, needle) {\n-  // Implement the documented contract during the governed workflow.\n-  return 0;\n+  if (typeof haystack !== 'string' || typeof needle !== 'string') {\n+    throw new TypeError('both arguments must be strings');\n+  }\n+  if (needle.length === 0) {\n+    throw new RangeError('needle must not be empty');\n+  }\n+  if (haystack.length === 0) {\n+    return 0;\n+  }\n+  let count = 0;\n+  for (let i = 0; i + needle.length <= haystack.length; i++) {\n+    if (haystack.slice(i, i + needle.length) === needle) {\n+      count++;\n+    }\n+  }\n+  return count;\n }\n",
+      "validation": {
+        "command": "npm test",
+        "beforeAdvisor": true,
+        "afterWorkflow": true,
+        "freshParentRecheck": true,
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "immutableTestsSHA256": "05d602eac0a7a739440445053c6f1ce532b73ce585aa5a1800452aa8f28f351b",
+        "recorded": [
+          {
+            "name": "npm test",
+            "ok": true,
+            "summary": "npm test (node --test test/count-occurrences.test.mjs): all 5 tests pass, 0 fail. Implementation in src/count-occurrences.mjs handles overlapping matches, literal case-sensitive comparison, empty haystack -> 0, empty needle -> RangeError, non-strings -> TypeError."
+          },
+          {
+            "name": "change-scope-check",
+            "ok": true,
+            "summary": "git status shows exactly one modified file: src/count-occurrences.mjs. test/count-occurrences.test.mjs and package.json are untouched. Contract implemented: overlapping counts, literal case-sensitive matching, empty haystack -> 0, empty needle -> RangeError, non-string args -> TypeError; npm test passes all 5 tests."
+          }
+        ]
+      },
+      "advisor": [
+        {
+          "attempt": 1,
+          "invocationId": "advisor-1",
+          "route": "observed-advisor",
+          "provider": "kimi-coding",
+          "model": "kimi-for-coding",
+          "reasoning": "high",
+          "request": "Review the following sanitized Wayforge evidence.\nReturn only JSON with exactly: status (approve|changes_requested|unable), summary, findings[].\nEach finding has exactly code, severity (blocker|warning|note), summary, and optional path.\n{\"objective\":\"Implement countOccurrences(haystack, needle) in src/count-occurrences.mjs: count overlapping, literal, case-sensitive string occurrences; an empty haystack returns 0; empty needle throws RangeError; non-string arguments throw TypeError. The five immutable tests in test/count-occurrences.test.mjs are the acceptance criteria. Change only src/count-occurrences.mjs, do not modify tests or package.json. Run npm test and record its actual result with wayforge_record_validation. Then pause: independent host validation will run before Advisor review. Do not request Advisor or completion in this coding turn.\",\"completionCriteria\":\"all recorded validations pass and the before-done advisor approves\",\"implementationSummary\":\"all recorded validations and worker outcomes are reflected in state\",\"changedPaths\":[],\"diffSummary\":\"in-process Alpha 0 workflow; no repository diff is tracked by the controller\",\"validations\":[{\"name\":\"npm test\",\"ok\":true,\"summary\":\"npm test (node --test test/count-occurrences.test.mjs): all 5 tests pass, 0 fail. Implementation in src/count-occurrences.mjs handles overlapping matches, literal case-sensitive comparison, empty haystack -> 0, empty needle -> RangeError, non-strings -> TypeError.\"}],\"workerFindings\":[],\"unresolved\":[],\"workspaceDigest\":\"unavailable\",\"extra\":{}}",
+          "rawVisibleText": "{\n  \"status\": \"unable\",\n  \"summary\": \"The recorded npm test validation passes all 5 acceptance tests, and the implementation behavior is correctly described. However, change-scope compliance cannot be verified: changedPaths is empty and workspaceDigest is unavailable, despite implementationSummary claiming src/count-occurrences.mjs was implemented. The objective's pause directive (no Advisor request this turn) is appropriately followed.\",\n  \"findings\": [\n    {\n      \"code\": \"VALIDATION_PASSED\",\n      \"severity\": \"note\",\n      \"summary\": \"npm test recorded via wayforge_record_validation: all 5 tests pass, 0 fail, covering overlapping matches, case-sensitive literal comparison, empty haystack -> 0, empty needle -> RangeError, and non-string arguments -> TypeError.\"\n    },\n    {\n      \"code\": \"CHANGE_SCOPE_UNVERIFIABLE\",\n      \"severity\": \"warning\",\n      \"summary\": \"changedPaths is empty and workspaceDigest is unavailable, so it cannot be confirmed that only src/count-occurrences.mjs was modified and that tests/package.json were untouched. This conflicts with implementationSummary's claim of an implemented file.\"\n    },\n    {\n      \"code\": \"WORKFLOW_PAUSE_OBSERVED\",\n      \"severity\": \"note\",\n      \"summary\": \"No Advisor or completion request was made in this turn, consistent with the objective's instruction to pause for independent host validation before Advisor review.\"\n    }\n  ]\n}",
+          "stopReason": "stop",
+          "usage": {
+            "input": 410,
+            "output": 664
+          },
+          "parsedVerdict": {
+            "status": "unable",
+            "summary": "The recorded npm test validation passes all 5 acceptance tests, and the implementation behavior is correctly described. However, change-scope compliance cannot be verified: changedPaths is empty and workspaceDigest is unavailable, despite implementationSummary claiming src/count-occurrences.mjs was implemented. The objective's pause directive (no Advisor request this turn) is appropriately followed.",
+            "findings": [
+              {
+                "code": "VALIDATION_PASSED",
+                "severity": "note",
+                "summary": "npm test recorded via wayforge_record_validation: all 5 tests pass, 0 fail, covering overlapping matches, case-sensitive literal comparison, empty haystack -> 0, empty needle -> RangeError, and non-string arguments -> TypeError."
+              },
+              {
+                "code": "CHANGE_SCOPE_UNVERIFIABLE",
+                "severity": "warning",
+                "summary": "changedPaths is empty and workspaceDigest is unavailable, so it cannot be confirmed that only src/count-occurrences.mjs was modified and that tests/package.json were untouched. This conflicts with implementationSummary's claim of an implemented file."
+              },
+              {
+                "code": "WORKFLOW_PAUSE_OBSERVED",
+                "severity": "note",
+                "summary": "No Advisor or completion request was made in this turn, consistent with the objective's instruction to pause for independent host validation before Advisor review."
+              }
+            ]
+          },
+          "classification": "POLICY_REJECTION"
+        }
+      ],
+      "toolOutcomes": [
+        {
+          "tool": "wayforge_advise",
+          "toolCallId": "tool_quljwbkK9qbS2tx77YsdRH8A",
+          "isError": false,
+          "result": {
+            "ok": true,
+            "verdict": {
+              "status": "unable",
+              "summary": "The recorded npm test validation passes all 5 acceptance tests, and the implementation behavior is correctly described. However, change-scope compliance cannot be verified: changedPaths is empty and workspaceDigest is unavailable, despite implementationSummary claiming src/count-occurrences.mjs was implemented. The objective's pause directive (no Advisor request this turn) is appropriately followed.",
+              "findings": [
+                {
+                  "code": "VALIDATION_PASSED",
+                  "severity": "note",
+                  "summary": "npm test recorded via wayforge_record_validation: all 5 tests pass, 0 fail, covering overlapping matches, case-sensitive literal comparison, empty haystack -> 0, empty needle -> RangeError, and non-string arguments -> TypeError."
+                },
+                {
+                  "code": "CHANGE_SCOPE_UNVERIFIABLE",
+                  "severity": "warning",
+                  "summary": "changedPaths is empty and workspaceDigest is unavailable, so it cannot be confirmed that only src/count-occurrences.mjs was modified and that tests/package.json were untouched. This conflicts with implementationSummary's claim of an implemented file."
+                },
+                {
+                  "code": "WORKFLOW_PAUSE_OBSERVED",
+                  "severity": "note",
+                  "summary": "No Advisor or completion request was made in this turn, consistent with the objective's instruction to pause for independent host validation before Advisor review."
+                }
+              ]
+            }
+          }
+        },
+        {
+          "tool": "wayforge_advise",
+          "toolCallId": "tool_y6ySTxmh4AmJEHezKBlnwXBp",
+          "isError": true,
+          "result": {
+            "ok": false,
+            "failure": {
+              "kind": "capability",
+              "scope": "invocation",
+              "confidence": "certain",
+              "code": "budget_exhausted",
+              "message": "nested invocation budget is exhausted"
+            }
+          }
+        }
+      ],
+      "workflowEvents": [
+        {
+          "sequence": 1,
+          "kind": "task_started",
+          "atMs": 1791136864889
+        },
+        {
+          "sequence": 2,
+          "kind": "main_started",
+          "atMs": 1791136864891
+        },
+        {
+          "sequence": 3,
+          "kind": "validation",
+          "atMs": 1791136876341
+        },
+        {
+          "sequence": 4,
+          "kind": "main_ended",
+          "atMs": 1791136878490
+        },
+        {
+          "sequence": 5,
+          "kind": "main_started",
+          "atMs": 1791136878784
+        },
+        {
+          "sequence": 6,
+          "kind": "advisor_triggered",
+          "atMs": 1791136880704
+        },
+        {
+          "sequence": 7,
+          "kind": "advisor_verdict",
+          "atMs": 1791136891923
+        },
+        {
+          "sequence": 8,
+          "kind": "validation",
+          "atMs": 1791136901191
+        },
+        {
+          "sequence": 9,
+          "kind": "advisor_triggered",
+          "atMs": 1791136902989
+        },
+        {
+          "sequence": 10,
+          "kind": "main_ended",
+          "atMs": 1791136911664
+        }
+      ],
+      "completion": {
+        "gateAccepted": false,
+        "workflowStatus": "running",
+        "durableStatus": "cancelled",
+        "durableCompletionEvidence": null,
+        "recoveryBudget": {
+          "retriesLeft": 1,
+          "fallbacksLeft": 2
+        }
+      },
+      "additionalAdvisorRequests": [
+        {
+          "classification": "BUDGET_EXHAUSTION_AFTER_PRIOR_FAILURE",
+          "failure": {
+            "kind": "capability",
+            "scope": "invocation",
+            "confidence": "certain",
+            "code": "budget_exhausted",
+            "message": "nested invocation budget is exhausted"
+          },
+          "modelCalled": false
+        }
+      ]
+    },
+    {
+      "number": 2,
+      "taskId": "alpha0-2",
+      "taskRevision": 3,
+      "objective": "Implement countOccurrences(haystack, needle) in src/count-occurrences.mjs. Count overlapping literal case-sensitive string matches. Empty haystack returns 0; empty needle throws RangeError; non-string arguments throw TypeError. Acceptance: the five predefined immutable tests pass, and only the source file changes.",
+      "coding": {
+        "provider": "kimi-coding",
+        "model": "kimi-for-coding",
+        "mode": "real Pi 1.0.2 RPC, native Main"
+      },
+      "preflight": {
+        "authentication": "isolated auth check: ready (oauth); no credentials emitted",
+        "main": "READY",
+        "nested": {
+          "provider": "kimi-coding",
+          "model": "kimi-for-coding",
+          "reasoning": "high",
+          "stopReason": "stop",
+          "text": "READY",
+          "usage": {
+            "input": 0,
+            "output": 38
+          }
+        }
+      },
+      "workspace": {
+        "identity": "1b75edd7b8e337a7d7ddaa2fbf85fe3ae97fcd0b83b92fc80865752193021236",
+        "worktreeIdentity": "1b75edd7b8e337a7d7ddaa2fbf85fe3ae97fcd0b83b92fc80865752193021236",
+        "root": "/private/tmp/wayforge-phase11a.dea9xj/workspace2",
+        "startingHead": "6999102cdd000d5d55c76ab20053cfb9ade6fedf",
+        "startingDigest": "2105c667363f8feaf015c5c0980a0034d1e584e3e23a353c4fa89c0d046e7a9f",
+        "finalHead": "6999102cdd000d5d55c76ab20053cfb9ade6fedf",
+        "finalDigest": "c26eac6fddb282e2467a9a88d4edba897cccf295d63d11447a7decb5d13b818f",
+        "finalFilesSHA256": {
+          "package.json": "62dc6d75e8f54654740a5ac44771dc47d53814d1ef1aae32291737e8b08b3f97",
+          "src/count-occurrences.mjs": "624384969064363bcf66ca2a0b994fb464d5abd1d2256b480295e9d461f2a644",
+          "test/count-occurrences.test.mjs": "05d602eac0a7a739440445053c6f1ce532b73ce585aa5a1800452aa8f28f351b"
+        },
+        "changedPaths": [
+          {
+            "path": "src/count-occurrences.mjs",
+            "status": "modified",
+            "indexDigest": "c70362f4218f4095afe6a31352183d27c998366102047c9ab8f109ccac03aaac",
+            "worktreeDigest": "624384969064363bcf66ca2a0b994fb464d5abd1d2256b480295e9d461f2a644"
+          }
+        ],
+        "digestMethod": "existing captureWorkspaceCheckpoint; SHA256 of {headCommit,changedPaths}; no task state mutation"
+      },
+      "diff": "diff --git a/src/count-occurrences.mjs b/src/count-occurrences.mjs\nindex 56168f2..c5c390b 100644\n--- a/src/count-occurrences.mjs\n+++ b/src/count-occurrences.mjs\n@@ -1,3 +1,18 @@\n export function countOccurrences(haystack, needle) {\n-  return 0;\n+  if (typeof haystack !== 'string' || typeof needle !== 'string') {\n+    throw new TypeError('arguments must be strings');\n+  }\n+  if (needle.length === 0) {\n+    throw new RangeError('needle must not be empty');\n+  }\n+  if (haystack.length === 0) {\n+    return 0;\n+  }\n+  let count = 0;\n+  for (let i = 0; i + needle.length <= haystack.length; i++) {\n+    if (haystack.slice(i, i + needle.length) === needle) {\n+      count++;\n+    }\n+  }\n+  return count;\n }\n",
+      "validation": {
+        "command": "npm test",
+        "beforeAdvisor": true,
+        "afterWorkflow": true,
+        "freshParentRecheck": true,
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "immutableTestsSHA256": "05d602eac0a7a739440445053c6f1ce532b73ce585aa5a1800452aa8f28f351b",
+        "recorded": [
+          {
+            "name": "npm test",
+            "ok": true,
+            "summary": "All 5 predefined tests pass; only src/count-occurrences.mjs modified."
+          },
+          {
+            "name": "independentHostAcceptance",
+            "ok": true,
+            "summary": "independentValidation: npm test 5 passed 0 failed; changedPathsVerifiedByGit: src/count-occurrences.mjs only; immutableTestSHA256: 05d602eac0a7a739440445053c6f1ce532b73ce585aa5a1800452aa8f28f351b; implementation: overlapping case-sensitive literal count via sliding window; empty haystack returns 0; empty needle throws RangeError; non-strings throw TypeError."
+          }
+        ]
+      },
+      "advisor": [
+        {
+          "attempt": 1,
+          "invocationId": "advisor-1",
+          "route": "observed-advisor",
+          "provider": "kimi-coding",
+          "model": "kimi-for-coding",
+          "reasoning": "high",
+          "request": "Review the following sanitized Wayforge evidence.\nReturn only JSON with exactly: status (approve|changes_requested|unable), summary, findings[].\nEach finding has exactly code, severity (blocker|warning|note), summary, and optional path.\n{\"objective\":\"Implement countOccurrences(haystack, needle) in src/count-occurrences.mjs. Count overlapping literal case-sensitive string matches. Empty haystack returns 0; empty needle throws RangeError; non-string arguments throw TypeError. Acceptance: the five predefined immutable tests pass, and only the source file changes.\",\"completionCriteria\":\"all recorded validations pass and the before-done advisor approves\",\"implementationSummary\":\"all recorded validations and worker outcomes are reflected in state\",\"changedPaths\":[],\"diffSummary\":\"in-process Alpha 0 workflow; no repository diff is tracked by the controller\",\"validations\":[{\"name\":\"npm test\",\"ok\":true,\"summary\":\"All 5 predefined tests pass; only src/count-occurrences.mjs modified.\"},{\"name\":\"independentHostAcceptance\",\"ok\":true,\"summary\":\"independentValidation: npm test 5 passed 0 failed; changedPathsVerifiedByGit: src/count-occurrences.mjs only; immutableTestSHA256: 05d602eac0a7a739440445053c6f1ce532b73ce585aa5a1800452aa8f28f351b; implementation: overlapping case-sensitive literal count via sliding window; empty haystack returns 0; empty needle throws RangeError; non-strings throw TypeError.\"}],\"workerFindings\":[],\"unresolved\":[],\"workspaceDigest\":\"unavailable\",\"extra\":{}}",
+          "rawVisibleText": "{\"status\":\"approve\",\"summary\":\"Evidence satisfies the objective: all five immutable tests pass, only src/count-occurrences.mjs changed, independent host acceptance confirms required semantics and overlap/case-sensitive behavior, and there are no unresolved findings.\",\"findings\":[]}",
+          "stopReason": "stop",
+          "usage": {
+            "input": 421,
+            "output": 280
+          },
+          "parsedVerdict": {
+            "status": "approve",
+            "summary": "Evidence satisfies the objective: all five immutable tests pass, only src/count-occurrences.mjs changed, independent host acceptance confirms required semantics and overlap/case-sensitive behavior, and there are no unresolved findings.",
+            "findings": []
+          },
+          "classification": "VALID_APPROVAL"
+        }
+      ],
+      "toolOutcomes": [
+        {
+          "tool": "wayforge_advise",
+          "toolCallId": "tool_zYrNjvjLSp5ZAqgYkCEImClL",
+          "isError": false,
+          "result": {
+            "ok": true,
+            "verdict": {
+              "status": "approve",
+              "summary": "Evidence satisfies the objective: all five immutable tests pass, only src/count-occurrences.mjs changed, independent host acceptance confirms required semantics and overlap/case-sensitive behavior, and there are no unresolved findings.",
+              "findings": []
+            }
+          }
+        },
+        {
+          "tool": "wayforge_complete",
+          "toolCallId": "tool_mzWHrZl3natEA6X4HyY0IM1H",
+          "isError": false,
+          "result": {
+            "ok": true,
+            "summary": "completed with 2 passing validation(s)"
+          }
+        }
+      ],
+      "workflowEvents": [
+        {
+          "sequence": 1,
+          "kind": "task_started",
+          "atMs": 1791137074238
+        },
+        {
+          "sequence": 2,
+          "kind": "main_started",
+          "atMs": 1791137074240
+        },
+        {
+          "sequence": 3,
+          "kind": "validation",
+          "atMs": 1791137088846
+        },
+        {
+          "sequence": 4,
+          "kind": "main_ended",
+          "atMs": 1791137092219
+        },
+        {
+          "sequence": 5,
+          "kind": "main_started",
+          "atMs": 1791137092568
+        },
+        {
+          "sequence": 6,
+          "kind": "validation",
+          "atMs": 1791137097030
+        },
+        {
+          "sequence": 7,
+          "kind": "advisor_triggered",
+          "atMs": 1791137098604
+        },
+        {
+          "sequence": 8,
+          "kind": "advisor_verdict",
+          "atMs": 1791137102595
+        },
+        {
+          "sequence": 9,
+          "kind": "completion_ready",
+          "atMs": 1791137103965
+        },
+        {
+          "sequence": 10,
+          "kind": "main_ended",
+          "atMs": 1791137109537
+        }
+      ],
+      "completion": {
+        "gateAccepted": true,
+        "workflowStatus": "completed",
+        "durableStatus": "completed",
+        "durableCompletionEvidence": {
+          "at": 1791137103967,
+          "summary": "live workflow reported completion_ready"
+        },
+        "recoveryBudget": {
+          "retriesLeft": 1,
+          "fallbacksLeft": 2
+        }
+      },
+      "additionalAdvisorRequests": []
+    }
+  ],
+  "acceptanceTrace": [
+    "task_started",
+    "real coding changes source",
+    "independent npm test 5/5",
+    "independentHostAcceptance recorded before review",
+    "advisor_triggered before_done",
+    "real Kimi JSON approve",
+    "strict parser accepts approve",
+    "wayforge_complete ok:true",
+    "completion_ready",
+    "workflow completed",
+    "durable completed revision 3"
+  ],
+  "knownLimitationsUnchanged": [
+    "default nested continuation agentDir credential-free unless configured",
+    "probe strategies without live HealthRegistry remain fail-closed",
+    "continuation progress is not projected back into durable state",
+    "possible orphaned running record on runtime-construction exception",
+    "Advisor evidence still has empty changedPaths/unavailable workspaceDigest for direct Main; this run used truthful independent validation evidence via the existing tool, not new completion authority"
+  ],
+  "security": {
+    "credentialsRecorded": false,
+    "hiddenReasoningRecorded": false,
+    "accountsIntegrationAdded": false,
+    "productionConfigurationModified": false,
+    "originalRepositoryModified": false,
+    "upstreamPRModified": false
+  },
+  "fixture": {
+    "testFile": "test/count-occurrences.test.mjs",
+    "tests": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { countOccurrences } from '../src/count-occurrences.mjs';\ntest('counts non-overlapping occurrences', () => assert.equal(countOccurrences('abcabcabc', 'abc'), 3));\ntest('counts overlapping occurrences', () => assert.equal(countOccurrences('aaaa', 'aa'), 3));\ntest('handles absent matches and an empty haystack', () => { assert.equal(countOccurrences('abc', 'z'), 0); assert.equal(countOccurrences('', 'x'), 0); });\ntest('matches literally at boundaries, case-sensitively', () => { assert.equal(countOccurrences('a.a.', 'a.'), 2); assert.equal(countOccurrences('AaA', 'A'), 2); assert.equal(countOccurrences('abc', 'abc'), 1); });\ntest('rejects an empty needle and non-string inputs', () => { assert.throws(() => countOccurrences('abc', ''), RangeError); for (const value of [null, undefined, 3, {}, []]) { assert.throws(() => countOccurrences(value, 'a'), TypeError); assert.throws(() => countOccurrences('a', value), TypeError); } });\n",
+    "packageJson": {
+      "name": "phase11a-count-occurrences-dogfood",
+      "private": true,
+      "type": "module",
+      "scripts": {
+        "test": "node --test test/count-occurrences.test.mjs"
+      }
+    },
+    "initialFilesSHA256": {
+      "package.json": "62dc6d75e8f54654740a5ac44771dc47d53814d1ef1aae32291737e8b08b3f97",
+      "src/count-occurrences.mjs": "495a1721aa31ceda55ff7c11fe362808fa5916b9f71793932cf840cb9c288df4",
+      "test/count-occurrences.test.mjs": "05d602eac0a7a739440445053c6f1ce532b73ce585aa5a1800452aa8f28f351b"
+    }
+  }
+}
