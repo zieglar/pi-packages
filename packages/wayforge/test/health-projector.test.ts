@@ -22,6 +22,20 @@ describe("HealthProjector", () => {
     expect(health.getProvider("provider-a")).toBeUndefined();
     expect(health.getAccount("acct-a")).toBeUndefined();
   });
+  it("uses the injected clock for exact account cooldowns", () => {
+    const health = new HealthRegistry(() => 1_000);
+    const projector = new HealthProjector(health, { now: () => 1_000 });
+    projector.record(route, {
+      kind: "usage_limit",
+      scope: "account",
+      confidence: "certain",
+      code: "quota",
+      message: "quota exhausted",
+      resetAtMs: 5_000,
+    });
+    expect(health.getAccount("acct-a")?.cooldownUntilMs).toBe(5_000);
+  });
+
 
   it("records exact account facts without poisoning provider or model", () => {
     const health = new HealthRegistry(() => 100);

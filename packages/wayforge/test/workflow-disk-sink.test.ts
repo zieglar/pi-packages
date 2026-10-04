@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { WorkflowEventLog, type WorkflowEvent } from "../src/workflow/events.js";
 import { WorkflowDiskSink, workflowDiskSinkRoot } from "../src/runtime/workflow-disk-sink.js";
 
+import { durableTaskStoreRoot } from "../src/durable/filesystem-task-store.js";
 const tmpDirs: string[] = [];
 
 function tmpRoot(): string {
@@ -89,6 +90,9 @@ describe("WorkflowDiskSink", () => {
     process.env.PI_CODING_AGENT_DIR = join(isolated, "agent");
     try {
       expect(workflowDiskSinkRoot()).toBe(join(isolated, "agent", "wayforge"));
+      expect(durableTaskStoreRoot(join(isolated, "agent"))).toBe(
+        join(isolated, "agent", "wayforge", "tasks"),
+      );
       const sink = new WorkflowDiskSink();
       sink.writeStatus("alpha0-1", { ok: true });
       expect(readdirSync(join(isolated, "agent", "wayforge"))).toEqual(["alpha0-1.status.json"]);

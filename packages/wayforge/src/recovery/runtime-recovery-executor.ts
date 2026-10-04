@@ -14,6 +14,7 @@ import type { InvocationId, TaskId } from "../types/identity.js";
 import { invocationId as mkInvocationId } from "../types/identity.js";
 import type { ExecutionResult, Failure } from "../types/result.js";
 import { failure } from "../types/result.js";
+import type { DurableSuspension } from "./suspension.js";
 
 export interface RecoveryCounters {
   readonly retries: number;
@@ -40,6 +41,7 @@ export interface RecoveryTerminal {
   readonly action: "stop" | "block" | "suspend";
   readonly reason: string;
   readonly resumeAtMs?: number;
+  readonly suspension?: DurableSuspension;
 }
 
 export interface RecoveryStepResult {
@@ -52,6 +54,11 @@ export interface RecoveryStepResult {
 
 export interface RecoveryExecutorInit {
   readonly taskId: TaskId;
+  readonly now?: () => number;
+  readonly maxResumeChecks?: number;
+  readonly availabilityProbeDelayMs?: number;
+  readonly boundedContinuationDelayMs?: number;
+  readonly maxScheduleDelayMs?: number;
 }
 
 export interface RecoveryRunInput<T> {
@@ -107,6 +114,7 @@ const FALLBACK_ACTIONS: ReadonlySet<RecoveryAction> = new Set([
  */
 export class RuntimeRecoveryExecutor {
   private counters: RecoveryCounters = { retries: 0, fallbacks: 0, rotations: 0 };
+  private readonly now: () => number;
 
   constructor(
     private readonly coordinator: RecoveryCoordinator,
@@ -114,7 +122,9 @@ export class RuntimeRecoveryExecutor {
     private readonly health: HealthRegistry,
     private readonly events: WorkflowEventLog,
     private readonly init: RecoveryExecutorInit,
-  ) {}
+  ) {
+    this.now = init.now ?? (() => Date.now());
+  }
 
   plan(input: RecoveryStepInput): RecoveryStepResult {
     this.events.emit("failure_classified", {
@@ -139,6 +149,18 @@ export class RuntimeRecoveryExecutor {
       alternatives: input.alternatives.map(toRouteRef),
       budget: input.budget,
       health,
+      suspensionContext: {
+        nowMs: this.now(),
+        routeKey: input.currentRoute.routeId,
+        ...(input.currentRoute.accountRef !== undefined ? { accountKey: input.currentRoute.accountRef } : {}),
+        modelKey: input.currentRoute.modelId,
+        providerKey: input.currentRoute.provider,
+        maxChecks: this.init.maxResumeChecks ?? 5,
+        safeAvailabilityProbe: true,
+        availabilityProbeDelayMs: this.init.availabilityProbeDelayMs ?? 30_000,
+        boundedContinuationDelayMs: this.init.boundedContinuationDelayMs ?? 60_000,
+        maxScheduleDelayMs: this.init.maxScheduleDelayMs ?? 24 * 60 * 60 * 1_000,
+      },
     });
     this.events.emit("recovery_decided", {
       taskId: this.init.taskId,
@@ -155,6 +177,7 @@ export class RuntimeRecoveryExecutor {
         action: decision.action,
         reason: decision.reason,
         ...(decision.resumeAtMs !== undefined ? { resumeAtMs: decision.resumeAtMs } : {}),
+        ...(decision.suspension !== undefined ? { suspension: decision.suspension } : {}),
       };
       this.events.emit("recovery_applied", {
         taskId: this.init.taskId,

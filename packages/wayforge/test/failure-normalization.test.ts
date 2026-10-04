@@ -101,6 +101,21 @@ describe("conservative error normalization", () => {
     expect(f.confidence).toBe("ambiguous");
   });
 
+
+  it("preserves explicit normalized retry and reset hints without upgrading an ambiguous 429", () => {
+    const f = normalizeError({
+      status: 429,
+      message: "Too Many Requests",
+      retryAfterMs: 2_000,
+      resetAtMs: 9_000,
+    });
+    expect(f).toMatchObject({
+      kind: "rate_limit",
+      confidence: "ambiguous",
+      retryAfterMs: 2_000,
+      resetAtMs: 9_000,
+    });
+  });
   it("never upgrades an unqualified 429 to usage_limit", () => {
     const f = normalizeError({ status: 429, message: "Too Many Requests", headers: {} });
     expect(f.kind).not.toBe("usage_limit");

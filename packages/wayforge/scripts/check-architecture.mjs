@@ -8,7 +8,7 @@
  *           compatibility adapter (the sole parent-session mutation point);
  *   gate 2  no direct low-level `@earendil-works/pi-ai` transport imports;
  *   gate 3  Pi extension API imports only in the compatibility adapter, the
- *           extension entry, and the extension tool surface;
+ *           extension entry, extension tool surface, and the explicit Pi continuation launcher;
  *   gate 4  no adapter or recovery component declares forbidden lifecycle or
  *           fallback-loop authority (setModel, abort, retry, fallback,
  *           continueSession, ...);
@@ -28,10 +28,12 @@ import { join, relative, sep } from "node:path";
 
 const root = process.argv[2] ?? join(process.cwd(), "src");
 const ADAPTER_PATH = "runtime/pi-compatibility-adapter.ts";
+const PI_CONTINUATION_LAUNCHER_PATH = "runtime/pi-continuation-launcher.ts";
 const EXTENSION_PATHS = new Set([
   ADAPTER_PATH,
   "extension.ts",
   "runtime/extension-tools.ts",
+  PI_CONTINUATION_LAUNCHER_PATH,
 ]);
 const PI_PACKAGE = "@earendil-works/pi-coding-agent";
 const RUNTIME_FACTORY_PATH = "workflow/runtime-factory.ts";
@@ -108,7 +110,7 @@ for (const file of files) {
       !EXTENSION_PATHS.has(relPath)
     ) {
       violations.push(
-        `${relPath}:${line}: Pi extension API import is only permitted in ${ADAPTER_PATH}, extension.ts, and runtime/extension-tools.ts`,
+        `${relPath}:${line}: Pi extension API import is only permitted in ${ADAPTER_PATH}, extension.ts, runtime/extension-tools.ts, and ${PI_CONTINUATION_LAUNCHER_PATH}`,
       );
     }
   }

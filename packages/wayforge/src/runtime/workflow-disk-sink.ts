@@ -15,6 +15,10 @@ import type { WorkflowEvent } from "../workflow/events.js";
  * This sink is write-only observability: the in-memory event log remains the
  * authority, nothing is read back, and every write failure is swallowed — a
  * broken disk must never break a running workflow.
+ * Authoritative durable snapshots are separate children under
+ * `<PI_CODING_AGENT_DIR>/wayforge/tasks/`; these sibling JSONL/status files
+ * remain best-effort diagnostics and are never read for recovery.
+ *
  */
 export function workflowDiskSinkRoot(): string {
   const agentDir = process.env.PI_CODING_AGENT_DIR;

@@ -1,4 +1,5 @@
 import type { Failure } from "../types/result.js";
+import { scheduleSuspension, type DurableSuspension, type SuspensionPlanningContext } from "./suspension.js";
 
 /** Reference to a configured route; account is optional. */
 export interface RouteRef {
@@ -36,6 +37,7 @@ export interface RecoveryDecision {
   readonly route?: RouteRef;
   readonly retryAfterMs?: number;
   readonly resumeAtMs?: number;
+  readonly suspension?: DurableSuspension;
 }
 
 export interface RecoveryInput {
@@ -44,6 +46,7 @@ export interface RecoveryInput {
   readonly alternatives: readonly RouteRef[];
   readonly budget: RecoveryBudget;
   readonly health: Readonly<Record<string, RouteHealth>>;
+  readonly suspensionContext?: SuspensionPlanningContext;
 }
 
 function isHealthy(route: RouteRef, health: Readonly<Record<string, RouteHealth>>): boolean {
@@ -66,11 +69,6 @@ export class RecoveryCoordinator {
     // 1. Cancellation always stops.
     if (failure.kind === "cancellation") {
       return { action: "stop", reason: "cancellation stops recovery" };
-    }
-
-    // 2. Fully exhausted budget blocks.
-    if (budget.retriesLeft <= 0 && budget.fallbacksLeft <= 0) {
-      return { action: "block", reason: "recovery budget exhausted" };
     }
 
     // 3. Exact temporary current-route failures may retry within bounds.
@@ -114,16 +112,32 @@ export class RecoveryCoordinator {
       }
     }
 
-    // 7. Reset-bearing limits may suspend.
+
+    // 7. Only this coordinator may author a durable suspension after no
+    // healthy bounded retry/fallback route remains.
+    if (input.suspensionContext !== undefined) {
+      const suspension = scheduleSuspension(failure, input.suspensionContext);
+      if (suspension !== null) {
+        return {
+          action: "suspend",
+          reason: suspension.reason,
+          resumeAtMs: suspension.resumeNotBeforeMs,
+          suspension,
+        };
+      }
+    }
+    // 8. Legacy reset-bearing callers without scheduling context still suspend.
     if (failure.resetAtMs !== undefined) {
       return {
         action: "suspend",
         reason: "reset-bearing limit reached",
-        ...(failure.resetAtMs !== undefined ? { resumeAtMs: failure.resetAtMs } : {}),
+        resumeAtMs: failure.resetAtMs,
       };
     }
 
-    // 8. Otherwise block.
-    return { action: "block", reason: "no recovery rule matched" };
+    // 9. Otherwise block, distinguishing exhausted budget for diagnostics.
+    return budget.retriesLeft <= 0 && budget.fallbacksLeft <= 0
+      ? { action: "block", reason: "recovery budget exhausted" }
+      : { action: "block", reason: "no recovery rule matched" };
   }
 }

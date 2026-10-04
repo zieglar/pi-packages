@@ -71,12 +71,13 @@ function makeHarness(options?: {
     recoveryBudget: { retriesLeft: 1, fallbacksLeft: 1 },
   });
   const health = new HealthRegistry(() => 1_000);
+  const now = () => 1_000;
   const executor = new RuntimeRecoveryExecutor(
     new RecoveryCoordinator(),
-    new HealthProjector(health),
+    new HealthProjector(health, { now }),
     health,
     log,
-    { taskId: taskId("task-w") },
+    { taskId: taskId("task-w"), now },
   );
   const routes = new PassiveAccountAdapter([workerRoute, advisorRoute], { hasModel: () => true }, health);
   const outcomes = options?.workerOutcomes ?? [workerOutcome(1), workerOutcome(2)];
@@ -176,7 +177,7 @@ describe("WorkflowController", () => {
     expect(state.snapshot().activeMainInvocationId).toBe("main-1");
   });
 
-  it("returns Worker failures to Main with an explicit recovery plan and no auto-retry", async () => {
+  it("returns Worker provider failures to Main with a bounded suspension and no auto-retry", async () => {
     const { controller, state } = makeHarness({
       workerOutcomes: [workerOutcome(1, "failed")],
     });
@@ -185,7 +186,12 @@ describe("WorkflowController", () => {
     expect(failed.ok).toBe(true);
     if (!failed.ok) throw new Error("expected delegation report");
     expect(failed.value.outcomes[0]?.status).toBe("failed");
-    expect(failed.value.recovery?.decision.action).toBe("block");
+    expect(failed.value.recovery?.decision.action).toBe("suspend");
+    expect(failed.value.recovery?.terminal?.suspension).toMatchObject({
+      kind: "provider_outage",
+      strategy: "availability_probe",
+      nextCheckAtMs: 31_000,
+    });
     expect(executeRetryCount(failed.value.outcomes)).toBe(1);
     expect(state.snapshot().activeMainInvocationId).toBe("main-1");
     expect(state.snapshot().unresolved.length).toBe(1);

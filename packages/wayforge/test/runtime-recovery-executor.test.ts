@@ -21,11 +21,12 @@ const fail = (kind: Failure["kind"], extra: Partial<Failure> = {}): Failure => (
 
 function makeExecutor(now = () => 1_000) {
   const health = new HealthRegistry(now);
-  const projector = new HealthProjector(health);
+  const projector = new HealthProjector(health, { now });
   const log = new WorkflowEventLog(now);
   const coordinator = new RecoveryCoordinator();
   const executor = new RuntimeRecoveryExecutor(coordinator, projector, health, log, {
     taskId: taskId("task-r"),
+    now,
   });
   return { executor, health, log, coordinator, projector };
 }
@@ -106,7 +107,7 @@ describe("RuntimeRecoveryExecutor single step", () => {
       currentRoute: route("a"),
       alternatives: [route("b")],
       budget: { retriesLeft: 0, fallbacksLeft: 0 },
-      failure: fail("provider", { scope: "provider" }),
+      failure: fail("validation", { scope: "invocation" }),
       failedInvocationId: invocationId("inv-6"),
     });
     expect(blocked.terminal?.action).toBe("block");
@@ -121,6 +122,28 @@ describe("RuntimeRecoveryExecutor single step", () => {
     expect(suspended.terminal?.resumeAtMs).toBe(5_000);
   });
 
+
+  it("keeps durable suspension scheduling distinct from route health cooldown", () => {
+    const { executor, health } = makeExecutor(() => 1_000);
+    const step = executor.plan({
+      currentRoute: route("a"),
+      alternatives: [],
+      budget: { retriesLeft: 0, fallbacksLeft: 0 },
+      failure: fail("rate_limit", {
+        scope: "provider",
+        confidence: "ambiguous",
+        code: "http_429",
+      }),
+      failedInvocationId: invocationId("inv-suspend"),
+    });
+    expect(health.getRoute("a")?.cooldownUntilMs).toBe(31_000);
+    expect(step.terminal?.suspension).toMatchObject({
+      kind: "rate_limit",
+      strategy: "availability_probe",
+      nextCheckAtMs: 31_000,
+    });
+    expect(step.terminal?.suspension?.scope).toBe("route");
+  });
   it("projects only through the injected HealthProjector and plans only via RecoveryCoordinator", () => {
     const now = () => 1_000;
     const health = new HealthRegistry(now);

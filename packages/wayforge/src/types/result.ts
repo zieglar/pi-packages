@@ -106,6 +106,19 @@ function asRecord(error: unknown): Record<string, unknown> {
   return {};
 }
 
+
+function timingHints(record: Readonly<Record<string, unknown>>): Pick<Failure, "retryAfterMs" | "resetAtMs"> {
+  const retryAfterMs = record.retryAfterMs;
+  const resetAtMs = record.resetAtMs;
+  return {
+    ...(typeof retryAfterMs === "number" && Number.isInteger(retryAfterMs) && retryAfterMs >= 0
+      ? { retryAfterMs }
+      : {}),
+    ...(typeof resetAtMs === "number" && Number.isInteger(resetAtMs) && resetAtMs >= 0
+      ? { resetAtMs }
+      : {}),
+  };
+}
 const NETWORK_CODES = new Set([
   "ECONNRESET",
   "ECONNREFUSED",
@@ -131,6 +144,7 @@ export function normalizeError(error: unknown): Failure {
   const status = typeof rec.status === "number" ? rec.status : undefined;
   const code = typeof rec.code === "string" ? rec.code : undefined;
 
+  const timing = timingHints(rec);
   if (name === "AbortError" || code === "ABORT_ERR" || code === "ERR_ABORTED") {
     return { kind: "cancellation", scope: "invocation", confidence: "certain", code: "aborted", message };
   }
@@ -139,9 +153,9 @@ export function normalizeError(error: unknown): Failure {
   }
   if (status === 429) {
     if (/usage|quota|credit|plan/i.test(rawMessage)) {
-      return { kind: "usage_limit", scope: "account", confidence: "certain", code: "usage_exhausted", message };
+      return { kind: "usage_limit", scope: "account", confidence: "certain", code: "usage_exhausted", message, ...timing };
     }
-    return { kind: "rate_limit", scope: "provider", confidence: "ambiguous", code: "http_429", message };
+    return { kind: "rate_limit", scope: "provider", confidence: "ambiguous", code: "http_429", message, ...timing };
   }
   if (status !== undefined && status >= 400 && /context|token|too long|maximum.{0,20}length/i.test(rawMessage)) {
     return { kind: "context_overflow", scope: "model", confidence: "certain", code: "context_overflow", message };

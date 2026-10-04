@@ -4,13 +4,16 @@ import type { ExecutionRoute } from "../workflow/contracts.js";
 
 export interface HealthProjectionOptions {
   readonly maxAmbiguousRouteCooldownMs?: number;
+  readonly now?: () => number;
 }
 
 export class HealthProjector {
   private readonly maxAmbiguousRouteCooldownMs: number;
+  private readonly now: () => number;
 
   constructor(private readonly health: HealthRegistry, options: HealthProjectionOptions = {}) {
     this.maxAmbiguousRouteCooldownMs = options.maxAmbiguousRouteCooldownMs ?? 30_000;
+    this.now = options.now ?? (() => Date.now());
   }
 
   record(route: ExecutionRoute, outcome: Failure | { readonly ok: true }): void {
@@ -36,7 +39,7 @@ export class HealthProjector {
       if (outcome.resetAtMs !== undefined) {
         this.health.recordAccount(route.accountRef, {
           status: "cooldown",
-          cooldownMs: Math.max(1, outcome.resetAtMs - Date.now()),
+          cooldownMs: Math.max(1, outcome.resetAtMs - this.now()),
           metadata: { code: outcome.code, kind: outcome.kind },
         });
       } else {
