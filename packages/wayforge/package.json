@@ -1,0 +1,28 @@
+{
+  "name": "wayforge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deterministic agent orchestration kernel (Phase 1A): invocation, policy, runtime ownership, recovery, health, and durable-state contracts.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
+    "check:architecture": "node scripts/check-architecture.mjs",
+    "verify": "npm run check:architecture && npm test && npm run typecheck && npm run build",
+    "pi:version": "node -p \"JSON.parse(require('fs').readFileSync('node_modules/@earendil-works/pi-coding-agent/package.json','utf8')).version\""
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.0.2",
+    "@sinclair/typebox": "0.34.52"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11"
+  }
+}
