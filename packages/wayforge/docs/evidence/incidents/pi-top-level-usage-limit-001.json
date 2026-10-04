@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "incident_id": "pi-top-level-usage-limit-001",
+  "recorded_at": "2026-10-04T10:16:08.664Z",
+  "classification": "top_level_pi_usage_limit",
+  "failed_logical_route": {
+    "provider": "openai-codex",
+    "model": "gpt-5.6-sol",
+    "account_representation": "provider-managed-unspecified"
+  },
+  "pi_core_failover_selection": {
+    "provider": "openai-codex-account-2",
+    "model": "gpt-6.1-sol",
+    "selected_at": "2026-10-04T10:16:08.664Z"
+  },
+  "manual_continuation": {
+    "required": true,
+    "observed_at": "2026-10-04T10:16:22.971Z"
+  },
+  "wayforge_observation": {
+    "typed_failure_event_observed": false,
+    "recovery_decision_observed": false,
+    "active_wayforge_task_overlap": false
+  },
+  "earliest_missing_transition": "Pi top-level failed attempt to typed Wayforge failure with safe physical provider/model/account provenance",
+  "blocked_by_upstream_provenance": true,
+  "runtime_input": false,
+  "limitation": "Wayforge can autonomously recover only failures that enter its typed, Wayforge-controlled recovery boundary. It does not intercept arbitrary top-level Pi provider failures.",
+  "redaction": {
+    "contains_transcript": false,
+    "contains_provider_body": false,
+    "contains_credentials": false,
+    "contains_auth_headers": false,
+    "contains_hidden_reasoning": false
+  }
+}

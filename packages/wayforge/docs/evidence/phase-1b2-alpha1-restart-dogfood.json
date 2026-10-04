@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "phase": "1B.2",
+  "runtime_input": false,
+  "environment": "isolated temporary filesystem and disposable Git repository",
+  "provider_traffic": false,
+  "production_pi_access": false,
+  "positive_restart": {
+    "process_a": "persisted typed synthetic usage_limit suspension",
+    "process_b": "startup scan created one new continuation",
+    "assertions": ["running durable state", "continuationOf preserved", "one marker"]
+  },
+  "negative_drift": {
+    "external_path": "owned.txt",
+    "classification": "CONFLICTING_DRIFT",
+    "result": "blocked",
+    "assertions": ["no continuation marker", "HEAD unchanged", "no stash", "external bytes preserved"]
+  },
+  "redaction": {
+    "contains_credentials": false,
+    "contains_transcript": false,
+    "contains_provider_body": false,
+    "contains_hidden_reasoning": false,
+    "contains_file_contents": false
+  },
+  "verification": ["npx vitest run test/restart-integration.test.ts"]
+}

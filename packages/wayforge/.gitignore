@@ -1,0 +1,5 @@
+node_modules/
+dist/
+*.tsbuildinfo
+# Isolated Wayforge development state (project-local Pi config/sessions).
+.wayforge-dev/
