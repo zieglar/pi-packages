@@ -12,11 +12,12 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "tsc -p tsconfig.build.json",
+    "check": "pnpm run check:architecture",
     "check:architecture": "node scripts/check-architecture.mjs",
     "check:alpha0": "node scripts/check-alpha0.mjs",
     "check:alpha1": "node scripts/check-alpha1.mjs",
-    "verify": "npm run check:architecture && npm test && npm run typecheck && npm run build",
-    "verify:alpha0": "npm run verify && npm run check:alpha0",
+    "verify": "pnpm run check:architecture && pnpm test && pnpm run typecheck && pnpm run build",
+    "verify:alpha0": "pnpm run verify && pnpm run check:alpha0",
     "pi:version": "node -p \"JSON.parse(require('fs').readFileSync('node_modules/@earendil-works/pi-coding-agent/package.json','utf8')).version\""
   },
   "dependencies": {

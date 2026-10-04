@@ -19,7 +19,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const ROOT = process.cwd();
-const FROZEN_BASELINE = "98c640ec3a4c5ac3ecb83458254984fcf3601dc7";
+const FROZEN_BASELINE = "9a71aaebe5d6831874a4c37dde927d9c769ac863";
 const failures = [];
 
 function fail(message) {

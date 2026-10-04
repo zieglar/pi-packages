@@ -45,7 +45,7 @@ EOF
 case "${1:-}" in
   --setup)
     if [ ! -f "${REPO_ROOT}/dist/extension.js" ]; then
-      echo "dist/extension.js is missing; run 'npm run build' before --setup." >&2
+      echo "dist/extension.js is missing; run 'pnpm run build' before --setup." >&2
       exit 1
     fi
     install_isolated_extensions
@@ -56,7 +56,7 @@ esac
 
 if [ ! -f "${EXT_DIR}/wayforge.js" ] || [ ! -f "${EXT_DIR}/pi-subagents.js" ]; then
   if [ ! -f "${REPO_ROOT}/dist/extension.js" ]; then
-    echo "dist/extension.js is missing; run 'npm run build' then 'scripts/pi1-dev.sh --setup'." >&2
+    echo "dist/extension.js is missing; run 'pnpm run build' then 'scripts/pi1-dev.sh --setup'." >&2
     exit 1
   fi
   install_isolated_extensions
