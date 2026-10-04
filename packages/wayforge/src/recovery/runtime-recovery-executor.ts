@@ -182,7 +182,11 @@ export class RuntimeRecoveryExecutor {
       this.events.emit("recovery_applied", {
         taskId: this.init.taskId,
         invocationId: input.failedInvocationId,
-        detail: { action: decision.action, terminal: true },
+        detail: {
+          action: decision.action,
+          terminal: true,
+          ...(decision.suspension !== undefined ? { suspension: decision.suspension } : {}),
+        },
       });
       return {
         decision,

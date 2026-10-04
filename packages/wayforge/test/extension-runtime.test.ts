@@ -1,4 +1,5 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,6 +26,11 @@ beforeEach(() => {
   sinkAgentDir = mkdtempSync(join(tmpdir(), "wayforge-ext-runtime-"));
   previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = sinkAgentDir;
+  const workspace = join(sinkAgentDir, "workspace");
+  mkdirSync(workspace);
+  execFileSync("git", ["init", "--quiet"], { cwd: workspace });
+  execFileSync("git", ["-c", "user.name=Wayforge Test", "-c", "user.email=test@example.invalid",
+    "commit", "--quiet", "--allow-empty", "-m", "baseline"], { cwd: workspace });
 });
 
 afterEach(() => {
@@ -106,7 +112,7 @@ function makeHarness(externalTools: { name: string; source: string }[] = []) {
   } as unknown as ExtensionAPI;
 
   const ctx = {
-    cwd: "/repo",
+    cwd: join(sinkAgentDir!, "workspace"),
     mode: "tui",
     hasUI: true,
     thinkingLevel: "medium",
@@ -137,8 +143,8 @@ function makeHarness(externalTools: { name: string; source: string }[] = []) {
     ui: { notify },
   } as unknown as ExtensionContext;
 
-  const fire = (event: string) => {
-    for (const handler of listeners.get(event) ?? []) handler(undefined as never, ctx);
+  const fire = async (event: string) => {
+    await Promise.all((listeners.get(event) ?? []).map((handler) => handler(undefined as never, ctx)));
   };
   const tool = (name: string) => {
     const found = tools.find((candidate) => candidate.name === name);
@@ -164,17 +170,17 @@ describe("wayforgeExtension runtime", () => {
       "wayforge_task_status",
     ]);
     expect(h.commands.has("wayforge")).toBe(true);
-    h.fire("session_start");
+    await h.fire("session_start");
     expect(h.notify).not.toHaveBeenCalled();
   });
 
   it("runs an assisted workflow end to end without touching the parent model", async () => {
     const h = makeHarness();
-    h.fire("session_start");
+    await h.fire("session_start");
     await h.commands.get("wayforge")?.handler("add a small troubleshooting section", h.ctx);
     expect(h.sendUserMessage).toHaveBeenCalledTimes(1);
 
-    h.fire("before_agent_start");
+    await h.fire("before_agent_start");
     const status = await h.runTool("wayforge_task_status", {});
     expect(status.isError).toBeUndefined();
     expect(JSON.stringify(status.content)).toContain("alpha0-1");
@@ -203,8 +209,8 @@ describe("wayforgeExtension runtime", () => {
     expect(completed.isError).toBeUndefined();
     expect(JSON.stringify(completed.content)).toContain("passing validation");
 
-    h.fire("agent_end");
-    h.fire("session_shutdown");
+    await h.fire("agent_end");
+    await h.fire("session_shutdown");
     expect(h.setModel).not.toHaveBeenCalled();
 
     // The extension persisted the redacted event stream and the final status
@@ -219,7 +225,7 @@ describe("wayforgeExtension runtime", () => {
 
   it("fails closed when the ownership guard rejects competing sources", async () => {
     const h = makeHarness([{ name: "route_model", source: "pi-multi-account" }]);
-    h.fire("session_start");
+    await h.fire("session_start");
     expect(h.notify).toHaveBeenCalledTimes(1);
     expect(String(h.notify.mock.calls[0]?.[1])).toBe("error");
     await h.commands.get("wayforge")?.handler("try to start anyway", h.ctx);
@@ -231,7 +237,7 @@ describe("wayforgeExtension runtime", () => {
 
   it("returns typed failures before a workflow starts and never throws raw data", async () => {
     const h = makeHarness();
-    h.fire("session_start");
+    await h.fire("session_start");
     const early = await h.runTool("wayforge_task_status", {});
     expect(early.isError).toBe(true);
     expect(JSON.stringify(early.content)).toContain("workflow_not_started");

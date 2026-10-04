@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
+import { ensureBuilt } from "./helpers/ensure-built.js";
 
 const GATE = "scripts/check-alpha0.mjs";
 
@@ -18,7 +19,7 @@ describe("Alpha 0 assisted-dogfood gate", () => {
     "passes once the extension is built",
     { timeout: 120_000 },
     async () => {
-      execFileSync("npm", ["run", "build"], { encoding: "utf8", cwd: process.cwd() });
+      ensureBuilt();
       const result = runGate();
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("ALPHA 0 OK");

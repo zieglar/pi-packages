@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ensureBuilt } from "./helpers/ensure-built.js";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { FilesystemDurableTaskStore } from "../src/durable/filesystem-task-store.js";
 import { taskId } from "../src/types/identity.js";
@@ -61,7 +62,7 @@ function createWorkspace(): string {
   return workspace;
 }
 
-beforeAll(() => execFileSync("npm", ["run", "build"], { cwd: process.cwd(), stdio: "pipe" }));
+beforeAll(() => ensureBuilt());
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
 
 describe("filesystem process restart integration", () => {

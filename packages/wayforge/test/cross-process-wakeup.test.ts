@@ -1,8 +1,9 @@
-import { execFileSync, fork, type ChildProcess } from "node:child_process";
+import { fork, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ensureBuilt } from "./helpers/ensure-built.js";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { FilesystemDurableTaskStore } from "../src/durable/filesystem-task-store.js";
 import { populatedTaskState } from "./helpers/durable-task-fixture.js";
@@ -42,11 +43,19 @@ function child(taskRoot: string, marker: string): ChildProcess {
   });
 }
 
-beforeAll(() => execFileSync("npm", ["run", "build"], { cwd: process.cwd(), stdio: "pipe" }));
+beforeAll(() => ensureBuilt());
 afterEach(() => roots.splice(0).forEach((directory) => rmSync(directory, { recursive: true, force: true })));
 
 describe("cross-process WakeupService", () => {
-  it("permits exactly one continuation launch owner across repeated contention rounds", async () => {
+  it(
+    "permits exactly one continuation launch owner across repeated contention rounds",
+    // Ten rounds fork twenty child processes; the default 5s wall-clock
+    // budget assumed the old unconditional build hooks staggered file start.
+    // With deduplicated builds (helpers/ensure-built) and ambient desktop
+    // load ~12x cores, isolated runtime is ~3.3s and the default budget is
+    // exceeded without any defect; the ownership assertion is unchanged.
+    { timeout: 20_000 },
+    async () => {
     for (let round = 0; round < 10; round += 1) {
       const taskRoot = root();
       const marker = join(taskRoot, `launch-${round}.jsonl`);
@@ -79,5 +88,6 @@ describe("cross-process WakeupService", () => {
       expect(existsSync(marker)).toBe(true);
       expect(readFileSync(marker, "utf8").trim().split("\n")).toHaveLength(1);
     }
-  });
+    },
+  );
 });

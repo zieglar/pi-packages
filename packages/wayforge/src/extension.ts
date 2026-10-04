@@ -1,5 +1,7 @@
 import type { ExtensionContext, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { createWayforgeTools } from "./runtime/extension-tools.js";
+import { createDurableExecution, type DurableExecution } from "./runtime/durable-composition.js";
+import { LiveDurableProjection } from "./runtime/durable-task-projection.js";
 import { WorkflowDiskSink } from "./runtime/workflow-disk-sink.js";
 import { checkOwnershipGuard } from "./runtime/ownership-guard.js";
 import { MainModelController } from "./runtime/main-model-controller.js";
@@ -8,14 +10,32 @@ import type { ExecutionRoute } from "./workflow/contracts.js";
 import { createWorkflowRuntime, type WorkflowRuntime } from "./workflow/runtime-factory.js";
 import type { ModelTier, ThinkingLevel } from "./types/execution.js";
 import { routeId, taskId } from "./types/identity.js";
-
 interface WayforgeExtensionState {
   runtime?: WorkflowRuntime;
   guardFailures?: readonly string[];
   taskSequence: number;
   readonly sink: WorkflowDiskSink;
+  durable?: DurableExecution;
+  projection?: LiveDurableProjection;
+  startupScanStarted?: boolean;
 }
 
+/** Durable-composition overrides for isolated profiles and deterministic tests. */
+export interface WayforgeExtensionDurableOverrides {
+  readonly storeRoot?: string;
+  readonly agentDir?: string;
+  readonly now?: () => number;
+  readonly launcher?: import("./durable/contracts.js").ContinuationLauncher;
+  readonly leaseTtlMs?: number;
+  readonly maxContinuationLaunches?: number;
+  readonly maxRecoveryAttempts?: number;
+}
+
+/** Composition overrides for the live Wayforge extension factory. */
+export interface WayforgeExtensionOverrides {
+  readonly durable?: WayforgeExtensionDurableOverrides;
+  readonly observeRuntime?: (runtime: WorkflowRuntime | undefined) => void;
+}
 const DEFAULT_CRITERIA = "all recorded validations pass and the before-done advisor approves";
 
 /**
@@ -65,12 +85,13 @@ function observedRoutes(
   ];
 }
 
-function startWorkflow(
+async function startWorkflow(
   pi: Parameters<ExtensionFactory>[0],
   ctx: ExtensionContext,
   state: WayforgeExtensionState,
   objective: string,
-): WorkflowRuntime {
+  overrides: WayforgeExtensionOverrides,
+): Promise<WorkflowRuntime> {
   const model = ctx.model;
   if (model === undefined) {
     throw new Error("no model is selected; select one before starting Wayforge");
@@ -83,7 +104,31 @@ function startWorkflow(
     throw new Error("observed route table is empty");
   }
   const adapter = new PiCompatibilityAdapter(pi, ctx);
+  // Allocate from persisted identities, not the process-local counter. Store
+  // creation remains the atomic admission gate: concurrent collision fails
+  // closed before any live runtime/event can target an existing task.
+  if (state.durable !== undefined) {
+    const listed = await state.durable.store.list();
+    if (!listed.ok) throw new Error(`durable task admission failed: ${listed.failure.code}`);
+    for (const existing of listed.value) {
+      const match = /^alpha0-(\d+)$/.exec(existing.taskId);
+      if (match !== null) {
+        const sequence = Number(match[1]);
+        if (Number.isSafeInteger(sequence)) state.taskSequence = Math.max(state.taskSequence, sequence);
+      }
+    }
+  }
   state.taskSequence += 1;
+  if (state.projection !== undefined) {
+    const created = await state.projection.startDurableTask({
+      taskId: taskId(`alpha0-${state.taskSequence}`),
+      objective,
+      completionCriteria: DEFAULT_CRITERIA,
+      workspaceRoot: ctx.cwd,
+      policyVersions: { role: "main", model: `${String(model.provider)}/${model.id}` },
+    });
+    if (!created.ok) throw new Error(`durable task admission failed: ${created.failure.code}`);
+  }
   let controllerRef: WorkflowRuntime["controller"] | undefined;
   const runtime = createWorkflowRuntime({
     ownerRunId: `wayforge-alpha0-${state.taskSequence}`,
@@ -105,6 +150,7 @@ function startWorkflow(
     // controller reference attached right after construction.
     onEvent: (event) => {
       state.sink.appendEvent(event);
+      state.projection?.project(event);
       if (controllerRef !== undefined) {
         state.sink.writeStatus(event.taskId, controllerRef.status());
       }
@@ -115,11 +161,16 @@ function startWorkflow(
       maxWorkers: 4,
       // Parent budget feeds worker checks: min(worker route, parent remaining).
       mainBudgetLimit: 96_000,
+      // One time domain for the whole live composition: the recovery
+      // executor, durable projection, and wakeup scheduler must observe the
+      // same clock or suspension windows and due scans diverge.
+      ...(overrides.durable?.now !== undefined ? { now: overrides.durable.now } : {}),
     },
   });
   controllerRef = runtime.controller;
   state.sink.writeStatus(runtime.controller.taskId, runtime.controller.status());
   state.runtime = runtime;
+  overrides?.observeRuntime?.(runtime);
   return runtime;
 }
 
@@ -129,7 +180,10 @@ function startWorkflow(
  * The fail-closed ownership guard runs on every session start, and the sole
  * parent model-change path remains MainModelController -> adapter.setModel.
  */
-export const wayforgeExtension: ExtensionFactory = (pi) => {
+function wayforgeExtensionBody(
+  pi: Parameters<ExtensionFactory>[0],
+  overrides: WayforgeExtensionOverrides,
+): void {
   const state: WayforgeExtensionState = { taskSequence: 0, sink: new WorkflowDiskSink() };
 
   for (const tool of createWayforgeTools({
@@ -162,7 +216,7 @@ export const wayforgeExtension: ExtensionFactory = (pi) => {
         return;
       }
       try {
-        startWorkflow(pi, ctx, state, objective);
+        await startWorkflow(pi, ctx, state, objective, overrides);
       } catch (error) {
         ctx.ui.notify(`Wayforge failed to start: ${error instanceof Error ? error.message : "unknown error"}`, "error");
         return;
@@ -209,12 +263,65 @@ export const wayforgeExtension: ExtensionFactory = (pi) => {
     });
     if (guard.ok) {
       delete state.guardFailures;
+      startDurableExecution(state, overrides, ctx);
       return;
     }
     state.guardFailures = guard.failures;
     ctx.ui.notify(`Wayforge ownership guard failed closed:\n${guard.failures.join("\n")}`, "error");
   });
 
+/**
+ * Compose the durable execution stack once per process using the session
+ * workspace, then run one bounded startup recovery pass. The scan never
+ * blocks session start: it is fired asynchronously, failures surface as
+ * typed sanitized notifications, and repeated session starts cannot enqueue
+ * duplicate scans. Cross-process duplicate prevention stays with the
+ * WakeupService lease and persisted continuation phases.
+ */
+function startDurableExecution(
+  state: WayforgeExtensionState,
+  overrides: WayforgeExtensionOverrides,
+  ctx: ExtensionContext,
+): void {
+  if (state.durable === undefined) {
+    try {
+      const durable = createDurableExecution({
+        cwd: ctx.cwd,
+        ...(overrides.durable ?? {}),
+      });
+      state.durable = durable;
+      state.projection = new LiveDurableProjection(durable.store, {
+        ...(overrides.durable?.now !== undefined ? { now: overrides.durable.now } : {}),
+      });
+    } catch {
+      ctx.ui.notify(
+        "Wayforge durable execution is unavailable in this environment; workflows continue Alpha 0 only.",
+        "warning",
+      );
+      return;
+    }
+  }
+  if (state.startupScanStarted === true) return;
+  state.startupScanStarted = true;
+  const scanner = state.durable.scanner;
+  void scanner
+    .scan()
+    .then((scanned) => {
+      if (!scanned.ok) {
+        ctx.ui.notify(`Wayforge startup recovery failed: ${scanned.failure.code}`, "error");
+        return;
+      }
+      if (scanned.value.processed > 0) {
+        ctx.ui.notify(
+          `Wayforge startup recovery processed ${scanned.value.processed} suspended task(s).`,
+          "info",
+        );
+      }
+    })
+    .catch(() => {
+      ctx.ui.notify("Wayforge startup recovery failed: unknown error", "error");
+    });
+}
   pi.on("before_agent_start", () => {
     const runtime = state.runtime;
     if (runtime === undefined) return;
@@ -233,11 +340,24 @@ export const wayforgeExtension: ExtensionFactory = (pi) => {
     state.runtime?.controller.endMainTurn();
   });
 
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", async () => {
     const runtime = state.runtime;
-    if (runtime === undefined) return;
-    if (runtime.controller.status().status === "running") {
+    if (runtime !== undefined && runtime.controller.status().status === "running") {
       runtime.controller.cancel();
     }
+    // Pi awaits shutdown handlers, so drain durable projections before it
+    // disposes the session/process. This is not a second recovery owner.
+    await state.projection?.settle();
   });
-};
+}
+
+/**
+ * The live Wayforge extension factory. Constructed with composition overrides
+ * for isolated profiles and deterministic tests; `wayforgeExtension` is the
+ * default production instance Pi loads.
+ */
+export function createWayforgeExtension(overrides: WayforgeExtensionOverrides = {}): ExtensionFactory {
+  return (pi) => wayforgeExtensionBody(pi, overrides);
+}
+
+export const wayforgeExtension: ExtensionFactory = createWayforgeExtension();

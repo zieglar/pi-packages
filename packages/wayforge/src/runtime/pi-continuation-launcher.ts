@@ -12,7 +12,7 @@ export interface PiContinuationSession {
 }
 
 export interface PiContinuationSessionFactory {
-  create(input: { readonly continuationId: string }): Promise<PiContinuationSession>;
+  create(input: { readonly continuationId: string; readonly cwd: string }): Promise<PiContinuationSession>;
 }
 
 export interface PiSdkContinuationSessionFactoryOptions {
@@ -28,10 +28,10 @@ export interface PiSdkContinuationSessionFactoryOptions {
 export class PiSdkContinuationSessionFactory implements PiContinuationSessionFactory {
   constructor(private readonly options: PiSdkContinuationSessionFactoryOptions) {}
 
-  async create(_input: { readonly continuationId: string }): Promise<PiContinuationSession> {
-    const sessionManager = SessionManager.inMemory(this.options.cwd);
+  async create(input: { readonly continuationId: string; readonly cwd: string }): Promise<PiContinuationSession> {
+    const sessionManager = SessionManager.inMemory(input.cwd);
     const created = await createAgentSession({
-      cwd: this.options.cwd,
+      cwd: input.cwd,
       agentDir: this.options.agentDir,
       sessionManager,
     });
@@ -70,7 +70,10 @@ export class PiContinuationLauncher implements ContinuationLauncher {
 
     let session: PiContinuationSession;
     try {
-      session = await this.options.factory.create({ continuationId: preallocatedContinuationId });
+      session = await this.options.factory.create({
+        continuationId: preallocatedContinuationId,
+        cwd: packageData.workspace.workspaceRoot,
+      });
       await session.prompt(renderContinuationPrompt(packageData));
     } catch {
       return failure({

@@ -20,7 +20,11 @@
  *   gate 8  `new PiCompatibilityAdapter(` and `new MainModelController(` only
  *           in the extension entry (the only place holding live Pi objects);
  *   gate 9  pi-subagents imports only through the public
- *           `pi-subagents/delegation` contract.
+ *           `pi-subagents/delegation` contract;
+ *   gate 10 the durable execution stack (task store, wakeup scheduler,
+ *           startup scanner, continuation launcher/factory) is constructed
+ *           only in the single live durable composition root;
+ *   gate 11 no pi-accounts integration may be imported anywhere.
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -42,6 +46,15 @@ const IMPORT_RE = /import\s[^;]*?from\s*["']([^"']+)["']/g;
 const FORBIDDEN_MEMBER_RE =
   /\b(?:setModel|abort|retry|retryLoop|fallback|fallbackLoop|continueSession|resumeLoop)\s*[(:]/g;
 const DELEGATION_EXPORT = "pi-subagents/delegation";
+const DURABLE_COMPOSITION_PATH = "runtime/durable-composition.ts";
+const PI_ACCOUNTS_RE = /(^|\/)pi-accounts(\/|$)|@narumitw\//;
+const DURABLE_OWNER_TYPES = [
+  "WakeupService",
+  "StartupRecoveryScanner",
+  "PiContinuationLauncher",
+  "PiSdkContinuationSessionFactory",
+  "FilesystemDurableTaskStore",
+];
 
 function listFiles(dir) {
   const out = [];
@@ -93,11 +106,15 @@ for (const file of files) {
     }
   }
 
-  // Gate 2, 3 & 9: import restrictions.
+  // Gate 2, 3, 9 & 11: import restrictions.
   for (const match of content.matchAll(IMPORT_RE)) {
     const specifier = match[1] ?? "";
     const line = lineOf(content, match.index ?? 0);
-    if (specifier.startsWith("@earendil-works/pi-ai")) {
+    if (PI_ACCOUNTS_RE.test(specifier)) {
+      violations.push(
+        `${relPath}:${line}: pi-accounts integration import "${specifier}" is forbidden in Phase 1.1`,
+      );
+    } else if (specifier.startsWith("@earendil-works/pi-ai")) {
       violations.push(
         `${relPath}:${line}: direct low-level pi-ai import "${specifier}" is forbidden; use the Pi compatibility adapter`,
       );
@@ -139,6 +156,16 @@ for (const file of files) {
   }
   for (const match of countConstructor(content, "MainModelController")) {
     mainControllerSites.push({ name: "MainModelController", relPath, line: lineOf(content, match.index ?? 0) });
+  }
+  for (const ownerType of DURABLE_OWNER_TYPES) {
+    for (const match of countConstructor(content, ownerType)) {
+      const line = lineOf(content, match.index ?? 0);
+      if (relPath !== DURABLE_COMPOSITION_PATH) {
+        violations.push(
+          `${relPath}:${line}: \`new ${ownerType}(\` is only permitted in ${DURABLE_COMPOSITION_PATH} (single live durable composition root)`,
+        );
+      }
+    }
   }
 }
 
@@ -191,4 +218,4 @@ if (violations.length > 0) {
   process.exit(1);
 }
 
-console.log(`ARCHITECTURE OK: 9 gates passed (scanned ${files.length} files)`);
+console.log(`ARCHITECTURE OK: 11 gates passed (scanned ${files.length} files)`);

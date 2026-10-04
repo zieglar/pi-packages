@@ -181,7 +181,7 @@ describe("architecture gates over production source", () => {
     });
     const result = runChecker(dir);
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("9 gates passed");
+    expect(result.stdout).toContain("11 gates passed");
   });
 
 });

@@ -1,0 +1,31 @@
+{
+  "phase": "1.1",
+  "kind": "live-pi-smoke",
+  "date": "2026-10-05",
+  "isolation": {
+    "profile": "packages/wayforge/.wayforge-dev/agent (pi1-dev.sh launcher)",
+    "workspace": "disposable git repository under /tmp (removed after capture)",
+    "productionPiTouched": false,
+    "credentialsUsed": "none (credential-free isolated profile)"
+  },
+  "observed": {
+    "extensionLoads": "real Pi binary loaded dist/extension.js via isolated profile",
+    "durableServicesInitialize": "store root <agent>/wayforge/tasks created at session start",
+    "governedTaskStarts": "/wayforge command created durable task alpha0-1 with checkpoint summary and workspace checkpoint",
+    "checkpointWritten": "state.json workspace checkpoint with repository identity and empty changed-path set",
+    "lifecycleProjection": "session end projected status cancelled through the real event path",
+    "suspension": "operator-authored explicit_reset wake with resumeNotBeforeMs in the past (deterministic controlled wake condition)",
+    "restart": "fresh real Pi process in the same isolated profile",
+    "discovery": "startup scan found the due suspension without blocking session start",
+    "leaseClaimed": "leaseGeneration advanced 0 -> 1",
+    "driftCheck": "workspace digests compared; no drift; workspace file bytes unchanged",
+    "resumingTransition": "status resuming persisted with continuation alpha0-1:resume-1 reserved then launching",
+    "newSession": "not independently observed: the launch intent reached the real SDK factory boundary, but factory creation and prompt failures are collapsed by the launcher",
+    "failSafe": "launcher returned failure and task became blocked with continuation_outcome_ambiguous; exact factory-versus-prompt failure point was not captured",
+    "duplicatePrevention": "one persisted launch intent observed in this run; the deterministic tests separately exercise duplicate prevention"
+  },
+  "notProvenInSmoke": [
+    "a continuation prompt that completes successfully (requires model credentials in the isolated profile; production credentials are forbidden)",
+    "test/live-restart-acceptance.test.ts proves extension composition across processes with a Pi host double and a doubled session factory behind the real launcher; it does not prove successful real SDK continuation"
+  ]
+}

@@ -18,7 +18,7 @@ describe("PiContinuationLauncher", () => {
 
     const result = await launcher.launch(packageData, "task-fixture:resume-1");
     expect(result).toMatchObject({ ok: true, value: { invocationId: "task-fixture:resume-1", sessionId: "pi-new-session" } });
-    expect(create).toHaveBeenCalledWith({ continuationId: "task-fixture:resume-1" });
+    expect(create).toHaveBeenCalledWith({ continuationId: "task-fixture:resume-1", cwd: workspace.workspaceRoot });
     expect(prompt).toHaveBeenCalledTimes(1);
     expect(prompt.mock.calls[0]?.[0]).toContain("new invocation");
     expect(prompt.mock.calls[0]?.[0]).not.toContain("sk-fixturesecret");

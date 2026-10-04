@@ -1,8 +1,9 @@
-import { execFileSync, fork, type ChildProcess } from "node:child_process";
+import { fork, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { ensureBuilt } from "./helpers/ensure-built.js";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   durableTaskDirectoryName,
@@ -67,7 +68,7 @@ function claimant(root: string, rawTaskId: string, now: number, ttl: number): Ch
 }
 
 beforeAll(() => {
-  execFileSync("npm", ["run", "build"], { cwd: process.cwd(), stdio: "pipe" });
+  ensureBuilt();
 });
 
 afterEach(() => {

@@ -1,0 +1,45 @@
+{
+  "phase": "1.1",
+  "kind": "real-pi-sdk-restart-acceptance",
+  "result": "pass",
+  "provider": "kimi-coding",
+  "model": "kimi-for-coding",
+  "productionConfigurationModified": false,
+  "credentialsCopiedOrRecorded": false,
+  "configuration": {
+    "profile": "project-local .wayforge-dev/agent",
+    "continuationAgentDir": "explicit override to the already authenticated isolated profile via createWayforgeExtension",
+    "defaultCredentialFreeSubdirectoryProven": false,
+    "piMode": "long-lived RPC",
+    "workspace": "disposable Git workspace A",
+    "restartCwd": "different disposable workspace B"
+  },
+  "sequence": [
+    "Real Pi process A loaded the actual extension and /wayforge created authoritative task alpha0-4 and workspace checkpoint",
+    "Initial model turn made no workspace changes",
+    "Operator authored a schema-validated explicit_reset suspension due now using FilesystemDurableTaskStore.update",
+    "Process A terminated by SIGKILL without session_shutdown cancellation",
+    "Real Pi process B started in different workspace B with the same isolated profile; no parent model prompt was submitted",
+    "Startup scan discovered task alpha0-4, claimed fenced lease generation 1, revalidated persisted workspace A and reserved alpha0-4:resume-1",
+    "Unreplaced PiContinuationLauncher and PiSdkContinuationSessionFactory launched a fresh in-memory AgentSession using persisted workspace A",
+    "Continuation created resumed-proof.txt in workspace A containing resumed via new session followed by a newline",
+    "No proof file was created in workspace B; durable continuation reached launched and continuationLaunches equals 1"
+  ],
+  "observed": {
+    "taskId": "alpha0-4",
+    "status": "running",
+    "continuationId": "alpha0-4:resume-1",
+    "continuationPhase": "launched",
+    "leaseGeneration": 1,
+    "continuationLaunches": 1,
+    "invocationRole": "continuation",
+    "workspaceProof": "resumed via new session\n",
+    "wrongWorkspaceProof": null
+  },
+  "limitations": [
+    "Operator-authored suspension validates the real restart path, not spontaneous provider-quota recovery",
+    "Successful launch and workspace effect are not workflow completion authorization",
+    "Continuation progress projection after launch remains outside Phase 1.1",
+    "Authenticated isolated agentDir was an explicit configuration override; credentials were not copied into the default nested credential-free directory"
+  ]
+}

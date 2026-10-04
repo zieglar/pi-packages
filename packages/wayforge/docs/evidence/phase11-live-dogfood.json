@@ -1,0 +1,48 @@
+{
+  "phase": "1.1",
+  "kind": "isolated-live-coding-dogfood",
+  "result": "needs_revision",
+  "profile": "project-local .wayforge-dev/agent",
+  "credentialsRecorded": false,
+  "task": "Add finite-number argument checks and tests in a disposable two-file Git repository",
+  "initialAttempt": {
+    "provider": "openai",
+    "model": "gpt-5.5",
+    "authenticationType": "oauth",
+    "filesChanged": 0,
+    "providerDiagnosticWithExtensionsDisabled": "ChatGPT Subscription Sharing usage limit reached",
+    "printModeError": "turn_end could not resolve the persisted assistant entry ID",
+    "accepted": false
+  },
+  "authenticatedCodingAttempt": {
+    "provider": "kimi-coding",
+    "model": "kimi-for-coding",
+    "mode": "long-lived real Pi RPC",
+    "readinessDiagnostic": "READY, stopReason stop",
+    "durableTaskId": "alpha0-3",
+    "filesChanged": ["add.mjs", "test.mjs"],
+    "codeArtifacts": {
+      "add.mjs.sha256": "f2ef8338e023edfdf53741dd9c410fceb254dc4b122076b350d735e16af089cb",
+      "test.mjs.sha256": "793abb5f9387f3c4f694e774cc960f1ae3160982263e1da8ca899271ee0e841a",
+      "diff": "2 files changed, 30 insertions, 1 deletion; 4 valid sums and 10 rejected-input cases"
+    },
+    "validationCommand": "node test.mjs",
+    "validationResult": "PASS (also rerun independently by the parent)",
+    "durableValidationEvidenceCount": 1,
+    "advisorAttempts": ["invalid_advisor_verdict", "budget_exhausted", "budget_exhausted"],
+    "completionResult": "completion_gate_failed: completion requires an approving advisor verdict",
+    "completionEvidence": false,
+    "completionAuthorityBypassed": false,
+    "advisorPolicyOrBudgetChanged": false,
+    "acceptedAsCompletedWorkflow": false
+  },
+  "additionalLiveFinding": {
+    "issue": "session_shutdown returned before queued cancellation projection reached disk",
+    "regressionTest": "live-durable-composition.test.ts: persists cancellation before session_shutdown returns",
+    "red": "expected cancelled, received running",
+    "fix": "async session_shutdown awaits LiveDurableProjection.settle after cancellation",
+    "green": "14 focused tests pass with typecheck"
+  },
+  "acceptance": "Real coding and persisted validation are proven; complete governed coding workflow is not proven because the Advisor did not approve",
+  "remaining": ["Owner decision on the unsuccessful Advisor/completion gate, without silently changing frozen Completion Authority or redesigning Advisor"]
+}

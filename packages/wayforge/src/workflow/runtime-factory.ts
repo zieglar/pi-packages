@@ -82,8 +82,8 @@ export function createWorkflowRuntime(input: WorkflowRuntimeInput): WorkflowRunt
   const coordinator = new RecoveryCoordinator();
   const recovery = new RuntimeRecoveryExecutor(coordinator, projector, health, log, {
     taskId: input.task.taskId,
+    ...(input.config?.now !== undefined ? { now: input.config.now } : {}),
   });
-
   const accountRoutes = new PassiveAccountAdapter(input.routes, input.modelAvailability, health, (route, outcome) =>
     projector.record(route, outcome),
   );
