@@ -5,7 +5,7 @@ A pnpm workspace for independently owned packages that extend or integrate with 
 ## Packages
 
 - [`wayforge`](packages/wayforge/README.md) — deterministic agent orchestration kernel. This is the only initial package.
-- [`pi-handoff`](packages/pi-handoff/README.md) — durable handoff protocol between ChatGPT and the local Pi runtime (Phase 0/1: frozen contracts + MCP ping smoke).
+- [`pi-chat-exchange`](packages/pi-chat-exchange/README.md) — generic chat-exchange protocol: Exchange aggregate, independent message/result lifecycles, pure core rules, and an MCP ping smoke (durable host deferred).
 
 ## Development
 

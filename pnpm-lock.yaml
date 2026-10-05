@@ -170,7 +170,7 @@ importers:
         specifier: 3.0.3
         version: 3.0.3
 
-  packages/pi-handoff:
+  packages/pi-chat-exchange:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: 1.30.1
