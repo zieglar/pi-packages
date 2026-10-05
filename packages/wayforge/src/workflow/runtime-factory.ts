@@ -1,4 +1,5 @@
 import { PassiveAccountAdapter, type ModelAvailabilityPort } from "../adapters/passive-account-adapter.js";
+import type { CompletionAuthorityPort } from "../completion/completion-authority.js";
 import type { DelegationEventBus } from "../adapters/pi-subagent-worker-adapter.js";
 import { PiSubagentWorkerAdapter } from "../adapters/pi-subagent-worker-adapter.js";
 import { PiAdvisorAdapter } from "../adapters/pi-advisor-adapter.js";
@@ -44,6 +45,7 @@ export interface WorkflowRuntimeInput {
   readonly task: WorkflowRuntimeTaskInit;
   readonly mainModel: MainModelController;
   readonly nestedRuntime?: NestedModelRuntimePort;
+  readonly completionAuthority?: CompletionAuthorityPort;
   readonly onEvent?: (event: WorkflowEvent) => void;
   readonly config?: WorkflowRuntimeConfig;
 }
@@ -139,6 +141,7 @@ export function createWorkflowRuntime(input: WorkflowRuntimeInput): WorkflowRunt
     routes: accountRoutes,
     workers: workerAdapter,
     ...(advisorAdapter !== undefined ? { advisors: advisorAdapter } : {}),
+    ...(input.completionAuthority !== undefined ? { completionAuthority: input.completionAuthority } : {}),
     recovery,
     mainModel: input.mainModel,
     mainContext,

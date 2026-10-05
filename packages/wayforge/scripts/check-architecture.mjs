@@ -24,7 +24,17 @@
  *   gate 10 the durable execution stack (task store, wakeup scheduler,
  *           startup scanner, continuation launcher/factory) is constructed
  *           only in the single live durable composition root;
- *   gate 11 no pi-accounts integration may be imported anywhere.
+ *   gate 11 no pi-accounts integration may be imported anywhere;
+ *   gate 12 exactly one CompletionAuthority construction, in extension.ts;
+ *   gate 13 durable task completion literals/evidence writers live only in
+ *           completion/completion-authority.ts (worker outcomes excluded);
+ *   gate 14 completion CAS callsites live only in the completion authority;
+ *   gate 15 no pi-accounts package or protocol string appears in production.
+ *   gate 16 completion budget reservation callsites belong to the controller;
+ *   gate 17 authoritative review dispatch belongs to the authority callback;
+ *   gate 18 governed manual advice refuses before any review dispatch;
+ *   gate 19 the authoritative advisor diagnostic event is emitted only
+ *           by the workflow controller (non-authoritative side channel).
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -48,6 +58,14 @@ const FORBIDDEN_MEMBER_RE =
 const DELEGATION_EXPORT = "pi-subagents/delegation";
 const DURABLE_COMPOSITION_PATH = "runtime/durable-composition.ts";
 const PI_ACCOUNTS_RE = /(^|\/)pi-accounts(\/|$)|@narumitw\//;
+const PI_ACCOUNTS_CONTENT_RE = /pi-accounts|@narumitw\//i;
+const COMPLETION_AUTHORITY_PATH = "completion/completion-authority.ts";
+const COMPLETED_STATUS_RE = /\bstatus\s*:\s*["']completed["']/g;
+const WORKFLOW_COMPLETED_WRITE_RE = /\.setStatus\s*\(\s*["']completed["']\s*\)/g;
+const COMPLETION_EVIDENCE_WRITE_RE = /\bcompletionEvidence\s*:(?!\s*(?:Type\.|null\b))\s*/g;
+const STORE_UPDATE_RE = /\.update\s*\(/g;
+const COMPLETION_CAS_SHAPE_RE =
+  /\bstatus\s*:\s*["']completed["']|\bcompletionEvidence\s*:(?!\s*(?:Type\.|null\b))/;
 const DURABLE_OWNER_TYPES = [
   "WakeupService",
   "StartupRecoveryScanner",
@@ -83,6 +101,69 @@ function countConstructor(content, name) {
   return [...content.matchAll(pattern)];
 }
 
+function stripComments(content) {
+  // Blank comment characters with spaces (newlines and offsets preserved) so
+  // gate scanners match code, not prose. String literals are left untouched.
+  const chars = content.split("");
+  let quote = null;
+  let i = 0;
+  while (i < chars.length) {
+    const ch = chars[i];
+    if (quote !== null) {
+      if (ch === "\\") i += 1;
+      else if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+    } else if (ch === "/" && chars[i + 1] === "/") {
+      while (i < chars.length && chars[i] !== "\n") {
+        chars[i] = " ";
+        i += 1;
+      }
+      continue;
+    } else if (ch === "/" && chars[i + 1] === "*") {
+      chars[i] = " ";
+      chars[i + 1] = " ";
+      i += 2;
+      while (i < chars.length && !(chars[i] === "*" && chars[i + 1] === "/")) {
+        if (chars[i] !== "\n") chars[i] = " ";
+        i += 1;
+      }
+      if (i < chars.length) {
+        chars[i] = " ";
+        chars[i + 1] = " ";
+        i += 1;
+      }
+    }
+    i += 1;
+  }
+  return chars.join("");
+}
+
+function callArguments(content, openParenIndex) {
+  // Slice the balanced argument region starting at "(". String literals are
+  // skipped so parentheses inside them cannot unbalance the scan.
+  let depth = 0;
+  let quote = null;
+  for (let i = openParenIndex; i < content.length; i += 1) {
+    const ch = content[i];
+    if (quote !== null) {
+      if (ch === "\\") i += 1;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "(") depth += 1;
+    else if (ch === ")") {
+      depth -= 1;
+      if (depth === 0) return content.slice(openParenIndex, i + 1);
+    }
+  }
+  return content.slice(openParenIndex);
+}
+
 const files = listFiles(root);
 const violations = [];
 let setModelCount = 0;
@@ -91,6 +172,7 @@ const healthSites = [];
 const projectorSites = [];
 const adapterSites = [];
 const mainControllerSites = [];
+const completionAuthoritySites = [];
 
 for (const file of files) {
   const relPath = rel(file);
@@ -104,6 +186,11 @@ for (const file of files) {
         `${relPath}:${lineOf(content, match.index ?? 0)}: setModel( is only permitted in ${ADAPTER_PATH}`,
       );
     }
+  }
+
+  // Gate 15: reject account package/protocol strings, not only imports.
+  if (PI_ACCOUNTS_CONTENT_RE.test(content)) {
+    violations.push(`${relPath}: pi-accounts dependency or protocol strings are forbidden`);
   }
 
   // Gate 2, 3, 9 & 11: import restrictions.
@@ -157,6 +244,86 @@ for (const file of files) {
   for (const match of countConstructor(content, "MainModelController")) {
     mainControllerSites.push({ name: "MainModelController", relPath, line: lineOf(content, match.index ?? 0) });
   }
+  for (const match of countConstructor(content, "CompletionAuthority")) {
+    completionAuthoritySites.push({ relPath, line: lineOf(content, match.index ?? 0) });
+  }
+
+  // Gates 16-18: concrete Advisor reservation and callback ownership.
+  // Gates 16-18: concrete Advisor reservation and callback ownership.
+  const ownershipSource = stripComments(content);
+  const reservations = [...ownershipSource.matchAll(/\.reserveCompletionBudget\s*\(/g)];
+  for (const match of reservations) {
+    if (relPath !== "workflow/workflow-controller.ts" || reservations.length !== 1) {
+      violations.push(`${relPath}:${lineOf(content, match.index ?? 0)}: completion budget reservation belongs only to the one-shot controller callback`);
+    }
+  }
+  const completionReviews = [...ownershipSource.matchAll(/\.reviewCompletionEvidence\s*\(/g)];
+  for (const match of completionReviews) {
+    if (relPath !== "workflow/workflow-controller.ts" || completionReviews.length !== 1 ||
+        !/review:\s*\(evidence\)\s*=>\s*this\.reviewCompletionEvidence\(evidence\)/.test(ownershipSource)) {
+      violations.push(`${relPath}:${lineOf(content, match.index ?? 0)}: authoritative Advisor review callback is owned only by the CompletionAuthority request`);
+    }
+  }
+  if (relPath === "workflow/workflow-controller.ts" && reservations.length > 0) {
+    const adviceStart = ownershipSource.indexOf("  advise(");
+    const adviceEnd = ownershipSource.indexOf("  private reviewCompletionEvidence(");
+    const adviceBody = ownershipSource.slice(Math.max(0, adviceStart), adviceEnd < 0 ? undefined : adviceEnd);
+    const guard = adviceBody.indexOf("advisor_reserved_for_completion");
+    const dispatch = adviceBody.indexOf("this.reviewAdvisorEvidence(");
+    if (!adviceBody.includes("this.options.completionAuthority !== undefined") || guard < 0 ||
+        (dispatch >= 0 && guard > dispatch)) {
+      violations.push(`${relPath}: governed advice must refuse before review; manual requests cannot consume completion reservation`);
+    }
+  }
+
+  // Gate 19: authoritative advisor diagnostics are a controller-owned
+  // best-effort side channel; only the controller may emit the event kind.
+  for (const match of ownershipSource.matchAll(/\.emit\(\s*["']advisor_review_diagnostic["']/g)) {
+    if (relPath !== "workflow/workflow-controller.ts") {
+      violations.push(
+        `${relPath}:${lineOf(content, match.index ?? 0)}: authoritative advisor diagnostic emission is only permitted in workflow/workflow-controller.ts`,
+      );
+    }
+  }
+
+  // Gates 13-14: only the authority may author durable completion.
+  if (relPath !== COMPLETION_AUTHORITY_PATH && relPath !== "adapters/pi-subagent-worker-adapter.ts") {
+    for (const match of content.matchAll(COMPLETED_STATUS_RE)) {
+      violations.push(
+        `${relPath}:${lineOf(content, match.index ?? 0)}: durable status completed is owned only by ${COMPLETION_AUTHORITY_PATH}`,
+      );
+    }
+  }
+  if (relPath !== "workflow/workflow-controller.ts") {
+    for (const match of content.matchAll(WORKFLOW_COMPLETED_WRITE_RE)) {
+      violations.push(
+        `${relPath}:${lineOf(content, match.index ?? 0)}: workflow completion publication is only permitted in workflow/workflow-controller.ts`,
+      );
+    }
+  }
+  if (relPath !== COMPLETION_AUTHORITY_PATH && relPath !== "durable/state.ts") {
+    for (const match of content.matchAll(COMPLETION_EVIDENCE_WRITE_RE)) {
+      violations.push(
+        `${relPath}:${lineOf(content, match.index ?? 0)}: completion evidence writes are owned only by ${COMPLETION_AUTHORITY_PATH}`,
+      );
+    }
+  }
+  // Gate 14: completion CAS callsites (a durable store update whose payload
+  // transitions to a completed/evidence-bearing state) live only in the
+  // completion authority. Benign non-completion updates pass; comments are
+  // stripped before matching.
+  if (relPath !== COMPLETION_AUTHORITY_PATH) {
+    const code = stripComments(content);
+    for (const match of code.matchAll(STORE_UPDATE_RE)) {
+      const start = match.index ?? 0;
+      const args = callArguments(code, start + match[0].length - 1);
+      if (COMPLETION_CAS_SHAPE_RE.test(args)) {
+        violations.push(
+          `${relPath}:${lineOf(content, start)}: completion CAS (durable store update into a completed/evidence-bearing state) is only permitted in ${COMPLETION_AUTHORITY_PATH}`,
+        );
+      }
+    }
+  }
   for (const ownerType of DURABLE_OWNER_TYPES) {
     for (const match of countConstructor(content, ownerType)) {
       const line = lineOf(content, match.index ?? 0);
@@ -201,6 +368,14 @@ for (const site of projectorSites) {
   }
 }
 
+// Gate 12: exactly one completion authority construction, in extension.ts.
+if (completionAuthoritySites.length !== 1 || completionAuthoritySites[0].relPath !== "extension.ts") {
+  violations.push(
+    `<root>: expected exactly 1 \`new CompletionAuthority(\` in extension.ts, found ${completionAuthoritySites.length}` +
+      `${completionAuthoritySites.map((site) => ` [${site.relPath}:${site.line}]`).join("")}`,
+  );
+}
+
 // Gate 8: live-Pi component construction only in the extension entry.
 for (const site of [...adapterSites, ...mainControllerSites]) {
   if (site.relPath !== "extension.ts") {
@@ -218,4 +393,4 @@ if (violations.length > 0) {
   process.exit(1);
 }
 
-console.log(`ARCHITECTURE OK: 11 gates passed (scanned ${files.length} files)`);
+console.log(`ARCHITECTURE OK: 19 gates passed (scanned ${files.length} files)`);

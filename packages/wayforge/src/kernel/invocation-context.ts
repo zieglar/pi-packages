@@ -146,6 +146,23 @@ export class InvocationContext {
     this.controller.abort();
   }
 
+  /** Completion-only allowance; caller owns its one-shot claim. Keeps identity
+   * and parent cancellation, but not unrelated Main/Worker consumption. */
+  reserveCompletionBudget(): InvocationContext {
+    return new InvocationContext({
+      invocationId: this.invocationId,
+      taskId: this.taskId,
+      role: this.role,
+      parentInvocationId: this.parentInvocationId,
+      depth: this.depth,
+      maxDepth: this.maxDepth,
+      limit: Math.min(800, this.limit),
+      ledger: new SharedBudgetLedger(),
+      parentSignal: this.signal,
+      traceMetadata: persistSafe({ ...this.traceMetadata, purpose: "authoritative_completion" }),
+    });
+  }
+
   /** Record consumption into the shared ledger of the derivation tree. */
   spend(amount: number): void {
     if (amount < 0) throw new RangeError("spend amount must be >= 0");

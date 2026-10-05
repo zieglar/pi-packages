@@ -10,7 +10,7 @@ Make one `CompletionAuthority` the sole production owner of governed durable com
 
 ## Frozen constraints
 
-- Preserve the Advisor output contract (`approve | changes_requested | unable`, summary, findings), 800-token budget, and high thinking level.
+- Preserve the Advisor output contract (`approve | changes_requested | unable`, summary, findings), 800-token Wayforge logical allowance, and high thinking level.
 - Preserve the sole `RecoveryCoordinator` and existing recovery taxonomy.
 - Do not add account integration, routing/fallback policy, packages, release work, or a second durable store.
 - Persist no credentials, raw provider payloads, hidden reasoning, transcripts, or workspace contents.
@@ -126,7 +126,7 @@ The Advisor receives the existing strict semantic contract and sanitized evidenc
 
 A valid `approve` result is bound in memory to the candidate digest, Advisor invocation identity, selected route, and a digest of the sanitized verdict. `changes_requested`, `unable`, malformed output, and provider failure return typed refusal and never reach the durable completion write.
 
-The accepted Advisor contract, 800-token budget, high thinking, route selection, and no-hidden-retry behavior remain unchanged.
+The accepted Advisor contract, 800-token Wayforge logical allowance, high thinking, route selection, and no-hidden-retry behavior remain unchanged.
 
 ### Lease and TOCTOU boundary
 

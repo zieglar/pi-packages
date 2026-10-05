@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { CompletionAuthorityPort } from "../src/completion/completion-authority.js";
 import { WorkflowController, type WorkerDelegationPort } from "../src/workflow/workflow-controller.js";
 import { WorkflowEventLog } from "../src/workflow/events.js";
 import { WorkflowStateStore, type WorkflowTaskState } from "../src/workflow/workflow-state.js";
@@ -100,11 +101,37 @@ function makeHarness(options?: {
   const mainContext = createInvocation({
     invocationId: invocationId("main-1"), taskId: taskId("task-w"), role: "main", maxDepth: 2, budgetLimit: 500,
   });
+  const completionAuthority = {
+    recordValidation: vi.fn(async () => success({ evidenceId: "validation:test", workspaceDigest: "digest" })),
+    requestCompletion: vi.fn(async (request: Parameters<CompletionAuthorityPort["requestCompletion"]>[0]) => {
+      const snapshot = state.snapshot();
+      const latest = new Map(snapshot.validations.map((result) => [result.name, result]));
+      if (latest.size === 0 || [...latest.values()].some((result) => !result.ok)) {
+        return { ok: false as const, failure: {
+          kind: "validation" as const,
+          scope: "task" as const,
+          confidence: "certain" as const,
+          code: "validation_failed",
+          message: "validation required",
+        } };
+      }
+      if (options?.requireAdvisorApproval === true) {
+        const reviewed = await request.review({
+          objective: snapshot.objective, completionCriteria: snapshot.completionCriteria,
+          implementationSummary: "implemented", changedPaths: [], diffSummary: "test double",
+          validations: [...latest.values()], workerFindings: [], unresolved: [], workspaceDigest: "digest", extra: {},
+        });
+        if (!reviewed.ok) return reviewed;
+      }
+      return success({ summary: "completed", committedRevision: 1, idempotent: false });
+    }),
+  } satisfies CompletionAuthorityPort;
   const controller = new WorkflowController({
     state,
     routes,
     workers,
     advisors,
+    completionAuthority,
     recovery: executor,
     mainModel,
     mainContext,
@@ -138,12 +165,12 @@ describe("WorkflowController", () => {
     if (!duplicate.ok) expect(duplicate.failure.code).toBe("main_already_active");
   });
 
-  it("completes the shortest path without Workers or Advisors", () => {
+  it("completes the shortest path without Workers or Advisors", async () => {
     const { controller } = makeHarness();
     controller.beginMainTurn();
-    expect(controller.complete().ok).toBe(false);
-    controller.recordValidation({ name: "npm test", ok: true, summary: "4 passed" });
-    const done = controller.complete();
+    expect((await controller.complete()).ok).toBe(false);
+    await controller.recordValidation({ name: "npm test", ok: true, summary: "4 passed" });
+    const done = await controller.complete();
     expect(done.ok).toBe(true);
     expect(controller.status().status).toBe("completed");
   });
@@ -151,13 +178,14 @@ describe("WorkflowController", () => {
   it("gates completion on failed validations and missing advisor approval", async () => {
     const { controller } = makeHarness({ requireAdvisorApproval: true });
     controller.beginMainTurn();
-    controller.recordValidation({ name: "npm test", ok: false, summary: "1 failed" });
-    expect(controller.complete().ok).toBe(false);
+    await controller.recordValidation({ name: "npm test", ok: false, summary: "1 failed" });
+    expect((await controller.complete()).ok).toBe(false);
     const unapproved = await controller.advise({ beforeDone: true });
-    expect(unapproved.ok).toBe(true);
-    expect(controller.complete().ok).toBe(false);
-    controller.recordValidation({ name: "npm test", ok: true, summary: "4 passed" });
-    expect(controller.complete().ok).toBe(true);
+    expect(unapproved.ok).toBe(false);
+    if (!unapproved.ok) expect(unapproved.failure.code).toBe("advisor_reserved_for_completion");
+    expect((await controller.complete()).ok).toBe(false);
+    await controller.recordValidation({ name: "npm test", ok: true, summary: "4 passed" });
+    expect((await controller.complete()).ok).toBe(true);
   });
 
   it("delegates bounded Workers and records outcomes without aborting Main", async () => {
@@ -175,6 +203,14 @@ describe("WorkflowController", () => {
     expect(inputs?.[0]?.parent.invocationId).toBe("main-1");
     expect(state.snapshot().children).toHaveLength(2);
     expect(state.snapshot().activeMainInvocationId).toBe("main-1");
+  });
+
+  it("clears pending governed work in finally when Worker execution throws", async () => {
+    const { controller, state, executeMany } = makeHarness();
+    controller.beginMainTurn();
+    executeMany.mockRejectedValueOnce(new Error("worker boundary failed"));
+    await expect(controller.delegateWorkers({ prompts: ["x"] })).rejects.toThrow("worker boundary failed");
+    expect(state.governedWorkSnapshot()).toEqual({ pendingGovernedWorkCount: 0, governedWorkEpoch: 2 });
   });
 
   it("returns Worker provider failures to Main with a bounded suspension and no auto-retry", async () => {
@@ -207,7 +243,7 @@ describe("WorkflowController", () => {
     const delegated = await controller.delegateWorkers({ prompts: ["a"] });
     expect(delegated.ok).toBe(false);
     if (!delegated.ok) expect(delegated.failure.kind).toBe("cancellation");
-    expect(controller.complete().ok).toBe(false);
+    expect((await controller.complete()).ok).toBe(false);
   });
 
   it("routes parent model changes only through the injected MainModelController", async () => {

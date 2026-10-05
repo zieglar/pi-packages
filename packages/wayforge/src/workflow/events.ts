@@ -17,7 +17,8 @@ export type WorkflowEventKind =
   | "budget_changed"
   | "validation"
   | "cancellation"
-  | "completion_ready";
+  | "completion_ready"
+  | "advisor_review_diagnostic";
 
 export interface WorkflowEvent {
   readonly sequence: number;

@@ -19,13 +19,30 @@ export interface NestedModelRequest {
   readonly thinking: ThinkingLevel;
   readonly prompt: string;
   readonly signal?: AbortSignal;
+  /** Logical invocation allowance; not necessarily a provider payload ceiling. */
   readonly budgetLimit: number;
+}
+
+/**
+ * Safe response observation for advisor diagnostics: allowlisted stop
+ * reason, fixed block-type counts, and observation-only text statistics.
+ * Never carries block bodies, reasoning text, or provider payloads.
+ */
+export interface NestedResponseObservation {
+  readonly stopReason: import("../trace/advisor-diagnostics.js").AdvisorDiagnosticStopReason;
+  readonly blocks: import("../trace/advisor-diagnostics.js").AdvisorBlockCounts;
+  readonly text: import("../trace/advisor-diagnostics.js").AdvisorTextStats;
+  /** SDK option and prepared payload facts, not a guaranteed provider ceiling. */
+  readonly request?: import("../trace/advisor-diagnostics.js").AdvisorRequestObservation;
 }
 
 /** Output of one nested model call. */
 export interface NestedModelOutput {
   readonly text: string;
+  /** SDK counters retained for existing accounting; no provider-provenance claim. */
   readonly usage: { readonly inputTokens: number; readonly outputTokens: number };
+  /** Present when the runtime observed the resolved response shape. */
+  readonly observed?: NestedResponseObservation;
 }
 
 /** Port performing exactly one nested model call attempt. Never retries. */

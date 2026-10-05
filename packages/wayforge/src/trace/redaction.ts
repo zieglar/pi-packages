@@ -9,6 +9,21 @@ import type { PersistSafeValue } from "../types/execution.js";
 
 const REDACTED = "[redacted]";
 
+/** Deterministically remove credential material embedded inside diagnostic text. */
+export function redactInlineSecrets(value: string): string {
+  return value
+    .replace(/\b(authorization\s*:\s*)(?:bearer|basic)\s+[^\s,;]+/gi, "$1[redacted]")
+    .replace(/\b((?:set-cookie|cookie)\s*:\s*)[^\r\n]+/gi, "$1[redacted]")
+    .replace(
+      /\b(credential|credentials|password|passwd|token|api[-_ ]?key|secret)\s*([:=])\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)/gi,
+      "$1$2[redacted]",
+    )
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, REDACTED)
+    .replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, REDACTED)
+    .replace(/\b(?:sk|rk)-[A-Za-z0-9_-]{8,}\b/g, REDACTED)
+    .replace(/\b(Bearer)\s+[A-Za-z0-9._~+/=-]{8,}/gi, "$1 [redacted]");
+}
+
 export type RedactedTraceValue =
   | null
   | string
@@ -94,12 +109,8 @@ function redactValue(value: unknown, depth: number): RedactedTraceValue {
     }
     return out;
   }
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean"
-  ) {
+  if (typeof value === "string") return redactInlineSecrets(value);
+  if (value === null || typeof value === "number" || typeof value === "boolean") {
     return value;
   }
   return REDACTED;

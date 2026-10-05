@@ -26,6 +26,8 @@ export interface WorkflowSnapshot {
   readonly validations: readonly ValidationResult[];
   readonly advisorVerdicts: readonly StructuredAdvisorVerdict[];
   readonly unresolved: readonly string[];
+  readonly pendingGovernedWorkCount: number;
+  readonly governedWorkEpoch: number;
   readonly events: readonly WorkflowEvent[];
 }
 
@@ -45,6 +47,8 @@ export class WorkflowTaskState {
   private readonly validations: ValidationResult[] = [];
   private readonly advisorVerdicts: StructuredAdvisorVerdict[] = [];
   private readonly unresolved: string[] = [];
+  private pendingGovernedWorkCount = 0;
+  private governedWorkEpoch = 0;
 
   constructor(private readonly init: WorkflowInit, private readonly events: WorkflowEventLog) {
     this.recoveryBudget = { ...init.recoveryBudget };
@@ -113,6 +117,24 @@ export class WorkflowTaskState {
     this.unresolved.push(summary.slice(0, 500));
   }
 
+  beginGovernedWork(): void {
+    this.pendingGovernedWorkCount += 1;
+    this.governedWorkEpoch += 1;
+  }
+
+  endGovernedWork(): void {
+    if (this.pendingGovernedWorkCount <= 0) throw new Error("no governed work is pending");
+    this.pendingGovernedWorkCount -= 1;
+    this.governedWorkEpoch += 1;
+  }
+
+  governedWorkSnapshot(): { pendingGovernedWorkCount: number; governedWorkEpoch: number } {
+    return {
+      pendingGovernedWorkCount: this.pendingGovernedWorkCount,
+      governedWorkEpoch: this.governedWorkEpoch,
+    };
+  }
+
   setStatus(status: WorkflowSnapshot["status"]): void {
     this.status = status;
   }
@@ -135,6 +157,8 @@ export class WorkflowTaskState {
         findings: verdict.findings.map((finding) => ({ ...finding })),
       })),
       unresolved: [...this.unresolved],
+      pendingGovernedWorkCount: this.pendingGovernedWorkCount,
+      governedWorkEpoch: this.governedWorkEpoch,
       events: this.events.snapshot(),
     };
   }

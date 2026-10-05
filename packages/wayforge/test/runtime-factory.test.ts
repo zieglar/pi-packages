@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { CompletionAuthorityPort } from "../src/completion/completion-authority.js";
 import {
   SUBAGENT_DELEGATION_REQUEST_EVENT,
   SUBAGENT_DELEGATION_RESPONSE_EVENT,
@@ -89,6 +90,20 @@ describe("createWorkflowRuntime", () => {
       },
       mainModel,
       nestedRuntime,
+      completionAuthority: {
+        recordValidation: async () => success({ evidenceId: "validation:test", workspaceDigest: "digest" }),
+        requestCompletion: async (request) => {
+          const reviewed = await request.review({
+            objective: "small improvement", completionCriteria: "validation passes",
+            implementationSummary: "implemented", changedPaths: ["owned.txt"], diffSummary: "one change",
+            validations: [{ name: "npm test", ok: true, summary: "passed" }],
+            workerFindings: [], unresolved: [], workspaceDigest: "digest", extra: {},
+          });
+          return reviewed.ok
+            ? success({ summary: "completed", committedRevision: 1, idempotent: false })
+            : reviewed;
+        },
+      } satisfies CompletionAuthorityPort,
       config: { cwd: "/repo", requireAdvisorApproval: true, now: () => 1_000 },
     });
 
@@ -101,13 +116,15 @@ describe("createWorkflowRuntime", () => {
     expect(delegated.value.outcomes[0]?.status).toBe("completed");
 
     const advised = await runtime.controller.advise({ beforeDone: true });
-    expect(advised.ok).toBe(true);
+    expect(advised.ok).toBe(false);
+    if (!advised.ok) expect(advised.failure.code).toBe("advisor_reserved_for_completion");
+    expect(advisorCalls).toHaveLength(0);
+    await runtime.controller.recordValidation({ name: "npm test", ok: true, summary: "all green" });
+    expect((await runtime.controller.complete()).ok).toBe(true);
     expect(advisorCalls).toHaveLength(1);
     expect(advisorCalls[0]?.modelId).toBe("advisor-model");
     expect(advisorCalls[0]?.thinking).toBe("high");
-
-    runtime.controller.recordValidation({ name: "npm test", ok: true, summary: "all green" });
-    expect(runtime.controller.complete().ok).toBe(true);
+    expect(advisorCalls[0]?.budgetLimit).toBe(advisorRoute.budgetLimit);
 
     const events = runtime.log.snapshot();
     expect(events.map((event) => event.kind)).toContain("worker_launched");

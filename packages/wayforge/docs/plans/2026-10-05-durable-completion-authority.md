@@ -14,7 +14,7 @@
 
 - Start implementation from design commit `d71c607` on `main` with a clean worktree.
 - Use Node `22.14.0` and pnpm `12.9.1` through `mise`.
-- Do not change the Advisor JSON contract, 800-token budget, high thinking, routing, or retry behavior.
+- Do not change the Advisor JSON contract, 800-token Wayforge logical allowance, high thinking, routing, or retry behavior.
 - Do not add recovery policy, another `RecoveryCoordinator`, accounts integration, dependencies, packages, or release changes.
 - Write no production implementation until the complete 13-gate live/public-path suite has been run and its expected missing-authority failures recorded.
 - Use one final implementation commit, plus at most one evidence-only commit if live evidence must follow it.

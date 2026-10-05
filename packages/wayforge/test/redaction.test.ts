@@ -34,6 +34,26 @@ describe("recursive redaction", () => {
     expect(JSON.stringify(out)).not.toContain("Bearer abc");
   });
 
+  it.each([
+    ["authorization bearer", "request failed Authorization: Bearer bearer-synthetic-token at validation", "bearer-synthetic-token"],
+    ["authorization basic", "request failed Authorization: Basic c3ludGhldGljOnNlY3JldA== at validation", "c3ludGhldGljOnNlY3JldA=="],
+    ["cookie", "request failed Cookie: session=cookie-synthetic-value", "cookie-synthetic-value"],
+    ["set-cookie", "request failed Set-Cookie: session=set-cookie-synthetic-value; HttpOnly", "set-cookie-synthetic-value"],
+    ["credential assignment", "credential=credential-synthetic-value", "credential-synthetic-value"],
+    ["password assignment", "password: password-synthetic-value", "password-synthetic-value"],
+    ["token assignment", "token=token-synthetic-value", "token-synthetic-value"],
+    ["GitHub token", "github token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"],
+    ["AWS access key", "aws key AKIAABCDEFGHIJKLMNOP", "AKIAABCDEFGHIJKLMNOP"],
+    ["OpenAI-style key", "key sk-syntheticsecret", "sk-syntheticsecret"],
+    ["restricted key", "key rk-syntheticsecret", "rk-syntheticsecret"],
+    ["bare bearer", "provider said Bearer bare-synthetic-token", "bare-synthetic-token"],
+  ] as const)("redacts inline %s text while preserving safe context", (_name, input, secret) => {
+    const output = redact(input);
+    expect(output).toContain("[redacted]");
+    expect(output).not.toContain(secret);
+    expect(output).toContain(input.match(/^[^:=\s]+/)?.[0] ?? "");
+  });
+
   it("removes raw provider bodies and responses", () => {
     const input = {
       body: '{"prompt":"raw"}',

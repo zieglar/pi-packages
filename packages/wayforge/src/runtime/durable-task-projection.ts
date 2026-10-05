@@ -36,12 +36,6 @@ interface RecoveryAppliedDetail {
   readonly suspension?: unknown;
 }
 
-interface ValidationDetail {
-  readonly name?: unknown;
-  readonly ok?: unknown;
-  readonly summary?: unknown;
-}
-
 function isSuspension(value: unknown): value is DurableSuspension {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Partial<DurableSuspension>;
@@ -150,31 +144,8 @@ export class LiveDurableProjection {
         });
         return;
       }
-      case "completion_ready": {
-        await this.update(event.taskId, {
-          status: "completed",
-          completionEvidence: { summary: "live workflow reported completion_ready", at: this.now() },
-        });
-        return;
-      }
       case "cancellation": {
         await this.update(event.taskId, { status: "cancelled" });
-        return;
-      }
-      case "validation": {
-        const detail = event.detail as ValidationDetail;
-        if (typeof detail.name !== "string" || detail.name.length === 0) return;
-        const loaded = await this.store.load(event.taskId);
-        if (!loaded.ok || loaded.value === null) return;
-        const state = loaded.value;
-        const entry = {
-          evidenceId: `validation:${detail.name.slice(0, 100)}`,
-          kind: "command" as const,
-          summary: `${detail.name}: ${detail.ok === true ? "pass" : "fail"} — ${String(detail.summary ?? "").slice(0, 200)}`,
-          recordedAtMs: this.now(),
-        };
-        const evidence = [...state.evidence.filter((existing) => existing.evidenceId !== entry.evidenceId), entry];
-        await this.update(event.taskId, { evidence: evidence.slice(-20) });
         return;
       }
       default:

@@ -1,4 +1,5 @@
 import type { ExtensionContext, ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { CompletionAuthority } from "./completion/completion-authority.js";
 import { createWayforgeTools } from "./runtime/extension-tools.js";
 import { createDurableExecution, type DurableExecution } from "./runtime/durable-composition.js";
 import { LiveDurableProjection } from "./runtime/durable-task-projection.js";
@@ -119,9 +120,10 @@ async function startWorkflow(
     }
   }
   state.taskSequence += 1;
+  const activeTaskId = taskId(`alpha0-${state.taskSequence}`);
   if (state.projection !== undefined) {
     const created = await state.projection.startDurableTask({
-      taskId: taskId(`alpha0-${state.taskSequence}`),
+      taskId: activeTaskId,
       objective,
       completionCriteria: DEFAULT_CRITERIA,
       workspaceRoot: ctx.cwd,
@@ -129,6 +131,15 @@ async function startWorkflow(
     });
     if (!created.ok) throw new Error(`durable task admission failed: ${created.failure.code}`);
   }
+  const completionAuthority = state.durable === undefined
+    ? undefined
+    : new CompletionAuthority({
+        store: state.durable.store,
+        workspaceRoot: ctx.cwd,
+        taskId: activeTaskId,
+        leaseTtlMs: overrides.durable?.leaseTtlMs ?? 30_000,
+        now: overrides.durable?.now ?? (() => Date.now()),
+      });
   let controllerRef: WorkflowRuntime["controller"] | undefined;
   const runtime = createWorkflowRuntime({
     ownerRunId: `wayforge-alpha0-${state.taskSequence}`,
@@ -139,12 +150,13 @@ async function startWorkflow(
     routes,
     observedMainRoute,
     task: {
-      taskId: taskId(`alpha0-${state.taskSequence}`),
+      taskId: activeTaskId,
       objective,
       completionCriteria: DEFAULT_CRITERIA,
     },
     mainModel: new MainModelController(adapter),
     nestedRuntime: adapter,
+    ...(completionAuthority !== undefined ? { completionAuthority } : {}),
     // The first event fires synchronously inside createWorkflowRuntime, before
     // `runtime` is assigned; the status writer therefore goes through a mutable
     // controller reference attached right after construction.

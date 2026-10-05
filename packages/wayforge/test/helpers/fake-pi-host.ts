@@ -33,7 +33,14 @@ export interface ModelShape {
   readonly reasoning: boolean;
   readonly name: string;
 }
+
+export interface FakeModelMessage {
+  readonly content: readonly { readonly type: string; readonly text?: string; readonly thinking?: string }[];
+  readonly usage: { readonly input: number; readonly output: number };
+  readonly stopReason?: string;
+}
 type LifecycleHook = (event?: unknown, ctx?: unknown) => void | Promise<void>;
+type StreamSimpleHandler = (prompt: string) => Promise<FakeModelMessage>;
 
 export class FakePiHost {
   readonly tools: ToolDefinition[] = [];
@@ -43,6 +50,9 @@ export class FakePiHost {
   readonly delegationHandlers = new Map<string, Set<(data: unknown) => void>>();
   private readonly lifecycle = new Map<string, LifecycleHook[]>();
   private sequence = 0;
+  private streamSimpleHandler: StreamSimpleHandler = async () => {
+    throw new Error("not used by these tests");
+  };
 
   readonly events = {
     emit: (channel: string, data: unknown): void => {
@@ -69,7 +79,10 @@ export class FakePiHost {
     thinkingLevel: "medium";
     modelRegistry: {
       find: (provider: string, modelId: string) => ModelShape | undefined;
-      streamSimple: () => never;
+      streamSimple: (
+        model: ModelShape,
+        context: { messages: readonly { readonly content: string }[] },
+      ) => { result(): Promise<FakeModelMessage> };
     };
     ui: { notify: (message: string, level: "info" | "warning" | "error") => void };
   };
@@ -84,9 +97,9 @@ export class FakePiHost {
       modelRegistry: {
         find: (provider, modelId) =>
           provider === model.provider && modelId === model.id ? model : undefined,
-        streamSimple: () => {
-          throw new Error("not used by these tests");
-        },
+        streamSimple: (_model, context) => ({
+          result: () => this.streamSimpleHandler(context.messages[0]?.content ?? ""),
+        }),
       },
       ui: {
         notify: (message, level) => {
@@ -126,6 +139,10 @@ export class FakePiHost {
       sourceInfo: { source: "wayforge", path: `${this.cwd}/dist/extension.js` },
     }));
   setModel = async (): Promise<boolean> => true;
+
+  setStreamSimpleHandler(handler: StreamSimpleHandler): void {
+    this.streamSimpleHandler = handler;
+  }
 
   nextSessionTag(): string {
     this.sequence += 1;

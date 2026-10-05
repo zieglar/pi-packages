@@ -1,4 +1,5 @@
 import type { PassiveAccountAdapter } from "../adapters/passive-account-adapter.js";
+import type { CompletionAuthorityPort } from "../completion/completion-authority.js";
 import type { WorkerExecutionInput } from "../adapters/pi-subagent-worker-adapter.js";
 import type { AdvisorReviewInput, AdvisorReviewOutcome, PiAdvisorAdapter } from "../adapters/pi-advisor-adapter.js";
 import type { MainModelController } from "../runtime/main-model-controller.js";
@@ -10,9 +11,15 @@ import { failure } from "../types/result.js";
 import type { InvocationId } from "../types/identity.js";
 import { invocationId } from "../types/identity.js";
 import type { ExecutionRoute, StructuredAdvisorVerdict, WorkerOutcome } from "./contracts.js";
-import { buildAdvisorEvidence } from "./advisor-evidence.js";
+import { buildAdvisorEvidence, type AdvisorEvidence } from "./advisor-evidence.js";
 import { AdvisorTriggerPolicy } from "./advisor-trigger-policy.js";
 import type { WorkflowEventLog } from "./events.js";
+import {
+  advisorDiagnosticRecordIsSafe,
+  AUTHORITATIVE_COMPLETION_PURPOSE,
+  buildAdvisorDiagnosticRecord,
+  readAdvisorFailureDiagnostic,
+} from "../trace/advisor-diagnostics.js";
 import type { WorkflowTaskState } from "./workflow-state.js";
 
 export interface WorkerDelegationPort {
@@ -37,6 +44,7 @@ export interface WorkflowControllerOptions {
   readonly routes: PassiveAccountAdapter;
   readonly workers?: WorkerDelegationPort;
   readonly advisors?: AdvisorReviewPort;
+  readonly completionAuthority?: CompletionAuthorityPort;
   readonly recovery: RuntimeRecoveryExecutor;
   readonly mainModel: MainModelController;
   readonly mainContext: InvocationContext;
@@ -77,6 +85,7 @@ export class WorkflowController {
   private readonly workerFindings: string[] = [];
   private workerSequence = 0;
   private advisorSequence = 0;
+  private completionReviewClaimed = false;
 
   constructor(private readonly options: WorkflowControllerOptions) {}
 
@@ -163,7 +172,13 @@ export class WorkflowController {
       detail: { count: inputs.length, routeId: route.routeId, provider: route.provider, modelId: route.modelId },
     });
 
-    const outcomes = await workers.executeMany(inputs);
+    this.options.state.beginGovernedWork();
+    let outcomes: readonly WorkerOutcome[];
+    try {
+      outcomes = await workers.executeMany(inputs);
+    } finally {
+      this.options.state.endGovernedWork();
+    }
     let recovery: RecoveryStepResult | undefined;
     for (const outcome of outcomes) {
       this.options.state.recordChild({
@@ -205,6 +220,15 @@ export class WorkflowController {
     if (this.options.mainContext.signal.aborted) {
       return Promise.resolve(failure(cancellationFailure("workflow cancelled before advisor review")));
     }
+    if (this.options.completionAuthority !== undefined) {
+      return Promise.resolve(failure({
+        kind: "capability",
+        scope: "task",
+        confidence: "certain",
+        code: "advisor_reserved_for_completion",
+        message: "governed Advisor review is reserved for CompletionAuthority; use wayforge_complete when ready",
+      }));
+    }
     const advisors = this.options.advisors;
     if (advisors === undefined) {
       return Promise.resolve(failure({
@@ -229,65 +253,174 @@ export class WorkflowController {
         message: "no advisor trigger condition is met",
       }));
     }
-    return this.options.routes.listExecutionRoutes({ taskId: this.taskId, role: "advisor" }).then((routes) => {
-      if (!routes.ok) return routes;
-      const route = routes.value[0];
-      if (route === undefined) {
-        return failure({
-          kind: "capability",
-          scope: "invocation",
-          confidence: "certain",
-          code: "no_advisor_route",
-          message: "no eligible advisor route is currently available",
-        });
-      }
-      this.options.log.emit("advisor_triggered", {
-        taskId: this.taskId,
-        detail: { reason: trigger.reason, routeId: route.routeId },
-      });
-      const snapshot = this.options.state.snapshot();
-      const invocation = invocationId(`advisor-${++this.advisorSequence}`);
-      const reviewInput: AdvisorReviewInput = {
-        parent: this.options.mainContext,
-        invocationId: invocation,
-        budgetLimit: route.budgetLimit,
-        evidence: buildAdvisorEvidence({
-          objective: snapshot.objective,
-          completionCriteria: snapshot.completionCriteria,
-          implementationSummary: snapshot.unresolved.length === 0
-            ? "all recorded validations and worker outcomes are reflected in state"
-            : snapshot.unresolved.join("; ").slice(0, 4_000),
-          changedPaths: snapshot.children.map((child) => child.routeId),
-          diffSummary: "in-process Alpha 0 workflow; no repository diff is tracked by the controller",
-          validations: [...snapshot.validations],
-          workerFindings: this.workerFindings,
-          unresolved: [...snapshot.unresolved],
-          workspaceDigest: this.options.config.workspaceDigest ?? "unavailable",
-        }),
-      };
-      return advisors.review(reviewInput).then((reviewed) => {
-        if (!reviewed.ok) {
-          if (reviewed.failure.kind !== "cancellation") this.failures.push(reviewed.failure);
-          return reviewed;
-        }
-        this.options.state.recordChild({
-          invocationId: reviewed.value.invocationId,
-          parentInvocationId: reviewed.value.parentInvocationId,
-          role: "advisor",
-          routeId: reviewed.value.decision.routeId,
-          status: reviewed.value.verdict.status,
-        });
-        this.options.state.recordAdvisorVerdict(reviewed.value.verdict);
-        for (const finding of reviewed.value.verdict.findings) {
-          if (finding.severity === "blocker") this.options.state.addUnresolved(`${finding.code}: ${finding.summary}`);
-        }
-        return { ok: true, value: { verdict: reviewed.value.verdict } };
-      });
+    const snapshot = this.options.state.snapshot();
+    const evidence = buildAdvisorEvidence({
+      objective: snapshot.objective,
+      completionCriteria: snapshot.completionCriteria,
+      implementationSummary: snapshot.unresolved.length === 0
+        ? "all recorded validations and worker outcomes are reflected in state"
+        : snapshot.unresolved.join("; ").slice(0, 4_000),
+      changedPaths: snapshot.children.map((child) => child.routeId),
+      diffSummary: "in-process Alpha 0 workflow; no repository diff is tracked by the controller",
+      validations: [...snapshot.validations],
+      workerFindings: this.workerFindings,
+      unresolved: [...snapshot.unresolved],
+      workspaceDigest: this.options.config.workspaceDigest ?? "unavailable",
     });
+    return this.reviewAdvisorEvidence(evidence, trigger.reason).then((reviewed) =>
+      reviewed.ok ? { ok: true, value: { verdict: reviewed.value.verdict } } : reviewed,
+    );
   }
 
-  recordValidation(result: { readonly name: string; readonly ok: boolean; readonly summary: string }): void {
+  private reviewCompletionEvidence(evidence: AdvisorEvidence): Promise<ExecutionResult<AdvisorReviewOutcome>> {
+    if (this.completionReviewClaimed) {
+      return Promise.resolve(failure({
+        kind: "capability", scope: "task", confidence: "certain",
+        code: "completion_review_spent",
+        message: "the single authoritative completion review opportunity has already been claimed",
+      }));
+    }
+    // Synchronous claim before route lookup or provider awaits. Never reset.
+    this.completionReviewClaimed = true;
+    return this.reviewAdvisorEvidence(evidence, "before_done", this.options.mainContext.reserveCompletionBudget());
+  }
+
+  private async reviewAdvisorEvidence(
+    evidence: AdvisorEvidence,
+    reason: string,
+    parent: InvocationContext = this.options.mainContext,
+  ): Promise<ExecutionResult<AdvisorReviewOutcome>> {
+    const advisors = this.options.advisors;
+    if (advisors === undefined) {
+      return failure({
+        kind: "capability",
+        scope: "invocation",
+        confidence: "certain",
+        code: "advisors_unavailable",
+        message: "no advisor engine is configured",
+      });
+    }
+    const routes = await this.options.routes.listExecutionRoutes({ taskId: this.taskId, role: "advisor" });
+    if (!routes.ok) return routes;
+    const route = routes.value[0];
+    if (route === undefined) {
+      return failure({
+        kind: "capability",
+        scope: "invocation",
+        confidence: "certain",
+        code: "no_advisor_route",
+        message: "no eligible advisor route is currently available",
+      });
+    }
+    this.options.log.emit("advisor_triggered", {
+      taskId: this.taskId,
+      detail: { reason, routeId: route.routeId, purpose: parent.traceMetadata.purpose ?? "advisory" },
+    });
+    const reviewInput: AdvisorReviewInput = {
+      parent,
+      invocationId: invocationId(`advisor-${++this.advisorSequence}`),
+      budgetLimit: route.budgetLimit,
+      evidence,
+    };
+    const reviewed = await advisors.review(reviewInput);
+    this.emitAuthoritativeReviewDiagnostic(evidence, parent, reviewInput.invocationId, reviewed);
+    if (!reviewed.ok) {
+      if (reviewed.failure.kind !== "cancellation") this.failures.push(reviewed.failure);
+      return reviewed;
+    }
+    if (parent.signal.aborted) return failure(cancellationFailure("workflow cancelled during advisor review"));
+    this.options.log.emit("budget_changed", {
+      taskId: this.taskId, invocationId: reviewed.value.invocationId,
+      detail: { purpose: parent.traceMetadata.purpose ?? "advisory", usage: reviewed.value.usage, budgetLimit: route.budgetLimit },
+    });
+    this.options.state.recordChild({
+      invocationId: reviewed.value.invocationId,
+      parentInvocationId: reviewed.value.parentInvocationId,
+      role: "advisor",
+      routeId: reviewed.value.decision.routeId,
+      status: reviewed.value.verdict.status,
+    });
+    this.options.state.recordAdvisorVerdict(reviewed.value.verdict);
+    for (const finding of reviewed.value.verdict.findings) {
+      if (finding.severity === "blocker") this.options.state.addUnresolved(`${finding.code}: ${finding.summary}`);
+    }
+    return reviewed;
+  }
+  /**
+   * Best-effort, non-authoritative diagnostic for the one dispatched
+   * authoritative completion review: an independent side channel that
+   * correlates the bound candidate and classifies the observed
+   * request/response shape. It never participates in readiness, verdicts,
+   * CAS, recovery, or any authority decision, never adds a task-state
+   * revision, and can never throw into the authoritative path.
+   */
+  private emitAuthoritativeReviewDiagnostic(
+    evidence: AdvisorEvidence,
+    parent: InvocationContext,
+    invocationId: InvocationId,
+    reviewed: ExecutionResult<AdvisorReviewOutcome>,
+  ): void {
+    if (parent.traceMetadata.purpose !== AUTHORITATIVE_COMPLETION_PURPOSE) return;
+    try {
+      const extra = evidence.extra as Record<string, unknown>;
+      const correlation = {
+        invocationId,
+        candidateDigest: extra.candidateDigest,
+        candidateRevision: extra.taskRevision,
+        workspaceDigest: evidence.workspaceDigest,
+      };
+      const record = reviewed.ok
+        ? buildAdvisorDiagnosticRecord({
+            ...correlation,
+            reasoning: reviewed.value.decision.thinking,
+            logicalBudget: reviewed.value.decision.budget.limit,
+            sdkMaxTokens: reviewed.value.observed?.request?.sdkMaxTokens,
+            preparedMaxTokens: reviewed.value.observed?.request?.preparedMaxTokens,
+            preparedMaxTokensField: reviewed.value.observed?.request?.preparedMaxTokensField,
+            stream: "resolved",
+            stopReason: reviewed.value.observed?.stopReason,
+            // SDK counters do not establish provider-reported usage.
+            blocks: reviewed.value.observed?.blocks,
+            text: reviewed.value.observed?.text,
+            parseValid: true,
+          })
+        : buildAdvisorDiagnosticRecord({
+            ...correlation,
+            ...readAdvisorFailureDiagnostic(reviewed.failure),
+            parseValid: false,
+          });
+      if (!advisorDiagnosticRecordIsSafe(record)) return;
+      this.options.log.emit("advisor_review_diagnostic", {
+        taskId: this.taskId,
+        invocationId,
+        parentInvocationId: parent.invocationId,
+        detail: record,
+      });
+    } catch {
+      // Diagnostics must never alter the authoritative review result.
+    }
+  }
+
+
+  async recordValidation(result: {
+    readonly name: string;
+    readonly ok: boolean;
+    readonly summary: string;
+  }): Promise<ExecutionResult<void>> {
+    const authority = this.options.completionAuthority;
+    if (authority === undefined) {
+      return failure({
+        kind: "capability",
+        scope: "task",
+        confidence: "certain",
+        code: "completion_authority_unavailable",
+        message: "durable completion authority is unavailable",
+      });
+    }
+    const persisted = await authority.recordValidation(result);
+    if (!persisted.ok) return persisted;
     this.options.state.recordValidation(result);
+    return { ok: true, value: undefined };
   }
 
   async applyMainModelDecision(decision: ModelDecision): Promise<ExecutionResult<{ provider: string; modelId: string }>> {
@@ -304,43 +437,36 @@ export class WorkflowController {
     });
   }
 
-  complete(): ExecutionResult<{ readonly summary: string }> {
-    const snapshot = this.options.state.snapshot();
-    const latest = new Map(snapshot.validations.map((result) => [result.name, result]));
-    if (latest.size === 0 || [...latest.values()].some((result) => !result.ok)) {
-      return failure({
-        kind: "validation",
-        scope: "task",
-        confidence: "certain",
-        code: "completion_gate_failed",
-        message: "completion requires at least one passing validation and no failed validation",
-      });
-    }
-    if (this.options.config.requireAdvisorApproval) {
-      const latest = snapshot.advisorVerdicts.at(-1);
-      if (latest === undefined || latest.status !== "approve") {
-        return failure({
-          kind: "validation",
-          scope: "task",
-          confidence: "certain",
-          code: "completion_gate_failed",
-          message: "completion requires an approving advisor verdict",
-        });
-      }
-    }
-    if (snapshot.status === "cancelled") {
+  async complete(): Promise<ExecutionResult<{ readonly summary: string }>> {
+    // Synchronous cancellation guard: durable cancellation projection is
+    // async/best-effort, so it can never be the only barrier to completion.
+    if (this.options.mainContext.signal.aborted || this.options.state.snapshot().status === "cancelled") {
       return failure(cancellationFailure("a cancelled workflow cannot complete"));
     }
-    this.options.state.setStatus("completed");
-    this.options.log.emit("completion_ready", {
-      taskId: this.taskId,
-      invocationId: this.options.mainContext.invocationId,
-      detail: { validations: snapshot.validations.length },
+    const authority = this.options.completionAuthority;
+    if (authority === undefined) {
+      return failure({
+        kind: "capability",
+        scope: "task",
+        confidence: "certain",
+        code: "completion_authority_unavailable",
+        message: "durable completion authority is unavailable",
+      });
+    }
+    const completed = await authority.requestCompletion({
+      pending: () => this.options.state.governedWorkSnapshot(),
+      review: (evidence) => this.reviewCompletionEvidence(evidence),
     });
-    return {
-      ok: true,
-      value: { summary: `completed with ${snapshot.validations.length} passing validation(s)` },
-    };
+    if (!completed.ok) return completed;
+    if (!completed.value.idempotent) {
+      this.options.state.setStatus("completed");
+      this.options.log.emit("completion_ready", {
+        taskId: this.taskId,
+        invocationId: this.options.mainContext.invocationId,
+        detail: { authoritativeRevision: completed.value.committedRevision },
+      });
+    }
+    return { ok: true, value: { summary: completed.value.summary } };
   }
 
   status() {

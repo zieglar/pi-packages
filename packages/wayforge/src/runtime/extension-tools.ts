@@ -111,7 +111,7 @@ export function createWayforgeTools(deps: WayforgeToolDeps): ToolDefinition[] {
       name: "wayforge_advise",
       label: "Wayforge advisor review",
       description:
-        "Request a runtime-composed Advisor review of the sanitized workflow evidence. Use manual review freely; beforeDone review gates completion.",
+        "Request non-authoritative advice where available. In governed tasks Advisor capacity is reserved for CompletionAuthority: this tool refuses without a provider call; use wayforge_complete when validated and ready.",
       parameters: Type.Object(
         {
           manual: Type.Optional(Type.Boolean()),
@@ -150,11 +150,12 @@ export function createWayforgeTools(deps: WayforgeToolDeps): ToolDefinition[] {
         if (blocked !== undefined) return blocked;
         const current = runtime();
         if (current === undefined) return toolResult({ ok: false, error: "workflow_not_started" });
-        current.controller.recordValidation({
+        const recorded = await current.controller.recordValidation({
           name: params.name,
           ok: params.ok,
           summary: params.summary,
         });
+        if (!recorded.ok) return toolResult({ ok: false, failure: recorded.failure });
         return toolResult({ ok: true, recorded: params.name });
       },
     }),
@@ -169,7 +170,7 @@ export function createWayforgeTools(deps: WayforgeToolDeps): ToolDefinition[] {
         if (blocked !== undefined) return blocked;
         const current = runtime();
         if (current === undefined) return toolResult({ ok: false, error: "workflow_not_started" });
-        const completed = current.controller.complete();
+        const completed = await current.controller.complete();
         if (!completed.ok) return toolResult({ ok: false, failure: completed.failure });
         return toolResult({ ok: true, summary: completed.value.summary });
       },

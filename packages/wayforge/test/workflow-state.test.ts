@@ -32,6 +32,22 @@ describe("workflow state", () => {
     expect(snapshot.routeHistory).toEqual(["route-main", "route-worker"]);
   });
 
+  it("tracks pending governed work with an accurate count and monotonic epoch", () => {
+    const state = new WorkflowStateStore(new WorkflowEventLog(() => 10)).create({
+      taskId: task,
+      objective: "ship alpha",
+      completionCriteria: "tests pass",
+      recoveryBudget: { retriesLeft: 1, fallbacksLeft: 2 },
+    });
+    expect(state.governedWorkSnapshot()).toEqual({ pendingGovernedWorkCount: 0, governedWorkEpoch: 0 });
+    state.beginGovernedWork();
+    state.beginGovernedWork();
+    expect(state.governedWorkSnapshot()).toEqual({ pendingGovernedWorkCount: 2, governedWorkEpoch: 2 });
+    state.endGovernedWork();
+    state.endGovernedWork();
+    expect(state.governedWorkSnapshot()).toEqual({ pendingGovernedWorkCount: 0, governedWorkEpoch: 4 });
+  });
+
   it("emits monotonic redacted events", () => {
     const log = new WorkflowEventLog(() => 25);
     log.emit("task_started", { taskId: task, detail: { apiKey: "sk-secret-value", stage: "start" } });

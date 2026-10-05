@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { partitionEvidenceByWorkspace } from "../src/durable/evidence-freshness.js";
+import {
+  latestValidationEvidenceByWorkspace,
+  partitionEvidenceByWorkspace,
+} from "../src/durable/evidence-freshness.js";
 import type { AuthoritativeTaskState } from "../src/durable/state.js";
 
 type Evidence = AuthoritativeTaskState["evidence"][number];
@@ -31,5 +34,17 @@ describe("partitionEvidenceByWorkspace", () => {
       { evidence: source[1], reason: "workspace_digest_unbound" },
     ]);
     expect(JSON.stringify(source)).toBe(snapshot);
+  });
+
+  it("selects only the latest typed validation per name without parsing summaries", () => {
+    const source: Evidence[] = [
+      { ...evidence("old", "digest-current", 1), validation: { name: "test", ok: false } },
+      { ...evidence("legacy", "digest-current", 9), summary: "test: pass" },
+      { ...evidence("new", "digest-current", 2), validation: { name: "test", ok: true } },
+      { ...evidence("lint", "digest-before", 3), validation: { name: "lint", ok: true } },
+    ];
+    const result = latestValidationEvidenceByWorkspace(source, "digest-current");
+    expect(result.valid.map((entry) => entry.evidenceId)).toEqual(["new"]);
+    expect(result.stale.map((entry) => entry.evidence.evidenceId)).toEqual(["lint"]);
   });
 });

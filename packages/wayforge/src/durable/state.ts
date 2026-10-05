@@ -209,6 +209,15 @@ export const evidenceReferenceSchema = Type.Object(
     validAtWorkspaceDigest: Type.Optional(
       Type.String({ minLength: 1, maxLength: DURABLE_LIMITS.maxDigestLength }),
     ),
+    validation: Type.Optional(
+      Type.Object(
+        {
+          name: Type.String({ minLength: 1, maxLength: DURABLE_LIMITS.maxShortStringLength }),
+          ok: Type.Boolean(),
+        },
+        { additionalProperties: false },
+      ),
+    ),
   },
   { additionalProperties: false },
 );
@@ -297,6 +306,33 @@ export const taskStateSchema = Type.Object(
         { summary: Type.String({ maxLength: DURABLE_LIMITS.maxObjectiveLength }), at: Type.Integer() },
         { additionalProperties: false },
       ),
+      Type.Object(
+        {
+          authority: Type.Literal("completion_authority_v1"),
+          candidateDigest: Type.String({ minLength: 1, maxLength: DURABLE_LIMITS.maxDigestLength }),
+          authoritativeRevision: Type.Integer({ minimum: 1 }),
+          workspaceDigest: Type.String({ minLength: 1, maxLength: DURABLE_LIMITS.maxDigestLength }),
+          validationEvidenceIds: Type.Array(
+            Type.String({ minLength: 1, maxLength: DURABLE_LIMITS.maxIdentifierLength }),
+            { maxItems: DURABLE_LIMITS.maxEvidenceReferences },
+          ),
+          validationEvidenceDigest: Type.String({ minLength: 1, maxLength: DURABLE_LIMITS.maxDigestLength }),
+          advisor: Type.Object(
+            {
+              invocationId: Type.String({ minLength: 1, maxLength: DURABLE_LIMITS.maxIdentifierLength }),
+              routeId: Type.String({ minLength: 1, maxLength: DURABLE_LIMITS.maxIdentifierLength }),
+              status: Type.Literal("approve"),
+              verdictDigest: Type.String({ minLength: 1, maxLength: DURABLE_LIMITS.maxDigestLength }),
+              summary: Type.String({ maxLength: DURABLE_LIMITS.maxSummaryLength }),
+            },
+            { additionalProperties: false },
+          ),
+          completedAtMs: Type.Integer(),
+          leaseGeneration: Type.Integer({ minimum: 1 }),
+          summary: Type.String({ maxLength: DURABLE_LIMITS.maxObjectiveLength }),
+        },
+        { additionalProperties: false },
+      ),
     ]),
     invocationProvenance: Type.Union([invocationProvenanceSchema, Type.Null()]),
     continuation: Type.Union([continuationStateSchema, Type.Null()]),
@@ -336,7 +372,12 @@ function redactSensitiveString(value: string): string {
   );
 }
 
-function containsSensitiveValue(value: unknown): boolean {
+/**
+ * Shared secret-rejection check: true when any string in the value looks
+ * like key material. Used by durable persistence and by the best-effort
+ * advisor diagnostic side channel; never a control-flow decision.
+ */
+export function containsSensitiveValue(value: unknown): boolean {
   if (typeof value === "string") return SECRET_VALUE_PATTERN.test(value);
   if (Array.isArray(value)) return value.some(containsSensitiveValue);
   if (typeof value !== "object" || value === null) return false;

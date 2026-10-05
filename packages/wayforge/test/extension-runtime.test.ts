@@ -198,16 +198,14 @@ describe("wayforgeExtension runtime", () => {
     });
     expect(validated.isError).toBeUndefined();
 
-    const blocked = await h.runTool("wayforge_complete", {});
-    expect(blocked.isError).toBe(true);
-
-    const advised = await h.runTool("wayforge_advise", { beforeDone: true });
-    expect(advised.isError).toBeUndefined();
-    expect(JSON.stringify(advised.content)).toContain("approve");
-
     const completed = await h.runTool("wayforge_complete", {});
     expect(completed.isError).toBeUndefined();
     expect(JSON.stringify(completed.content)).toContain("passing validation");
+
+    // Completion invokes the strict Advisor itself; a repeat is idempotent.
+    const repeated = await h.runTool("wayforge_complete", {});
+    expect(repeated.isError).toBeUndefined();
+    expect(JSON.stringify(repeated.content)).toContain("passing validation");
 
     await h.fire("agent_end");
     await h.fire("session_shutdown");

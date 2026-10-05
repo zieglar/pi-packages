@@ -250,14 +250,14 @@ describe("pi compatibility adapter (sentinel nested runtime path)", () => {
     return { ctx: ctx as unknown as ExtensionContext, streamSimple, pi: {} as ExtensionAPI };
   }
 
-  it("streams through ctx.modelRegistry.streamSimple with resolved model, reasoning, and signal", async () => {
+  it("forwards the resolved logical allowance to Pi maxTokens with high reasoning and cancellation", async () => {
     const { ctx, streamSimple, pi } = makeRegistry();
     const adapter = new PiCompatibilityAdapter(pi, ctx);
     const controller = new AbortController();
     const result = await adapter.stream({
       provider: "anthropic",
       modelId: "claude-haiku",
-      thinking: "low",
+      thinking: "high",
       prompt: "say hi",
       signal: controller.signal,
       budgetLimit: 10,
@@ -270,12 +270,13 @@ describe("pi compatibility adapter (sentinel nested runtime path)", () => {
     const [model, context, options] = streamSimple.mock.calls[0] as unknown as [
       unknown,
       { messages: { role: string; content: string }[] },
-      { reasoning?: string; signal?: AbortSignal },
+      { reasoning?: string; signal?: AbortSignal; maxTokens?: number },
     ];
     expect(model).toBe(fakeModel);
     expect(context.messages[0]?.role).toBe("user");
     expect(context.messages[0]?.content).toBe("say hi");
-    expect(options?.reasoning).toBe("low");
+    expect(options?.maxTokens).toBe(10);
+    expect(options?.reasoning).toBe("high");
     expect(options?.signal).toBe(controller.signal);
   });
 

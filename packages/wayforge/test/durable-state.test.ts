@@ -178,6 +178,75 @@ describe("authoritative durable state schema v2", () => {
     expect(JSON.stringify(result)).not.toContain(FIXTURE_SECRET);
   });
 
+  it("round-trips bounded typed validation and discriminated authority completion evidence", () => {
+    const completionEvidence = {
+      authority: "completion_authority_v1" as const,
+      candidateDigest: "candidate-digest",
+      authoritativeRevision: 4,
+      workspaceDigest: "workspace-digest-1",
+      validationEvidenceIds: ["validation:test"],
+      validationEvidenceDigest: "validation-digest",
+      advisor: {
+        invocationId: "advisor-1",
+        routeId: "advisor-route",
+        status: "approve" as const,
+        verdictDigest: "verdict-digest",
+        summary: "approved",
+      },
+      completedAtMs: 2_000,
+      leaseGeneration: 2,
+      summary: "completed safely",
+    };
+    const state = populatedTaskState({
+      status: "completed",
+      evidence: [{
+        evidenceId: "validation:test",
+        kind: "command",
+        summary: "passed",
+        recordedAtMs: 1_900,
+        validAtWorkspaceDigest: "workspace-digest-1",
+        validation: { name: "test", ok: true },
+      }],
+      completionEvidence,
+    });
+    expect(state.evidence[0]?.validation).toEqual({ name: "test", ok: true });
+    expect(state.completionEvidence).toEqual(completionEvidence);
+  });
+
+  it("rejects extra raw or secret-like completion fields", () => {
+    const leaky = populatedTaskFixture({
+      status: "completed",
+      completionEvidence: {
+        authority: "completion_authority_v1",
+        candidateDigest: "candidate",
+        authoritativeRevision: 2,
+        workspaceDigest: "workspace",
+        validationEvidenceIds: ["validation:test"],
+        validationEvidenceDigest: "validation",
+        advisor: {
+          invocationId: "advisor-1",
+          routeId: "route",
+          status: "approve",
+          verdictDigest: "verdict",
+          summary: "approved",
+          transcript: "raw transcript",
+        },
+        completedAtMs: 2_000,
+        leaseGeneration: 1,
+        summary: "done",
+        authorization: "Bearer abcdefghijk",
+        reasoning: "hidden",
+        rawResponse: "provider payload",
+      } as never,
+    });
+    const result = deserializeTaskState(JSON.stringify({
+      ...leaky,
+      schemaVersion: DURABLE_TASK_STATE_VERSION,
+    }));
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).not.toContain("abcdefghijk");
+  });
+
   it("round-trips invocation provenance and prepared continuation state", () => {
     const state = populatedTaskState();
     expect(state.invocationProvenance).toMatchObject({ invocationId: "inv-1", modelId: "claude-opus-4" });
