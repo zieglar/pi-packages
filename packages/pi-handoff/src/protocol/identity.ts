@@ -56,15 +56,14 @@ export function encodeUlid(timestampMs: number, random: Uint8Array): string {
   // After nine divisions the top 3 bits remain for the masked first char.
   chars[0] = alphabetChar(remainder & 7);
 
-  // 80-bit randomness, big-endian, 16 chars.
-  for (let i = 0; i < 16; i += 1) {
-    const byteIndex = Math.floor(i / 2);
-    const byte = random[byteIndex];
-    if (byte === undefined) {
-      throw new Error(`random byte out of range at index ${byteIndex}`);
-    }
-    const fiveBits = i % 2 === 0 ? byte >> 3 : byte & 31;
-    chars[10 + i] = alphabetChar(fiveBits);
+  // Consume all ten bytes as one 80-bit big-endian value, then emit sixteen
+  // disjoint five-bit groups. Pairing two chars per byte overlaps bits and
+  // silently discards the final two bytes.
+  let entropy = 0n;
+  for (const byte of random) entropy = (entropy << 8n) | BigInt(byte);
+  for (let i = 25; i >= 10; i -= 1) {
+    chars[i] = alphabetChar(Number(entropy & 31n));
+    entropy >>= 5n;
   }
   return chars.join("");
 }
