@@ -101,7 +101,7 @@ export class PiAccountsAdapter {
     return this.waitForReply<TopologyOutcome>(
       signal,
       (settle) => this.events.emit(ACCOUNTS_TOPOLOGY_CHANNEL, {
-        reply: (value: unknown) => settle(validateTopology(value)),
+        reply: (value: unknown) => settle(safelyValidate(validateTopology, value)),
       }),
     );
   }
@@ -116,7 +116,7 @@ export class PiAccountsAdapter {
         account: request.account,
         ...(request.model !== undefined ? { model: request.model } : {}),
         ...(request.signal !== undefined ? { signal: request.signal } : {}),
-        reply: (value: unknown) => settle(validateActivation(value)),
+        reply: (value: unknown) => settle(safelyValidate(validateActivation, value)),
       }),
     );
   }
@@ -203,6 +203,14 @@ function validateActivation(value: unknown): ActivationOutcome {
     return { status: "error", providerId: value.providerId, accountName: value.accountName, code: value.code as ActivationErrorCode };
   }
   return malformedReply();
+}
+
+function safelyValidate<T>(validator: (value: unknown) => T, value: unknown): T | ProtocolFailure {
+  try {
+    return validator(value);
+  } catch {
+    return malformedReply();
+  }
 }
 
 function timeout(): ProtocolFailure {

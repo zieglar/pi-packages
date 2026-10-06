@@ -225,6 +225,54 @@ describe("PiAccountsAdapter", () => {
     }
   });
 
+  it("fails closed when an asynchronous topology getter throws and ignores later replies", async () => {
+    const bus = new TestEventBus();
+    const pending = new PiAccountsAdapter(bus, { timeoutMs: 100 }).topology();
+    const reply = topologyReply(bus);
+    const hostile = Object.defineProperty({}, "providers", {
+      get() { throw new Error("hostile-topology-marker"); },
+    });
+    await Promise.resolve().then(() => reply(hostile));
+    const result = await pending;
+    expect(result).toEqual({ status: "protocol_failure", code: "malformed_reply" });
+    expect(JSON.stringify(result)).not.toContain("hostile-topology-marker");
+    reply(validTopology);
+  });
+
+  it("fails closed when an asynchronous activation getter throws and ignores later replies", async () => {
+    const bus = new TestEventBus();
+    const pending = new PiAccountsAdapter(bus, { timeoutMs: 100 }).activate({ session: {}, provider: "p", account: "a" });
+    const reply = activationRequest(bus).reply;
+    const hostile = Object.defineProperty({}, "status", {
+      get() { throw new Error("hostile-activation-marker"); },
+    });
+    await Promise.resolve().then(() => reply(hostile));
+    const result = await pending;
+    expect(result).toEqual({ status: "protocol_failure", code: "malformed_reply" });
+    expect(JSON.stringify(result)).not.toContain("hostile-activation-marker");
+    reply({ status: "active", providerId: "p", accountName: "a" });
+  });
+
+  it("keeps a malformed first callback terminal when a valid callback follows", async () => {
+    const bus = new TestEventBus();
+    const pending = new PiAccountsAdapter(bus, { timeoutMs: 100 }).topology();
+    const reply = topologyReply(bus);
+    reply({ providers: "invalid" });
+    reply(validTopology);
+    await expect(pending).resolves.toEqual({ status: "protocol_failure", code: "malformed_reply" });
+  });
+
+  it("keeps a valid activation result when abort fires afterward", async () => {
+    const bus = new TestEventBus();
+    const controller = new AbortController();
+    const pending = new PiAccountsAdapter(bus, { timeoutMs: 100 }).activate({
+      session: {}, provider: "p", account: "a", signal: controller.signal,
+    });
+    activationRequest(bus).reply({ status: "active", providerId: "p", accountName: "a" });
+    controller.abort();
+    await expect(pending).resolves.toEqual({ status: "active", providerId: "p", accountName: "a" });
+  });
+
   it("exposes no credential or raw-error fields in validated results", async () => {
     const bus = new TestEventBus();
     const pending = new PiAccountsAdapter(bus, { timeoutMs: 100 }).activate({ session: {}, provider: "p", account: "a" });
