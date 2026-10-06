@@ -3,7 +3,7 @@ import { validTaskState, type AuthoritativeTaskState } from "../durable/state.js
 import { captureWorkspaceCheckpoint } from "../durable/workspace-checkpoint.js";
 import type { DurableSuspension } from "../recovery/suspension.js";
 import type { Failure } from "../types/result.js";
-import { failure, type ExecutionResult } from "../types/result.js";
+import type { ExecutionResult } from "../types/result.js";
 import type { TaskId } from "../types/identity.js";
 import type { WorkflowEvent } from "../workflow/events.js";
 
