@@ -6,6 +6,10 @@ forms live in `src/protocol/` (schemas, lifecycle requirement table) and
 `src/core/rules.ts` (pure enforcement). See [architecture.md](architecture.md)
 for layering and [protocol-v1.md](protocol-v1.md) for the superseded v1.
 
+**Authorized PH-0003 amendment:** the owner-abandonment cancellation exception
+is superseded by [quarantine-hotfix-ph0003.md](quarantine-hotfix-ph0003.md).
+No identity format, outcome vocabulary or normal close precondition changes.
+
 ## 1. Identity (compatibility preserved)
 
 | Entity | Prefix | Status |
@@ -40,7 +44,8 @@ alone (`canTransition`); every other move cites an evidence class validated by
 core rules (`isLegalTransition` + `assertMessageTransition`). Highlights:
 
 - `CLAIMED → QUEUED` / `CLAIMED → CANCELLED`: agent authority + recorded
-  lease + `not_attempted` dispatch evidence (the only safe requeue).
+  lease + a consistent `not_attempted` / `pending` attempt (the only safe
+  requeue). Contradictory transport facts cannot be laundered by the marker.
 - `CLAIMED → DISPATCHING`: agent authority + **current** lease + durable
   `started` dispatch marker (marked BEFORE any adapter effect).
 - `DISPATCHING → ACCEPTED`: current authoritative fenced lease + transport
@@ -61,14 +66,18 @@ core rules (`isLegalTransition` + `assertMessageTransition`). Highlights:
   correlated immutable Result loaded from successful publication.
 - `DELIVERY_UNKNOWN → ACCEPTED/FAILED`: agent authority + recorded lease +
   correlated transport evidence + **explicit reconciliation evidence**.
-  `DELIVERY_UNKNOWN → CANCELLED`: client (owner) authority + reconciliation.
+  `DELIVERY_UNKNOWN → CANCELLED` is prohibited (PH-0003 authorized hotfix):
+  owner intent/reconciliation text is not execution evidence. Administrative
+  abandonment is a separate disposition, never an execution-state transition.
   No exit to retryable states; no automatic retry anywhere.
 - Cancellation: `QUEUED → CANCELLED` (client; nothing dispatched) is the only
   evidence-free cancel. From `CLAIMED/DISPATCHING/ACCEPTED/RUNNING` the
   client may only `→ CANCEL_REQUESTED`; confirmation
   (`CANCEL_REQUESTED → CANCELLED`) needs either provably not-attempted
-  dispatch or correlated runtime `cancelled` confirmation; ambiguity remains
-  quarantined. Failure/settlement requires its own evidence, not the request.
+  dispatch (`not_attempted` plus `pending`) or a started/delivered attempt with
+  correlated runtime `cancelled` confirmation; ambiguity remains quarantined.
+  Failure/settlement requires its own evidence, not the request. Queued
+  cancellation also rejects contradictory presented dispatch evidence.
 
 Guards must correlate the exact message, attempt, endpoint and recorded lease.
 For live progress and safe release/requeue, `currentLease` must ALSO match the
@@ -110,6 +119,48 @@ Concurrent revision/CAS and durable fencing allocation remain unimplemented.
   digest?, length?, outcome? }` — diagnostics carry IDs/digests/lengths/typed
   outcomes only; raw payload bodies are structurally rejected.
 
+### Administrative termination without execution resolution
+
+Normal `Exchange.state = CLOSED` still requires every Message to be finished.
+It is not broadened to mean an unresolved Exchange was cancelled or succeeded.
+Instead an immutable `ExchangeDisposition` records administrative termination:
+
+```text
+status = ABANDONED_UNRESOLVED
+exchangeId, ownerId, recordedAt, reason, reconciliation intent
+unresolved[] = { messageId, originalState: DELIVERY_UNKNOWN,
+                 transport: ambiguous, unresolvedSideEffects: true,
+                 attempt: original started/ambiguous DeliveryAttempt snapshot }
+```
+
+The Exchange snapshot remains OPEN and Messages remain DELIVERY_UNKNOWN; the
+independent disposition makes the aggregate administratively inactive, not
+execution-resolved. A future view/API must expose BOTH execution facts and the
+disposition, never translate this marker into CANCELLED, FAILED_NO_EFFECT, a
+Result or success. The marker itself is the immutable administrative audit
+record. Its owner/time/reason and investigation metadata are not execution proof.
+`reconciliation.resolvedAt` retains the existing metadata field name, but here
+timestamps the investigation/intent record, not resolution of side effects.
+
+`archiveUnresolvedExchange` requires owner authority, at least one unresolved
+Message, exactly one correlated started/ambiguous active attempt per unresolved
+Message, and no remaining in-flight activity. Other Messages may already be
+finished. It preserves snapshots and permits exact replay, never replacement.
+No transport outcome is altered, no retry/requeue is authorized, no Result is
+manufactured. Unknown→ACCEPTED/FAILED still requires actual correlated evidence
+and explicit reconciliation BEFORE administrative termination.
+
+`assertExchangeActive` is the host admission precondition for creation, claims
+and every subsequent protocol mutation. Transition, publication and normal
+close helpers also reject a supplied authoritative disposition. The future
+host MUST load that record atomically; external callers cannot select/omit it.
+Administrative termination does not stop an already-delivered external runtime
+or prevent its side effects; it only stops protocol activity. Later external
+facts may be retained as separate audit observations, never revive the archived
+protocol or rewrite the original uncertainty snapshot. Historical reads remain
+non-mutating and allowed. Persistence, ACLs, audit append and APIs are not
+implemented in this phase.
+
 ## 4. Idempotency (create)
 
 Keyed by **(namespace, key)** with a canonical-request digest (SHA-256 over
@@ -128,8 +179,9 @@ recording semantic completion.
 ## 5. Capability ports (src/protocol/capabilities.ts)
 
 - Client: `exchange_send`, `exchange_get`, `exchange_list`,
-  `exchange_cancel` (request), `exchange_result`. `exchange_close` is a
-  separate optional capability, declared but not implemented.
+  `exchange_cancel` (request), `exchange_result`. `exchange_close` and
+  `exchange_archive` are distinct optional capabilities, declared but not
+  implemented as control APIs. Archive records disposition, not cancellation.
 - Agent: `message_claim`, `dispatch_mark_started`, `delivery_report`,
   `activity_report`, `settlement_report`, `result_publish`, `lease_release`,
   `ambiguity_resolve`, `cancel_confirm`.

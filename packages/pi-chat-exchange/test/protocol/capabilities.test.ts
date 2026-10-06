@@ -36,9 +36,11 @@ describe("capability ports (protocol v2)", () => {
     ).toEqual([]);
   });
 
-  it("keeps explicit close as a separate optional capability", () => {
-    expect([...OPTIONAL_CLIENT_CAPABILITIES]).toEqual(["exchange_close"]);
+  it("keeps normal close and unresolved archive as distinct optional capabilities", () => {
+    expect([...OPTIONAL_CLIENT_CAPABILITIES]).toEqual(["exchange_close", "exchange_archive"]);
     expect(CLIENT_OPERATIONS).not.toContain("exchange_close");
+    expect(CLIENT_OPERATIONS).not.toContain("exchange_archive");
+    expect(AGENT_OPERATIONS).not.toContain("exchange_archive");
   });
 
   it("recognizes only declared operations", () => {

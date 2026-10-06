@@ -237,3 +237,34 @@ export const ReconciliationEvidenceSchema = Type.Object(
 );
 
 export type ReconciliationEvidence = Static<typeof ReconciliationEvidenceSchema>;
+
+/**
+ * Separate administrative archive, never an execution state or Result.
+ * OPEN/CLOSED semantics are unchanged. A disposition permanently disables
+ * protocol activity but preserves each original unresolved delivery fact.
+ * Owner identity must come from the authenticated host, not an adapter label.
+ */
+export const ExchangeDispositionSchema = Type.Object(
+  {
+    exchangeId: idSchema(EXCHANGE_ID_PATTERN, "Administratively archived exchange identity."),
+    status: Type.Literal("ABANDONED_UNRESOLVED"),
+    ownerId: Type.String({ minLength: 1, maxLength: 256 }),
+    recordedAt: Type.String({ format: "date-time" }),
+    reason: Type.String({ minLength: 1, maxLength: 1024 }),
+    // This is investigation/owner-intent metadata, not execution proof.
+    reconciliation: ReconciliationEvidenceSchema,
+    unresolved: Type.Array(Type.Object(
+      {
+        messageId: idSchema(MESSAGE_ID_PATTERN, "Original unresolved message identity."),
+        originalState: Type.Literal("DELIVERY_UNKNOWN"),
+        transport: Type.Literal("ambiguous"),
+        unresolvedSideEffects: Type.Literal(true),
+        attempt: DeliveryAttemptSchema,
+      },
+      { additionalProperties: false },
+    ), { minItems: 1 }),
+  },
+  { additionalProperties: false },
+);
+export type ExchangeDisposition = Static<typeof ExchangeDispositionSchema>;
+export type DispositionIntent = Pick<ExchangeDisposition, "ownerId" | "recordedAt" | "reason" | "reconciliation">;

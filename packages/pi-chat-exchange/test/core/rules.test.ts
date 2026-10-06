@@ -237,15 +237,15 @@ describe("core transition rules (protocol v2)", () => {
         guard({ attempt: { ...attempt, dispatch: "started" as const, transport: "delivered" as const }, runtime: runtime("cancelled") }),
       ),
     ).toBe("CANCELLED");
-    // Owner may abandon a quarantined message, but only via reconciliation:
+    // Owner disposition is not execution evidence, even with reconciliation text.
     expect(() =>
       assertMessageTransition(
         message({ state: "DELIVERY_UNKNOWN" }),
         "CANCELLED",
         guard({ authority: "client", attempt: { ...attempt, dispatch: "started" as const } }),
       ),
-    ).toThrowError(TransitionEvidenceError);
-    expect(
+    ).toThrowError(IllegalTransitionError);
+    expect(() =>
       assertMessageTransition(
         message({ state: "DELIVERY_UNKNOWN" }),
         "CANCELLED",
@@ -255,7 +255,7 @@ describe("core transition rules (protocol v2)", () => {
           reconciliation: { resolvedAt: now, basis: "owner abandons after investigation" },
         }),
       ),
-    ).toBe("CANCELLED");
+    ).toThrowError(IllegalTransitionError);
   });
 
   it("publishes results once, permits exact replay, rejects replacement", () => {

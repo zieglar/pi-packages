@@ -122,9 +122,10 @@ describe("message lifecycle (protocol v2)", () => {
   it("quarantine resolution requires reconciliation-grade authority", () => {
     expect(TRANSITION_REQUIREMENTS["DELIVERY_UNKNOWN>ACCEPTED"]?.authority).toBe("agent");
     expect(TRANSITION_REQUIREMENTS["DELIVERY_UNKNOWN>FAILED"]?.authority).toBe("agent");
-    expect(TRANSITION_REQUIREMENTS["DELIVERY_UNKNOWN>CANCELLED"]?.authority).toBe("client");
-    for (const key of ["DELIVERY_UNKNOWN>ACCEPTED", "DELIVERY_UNKNOWN>FAILED", "DELIVERY_UNKNOWN>CANCELLED"]) {
-      expect(TRANSITION_REQUIREMENTS[key]?.evidence).toMatch(/^reconciled|^owner_abandons$/);
+    expect(isLegalTransition("DELIVERY_UNKNOWN", "CANCELLED")).toBe(false);
+    expect(TRANSITION_REQUIREMENTS["DELIVERY_UNKNOWN>CANCELLED"]).toBeUndefined();
+    for (const key of ["DELIVERY_UNKNOWN>ACCEPTED", "DELIVERY_UNKNOWN>FAILED"]) {
+      expect(TRANSITION_REQUIREMENTS[key]?.evidence).toMatch(/^reconciled/);
       expect(TRANSITION_REQUIREMENTS[key]?.lease).toBe("recorded");
     }
   });

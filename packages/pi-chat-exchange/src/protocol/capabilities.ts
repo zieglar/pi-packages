@@ -5,8 +5,8 @@
  *
  * - the CLIENT port (the requesting side of an exchange, whatever product or
  *   adapter it is reached through) may send, inspect, list, request
- *   cancellation of, and read results of its messages, and — as a separate
- *   optional capability — explicitly close an exchange;
+ *   cancellation of, and read results of its messages, and — as separate
+ *   optional capabilities — normally close or administratively archive;
  * - the AGENT port (the consuming side) alone holds dispatch, lease, runtime
  *   settlement, result publication, ambiguity reconciliation, and
  *   cancellation confirmation.
@@ -15,8 +15,8 @@
  * operations are closed lists. There is deliberately no inheritance
  * framework, no shared base port, and no product name anywhere — the generic
  * future surface is `exchange_send/get/list/cancel/result`, bound per
- * adapter. Explicit close (`exchange_close`) is a separate optional
- * capability and is intentionally NOT part of the base client surface.
+ * adapter. Explicit close and unresolved archive are distinct optional
+ * capabilities; neither is part of the base client surface.
  *
  * These are capability DECLARATIONS only: core rules remain the enforcement
  * authority at runtime, and compile-time checks are a development aid, never
@@ -40,10 +40,10 @@ export const CLIENT_OPERATIONS = [
 export type ClientOperation = (typeof CLIENT_OPERATIONS)[number];
 
 /**
- * Explicit close is a separate, optional client capability. It is declared
- * but NOT implemented by any adapter in this phase.
+ * Normal close and unresolved archive are separate optional owner capabilities.
+ * No control API for either is implemented in this phase.
  */
-export const OPTIONAL_CLIENT_CAPABILITIES = ["exchange_close"] as const;
+export const OPTIONAL_CLIENT_CAPABILITIES = ["exchange_close", "exchange_archive"] as const;
 
 export type OptionalClientCapability = (typeof OPTIONAL_CLIENT_CAPABILITIES)[number];
 

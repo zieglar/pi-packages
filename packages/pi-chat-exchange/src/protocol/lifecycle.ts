@@ -25,8 +25,8 @@
  *   definitely-not-attempted attempt record — evidence, not assertion.
  * - Cancellation is split: a request (CANCEL_REQUESTED) is never a
  *   confirmation. After dispatch may have begun, only the agent side can
- *   confirm CANCELLED, and quarantine can only be abandoned by the owning
- *   client through explicit reconciliation.
+ *   confirm CANCELLED. Owner abandonment is a separate administrative
+ *   disposition; it never resolves execution ambiguity or cancels a runtime.
  *
  * Transitions split into two groups:
  * - evidence-free moves, licensed by state shape alone ({@link canTransition});
@@ -96,8 +96,7 @@ export type TransitionEvidenceKind =
   | "result_published"
   | "cancel_confirmed"
   | "reconciled_delivered"
-  | "reconciled_not_executed"
-  | "owner_abandons";
+  | "reconciled_not_executed";
 export interface TransitionRequirement {
   readonly authority: TransitionAuthority;
   readonly lease: LeaseEvidence;
@@ -150,7 +149,6 @@ export const TRANSITION_REQUIREMENTS: Readonly<Record<string, TransitionRequirem
   // Quarantine resolution: explicit reconciliation, never lease expiry reuse.
   "DELIVERY_UNKNOWN>ACCEPTED": { authority: "agent", lease: "recorded", evidence: "reconciled_delivered" },
   "DELIVERY_UNKNOWN>FAILED": { authority: "agent", lease: "recorded", evidence: "reconciled_not_executed" },
-  "DELIVERY_UNKNOWN>CANCELLED": { authority: "client", lease: "recorded", evidence: "owner_abandons" },
 };
 
 /**

@@ -11,6 +11,11 @@ import type { ExchangeAuthority } from "../protocol/capabilities.js";
 import {
   type DeliveryAttempt,
   type Exchange,
+  ExchangeSchema,
+  MessageSchema,
+  type ExchangeDisposition,
+  type DispositionIntent,
+  ExchangeDispositionSchema,
   type Lease,
   type Message,
   type ReconciliationEvidence,
@@ -102,6 +107,8 @@ export interface TransitionGuard {
   readonly lease: Lease;
   /** Authoritative latest claim loaded by the host transaction, not adapter input. */
   readonly currentLease?: Lease;
+  /** Authoritative administrative disposition loaded by the host transaction. */
+  readonly disposition?: ExchangeDisposition;
   readonly runtime?: RuntimeEvidence;
   readonly result?: Result;
   readonly attempt?: DeliveryAttempt;
@@ -119,6 +126,7 @@ export function assertMessageTransition(
   to: MessageState,
   guard: TransitionGuard,
 ): MessageState {
+  assertNotArchived(message.exchangeId, guard.disposition);
   const requirement = TRANSITION_REQUIREMENTS[`${message.state}>${to}`];
   if (requirement === undefined || !isLegalTransition(message.state, to)) {
     throw new IllegalTransitionError(message.state, to);
@@ -127,6 +135,13 @@ export function assertMessageTransition(
     throw new TransitionEvidenceError(message.state, to, "invalid observation time");
   }
   assertAuthority(requirement, guard, message.state, to);
+  if (message.state === "QUEUED" && to === "CANCELLED" && guard.attempt !== undefined && (
+    !Value.Check(DeliveryAttemptSchema, guard.attempt) ||
+    guard.attempt.messageId !== message.messageId || !deepEqual(guard.attempt.endpoint, message.to) ||
+    guard.attempt.dispatch !== "not_attempted" || guard.attempt.transport !== "pending"
+  )) {
+    throw new TransitionEvidenceError(message.state, to, "queued cancellation contradicts presented dispatch evidence");
+  }
   const attempt = assertAttemptCorrelation(requirement, message, to, guard);
   if (attempt !== undefined) {
     assertLeaseEvidence(requirement, attempt, guard, message.state, to);
@@ -239,8 +254,8 @@ function assertEvidence(
     case "none":
       return;
     case "not_attempted":
-      if (attempt.dispatch !== "not_attempted") {
-        reject(`safe requeue/release requires dispatch "not_attempted", found "${attempt.dispatch}"`);
+      if (attempt.dispatch !== "not_attempted" || attempt.transport !== "pending") {
+        reject(`safe requeue/release requires a pending not-attempted record, found (${attempt.dispatch}, ${attempt.transport})`);
       }
       return;
     case "dispatch_started":
@@ -279,7 +294,7 @@ function assertEvidence(
       return;
     case "cancel_confirmed":
       if (attempt.dispatch === "not_attempted" && attempt.transport === "pending") return;
-      if (attempt.transport !== "delivered" || guard.runtime?.outcome !== "cancelled") {
+      if (attempt.dispatch !== "started" || attempt.transport !== "delivered" || guard.runtime?.outcome !== "cancelled") {
         reject("cancellation requires no-attempt proof or correlated runtime cancellation confirmation");
       }
       return;
@@ -299,12 +314,106 @@ function assertEvidence(
         reject(`reconciled non-execution requires transport "failed", found "${attempt.transport}"`);
       }
       return;
-    case "owner_abandons":
-      if (guard.reconciliation === undefined) {
-        reject("owner abandonment of a quarantined message requires explicit reconciliation evidence");
-      }
-      return;
   }
+}
+
+export class ExchangeDispositionError extends Error {
+  readonly code = "EXCHANGE_DISPOSITION_REJECTED" as const;
+  constructor(detail: string) {
+    super(`administrative disposition rejected: ${detail}`);
+    this.name = "ExchangeDispositionError";
+  }
+}
+
+/** Admission precondition for the future host's every protocol mutation. */
+export function assertExchangeActive(
+  exchange: Pick<Exchange, "exchangeId" | "state">,
+  disposition?: ExchangeDisposition,
+): void {
+  assertNotArchived(exchange.exchangeId, disposition);
+  if (exchange.state !== "OPEN") throw new ExchangeDispositionError("exchange is closed");
+}
+
+function assertNotArchived(exchangeId: string, disposition?: ExchangeDisposition): void {
+  if (disposition === undefined) return;
+  assertDispositionShape(disposition);
+  if (disposition.exchangeId !== exchangeId) throw new ExchangeDispositionError("foreign disposition guard");
+  throw new ExchangeDispositionError("ABANDONED_UNRESOLVED prohibits further protocol activity");
+}
+
+/**
+ * Administrative termination, NOT runtime cancellation or normal CLOSED.
+ * The authenticated host must load the complete message set, each current
+ * unresolved attempt, and any existing disposition and commit atomically.
+ * Owner/reconciliation text records intent only; unknown facts are unchanged.
+ */
+export function archiveUnresolvedExchange(
+  exchange: Exchange,
+  messages: readonly Message[],
+  attempts: readonly DeliveryAttempt[],
+  intent: DispositionIntent,
+  authority: ExchangeAuthority,
+  existing?: ExchangeDisposition,
+): ExchangeDisposition {
+  const reject = (detail: string): never => { throw new ExchangeDispositionError(detail); };
+  if (authority !== "client") reject("administrative owner authority is required");
+  if (!Value.Check(ExchangeSchema, exchange) || exchange.state !== "OPEN") reject("exchange must be open");
+  const seenMessages = new Set<string>();
+  for (const message of messages) {
+    if (!Value.Check(MessageSchema, message) || message.exchangeId !== exchange.exchangeId) reject("invalid or foreign message");
+    if (seenMessages.has(message.messageId)) reject("duplicate message");
+    seenMessages.add(message.messageId);
+    if (message.state !== "DELIVERY_UNKNOWN" && !FINISHED_MESSAGE_STATES.includes(message.state)) reject("in-flight activity must first be reconciled or quarantined");
+  }
+  const unresolvedMessages = messages.filter((message) => message.state === "DELIVERY_UNKNOWN");
+  if (unresolvedMessages.length === 0 || attempts.length !== unresolvedMessages.length) reject("one active attempt per unresolved message is required");
+  const seenAttempts = new Set<string>();
+  const seenAttemptMessages = new Set<string>();
+  for (const attempt of attempts) {
+    if (!Value.Check(DeliveryAttemptSchema, attempt)) reject("invalid active attempt");
+    const message = unresolvedMessages.find((entry) => entry.messageId === attempt.messageId);
+    if (message === undefined || !deepEqual(message.to, attempt.endpoint)) reject("uncorrelated active attempt");
+    if (attempt.dispatch !== "started" || attempt.transport !== "ambiguous") reject("original unknown/ambiguous evidence is required");
+    if (seenAttempts.has(attempt.attemptId) || seenAttemptMessages.has(attempt.messageId)) reject("duplicate active attempt");
+    seenAttempts.add(attempt.attemptId);
+    seenAttemptMessages.add(attempt.messageId);
+  }
+  const candidate: ExchangeDisposition = {
+    ...intent,
+    exchangeId: exchange.exchangeId,
+    status: "ABANDONED_UNRESOLVED",
+    unresolved: [...unresolvedMessages].sort((a, b) => a.messageId.localeCompare(b.messageId)).map((message) => ({
+      messageId: message.messageId,
+      originalState: "DELIVERY_UNKNOWN",
+      transport: "ambiguous",
+      unresolvedSideEffects: true,
+      attempt: attempts.find((attempt) => attempt.messageId === message.messageId)!,
+    })),
+  };
+  assertDispositionShape(candidate);
+  const recordedAt = Date.parse(candidate.recordedAt);
+  if (Date.parse(exchange.createdAt) > recordedAt || messages.some((message) => Date.parse(message.createdAt) > recordedAt)) reject("disposition predates the aggregate");
+  if (existing !== undefined) {
+    assertDispositionShape(existing);
+    if (!deepEqual(existing, candidate)) reject("immutable disposition conflicts with existing history");
+  }
+  return deepFreeze(clone(existing ?? candidate));
+}
+
+function assertDispositionShape(disposition: ExchangeDisposition): void {
+  try { canonicalDigest(disposition); } catch { throw new ExchangeDispositionError("disposition must be plain JSON"); }
+  if (!Value.Check(ExchangeDispositionSchema, disposition)) throw new ExchangeDispositionError("invalid disposition schema");
+  const seenMessages = new Set<string>();
+  const seenAttempts = new Set<string>();
+  for (const entry of disposition.unresolved) {
+    if (entry.attempt.messageId !== entry.messageId || entry.attempt.dispatch !== "started" || entry.attempt.transport !== "ambiguous" || seenMessages.has(entry.messageId) || seenAttempts.has(entry.attempt.attemptId)) {
+      throw new ExchangeDispositionError("invalid original unresolved snapshot");
+    }
+    if (Date.parse(entry.attempt.createdAt) > Date.parse(disposition.recordedAt)) throw new ExchangeDispositionError("disposition predates the attempt");
+    seenMessages.add(entry.messageId);
+    seenAttempts.add(entry.attempt.attemptId);
+  }
+  if (Date.parse(disposition.reconciliation.resolvedAt) > Date.parse(disposition.recordedAt)) throw new ExchangeDispositionError("future reconciliation metadata");
 }
 
 /**
@@ -318,7 +427,9 @@ export function closeExchange(
   exchange: Exchange,
   messages: readonly Message[],
   authority: ExchangeAuthority,
+  disposition?: ExchangeDisposition,
 ): Exchange {
+  assertNotArchived(exchange.exchangeId, disposition);
   if (authority !== "client") {
     throw new CloseRejectedError(`only the client authority may close an exchange (got "${authority}")`);
   }
@@ -354,7 +465,9 @@ export function readResult(result: Result): Result {
 export function assertResultPublication(
   existing: Result | undefined,
   candidate: Result,
+  disposition?: ExchangeDisposition,
 ): Result {
+  assertNotArchived(candidate.exchangeId, disposition);
   assertResultShape(candidate);
   if (existing === undefined) {
     return deepFreeze(clone(candidate)) as Result;
