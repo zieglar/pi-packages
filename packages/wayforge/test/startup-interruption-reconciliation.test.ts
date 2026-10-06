@@ -214,4 +214,44 @@ describe("startup interruption reconciliation (B2)", () => {
     if (!orphan.ok || orphan.value === null) throw new Error("task-orphan missing");
     expect(orphan.value.status).toBe("blocked");
   });
+
+  it("B2.8 preserves a settled negative review across interruption reconciliation", async () => {
+    const store = new InMemoryTaskStore({ now: () => 1_000 });
+    const { wakeup } = makeWakeup(store);
+    const scanner = new StartupRecoveryScanner(store, wakeup, () => 1_000);
+    await store.create(staleRunning("task-reviewed", {
+      negativeReview: {
+        outcome: "changes_requested",
+        candidateDigest: "candidate-c1",
+        recordedAtMs: 500,
+        summary: "correct the validation gap",
+      },
+    }));
+
+    const scanned = await scanner.scan();
+    expect(scanned.ok).toBe(true);
+
+    const loaded = await store.load(taskId("task-reviewed"));
+    if (!loaded.ok || loaded.value === null) throw new Error("task missing after reconciliation");
+    const stored = loaded.value;
+    expect(stored.status).toBe("blocked");
+    expect("negativeReview" in stored ? stored.negativeReview : undefined).toMatchObject({
+      outcome: "changes_requested",
+      candidateDigest: "candidate-c1",
+      summary: "correct the validation gap",
+    });
+    const detail = await inspectDurableTask(store, taskId("task-reviewed"));
+    expect(detail).toEqual({
+      ok: true,
+      value: expect.objectContaining({
+        status: "blocked",
+        nextAction: "correct the work and start a new governed task",
+        negativeReview: {
+          outcome: "changes_requested",
+          recordedAtMs: 500,
+          summary: "correct the validation gap",
+        },
+      }),
+    });
+  });
 });

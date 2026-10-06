@@ -48,6 +48,13 @@ describe("architecture gates over production source", () => {
     expect(result.stdout).toContain("completion budget reservation");
   });
 
+  it("rejects negative-review history writes outside the completion authority", () => {
+    const result = runChecker(fixture({
+      "recovery/rogue.ts": "const next = { ...state, negativeReview: record };",
+    }));
+    expect(result.stdout).toContain("negative-review history is owned only by");
+  });
+
   it("rejects authority-review invocation outside the controller callback", () => {
     const result = runChecker(fixture({
       "recovery/rogue.ts": "controller.reviewCompletionEvidence(evidence);",
@@ -105,7 +112,7 @@ describe("architecture gates over production source", () => {
       "adapters/rogue.ts": "const e = log.emit(\"budget_changed\", { taskId });",
     }));
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("19 gates passed");
+    expect(result.stdout).toContain("20 gates passed");
   });
 
 
@@ -250,7 +257,7 @@ describe("architecture gates over production source", () => {
     });
     const result = runChecker(dir);
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("19 gates passed");
+    expect(result.stdout).toContain("20 gates passed");
   });
 
   it("fails when CompletionAuthority has a second production construction site", () => {
@@ -323,7 +330,7 @@ describe("architecture gates over production source", () => {
     });
     const result = runChecker(dir);
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("19 gates passed");
+    expect(result.stdout).toContain("20 gates passed");
   });
 
   it("fails when an accounts protocol channel appears outside the dedicated adapter", () => {

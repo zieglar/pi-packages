@@ -148,4 +148,63 @@ describe("durable inspection", () => {
     expect(serialized).not.toContain("account-key-hash");
     expect(serialized).not.toContain("originatingFailure");
   });
+
+  it("exposes the settled negative review in detail without digest internals", async () => {
+    const state = validTaskState(durableTaskFixture({
+      taskId: "reviewed",
+      status: "running",
+      negativeReview: {
+        outcome: "changes_requested",
+        candidateDigest: "candidate-c1",
+        recordedAtMs: 2_000,
+        summary: "correct the validation gap",
+      },
+    }));
+    const result = await inspectDurableTask(storeWith([state]), taskId("reviewed"));
+
+    expect(result).toEqual({
+      ok: true,
+      value: expect.objectContaining({
+        negativeReview: {
+          outcome: "changes_requested",
+          recordedAtMs: 2_000,
+          summary: "correct the validation gap",
+        },
+        nextAction: "correct the work and start a new governed task",
+      }),
+    });
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain("candidate-c1");
+    expect(serialized).not.toContain("allowance");
+  });
+
+  it("keeps the task listing compact when a negative review is settled", async () => {
+    const state = validTaskState(durableTaskFixture({
+      taskId: "listed",
+      status: "running",
+      negativeReview: {
+        outcome: "changes_requested",
+        candidateDigest: "candidate-c1",
+        recordedAtMs: 2_000,
+        summary: "fix it",
+      },
+    }));
+    const result = await inspectDurableTasks(storeWith([state]));
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    const [only] = result.value;
+    if (only === undefined) throw new Error("expected one summary");
+    expect("negativeReview" in only).toBe(false);
+    expect(JSON.stringify(result)).not.toContain("candidate-c1");
+  });
+
+  it("renders absence of a negative review as unknown, never as proof of no review", async () => {
+    const state = validTaskState(durableTaskFixture({ taskId: "fresh", status: "running" }));
+    const detail = await inspectDurableTask(storeWith([state]), taskId("fresh"));
+    expect(detail.ok).toBe(true);
+    const serialized = JSON.stringify(detail);
+    expect(serialized).not.toContain("negativeReview");
+    expect(serialized).not.toContain("no review");
+    expect(serialized).not.toContain("never reviewed");
+  });
 });

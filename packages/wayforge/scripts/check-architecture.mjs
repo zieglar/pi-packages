@@ -34,6 +34,10 @@
  *   gate 17 authoritative review dispatch belongs to the authority callback;
  *   gate 18 governed manual advice refuses before any review dispatch;
  *   gate 19 the authoritative advisor diagnostic event is emitted only
+ *           in the Pi advisor adapter;
+ *   gate 20 durable negative-review history is written only by the
+ *           completion authority (durable schema and read-only inspection
+ *           excepted);
  *           by the workflow controller (non-authoritative side channel).
  */
 
@@ -68,6 +72,12 @@ const COMPLETION_EVIDENCE_WRITE_RE = /\bcompletionEvidence\s*:(?!\s*(?:Type\.|nu
 const STORE_UPDATE_RE = /\.update\s*\(/g;
 const COMPLETION_CAS_SHAPE_RE =
   /\bstatus\s*:\s*["']completed["']|\bcompletionEvidence\s*:(?!\s*(?:Type\.|null\b))/;
+const NEGATIVE_REVIEW_RE = /\bnegativeReview\b/g;
+const NEGATIVE_REVIEW_ALLOWED = new Set([
+  COMPLETION_AUTHORITY_PATH,
+  "durable/state.ts",
+  "durable/inspection.ts",
+]);
 const DURABLE_OWNER_TYPES = [
   "WakeupService",
   "StartupRecoveryScanner",
@@ -329,6 +339,16 @@ for (const file of files) {
       }
     }
   }
+  // Gate 20: durable negative-review history is owned only by the completion
+  // authority; the durable schema and read-only inspection may reference it.
+  if (!NEGATIVE_REVIEW_ALLOWED.has(relPath)) {
+    const code = stripComments(content);
+    for (const match of code.matchAll(NEGATIVE_REVIEW_RE)) {
+      violations.push(
+        `${relPath}:${lineOf(content, match.index ?? 0)}: negative-review history is owned only by ${COMPLETION_AUTHORITY_PATH} (durable schema and read-only inspection excepted)`,
+      );
+    }
+  }
   for (const ownerType of DURABLE_OWNER_TYPES) {
     for (const match of countConstructor(content, ownerType)) {
       const line = lineOf(content, match.index ?? 0);
@@ -398,4 +418,4 @@ if (violations.length > 0) {
   process.exit(1);
 }
 
-console.log(`ARCHITECTURE OK: 19 gates passed (scanned ${files.length} files)`);
+console.log(`ARCHITECTURE OK: 20 gates passed (scanned ${files.length} files)`);

@@ -1,11 +1,15 @@
 import type { AdvisorReviewOutcome } from "../adapters/pi-advisor-adapter.js";
 import type { DurableTaskStore, TaskLease } from "../durable/contracts.js";
-import type { AuthoritativeTaskState } from "../durable/state.js";
+import {
+  DURABLE_TASK_STATE_VERSION,
+  type AuthoritativeTaskState,
+  type NegativeReviewEvidence,
+} from "../durable/state.js";
 import {
   captureWorkspaceCheckpoint,
   type WorkspaceCheckpoint,
 } from "../durable/workspace-checkpoint.js";
-import { redact } from "../trace/redaction.js";
+import { redact, redactInlineSecrets } from "../trace/redaction.js";
 import type { TaskId } from "../types/identity.js";
 import type { ExecutionResult, Failure } from "../types/result.js";
 import { failure, success } from "../types/result.js";
@@ -15,6 +19,7 @@ import {
   buildCompletionCandidate,
   sha256,
   type CompletionRefusalCode,
+  type CompletionCandidate,
   type GovernedWorkSnapshot,
 } from "./contracts.js";
 
@@ -58,6 +63,23 @@ function authorityCompletion(state: AuthoritativeTaskState): state is Authoritat
 function sanitizedSummary(value: string, limit: number): string {
   const safe = redact(value);
   return (typeof safe === "string" ? safe : "redacted").slice(0, limit);
+}
+
+const NEGATIVE_REVIEW_CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+const NEGATIVE_REVIEW_ABSOLUTE_PATHS =
+  /(?:~\/|[A-Za-z]:\\|\/(?:Users|home|private|var|tmp|etc|opt|srv|mnt|media)\/)[^\s"'`]+/g;
+
+/**
+ * Stricter bound for durable negative-review summaries: they outlive the
+ * conversation, so absolute/home/workspace paths, control characters, and
+ * inline secret material are all removed before persistence.
+ */
+function sanitizedNegativeReviewSummary(value: string, workspaceRoot: string): string {
+  const withoutControl = value.replace(NEGATIVE_REVIEW_CONTROL_CHARACTERS, " ");
+  const withoutWorkspace = workspaceRoot.length > 0
+    ? withoutControl.split(workspaceRoot).join("[workspace]")
+    : withoutControl;
+  return redactInlineSecrets(withoutWorkspace.replace(NEGATIVE_REVIEW_ABSOLUTE_PATHS, "[path]")).slice(0, 1_000);
 }
 
 export interface CompletionAuthorityPort {
@@ -205,7 +227,7 @@ export class CompletionAuthority implements CompletionAuthorityPort {
           : reviewed;
       }
       if (reviewed.value.verdict.status === "changes_requested") {
-        return refusal("advisor_changes_requested", "Advisor requested changes");
+        return await this.recordNegativeReview(candidate, reviewed.value, lease);
       }
       if (reviewed.value.verdict.status === "unable") {
         return refusal("advisor_unable", "Advisor was unable to decide");
@@ -286,6 +308,59 @@ export class CompletionAuthority implements CompletionAuthorityPort {
     } finally {
       await this.options.store.releaseLease(lease).catch(() => undefined);
     }
+  }
+
+  /**
+   * Durable, non-authorizing record of one settled `changes_requested`
+   * review. Write-once, candidate-bound, fenced by revision CAS + lease;
+   * never overwrites an existing fact and never upgrades legacy records
+   * except through this otherwise valid authoritative write.
+   */
+  private async recordNegativeReview(
+    candidate: CompletionCandidate,
+    reviewed: AdvisorReviewOutcome,
+    lease: TaskLease,
+  ): Promise<ExecutionResult<never>> {
+    const heartbeat = await this.options.store.heartbeatLease(lease, this.options.leaseTtlMs);
+    if (!heartbeat.ok) return leaseRefusal();
+    const reloaded = await this.options.store.load(this.options.taskId);
+    if (!reloaded.ok) return reloaded;
+    if (reloaded.value === null) return refusal("state_conflict", "durable task disappeared after review");
+    const state = reloaded.value;
+    if (
+      state.revision !== candidate.taskRevision ||
+      state.status !== "running" ||
+      state.leaseGeneration !== lease.leaseGeneration
+    ) {
+      return refusal("state_conflict", "durable task changed after Advisor review");
+    }
+    if (authorityCompletion(state)) {
+      return refusal("state_conflict", "durable task completed after Advisor review");
+    }
+    const existing = "negativeReview" in state ? state.negativeReview : undefined;
+    if (existing !== undefined && existing !== null) {
+      // Write-once: an earlier settled negative review is never overwritten.
+      return refusal("advisor_changes_requested", "Advisor requested changes");
+    }
+    const record: NegativeReviewEvidence = {
+      outcome: "changes_requested",
+      candidateDigest: candidate.candidateDigest,
+      recordedAtMs: this.options.now(),
+      summary: sanitizedNegativeReviewSummary(reviewed.verdict.summary, this.options.workspaceRoot),
+    };
+    const next: AuthoritativeTaskState = {
+      ...state,
+      schemaVersion: DURABLE_TASK_STATE_VERSION,
+      revision: candidate.taskRevision + 1,
+      negativeReview: record,
+      updatedAtMs: this.options.now(),
+    };
+    const committed = await this.options.store.update(candidate.taskRevision, next, lease);
+    if (!committed.ok) return this.mapStoreConflict(committed.failure);
+    return refusal(
+      "advisor_changes_requested",
+      "Advisor requested changes; correct the work and start a new governed task",
+    );
   }
 
   private capture(workspace: WorkspaceCheckpoint) {

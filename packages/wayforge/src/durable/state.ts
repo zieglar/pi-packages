@@ -12,7 +12,8 @@ import { failure } from "../types/result.js";
  * `EphemeralTaskState` and is never serialized.
  */
 
-export const DURABLE_TASK_STATE_VERSION = 2;
+export const DURABLE_TASK_STATE_VERSION = 3;
+export const LEGACY_DURABLE_TASK_STATE_VERSION = 2;
 
 /** Structural bounds enforced by the schema and by bounded constructors. */
 export const DURABLE_LIMITS = {
@@ -258,6 +259,18 @@ export const continuationStateSchema = Type.Object(
   { additionalProperties: false },
 );
 
+/** Non-authorizing historical evidence of one settled completion review. */
+export const negativeReviewEvidenceSchema = Type.Object(
+  {
+    outcome: Type.Literal("changes_requested"),
+    candidateDigest: Type.String({ minLength: 1, maxLength: DURABLE_LIMITS.maxDigestLength }),
+    recordedAtMs: Type.Integer(),
+    summary: Type.String({ maxLength: 1_000 }),
+  },
+  { additionalProperties: false },
+);
+export type NegativeReviewEvidence = Static<typeof negativeReviewEvidenceSchema>;
+
 export const taskStateSchema = Type.Object(
   {
     schemaVersion: Type.Literal(DURABLE_TASK_STATE_VERSION),
@@ -335,6 +348,7 @@ export const taskStateSchema = Type.Object(
       ),
     ]),
     invocationProvenance: Type.Union([invocationProvenanceSchema, Type.Null()]),
+    negativeReview: Type.Optional(Type.Union([negativeReviewEvidenceSchema, Type.Null()])),
     continuation: Type.Union([continuationStateSchema, Type.Null()]),
     createdAtMs: Type.Integer(),
     updatedAtMs: Type.Integer(),
@@ -342,10 +356,20 @@ export const taskStateSchema = Type.Object(
   { additionalProperties: false },
 );
 
-/** Authoritative persisted task state. */
-export type AuthoritativeTaskState = Static<typeof taskStateSchema>;
+const { negativeReview: _negativeReview, ...legacyTaskStateProperties } = taskStateSchema.properties;
+export const legacyTaskStateSchema = Type.Object(
+  {
+    ...legacyTaskStateProperties,
+    schemaVersion: Type.Literal(LEGACY_DURABLE_TASK_STATE_VERSION),
+  },
+  { additionalProperties: false },
+);
 
-export type TaskStateInput = Omit<AuthoritativeTaskState, "schemaVersion">;
+/** Authoritative persisted task state, preserving legacy v2 records on read. */
+export type AuthoritativeTaskState = Static<typeof legacyTaskStateSchema> | Static<typeof taskStateSchema>;
+
+/** New task input emits the current durable schema generation. */
+export type TaskStateInput = Omit<Static<typeof taskStateSchema>, "schemaVersion">;
 
 /**
  * Runtime-only, never-serialized state for one task: abort signals, runtime
@@ -359,6 +383,7 @@ export interface EphemeralTaskState {
 }
 
 const SCHEMA_KEYS = new Set(Object.keys(taskStateSchema.properties));
+const LEGACY_SCHEMA_KEYS = new Set(Object.keys(legacyTaskStateSchema.properties));
 
 /** Keys that must never be written through any persistence path. */
 const FORBIDDEN_PROPERTY_KEYS = new Set(["__proto__", "prototype", "constructor"]);
@@ -516,11 +541,25 @@ function sanitizeAgainstSchema(schema: TSchema, value: unknown): SanitizedSchema
   return undefined;
 }
 
+function schemaForVersion(version: unknown): typeof taskStateSchema | typeof legacyTaskStateSchema | undefined {
+  if (version === DURABLE_TASK_STATE_VERSION) return taskStateSchema;
+  if (version === LEGACY_DURABLE_TASK_STATE_VERSION) return legacyTaskStateSchema;
+  return undefined;
+}
+
+function containsContradictoryCompletionEvidence(state: AuthoritativeTaskState): boolean {
+  return ("negativeReview" in state && state.negativeReview !== undefined && state.negativeReview !== null) &&
+    state.completionEvidence !== null;
+}
+
 /** Build and validate an authoritative state value; throws on violation. */
 export function validTaskState(input: TaskStateInput): AuthoritativeTaskState {
   const state = { ...input, schemaVersion: DURABLE_TASK_STATE_VERSION } as AuthoritativeTaskState;
   if (containsSensitiveValue(state)) {
     throw new Error("task state contains forbidden secret-shaped content");
+  }
+  if (containsContradictoryCompletionEvidence(state)) {
+    throw new Error("task state cannot contain both completion and negative-review evidence");
   }
   if (!Value.Check(taskStateSchema, state)) {
     throw new Error("task state failed schema validation (forbidden fields or wrong types)");
@@ -546,7 +585,8 @@ export function serializeTaskState(state: AuthoritativeTaskState): string {
   if (containsSensitiveValue(state)) {
     throw new Error("task state contains forbidden secret-shaped content");
   }
-  if (!Value.Check(taskStateSchema, state)) {
+  const schema = schemaForVersion(state.schemaVersion);
+  if (schema === undefined || containsContradictoryCompletionEvidence(state) || !Value.Check(schema, state)) {
     throw new Error("task state failed schema validation (forbidden fields or wrong types)");
   }
   return stableStringify(state);
@@ -576,7 +616,8 @@ export function deserializeTaskState(json: string): ExecutionResult<Authoritativ
     });
   }
   const record = parsed as Record<string, unknown>;
-  if (record.schemaVersion !== DURABLE_TASK_STATE_VERSION) {
+  const schema = schemaForVersion(record.schemaVersion);
+  if (schema === undefined) {
     return failure({
       kind: "validation",
       scope: "task",
@@ -585,7 +626,8 @@ export function deserializeTaskState(json: string): ExecutionResult<Authoritativ
       message: `unsupported task state schema version: ${String(record.schemaVersion)}`,
     });
   }
-  const extra = Object.keys(record).filter((key) => !SCHEMA_KEYS.has(key));
+  const schemaKeys = schema === taskStateSchema ? SCHEMA_KEYS : LEGACY_SCHEMA_KEYS;
+  const extra = Object.keys(record).filter((key) => !schemaKeys.has(key));
   if (extra.length > 0) {
     return failure({
       kind: "validation",
@@ -614,7 +656,8 @@ export function deserializeTaskState(json: string): ExecutionResult<Authoritativ
       message: "task state contains secret-shaped content",
     });
   }
-  if (!Value.Check(taskStateSchema, parsed)) {
+  const state = parsed as AuthoritativeTaskState;
+  if (!Value.Check(schema, parsed) || containsContradictoryCompletionEvidence(state)) {
     return failure({
       kind: "validation",
       scope: "task",

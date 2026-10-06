@@ -296,6 +296,107 @@ describe("durable completion authority public path", () => {
     },
   );
 
+
+  it("persists one bounded historical fact for authoritative changes_requested", async () => {
+    const harness = await createHarness();
+    await harness.recordValidation("pnpm test", true, "passed");
+    const before = await harness.state();
+    harness.setAdvisor({
+      kind: "verdict",
+      status: "changes_requested",
+      summary: "add a regression test",
+    });
+
+    await expectRefused(harness, "advisor_changes_requested", 1);
+    const settled = await harness.state();
+    expect(settled.revision).toBe(before.revision + 1);
+    expect("negativeReview" in settled && settled.negativeReview).toMatchObject({
+      outcome: "changes_requested",
+      candidateDigest: expect.any(String),
+      recordedAtMs: T0,
+      summary: "add a regression test",
+    });
+    expect(settled.completionEvidence).toBeNull();
+    expect(settled.status).toBe("running");
+  });
+
+  it("records nothing when the lease is lost during a changes_requested review", async () => {
+    const harness = await createHarness();
+    await harness.recordValidation("pnpm test", true, "passed");
+    const before = await harness.state();
+    harness.setAdvisor({
+      kind: "verdict",
+      status: "changes_requested",
+      afterReview: async () => {
+        harness.clock.now += 2_000;
+        const acquired = await harness.store.acquireLease(harness.runtime.controller.taskId, 1_000);
+        expect(acquired.ok).toBe(true);
+      },
+    });
+    await expectRefused(harness, "lease_conflict", 1);
+    const settled = await harness.state();
+    expect(settled.revision).toBe(before.revision);
+    expect("negativeReview" in settled ? settled.negativeReview : undefined).toBeFalsy();
+  });
+
+  it("never overwrites an existing settled negative review", async () => {
+    const harness = await createHarness();
+    await harness.recordValidation("pnpm test", true, "passed");
+    await replaceState(harness.store, () => ({
+      negativeReview: {
+        outcome: "changes_requested",
+        candidateDigest: "candidate-original",
+        recordedAtMs: T0 - 1_000,
+        summary: "original verdict",
+      },
+    }));
+    const before = await harness.state();
+    harness.setAdvisor({ kind: "verdict", status: "changes_requested", summary: "second verdict" });
+    await expectRefused(harness, "advisor_changes_requested", 1);
+    const settled = await harness.state();
+    expect(settled.revision).toBe(before.revision);
+    expect("negativeReview" in settled ? settled.negativeReview : undefined).toMatchObject({
+      candidateDigest: "candidate-original",
+      summary: "original verdict",
+    });
+  });
+
+  it("still records the reviewed candidate when only the workspace drifts after review", async () => {
+    const harness = await createHarness();
+    await harness.recordValidation("pnpm test", true, "passed");
+    const before = await harness.state();
+    harness.setAdvisor({
+      kind: "verdict",
+      status: "changes_requested",
+      summary: "tighten the error handling",
+      afterReview: async () => {
+        writeFileSync(join(harness.workspace, "owned.txt"), "changed during review\n", "utf8");
+      },
+    });
+    await expectRefused(harness, "advisor_changes_requested", 1);
+    const settled = await harness.state();
+    expect(settled.revision).toBe(before.revision + 1);
+    expect("negativeReview" in settled ? settled.negativeReview : undefined).toMatchObject({
+      outcome: "changes_requested",
+      candidateDigest: expect.any(String),
+      summary: "tighten the error handling",
+    });
+  });
+
+  it("sanitizes secrets, absolute paths, and control characters in the recorded summary", async () => {
+    const harness = await createHarness();
+    await harness.recordValidation("pnpm test", true, "passed");
+    const hostile = `fix /etc/passwd quoting, rotate sk-abcdefghijklmnop, ring \u0007 bell`;
+    harness.setAdvisor({ kind: "verdict", status: "changes_requested", summary: hostile });
+    await expectRefused(harness, "advisor_changes_requested", 1);
+    const settled = await harness.state();
+    const record = "negativeReview" in settled ? settled.negativeReview : undefined;
+    expect(record).toBeDefined();
+    if (record === undefined || record === null) throw new Error("expected a recorded negative review");
+    expect(record.summary).not.toContain("sk-abcdefghijklmnop");
+    expect(record.summary).not.toContain("/etc/passwd");
+    expect(record.summary).not.toContain("\u0007");
+  });
   it("returns advisor_invalid for malformed strict Advisor output", async () => {
     const harness = await createHarness();
     await harness.recordValidation("pnpm test", true, "passed");

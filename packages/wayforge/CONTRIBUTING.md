@@ -112,6 +112,12 @@ must traverse. An outcome can name a prerequisite without hiding the final scope
 - Use `wayforge_tasks` and `wayforge_task_status {taskId}` for sanitized,
   read-only history. Successful acceptance requires `completed` and
   `completion.authoritative: true`, not merely an approving runtime message.
+- A settled negative review appears in `wayforge_task_status` detail as
+  `negativeReview`: one bounded, sanitized, non-authorizing historical fact
+  binding the reviewed candidate. Treat its absence as **unknown** — a legacy
+  record or an unsettled task — never as proof that no review happened. It
+  never means a review allowance is exhausted: correct the work and start a
+  new governed task. `wayforge_tasks` stays compact and does not list it.
 - Completion does not imply a Git commit. Follow the authorized repository Git
   workflow; do not amend/rewrite/push history without explicit authorization.
 
@@ -184,7 +190,7 @@ that accepted result; documentation freeze does not claim a new provider run.
 | Print-mode process lifetime does not retain extension-triggered execution | **UX friction:** unsupported for governed U1; use persistent TUI/RPC. Not a permanent ban. |
 | `turn_end could not resolve the persisted assistant entry ID` on aborted teardown | **Bug (observed, root cause unconfirmed):** candidate Pi boundary defect; requires independent reproduction/triage, not a claimed Wayforge fix. |
 | RPC `follow_up` queued after settle without restarting work in the acceptance driver | **UX friction / harness behavior:** use explicit idle-aware lifecycle/prompt control; queue semantics need reproduction, not assumed universal behavior. |
-| Negative authoritative Advisor findings unavailable through historical status projection | **UX friction:** history proves authority/status but does not yet expose these findings; do not infer them from status alone. |
+| Negative authoritative Advisor findings unavailable through historical status projection | **Partially resolved (U2-H1):** settled `changes_requested` outcomes are now exposed through `wayforge_task_status` as one bounded non-authorizing historical fact (`negativeReview`); approval remains in `completion`, and unrecorded outcomes must still not be inferred from status alone. |
 | No automatic workspace fencing; concurrent operator edits contaminated a candidate | **UX friction:** enforce exclusive-workspace U1 protocol. Advisor correctly rejected scope creep; no fencing capability is claimed. |
 | Alpha 1 gate resolves package-relative paths against cwd | **U2 limitation:** run it from `packages/wayforge`; portability improvement deferred. |
 | No transparent cross-session governed Main resume | **Expected limitation:** retain process lifetime or start a new governed lifecycle; existing suspension/continuation machinery is not general Main-session resume. |

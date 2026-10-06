@@ -28,6 +28,12 @@ export interface DurableCompletionView {
   readonly completedAtMs?: number;
 }
 
+export interface DurableNegativeReviewView {
+  readonly outcome: "changes_requested";
+  readonly recordedAtMs: number;
+  readonly summary: string;
+}
+
 export interface DurableTaskSummary {
   readonly source: "durable";
   readonly taskId: string;
@@ -46,6 +52,7 @@ export interface DurableTaskDetail extends DurableTaskSummary {
   readonly currentPhase: string;
   readonly unresolvedCount: number;
   readonly lastFailure?: { readonly kind: string; readonly code: string };
+  readonly negativeReview?: DurableNegativeReviewView;
 }
 
 function nextActionFor(state: AuthoritativeTaskState): string {
@@ -86,6 +93,21 @@ function completionView(state: AuthoritativeTaskState): DurableCompletionView | 
   return { authoritative: false };
 }
 
+/**
+ * Historical, non-authorizing negative-review fact. Absence is unknown
+ * (legacy record or never settled) and is rendered as no field at all.
+ */
+function negativeReviewView(state: AuthoritativeTaskState): DurableNegativeReviewView | undefined {
+  if (!("negativeReview" in state)) return undefined;
+  const record = state.negativeReview;
+  if (record === undefined || record === null) return undefined;
+  return {
+    outcome: record.outcome,
+    recordedAtMs: record.recordedAtMs,
+    summary: record.summary,
+  };
+}
+
 function summaryOf(state: AuthoritativeTaskState): DurableTaskSummary {
   const suspension = suspensionView(state);
   const completion = completionView(state);
@@ -106,14 +128,19 @@ function summaryOf(state: AuthoritativeTaskState): DurableTaskSummary {
 function detailOf(state: AuthoritativeTaskState): DurableTaskDetail {
   const summary = summaryOf(state);
   const lastFailure = state.lastFailure;
+  const negativeReview = negativeReviewView(state);
   return {
     ...summary,
+    ...(negativeReview !== undefined && state.status !== "completed"
+      ? { nextAction: "correct the work and start a new governed task" }
+      : {}),
     completionCriteria: state.completionCriteria.slice(0, OBJECTIVE_EXCERPT_LIMIT),
     currentPhase: state.currentPhase,
     unresolvedCount: state.unresolvedItems.length,
     ...(lastFailure !== null
       ? { lastFailure: { kind: lastFailure.kind, code: lastFailure.code } }
       : {}),
+    ...(negativeReview !== undefined ? { negativeReview } : {}),
   };
 }
 

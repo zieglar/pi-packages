@@ -17,7 +17,7 @@ import {
 
 const base = durableTaskFixture({ taskId: "task-1", revision: 3, status: "running" });
 
-describe("authoritative durable state schema v2", () => {
+describe("authoritative durable task state codec", () => {
   it("round-trips deterministically with stable key ordering", () => {
     const state = validTaskState(base);
     const first = serializeTaskState(state);
@@ -415,6 +415,70 @@ describe("authoritative durable state schema v2", () => {
     } as never;
     expect(() => serializeTaskState(constructed)).toThrow();
   });
+  it("reads legacy v2 records while accepting a versioned changes-requested history record", () => {
+    const legacy = JSON.stringify({ ...base, schemaVersion: 2 });
+    expect(deserializeTaskState(legacy)).toMatchObject({ ok: true });
+
+    const versioned = JSON.stringify({
+      ...base,
+      schemaVersion: 3,
+      negativeReview: {
+        outcome: "changes_requested",
+        candidateDigest: "candidate-c1",
+        recordedAtMs: 2_000,
+        summary: "correct the missing validation",
+      },
+    });
+    const parsed = deserializeTaskState(versioned);
+    expect(parsed).toMatchObject({
+      ok: true,
+      value: {
+        schemaVersion: 3,
+        negativeReview: {
+          outcome: "changes_requested",
+          candidateDigest: "candidate-c1",
+          recordedAtMs: 2_000,
+          summary: "correct the missing validation",
+        },
+      },
+    });
+  });
+
+  it("rejects records carrying both completion and negative-review evidence", () => {
+    const contradictory = JSON.stringify({
+      ...base,
+      schemaVersion: DURABLE_TASK_STATE_VERSION,
+      completionEvidence: {
+        authority: "completion_authority_v1",
+        candidateDigest: "candidate-c1",
+        authoritativeRevision: 4,
+        workspaceDigest: "workspace-digest-1",
+        validationEvidenceIds: ["validation:pnpm-test"],
+        validationEvidenceDigest: "validation-digest-1",
+        advisor: {
+          invocationId: "invocation-1",
+          routeId: "route-1",
+          status: "approve",
+          verdictDigest: "verdict-digest-1",
+          summary: "approved",
+        },
+        completedAtMs: 2_000,
+        leaseGeneration: 1,
+        summary: "completed",
+      },
+      negativeReview: {
+        outcome: "changes_requested",
+        candidateDigest: "candidate-c1",
+        recordedAtMs: 2_000,
+        summary: "correct the work",
+      },
+    });
+    const result = deserializeTaskState(contradictory);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.failure.code).toBe("schema_violation");
+  });
+
 });
 
 describe("bounded state construction", () => {

@@ -144,6 +144,19 @@ a corrected workspace must enter a **new governed task/candidate lifecycle**.
 It is not retryable; `completion_review_spent` must not be bypassed. Invalid,
 unable, or provider-failed reviews do not replenish the claim either.
 
+A settled `changes_requested` verdict is additionally preserved as exactly one
+**non-authorizing durable historical fact** (`negativeReview`, durable schema
+generation 3): outcome, candidate digest, record time, and a bounded sanitized
+summary. It binds the reviewed completion candidate — later workspace drift
+does not erase the judgment — is written at most once by the Completion
+Authority inside the completion path under lease and revision fencing, and
+never authorizes, blocks, or spends anything by itself. It carries **no
+review-allowance semantics**: absence is unknown (legacy generation or never
+settled), never proof that no review happened, and inspection guidance stays
+"correct the work and start a new governed task" — never an allowance
+exhaustion claim. Durable review-allowance enforcement across restarts remains
+out of scope (decision E0/A0).
+
 Preserve Contract A's bounded logical allowance (800, capped by the parent),
 high reasoning, reserved review capacity, and post-generation overdraw semantics:
 overdraw does not invalidate an otherwise valid verdict. Governed manual advice
@@ -172,6 +185,8 @@ sanitized workflow authority/evidence justified by the owning schema:
 - policy versions and safe checkpoint/work/recovery state;
 - workspace identity/digests/write-set metadata, not file contents;
 - workspace-bound validation evidence and authoritative completion evidence;
+- one settled non-authorizing negative-review fact (`changes_requested` only),
+  candidate-bound and mutually exclusive with completion evidence;
 - bounded sanitized failure summaries and approved safe route representations.
 
 Do not persist credentials, tokens, cookies, authorization headers, unsafe raw
@@ -186,6 +201,18 @@ rejection. It allows workspace roots and optional sanitized `accountKey`
 provenance internally; that is not permission to expose them. Secret detection
 is a guard, not a proof that arbitrary text is safe. Producers must minimize and
 sanitize; schema presence alone does not justify a new privacy exposure.
+
+The negative-review fact follows the same boundary: only `changes_requested`
+outcomes are recorded (approval lives in completion evidence; abstention,
+invalid output, provider failure, and cancellation are not negative judgment),
+the summary is bounded (1,000 characters) and stripped of secret material,
+absolute paths, and control characters before persistence, the record is
+write-once and mutually exclusive with `completionEvidence` at the codec level,
+and it survives cancellation and startup reconciliation as historical fact.
+Sole writer ownership is enforced by architecture gate 20 in
+[check-architecture.mjs](scripts/check-architecture.mjs); legacy generation-2
+records remain readable and upgrade lazily only through an otherwise valid
+authoritative write.
 
 The [historical inspection projection](src/durable/inspection.ts) separately
 omits workspace paths, account identifiers (including `accountKey`), originating
