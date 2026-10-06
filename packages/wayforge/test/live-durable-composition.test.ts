@@ -197,7 +197,7 @@ describe("live durable composition", () => {
     expect(loaded.ok && loaded.value?.status).toBe("cancelled");
   });
 
-  it("allocates a distinct durable task after restart without projecting into the prior task", async () => {
+  it("reconciles the prior running task and allocates a distinct durable task after restart", async () => {
     const harness = liveHarness();
     const workspace = createWorkspace();
     const first = harness.host(workspace);
@@ -213,8 +213,15 @@ describe("live durable composition", () => {
     const secondRuntime = await second.runtime;
     expect(secondRuntime.controller.taskId).not.toBe(firstRuntime.controller.taskId);
     await second.host.emitLifecycle("session_shutdown");
-    await pollStore(harness.storeRoot, () => true);
-    expect(await store.load(firstRuntime.controller.taskId)).toEqual(original);
+    await pollStore(harness.storeRoot, (state) => state.status === "blocked");
+    // Phase B2: the prior execution's running task is reconciled at the new
+    // session's startup scan — blocked with an interruption reason, never
+    // silently orphaned — while the new task stays distinct.
+    const reconciled = await store.load(firstRuntime.controller.taskId);
+    if (!reconciled.ok || reconciled.value === null) throw new Error("prior task missing");
+    expect(reconciled.value.status).toBe("blocked");
+    expect(reconciled.value.lastFailure?.code).toBe("interrupted_execution");
+    expect(reconciled.value?.objective).toBe(original.ok ? original.value?.objective : undefined);
     const listed = await store.list();
     expect(listed.ok && listed.value.length).toBe(2);
   });

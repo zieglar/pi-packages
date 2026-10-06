@@ -161,6 +161,7 @@ async function startWorkflow(
     mainModel: new MainModelController(adapter),
     nestedRuntime: adapter,
     ...(completionAuthority !== undefined ? { completionAuthority } : {}),
+    ...(state.projection !== undefined ? { durableUnresolved: state.projection } : {}),
     // The first event fires synchronously inside createWorkflowRuntime, before
     // `runtime` is assigned; the status writer therefore goes through a mutable
     // controller reference attached right after construction.
@@ -337,11 +338,20 @@ function startDurableExecution(
   state.startupScanStarted = true;
   const scanner = state.durable.scanner;
   void scanner
-    .scan()
+    .scan({
+      // Never reconcile a task owned by THIS process's live runtime.
+      isOwnedTask: (id) => state.runtime !== undefined && state.runtime.controller.taskId === id,
+    })
     .then((scanned) => {
       if (!scanned.ok) {
         ctx.ui.notify(`Wayforge startup recovery failed: ${scanned.failure.code}`, "error");
         return;
+      }
+      if (scanned.value.reconciled > 0) {
+        ctx.ui.notify(
+          `Wayforge startup reconciliation marked ${scanned.value.reconciled} running task(s) from a previous execution as blocked (interrupted_execution).`,
+          "info",
+        );
       }
       if (scanned.value.processed > 0) {
         ctx.ui.notify(

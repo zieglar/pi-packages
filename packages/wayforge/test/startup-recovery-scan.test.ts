@@ -25,7 +25,7 @@ function suspended(id: string, nextCheckAtMs = 1_000) {
 }
 
 describe("StartupRecoveryScanner", () => {
-  it("starts only due suspended tasks and remains idempotent across repeated scans", async () => {
+  it("starts only due suspended tasks and reconciles stale running tasks", async () => {
     const now = 1_000;
     const store = new InMemoryTaskStore({ now: () => now });
     const launch = vi.fn<ContinuationLauncher["launch"]>(async () => success({ invocationId: invocationId("restart-invocation") }));
@@ -45,10 +45,18 @@ describe("StartupRecoveryScanner", () => {
     await store.create(populatedTaskState({ taskId: "task-running", revision: 0, leaseGeneration: 0, status: "running", suspension: null }));
     await store.create(populatedTaskState({ taskId: "task-completed", revision: 0, leaseGeneration: 0, status: "completed", suspension: null }));
 
-    expect(await scanner.scan()).toMatchObject({ ok: true, value: { discovered: 1, processed: 1 } });
-    expect(await scanner.scan()).toMatchObject({ ok: true, value: { discovered: 0, processed: 0 } });
+    expect(await scanner.scan()).toMatchObject({ ok: true, value: { discovered: 1, processed: 1, reconciled: 1 } });
+    // The resumed continuation ended without a terminal transition, so the
+    // next startup scan truthfully reconciles it too.
+    expect(await scanner.scan()).toMatchObject({ ok: true, value: { discovered: 0, processed: 0, reconciled: 1 } });
     expect(launch).toHaveBeenCalledTimes(1);
     const due = await store.load(taskId("task-due"));
-    expect(due.ok && due.value?.status).toBe("running");
+    if (!due.ok || due.value === null) throw new Error("task-due missing");
+    expect(due.value.status).toBe("blocked");
+    expect(due.value.lastFailure?.code).toBe("interrupted_execution");
+    const running = await store.load(taskId("task-running"));
+    if (!running.ok || running.value === null) throw new Error("task-running missing");
+    expect(running.value.status).toBe("blocked");
+    expect(running.value.lastFailure?.code).toBe("interrupted_execution");
   });
 });

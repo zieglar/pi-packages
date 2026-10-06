@@ -11,6 +11,18 @@ import type { TaskId } from "../types/identity.js";
 
 const RESCHEDULE_DELAY_MS = 30_000;
 
+
+/** Failures on which interruption reconciliation must lose safely. */
+const RECONCILE_LOSS_CODES: ReadonlySet<string> = new Set([
+  "stale_task_revision",
+  "lease_contended",
+  "lease_expired",
+  "lease_token_mismatch",
+  "lease_race",
+  "lease_corrupt",
+  "lease_missing",
+  "task_not_found",
+]);
 export interface WakeupScanResult {
   readonly scanned: number;
   readonly due: number;
@@ -60,6 +72,69 @@ export class WakeupService {
       if (result.value) processed += 1;
     }
     return success({ scanned: listed.value.length, due: dueStates.length, processed });
+  }
+
+  /**
+   * Reconcile durable `running` tasks left by a previous governed
+   * execution. Every graceful terminal path persists a terminal status, so
+   * a `running` task at a fresh startup scan belongs to an execution that
+   * ended without one. Transitions stay inside this service: lease,
+   * generation revalidation, revision CAS, fail-closed skip on contention.
+   * `isOwnedTask` excludes tasks owned by the current process.
+   */
+  async reconcileInterruptedRunning(
+    isOwnedTask?: (taskId: string) => boolean,
+  ): Promise<ExecutionResult<{ readonly reconciled: number }>> {
+    const listed = await this.options.store.list();
+    if (!listed.ok) return listed;
+    const stale = listed.value.filter(
+      (state) => state.status === "running" && isOwnedTask?.(String(state.taskId)) !== true,
+    );
+    let reconciled = 0;
+    for (const state of stale) {
+      const result = await this.reconcileOne(state.taskId as TaskId);
+      if (!result.ok) return result;
+      if (result.value) reconciled += 1;
+    }
+    return success({ reconciled });
+  }
+
+  private async reconcileOne(taskId: TaskId): Promise<ExecutionResult<boolean>> {
+    const claimed = await this.options.store.acquireLease(taskId, this.options.leaseTtlMs);
+    if (!claimed.ok) {
+      // An actively held lease means a live owner or concurrent reconciler:
+      // skip safely instead of interrupting.
+      if (claimed.failure.code === "lease_contended") return success(false);
+      return claimed;
+    }
+    const lease = claimed.value;
+    try {
+      const loaded = await this.options.store.load(taskId);
+      if (!loaded.ok) return loaded;
+      const state = loaded.value;
+      if (state === null || state.leaseGeneration !== lease.leaseGeneration || state.status !== "running") {
+        return success(false); // legitimately advanced or absent
+      }
+      const blocked: AuthoritativeTaskState = {
+        ...state,
+        status: "blocked",
+        lastFailure: taskFailure(
+          "interrupted_execution",
+          "previous governed execution ended before terminal state",
+        ),
+        revision: state.revision + 1,
+        updatedAtMs: this.options.now(),
+      };
+      const updated = await this.options.store.update(state.revision, blocked, lease);
+      if (!updated.ok) {
+        // Fencing/CAS conflict: another owner advanced the task; lose safely.
+        if (RECONCILE_LOSS_CODES.has(updated.failure.code)) return success(false);
+        return updated;
+      }
+      return success(true);
+    } finally {
+      await this.options.store.releaseLease(lease);
+    }
   }
 
   private isDue(state: AuthoritativeTaskState, nowMs: number): boolean {

@@ -18,7 +18,7 @@ import { capabilityId, invocationId, type TaskId } from "../types/identity.js";
 import type { ExecutionRoute } from "./contracts.js";
 import { WorkflowEventLog, type WorkflowEvent } from "./events.js";
 import { AdvisorTriggerPolicy } from "./advisor-trigger-policy.js";
-import { WorkflowController } from "./workflow-controller.js";
+import { WorkflowController, type DurableUnresolvedPort } from "./workflow-controller.js";
 import { WorkflowStateStore, type WorkflowTaskState } from "./workflow-state.js";
 
 export interface WorkflowRuntimeTaskInit {
@@ -45,6 +45,7 @@ export interface WorkflowRuntimeInput {
   readonly task: WorkflowRuntimeTaskInit;
   readonly mainModel: MainModelController;
   readonly nestedRuntime?: NestedModelRuntimePort;
+  readonly durableUnresolved?: DurableUnresolvedPort;
   readonly completionAuthority?: CompletionAuthorityPort;
   readonly onEvent?: (event: WorkflowEvent) => void;
   readonly config?: WorkflowRuntimeConfig;
@@ -141,6 +142,7 @@ export function createWorkflowRuntime(input: WorkflowRuntimeInput): WorkflowRunt
     routes: accountRoutes,
     workers: workerAdapter,
     ...(advisorAdapter !== undefined ? { advisors: advisorAdapter } : {}),
+    ...(input.durableUnresolved !== undefined ? { durableUnresolved: input.durableUnresolved } : {}),
     ...(input.completionAuthority !== undefined ? { completionAuthority: input.completionAuthority } : {}),
     recovery,
     mainModel: input.mainModel,

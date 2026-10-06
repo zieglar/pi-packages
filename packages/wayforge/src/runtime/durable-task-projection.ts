@@ -3,7 +3,7 @@ import { validTaskState, type AuthoritativeTaskState } from "../durable/state.js
 import { captureWorkspaceCheckpoint } from "../durable/workspace-checkpoint.js";
 import type { DurableSuspension } from "../recovery/suspension.js";
 import type { Failure } from "../types/result.js";
-import type { ExecutionResult } from "../types/result.js";
+import { failure, type ExecutionResult } from "../types/result.js";
 import type { TaskId } from "../types/identity.js";
 import type { WorkflowEvent } from "../workflow/events.js";
 
@@ -115,6 +115,51 @@ export class LiveDurableProjection {
       updatedAtMs: timestamp,
     });
     return this.store.create(state);
+  }
+
+  /**
+   * Authoritatively append unresolved worker-failure summaries to the
+   * durable task (revision CAS; sanitized 300-char items, bounded 50).
+   * Never mutates status; missing task or CAS conflict fails closed.
+   */
+  async recordUnresolved(input: {
+    readonly taskId: TaskId;
+    readonly items: readonly string[];
+  }): Promise<ExecutionResult<void>> {
+    const bounded = input.items
+      .map((item) => item.slice(0, 300))
+      .filter((item) => item.length > 0);
+    if (bounded.length === 0) return { ok: true, value: undefined };
+    const loaded = await this.store.load(input.taskId);
+    if (!loaded.ok) return loaded;
+    if (loaded.value === null) {
+      const missing: Failure = {
+        kind: "capability",
+        scope: "task",
+        confidence: "certain",
+        code: "state_conflict",
+        message: "durable task is missing; unresolved state cannot be bound",
+      };
+      this.lastFailure = missing;
+      return { ok: false, failure: missing };
+    }
+    const state = loaded.value;
+    const merged = [...state.unresolvedItems];
+    for (const item of bounded) {
+      if (!merged.includes(item)) merged.push(item);
+    }
+    const next: AuthoritativeTaskState = {
+      ...state,
+      unresolvedItems: merged.slice(-50),
+      revision: state.revision + 1,
+      updatedAtMs: this.now(),
+    };
+    const updated = await this.store.update(state.revision, next);
+    if (!updated.ok) {
+      this.lastFailure = updated.failure;
+      return updated;
+    }
+    return { ok: true, value: undefined };
   }
 
   /** Feed one live workflow event into the durable projection (ordered, non-throwing). */

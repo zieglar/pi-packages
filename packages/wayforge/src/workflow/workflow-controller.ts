@@ -8,7 +8,7 @@ import type { ModelDecision } from "../policy/model-policy.js";
 import type { RuntimeRecoveryExecutor, RecoveryStepResult } from "../recovery/runtime-recovery-executor.js";
 import type { ExecutionResult, Failure } from "../types/result.js";
 import { failure } from "../types/result.js";
-import type { InvocationId } from "../types/identity.js";
+import type { InvocationId, TaskId } from "../types/identity.js";
 import { invocationId } from "../types/identity.js";
 import type { ExecutionRoute, StructuredAdvisorVerdict, WorkerOutcome } from "./contracts.js";
 import { buildAdvisorEvidence, type AdvisorEvidence } from "./advisor-evidence.js";
@@ -26,6 +26,19 @@ export interface WorkerDelegationPort {
   executeMany(inputs: readonly WorkerExecutionInput[]): Promise<readonly WorkerOutcome[]>;
 }
 
+
+/**
+ * Authoritative durable sink for unresolved worker failures. Binding must
+ * succeed before the delegation result is accepted: completion readiness
+ * consumes durable unresolved items, so an ephemeral-only failure would
+ * silently vanish from governed completion truth.
+ */
+export interface DurableUnresolvedPort {
+  recordUnresolved(input: {
+    readonly taskId: TaskId;
+    readonly items: readonly string[];
+  }): Promise<ExecutionResult<void>>;
+}
 export interface AdvisorReviewPort {
   review(input: AdvisorReviewInput): Promise<ExecutionResult<AdvisorReviewOutcome>>;
 }
@@ -44,6 +57,7 @@ export interface WorkflowControllerOptions {
   readonly routes: PassiveAccountAdapter;
   readonly workers?: WorkerDelegationPort;
   readonly advisors?: AdvisorReviewPort;
+  readonly durableUnresolved?: DurableUnresolvedPort;
   readonly completionAuthority?: CompletionAuthorityPort;
   readonly recovery: RuntimeRecoveryExecutor;
   readonly mainModel: MainModelController;
@@ -173,6 +187,7 @@ export class WorkflowController {
     });
 
     this.options.state.beginGovernedWork();
+    const unresolvedSummaries: string[] = [];
     let outcomes: readonly WorkerOutcome[];
     try {
       outcomes = await workers.executeMany(inputs);
@@ -193,10 +208,11 @@ export class WorkflowController {
         continue;
       }
       if (outcome.failure !== undefined) this.failures.push(outcome.failure);
-      this.options.state.addUnresolved(
+      const summary =
         `worker ${outcome.invocationId} ended ${outcome.status}` +
-          (outcome.failure !== undefined ? `: ${outcome.failure.code}` : ""),
-      );
+          (outcome.failure !== undefined ? `: ${outcome.failure.code}` : "");
+      this.options.state.addUnresolved(summary);
+      unresolvedSummaries.push(summary);
       if (recovery === undefined && outcome.failure !== undefined) {
         const snapshot = this.options.state.snapshot();
         recovery = this.options.recovery.plan({
@@ -207,6 +223,25 @@ export class WorkflowController {
           failedInvocationId: outcome.invocationId,
         });
         this.options.state.setRecoveryBudget(recovery.budgetAfter);
+      }
+    }
+    // Bind unresolved worker failures to authoritative durable state BEFORE
+    // the delegation result is accepted: readiness consumes durable
+    // unresolved items, so an unbound failure must fail closed here.
+    if (unresolvedSummaries.length > 0) {
+      const binding = this.options.durableUnresolved;
+      if (binding !== undefined) {
+        const bound = await binding.recordUnresolved({ taskId: this.taskId, items: unresolvedSummaries });
+        if (!bound.ok) {
+          return failure({
+            kind: "capability",
+            scope: "task",
+            confidence: "certain",
+            code: "unresolved_binding_failed",
+            message:
+              "worker failure could not be bound to authoritative durable state; the delegation result is not authoritative",
+          });
+        }
       }
     }
     this.options.log.emit("worker_finished", {

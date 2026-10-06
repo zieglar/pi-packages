@@ -7,6 +7,7 @@ import { WakeupService } from "./wakeup-service.js";
 export interface StartupScanResult {
   readonly discovered: number;
   readonly processed: number;
+  readonly reconciled: number;
 }
 
 /**
@@ -21,16 +22,22 @@ export class StartupRecoveryScanner {
     private readonly now: () => number = () => Date.now(),
   ) {}
 
-  async scan(): Promise<ExecutionResult<StartupScanResult>> {
+  async scan(options?: { readonly isOwnedTask?: (taskId: string) => boolean }): Promise<ExecutionResult<StartupScanResult>> {
+    // Reconcile previous-execution running tasks FIRST: wakeup continuations
+    // launched later in this same scan must never be self-interrupted.
+    const reconciled = await this.wakeup.reconcileInterruptedRunning(options?.isOwnedTask);
+    if (!reconciled.ok) return reconciled;
     const listed = await this.store.list();
     if (!listed.ok) return listed;
     const nowMs = this.now();
     const discovered = listed.value.filter((state) => this.isResumableDue(state, nowMs)).length;
-    if (discovered === 0) return success({ discovered: 0, processed: 0 });
+    if (discovered === 0) {
+      return success({ discovered: 0, processed: 0, reconciled: reconciled.value.reconciled });
+    }
 
     const woke = await this.wakeup.scanDueTasks();
     if (!woke.ok) return woke;
-    return success({ discovered, processed: woke.value.processed });
+    return success({ discovered, processed: woke.value.processed, reconciled: reconciled.value.reconciled });
   }
 
   private isResumableDue(state: AuthoritativeTaskState, nowMs: number): boolean {

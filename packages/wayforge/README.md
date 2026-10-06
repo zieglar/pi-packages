@@ -120,10 +120,16 @@ instructions. `completion_gate_failed` means a latest validation is failing or
 no approving advisor verdict exists yet.
 
 **General** — `wayforge_task_status` shows the sanitized snapshot (status,
-children, budget, validations, verdicts) at any point. `recovery_blocked` /
+children, budget, validations, verdicts) at any point; with a `taskId` it
+inspects one historical durable task, and `wayforge_tasks` lists all of them
+(newest activity first, read-only). `recovery_blocked` /
 `recovery_suspended` mean the deterministic recovery budget is exhausted or a
 reset-bearing limit fired; both are terminal for the task by design. If Pi
-exits, the in-process task is gone — there is no resume.
+exits mid-task, the durable record stays `running`; the next session's
+startup scan reconciles it to `blocked` (`interrupted_execution`) under a
+fenced lease, and unresolved worker failures are bound durably so they
+always block completion. There is still no resume: start a new task
+deliberately.
 
 ## Verification
 
