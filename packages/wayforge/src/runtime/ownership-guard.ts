@@ -47,6 +47,7 @@ export const WAYFORGE_TOOL_NAMES: readonly string[] = [
   "wayforge_record_validation",
   "wayforge_complete",
   "wayforge_cancel",
+  "wayforge_tasks",
 ];
 
 export const WAYFORGE_COMMAND_NAME = "wayforge";

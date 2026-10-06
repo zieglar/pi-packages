@@ -19,6 +19,8 @@ interface WayforgeExtensionState {
   durable?: DurableExecution;
   projection?: LiveDurableProjection;
   startupScanStarted?: boolean;
+  /** Stable sanitized reason code when durable authority failed to initialize. */
+  durableUnavailable?: string;
 }
 
 /** Durable-composition overrides for isolated profiles and deterministic tests. */
@@ -36,6 +38,8 @@ export interface WayforgeExtensionDurableOverrides {
 export interface WayforgeExtensionOverrides {
   readonly durable?: WayforgeExtensionDurableOverrides;
   readonly observeRuntime?: (runtime: WorkflowRuntime | undefined) => void;
+  /** Replaces the durable composition root entirely (isolated profiles, tests). */
+  readonly durableFactory?: () => DurableExecution;
 }
 const DEFAULT_CRITERIA = "all recorded validations pass and the before-done advisor approves";
 
@@ -201,6 +205,8 @@ function wayforgeExtensionBody(
   for (const tool of createWayforgeTools({
     getRuntime: () => state.runtime,
     getGuardFailures: () => state.guardFailures,
+    getDurableStore: () => state.durable?.store,
+    getGovernedUnavailable: () => state.durableUnavailable,
   })) {
     pi.registerTool(tool);
   }
@@ -211,6 +217,14 @@ function wayforgeExtensionBody(
       if (state.guardFailures !== undefined) {
         ctx.ui.notify(
           `Wayforge is disabled: the ownership guard failed closed.\n${state.guardFailures.join("\n")}`,
+          "error",
+        );
+        return;
+      }
+      if (state.durable === undefined || state.durableUnavailable !== undefined) {
+        ctx.ui.notify(
+          `Wayforge governed execution is unavailable (${state.durableUnavailable ?? "durable_authority_unavailable"}): ` +
+            "durable task authority could not be initialized. No governed task was started.",
           "error",
         );
         return;
@@ -241,6 +255,7 @@ function wayforgeExtensionBody(
           "- wayforge_record_validation: record each validation command result",
           "- wayforge_advise: advisor review (beforeDone gates completion)",
           "- wayforge_task_status: sanitized snapshot",
+          "- wayforge_tasks: sanitized historical durable task list (read-only)",
           "- wayforge_complete / wayforge_cancel",
           "Completion requires passing validations and an approving advisor verdict.",
         ].join("\n"),
@@ -297,18 +312,23 @@ function startDurableExecution(
 ): void {
   if (state.durable === undefined) {
     try {
-      const durable = createDurableExecution({
-        cwd: ctx.cwd,
-        ...(overrides.durable ?? {}),
-      });
+      const durable = overrides.durableFactory !== undefined
+        ? overrides.durableFactory()
+        : createDurableExecution({
+            cwd: ctx.cwd,
+            ...(overrides.durable ?? {}),
+          });
       state.durable = durable;
       state.projection = new LiveDurableProjection(durable.store, {
         ...(overrides.durable?.now !== undefined ? { now: overrides.durable.now } : {}),
       });
+      delete state.durableUnavailable;
     } catch {
+      state.durableUnavailable = "durable_authority_unavailable";
       ctx.ui.notify(
-        "Wayforge durable execution is unavailable in this environment; workflows continue Alpha 0 only.",
-        "warning",
+        "Wayforge governed execution is unavailable: durable task authority could not be initialized. " +
+        "Governed /wayforge start is disabled for this session; historical durable inspection is unavailable.",
+        "error",
       );
       return;
     }

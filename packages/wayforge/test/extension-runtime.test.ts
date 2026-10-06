@@ -14,7 +14,7 @@ import {
   SUBAGENT_DELEGATION_RESPONSE_EVENT,
   type SubagentDelegationRequest,
 } from "pi-subagents/delegation";
-import { wayforgeExtension } from "../src/extension.js";
+import { createWayforgeExtension, wayforgeExtension } from "../src/extension.js";
 
 // The extension constructs its disk sink at factory time from
 // PI_CODING_AGENT_DIR; every test gets an isolated temp agent dir so the
@@ -71,7 +71,10 @@ interface RegisteredCommand {
   handler: (args: string, ctx: ExtensionContext) => Promise<void>;
 }
 
-function makeHarness(externalTools: { name: string; source: string }[] = []) {
+function makeHarness(
+  externalTools: { name: string; source: string }[] = [],
+  extensionFactory: typeof wayforgeExtension = wayforgeExtension,
+) {
   const tools: ToolDefinition[] = [];
   const commands = new Map<string, RegisteredCommand>();
   const listeners = new Map<string, Array<(event: never, ctx: ExtensionContext) => void>>();
@@ -154,12 +157,12 @@ function makeHarness(externalTools: { name: string; source: string }[] = []) {
   const runTool = async (name: string, params: Record<string, unknown>) =>
     tool(name).execute(`call-${name}`, params as never, undefined, undefined, ctx as never);
 
-  wayforgeExtension(pi);
+  extensionFactory(pi);
   return { tools, commands, fire, tool, runTool, notify, sendUserMessage, setModel, ctx };
 }
 
 describe("wayforgeExtension runtime", () => {
-  it("registers the six tools and /wayforge, and stays open on a clean session", async () => {
+  it("registers the seven tools and /wayforge, and stays open on a clean session", async () => {
     const h = makeHarness();
     expect(h.tools.map((tool) => tool.name).sort()).toEqual([
       "wayforge_advise",
@@ -168,6 +171,7 @@ describe("wayforgeExtension runtime", () => {
       "wayforge_delegate_workers",
       "wayforge_record_validation",
       "wayforge_task_status",
+      "wayforge_tasks",
     ]);
     expect(h.commands.has("wayforge")).toBe(true);
     await h.fire("session_start");
@@ -242,5 +246,18 @@ describe("wayforgeExtension runtime", () => {
     await h.commands.get("wayforge")?.handler("   ", h.ctx);
     expect(h.notify).toHaveBeenCalledWith("Usage: /wayforge <objective>", "warning");
     expect(h.setModel).not.toHaveBeenCalled();
+  });
+  it("refuses governed start when durable authority is unavailable while durable diagnostics remain usable", async () => {
+    const h = makeHarness([], createWayforgeExtension({
+      durableFactory: () => { throw new Error("private filesystem failure"); },
+    }));
+    await h.fire("session_start");
+    await h.commands.get("wayforge")?.handler("change a file", h.ctx);
+    expect(h.sendUserMessage).not.toHaveBeenCalled();
+    expect(h.tools.map((tool) => tool.name)).toContain("wayforge_tasks");
+    const tasks = await h.runTool("wayforge_tasks", {});
+    expect(tasks.isError).toBe(true);
+    expect(JSON.stringify(tasks.content)).toContain("governed_execution_unavailable");
+    expect(JSON.stringify(tasks.content)).not.toContain("private filesystem failure");
   });
 });
