@@ -7,7 +7,8 @@
  */
 import { Value } from "@sinclair/typebox/value";
 import { canonicalDigest } from "../protocol/idempotency.js";
-import type { ExchangeAuthority } from "../protocol/capabilities.js";
+import type { AuthorizationContext, AuthorizationScope } from "../protocol/capabilities.js";
+import { assertAuthorized } from "./authorization.js";
 import {
   type DeliveryAttempt,
   type Exchange,
@@ -96,15 +97,17 @@ export class InvalidResultError extends Error {
 }
 
 /**
- * Evidence guard presented by the mutating side. `attempt` carries the
- * recorded dispatch evidence and its recorded lease; `lease` is the guard's
- * lease claim, which must match the recorded one. `reconciliation` is
- * required for every quarantined-state exit.
+ * Evidence guard loaded by the authenticated host, not accepted from an adapter.
+ * `attempt` carries recorded dispatch evidence and lease; when lease proof is
+ * required, the guard's `lease` must match that recorded claim exactly.
+ * `reconciliation` is required for every quarantined-state exit.
  */
 export interface TransitionGuard {
-  readonly authority: ExchangeAuthority;
+  /** Trusted authenticated-host context, never supplied as credentials by an adapter. */
+  readonly authorization: AuthorizationContext;
   readonly now: string;
-  readonly lease: Lease;
+  /** Absent for request-only moves; mandatory validated evidence for attempt-backed moves. */
+  readonly lease?: Lease;
   /** Authoritative latest claim loaded by the host transaction, not adapter input. */
   readonly currentLease?: Lease;
   /** Authoritative administrative disposition loaded by the host transaction. */
@@ -134,7 +137,7 @@ export function assertMessageTransition(
   if (!Number.isFinite(Date.parse(guard.now))) {
     throw new TransitionEvidenceError(message.state, to, "invalid observation time");
   }
-  assertAuthority(requirement, guard, message.state, to);
+  assertTransitionAuthorization(requirement, guard, message, to);
   if (message.state === "QUEUED" && to === "CANCELLED" && guard.attempt !== undefined && (
     !Value.Check(DeliveryAttemptSchema, guard.attempt) ||
     guard.attempt.messageId !== message.messageId || !deepEqual(guard.attempt.endpoint, message.to) ||
@@ -150,18 +153,31 @@ export function assertMessageTransition(
   return to;
 }
 
-function assertAuthority(
+function assertTransitionAuthorization(
   requirement: TransitionRequirement,
   guard: TransitionGuard,
-  from: MessageState,
+  message: Pick<Message, "messageId" | "exchangeId" | "to" | "state">,
   to: MessageState,
 ): void {
-  if (requirement.authority !== "any" && requirement.authority !== guard.authority) {
-    throw new TransitionEvidenceError(
-      from,
-      to,
-      `authority "${guard.authority}" may not perform this transition (requires "${requirement.authority}")`,
-    );
+  const actions = [...requirement.actions];
+  if (requirement.evidence === "cancel_confirmed" && guard.attempt?.dispatch === "started") {
+    actions.push("settlement_report");
+  }
+  for (const action of actions) {
+    let scope: AuthorizationScope;
+    if (action === "exchange_send") {
+      scope = { kind: "exchange", exchangeId: message.exchangeId };
+    } else if (action === "exchange_cancel") {
+      scope = { kind: "message", exchangeId: message.exchangeId, messageId: message.messageId };
+    } else if (action === "message_claim") {
+      scope = { kind: "destination", exchangeId: message.exchangeId, messageId: message.messageId, endpoint: message.to };
+    } else {
+      if (guard.attempt === undefined || !Value.Check(DeliveryAttemptSchema, guard.attempt)) throw new TransitionEvidenceError(message.state, to, "a valid correlated delivery attempt is required");
+      scope = { kind: "attempt", exchangeId: message.exchangeId, messageId: message.messageId, attemptId: guard.attempt.attemptId, endpoint: message.to };
+    }
+    try { assertAuthorized(guard.authorization, action, scope); } catch {
+      throw new TransitionEvidenceError(message.state, to, `scoped authorization required: ${action}`);
+    }
   }
 }
 
@@ -352,11 +368,13 @@ export function archiveUnresolvedExchange(
   messages: readonly Message[],
   attempts: readonly DeliveryAttempt[],
   intent: DispositionIntent,
-  authority: ExchangeAuthority,
+  authorization: AuthorizationContext,
   existing?: ExchangeDisposition,
 ): ExchangeDisposition {
   const reject = (detail: string): never => { throw new ExchangeDispositionError(detail); };
-  if (authority !== "client") reject("administrative owner authority is required");
+  try {
+    assertAuthorized(authorization, "exchange_archive", { kind: "owner", exchangeId: exchange.exchangeId, ownerId: intent.ownerId });
+  } catch { reject("scoped administrative owner authorization is required"); }
   if (!Value.Check(ExchangeSchema, exchange) || exchange.state !== "OPEN") reject("exchange must be open");
   const seenMessages = new Set<string>();
   for (const message of messages) {
@@ -417,8 +435,8 @@ function assertDispositionShape(disposition: ExchangeDisposition): void {
 }
 
 /**
- * Explicitly close an open exchange. Legal only for the owning client
- * authority, and only when EVERY message of the exchange is finished
+ * Explicitly close an open exchange with a scoped owner close grant,
+ * and only when EVERY message of the exchange is finished
  * (RESULT_AVAILABLE / CANCELLED / FAILED): nothing in flight, nothing
  * quarantined, no pending cancellation. Reading results never contributes to
  * closability. Returns a new closed exchange; the input is not mutated.
@@ -426,12 +444,14 @@ function assertDispositionShape(disposition: ExchangeDisposition): void {
 export function closeExchange(
   exchange: Exchange,
   messages: readonly Message[],
-  authority: ExchangeAuthority,
+  authorization: AuthorizationContext,
   disposition?: ExchangeDisposition,
 ): Exchange {
   assertNotArchived(exchange.exchangeId, disposition);
-  if (authority !== "client") {
-    throw new CloseRejectedError(`only the client authority may close an exchange (got "${authority}")`);
+  try {
+    assertAuthorized(authorization, "exchange_close", { kind: "owner", exchangeId: exchange.exchangeId, ownerId: authorization?.principalId });
+  } catch {
+    throw new CloseRejectedError("scoped owner close authorization is required");
   }
   if (exchange.state !== "OPEN") {
     throw new CloseRejectedError(`exchange ${exchange.exchangeId} is already ${exchange.state}`);
@@ -465,10 +485,15 @@ export function readResult(result: Result): Result {
 export function assertResultPublication(
   existing: Result | undefined,
   candidate: Result,
+  authorization: AuthorizationContext,
   disposition?: ExchangeDisposition,
 ): Result {
   assertNotArchived(candidate.exchangeId, disposition);
   assertResultShape(candidate);
+  assertAuthorized(authorization, "result_publish", {
+    kind: "attempt", exchangeId: candidate.exchangeId, messageId: candidate.messageId,
+    attemptId: candidate.attemptId, endpoint: candidate.source,
+  });
   if (existing === undefined) {
     return deepFreeze(clone(candidate)) as Result;
   }

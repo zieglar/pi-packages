@@ -6,18 +6,15 @@
  * declarations, dynamic import(), and require() calls) — not regexes — and
  * dependency direction is enforced TRANSITIVELY (through barrels):
  *
- *   protocol  <- core <- adapters <- bin      (arrows point at dependencies)
+ *   protocol <- core <- control/endpoints <- bin
  *
- * 1. src/protocol must never reach src/core or src/adapters.
- * 2. src/core must never reach src/adapters.
- * 3. src/adapters/mcp and src/adapters/pi must never reach each other.
- * 4. protocol and core stay adapter/product neutral: no MCP SDK imports, no
- *    product/adapter tokens (identifiers or string literals).
- * 5. No Pi-runtime coupling anywhere: src must not import @earendil-works/*.
- * 6. No environment access on the MCP surface (src/adapters/mcp, src/bin).
- * 7. The MCP surface stays strictly the ping smoke: no capability operation
- *    may appear there, and the ping tool is the only registered tool.
- * 8. Runtime dependencies must be exactly pinned (no semver ranges).
+ * 1. Protocol/core cannot reach outer layers or composition, transitively.
+ * 2. Control surfaces and endpoint integrations cannot reach each other.
+ * 3. One endpoint integration cannot depend on a different endpoint integration.
+ * 4. Protocol/core stay product-neutral and free of transport SDK dependencies.
+ * 5. Endpoint integrations cannot require MCP SDK; no runtime Pi coupling here.
+ * 6. MCP control/bin remain environment-free and strictly ping-only.
+ * 7. Runtime dependencies must be exactly pinned.
  *
  * Negative fixtures in scripts/fixtures/*.fixture.ts prove the gate REJECTS
  * violations (each fixture declares its role and must trigger >= 1 rule).
@@ -136,9 +133,11 @@ function reaches(fromPath, predicate, seen = new Set()) {
 
 const isProtocol = (path) => path.startsWith(join(srcRoot, "protocol"));
 const isCore = (path) => path.startsWith(join(srcRoot, "core"));
-const isAdapters = (path) => path.startsWith(join(srcRoot, "adapters"));
-const isMcp = (path) => path.startsWith(join(srcRoot, "adapters", "mcp"));
-const isPi = (path) => path.startsWith(join(srcRoot, "adapters", "pi"));
+const isControl = (path) => path.startsWith(join(srcRoot, "control") + "/");
+const isEndpoints = (path) => path.startsWith(join(srcRoot, "endpoints") + "/");
+const isBin = (path) => path.startsWith(join(srcRoot, "bin") + "/");
+const isOuter = (path) => isControl(path) || isEndpoints(path) || isBin(path);
+const isMcp = (path) => path.startsWith(join(srcRoot, "control", "mcp") + "/");
 
 function applyRules(file, bucket) {
   const label = relativePackage(file.path);
@@ -151,26 +150,34 @@ function applyRules(file, bucket) {
       push("protocol/core must not depend on the MCP SDK (adapter-neutral layers)");
     }
   }
-  if (file.envAccess.length > 0 && (isMcp(file.path) || file.roleDir === join(srcRoot, "adapters", "mcp") || file.roleDir === join(srcRoot, "bin"))) {
+  if (file.envAccess.length > 0 && (isMcp(file.path) || file.roleDir === join(srcRoot, "control", "mcp") || file.roleDir === join(srcRoot, "bin"))) {
     push("MCP surface must not access process.env");
   }
   if (isProtocol(file.path) || file.roleDir === join(srcRoot, "protocol")) {
-    if (reaches(file.path, (target) => isCore(target) || isAdapters(target))) {
-      push("protocol must not reach core or adapters (transitively, barrels included)");
+    if (reaches(file.path, (target) => isCore(target) || isOuter(target))) {
+      push("protocol must not reach core or outer layers (transitively, barrels included)");
     }
   }
   if (isCore(file.path) || file.roleDir === join(srcRoot, "core")) {
-    if (reaches(file.path, (target) => isAdapters(target))) {
-      push("core must not reach adapters (transitively, barrels included)");
+    if (reaches(file.path, isOuter)) {
+      push("core must not reach outer layers (transitively, barrels included)");
     }
   }
-  const inMcpRole = isMcp(file.path) || file.roleDir === join(srcRoot, "adapters", "mcp");
-  const inPiRole = isPi(file.path) || file.roleDir === join(srcRoot, "adapters", "pi");
-  if (inMcpRole && reaches(file.path, isPi)) {
-    push("MCP adapter must not reach the Pi adapter");
+  const inControlRole = isControl(file.path) || file.roleDir.startsWith(join(srcRoot, "control") + "/");
+  const inEndpointRole = isEndpoints(file.path) || file.roleDir.startsWith(join(srcRoot, "endpoints") + "/");
+  if (inControlRole && reaches(file.path, (target) => isEndpoints(target) || isBin(target))) {
+    push("control surface must not reach endpoint integrations or composition");
   }
-  if (inPiRole && reaches(file.path, isMcp)) {
-    push("Pi adapter must not reach the MCP adapter");
+  if (inEndpointRole && reaches(file.path, (target) => isControl(target) || isBin(target))) {
+    push("endpoint integration must not reach control surfaces or composition");
+  }
+  if (inEndpointRole) {
+    if (file.external.some((spec) => MCP_SDK.test(spec))) push("endpoint integration must not require MCP SDK");
+    const kind = file.roleDir.slice(srcRoot.length + 1).split("/")[1];
+    const ownRoot = join(srcRoot, "endpoints", kind ?? "") + "/";
+    if (reaches(file.path, (target) => isEndpoints(target) && !target.startsWith(ownRoot))) {
+      push("endpoint integration must not reach another endpoint integration");
+    }
   }
   if (isProtocol(file.path) || isCore(file.path) || file.roleDir === join(srcRoot, "protocol") || file.roleDir === join(srcRoot, "core")) {
     for (const identifier of file.identifiers) {
@@ -202,9 +209,9 @@ for (const operation of capabilityOperations) {
     }
   }
 }
-const serverSource = readFileSync(join(srcRoot, "adapters", "mcp", "server.ts"), "utf8");
+const serverSource = readFileSync(join(srcRoot, "control", "mcp", "server.ts"), "utf8");
 if (!/tools:\s*\[\s*PING_TOOL\s*\]/.test(serverSource)) {
-  errors.push("src/adapters/mcp/server.ts: the MCP surface must register exactly the ping tool");
+  errors.push("src/control/mcp/server.ts: the MCP surface must register exactly the ping tool");
 }
 
 // Runtime dependencies must be exactly pinned (no semver ranges).
@@ -253,6 +260,6 @@ if (errors.length > 0) {
   for (const error of errors.sort()) console.error(`  - ${error}`);
   process.exitCode = 1;
 } else {
-  console.log("PI-CHAT-EXCHANGE CONTRACT OK: layering protocol<-core<-adapters, adapter separation, neutral protocol/core, no Pi coupling, ping-only MCP surface, pinned deps");
+  console.log("PI-CHAT-EXCHANGE CONTRACT OK: protocol<-core<-control/endpoints, plane and endpoint separation, neutral protocol/core, no Pi coupling, ping-only MCP, pinned deps");
   for (const proof of provedFixtures.sort()) console.log(`  fixture rejected: ${proof}`);
 }

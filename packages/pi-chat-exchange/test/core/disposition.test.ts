@@ -13,8 +13,12 @@ const attempt: DeliveryAttempt = { attemptId: `att_${uid}`, messageId: message.m
 const intent = { ownerId: "authenticated-owner", recordedAt: now, reason: "No further investigation is available", reconciliation: { resolvedAt: now, basis: "Investigation exhausted; execution remains unknown" } };
 const result = { resultId: `hr_${uid}`, exchangeId: exchange.exchangeId, messageId: `msg_${"0".repeat(26)}`, attemptId: `att_${"0".repeat(26)}`, source: endpoint, transport: "delivered" as const, runtime: "settled" as const, body: "historical result of another finished message", resultDigest: "a".repeat(64), settledAt: now };
 
-function archive(messages: readonly Message[] = [message], attempts: readonly DeliveryAttempt[] = [attempt], options: Partial<typeof intent> = {}, authority: "client" | "agent" = "client", existing?: ExchangeDisposition): ExchangeDisposition {
-  return rules.archiveUnresolvedExchange(exchange, messages, attempts, { ...intent, ...options }, authority, existing);
+import { fixtureAuthorization } from "../fixtures/authorization.js";
+import { ENDPOINT_OPERATIONS, type AuthorizationContext } from "../../src/protocol/capabilities.js";
+const owner = fixtureAuthorization(exchange.exchangeId, message.messageId, attempt.attemptId, endpoint, intent.ownerId);
+const execution = fixtureAuthorization(exchange.exchangeId, message.messageId, attempt.attemptId, endpoint, "receiver", ENDPOINT_OPERATIONS);
+function archive(messages: readonly Message[] = [message], attempts: readonly DeliveryAttempt[] = [attempt], options: Partial<typeof intent> = {}, authorization: AuthorizationContext = owner, existing?: ExchangeDisposition): ExchangeDisposition {
+  return rules.archiveUnresolvedExchange(exchange, messages, attempts, { ...intent, ...options }, authorization, existing);
 }
 
 describe("administrative disposition is not execution evidence", () => {
@@ -36,25 +40,26 @@ describe("administrative disposition is not execution evidence", () => {
     expect(attempt.transport).toBe("ambiguous");
     expect(exchange.state).toBe("OPEN");
     expect(Value.Check(ResultSchema, disposition)).toBe(false);
-    expect(() => rules.closeExchange(exchange, [message], "client")).toThrow();
+    expect(() => rules.closeExchange(exchange, [message], owner)).toThrow();
   });
   it("prohibits subsequent protocol activity, but historical result reads remain repeatable", () => {
     const disposition = archive();
     expect(() => rules.assertExchangeActive(exchange, disposition)).toThrow();
-    expect(() => rules.assertMessageTransition({ ...message, state: "CREATED" }, "QUEUED", { authority: "client", now, lease, disposition })).toThrow();
-    expect(() => rules.assertMessageTransition(message, "ACCEPTED", { authority: "agent", now, lease, attempt: { ...attempt, transport: "delivered" }, reconciliation: intent.reconciliation, runtime: { exchangeId: exchange.exchangeId, messageId: message.messageId, attemptId: attempt.attemptId, endpoint, outcome: "accepted", observedAt: now }, disposition })).toThrow();
-    expect(() => rules.assertResultPublication(undefined, result, disposition)).toThrow();
-    expect(() => rules.closeExchange(exchange, [{ ...message, state: "RESULT_AVAILABLE" }], "client", disposition)).toThrow();
+    expect(() => rules.assertMessageTransition({ ...message, state: "CREATED" }, "QUEUED", { authorization: owner, now, lease, disposition })).toThrow();
+    expect(() => rules.assertMessageTransition(message, "ACCEPTED", { authorization: execution, now, lease, attempt: { ...attempt, transport: "delivered" }, reconciliation: intent.reconciliation, runtime: { exchangeId: exchange.exchangeId, messageId: message.messageId, attemptId: attempt.attemptId, endpoint, outcome: "accepted", observedAt: now }, disposition })).toThrow();
+    const publisher = fixtureAuthorization(exchange.exchangeId, result.messageId, result.attemptId, endpoint);
+    expect(() => rules.assertResultPublication(undefined, result, publisher, disposition)).toThrow();
+    expect(() => rules.closeExchange(exchange, [{ ...message, state: "RESULT_AVAILABLE" }], owner, disposition)).toThrow();
     expect(rules.readResult(result)).toEqual(rules.readResult(result));
     expect(disposition.unresolved[0]!.transport).toBe("ambiguous");
   });
   it("permits exact disposition replay but rejects replacement", () => {
     const disposition = archive();
-    expect(archive([message], [attempt], {}, "client", disposition)).toEqual(disposition);
-    expect(() => archive([message], [attempt], { reason: "replace history" }, "client", disposition)).toThrow();
+    expect(archive([message], [attempt], {}, owner, disposition)).toEqual(disposition);
+    expect(() => archive([message], [attempt], { reason: "replace history" }, owner, disposition)).toThrow();
   });
   it("rejects runtime authority as administrative owner authority", () => {
-    expect(() => archive([message], [attempt], {}, "agent")).toThrow();
+    expect(() => archive([message], [attempt], {}, execution)).toThrow();
   });
   it.each(["CREATED", "QUEUED", "CLAIMED", "DISPATCHING", "ACCEPTED", "RUNNING", "SETTLED", "CANCEL_REQUESTED"] as const)("does not abandon an in-flight %s message", (state) => {
     expect(() => archive([message, { ...message, messageId: `msg_${"0".repeat(26)}`, state }])).toThrow();

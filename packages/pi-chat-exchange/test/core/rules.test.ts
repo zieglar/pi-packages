@@ -12,6 +12,8 @@ import {
   readResult,
 } from "../../src/core/rules.js";
 
+import { fixtureAuthorization } from "../fixtures/authorization.js";
+import { CONTROL_OPERATIONS, ENDPOINT_OPERATIONS } from "../../src/protocol/capabilities.js";
 const uid = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const now = "2026-10-06T00:00:00.000Z";
 const later = "2026-10-06T00:02:00.000Z";
@@ -56,8 +58,11 @@ const runtime = (outcome: "accepted" | "running" | "settled" | "cancelled") => (
   exchangeId: exchange.exchangeId, messageId: attempt.messageId, attemptId: attempt.attemptId,
   endpoint: to, outcome, observedAt: now,
 });
+const execution = fixtureAuthorization(exchange.exchangeId, attempt.messageId, attempt.attemptId, to, "receiver", ENDPOINT_OPERATIONS);
+const requests = fixtureAuthorization(exchange.exchangeId, attempt.messageId, attempt.attemptId, to, "owner", CONTROL_OPERATIONS);
+const owner = fixtureAuthorization(exchange.exchangeId, attempt.messageId, attempt.attemptId, to);
 const guard = (overrides: Record<string, unknown> = {}) => ({
-  authority: "agent" as const,
+  authorization: execution,
   now,
   lease,
   attempt,
@@ -163,7 +168,7 @@ describe("core transition rules (protocol v2)", () => {
         message({ state: "DELIVERY_UNKNOWN" }),
         "ACCEPTED",
         guard({
-          authority: "client",
+          authorization: requests,
           attempt: { ...attempt, dispatch: "started" as const, transport: "delivered" as const },
           reconciliation: { resolvedAt: now, basis: "receiver receipt log correlation" },
         }),
@@ -201,33 +206,33 @@ describe("core transition rules (protocol v2)", () => {
     ).toThrowError(TransitionEvidenceError);
   });
 
-  it("does not grant clients execution authority", () => {
+  it("does not let request grants authorize execution or runtime grants authorize close", () => {
     expect(() =>
       assertMessageTransition(
         message({ state: "RUNNING" }),
         "SETTLED",
-        guard({ authority: "client", attempt: { ...attempt, dispatch: "started" as const } }),
+        guard({ authorization: requests, attempt: { ...attempt, dispatch: "started" as const } }),
       ),
     ).toThrowError(TransitionEvidenceError);
     expect(() =>
-      assertMessageTransition(message({ state: "QUEUED" }), "CLAIMED", guard({ authority: "client" })),
+      assertMessageTransition(message({ state: "QUEUED" }), "CLAIMED", guard({ authorization: requests })),
     ).toThrowError(TransitionEvidenceError);
-    expect(() => closeExchange(exchange, [message()], "agent")).toThrowError(CloseRejectedError);
+    expect(() => closeExchange(exchange, [message()], execution)).toThrowError(CloseRejectedError);
   });
 
   it("distinguishes cancellation requests from confirmations", () => {
     expect(
-      assertMessageTransition(message({ state: "QUEUED" }), "CANCELLED", guard({ authority: "client" })),
+      assertMessageTransition(message({ state: "QUEUED" }), "CANCELLED", guard({ authorization: requests })),
     ).toBe("CANCELLED");
     expect(
-      assertMessageTransition(message({ state: "DISPATCHING" }), "CANCEL_REQUESTED", guard({ authority: "client" })),
+      assertMessageTransition(message({ state: "DISPATCHING" }), "CANCEL_REQUESTED", guard({ authorization: requests })),
     ).toBe("CANCEL_REQUESTED");
     // A request is not a confirmation once dispatch may have begun:
     expect(() =>
       assertMessageTransition(
         message({ state: "CANCEL_REQUESTED" }),
         "CANCELLED",
-        guard({ authority: "client", attempt: { ...attempt, dispatch: "started" as const } }),
+        guard({ authorization: requests, attempt: { ...attempt, dispatch: "started" as const } }),
       ),
     ).toThrowError(TransitionEvidenceError);
     expect(
@@ -242,7 +247,7 @@ describe("core transition rules (protocol v2)", () => {
       assertMessageTransition(
         message({ state: "DELIVERY_UNKNOWN" }),
         "CANCELLED",
-        guard({ authority: "client", attempt: { ...attempt, dispatch: "started" as const } }),
+        guard({ authorization: requests, attempt: { ...attempt, dispatch: "started" as const } }),
       ),
     ).toThrowError(IllegalTransitionError);
     expect(() =>
@@ -250,7 +255,7 @@ describe("core transition rules (protocol v2)", () => {
         message({ state: "DELIVERY_UNKNOWN" }),
         "CANCELLED",
         guard({
-          authority: "client",
+          authorization: requests,
           attempt: { ...attempt, dispatch: "started" as const },
           reconciliation: { resolvedAt: now, basis: "owner abandons after investigation" },
         }),
@@ -259,12 +264,12 @@ describe("core transition rules (protocol v2)", () => {
   });
 
   it("publishes results once, permits exact replay, rejects replacement", () => {
-    expect(assertResultPublication(undefined, result)).toEqual(result);
-    expect(assertResultPublication(result, result)).toEqual(result);
-    expect(() => assertResultPublication(result, { ...result, body: "changed" })).toThrowError(
+    expect(assertResultPublication(undefined, result, execution)).toEqual(result);
+    expect(assertResultPublication(result, result, execution)).toEqual(result);
+    expect(() => assertResultPublication(result, { ...result, body: "changed" }, execution)).toThrowError(
       ResultConflictError,
     );
-    expect(() => assertResultPublication(undefined, { ...result, resultDigest: "zz" })).toThrowError(
+    expect(() => assertResultPublication(undefined, { ...result, resultDigest: "zz" }, execution)).toThrowError(
       InvalidResultError,
     );
   });
@@ -284,10 +289,10 @@ describe("core transition rules (protocol v2)", () => {
   });
 
   it("closes exchanges explicitly only when every message is finished", () => {
-    const closed = closeExchange(exchange, [message()], "client");
+    const closed = closeExchange(exchange, [message()], owner);
     expect(closed).toEqual({ ...exchange, state: "CLOSED" });
     expect(exchange.state).toBe("OPEN");
-    expect(() => closeExchange(closed, [], "client")).toThrowError(CloseRejectedError);
+    expect(() => closeExchange(closed, [], owner)).toThrowError(CloseRejectedError);
   });
 
   it.each([
@@ -301,12 +306,12 @@ describe("core transition rules (protocol v2)", () => {
     "SETTLED",
     "CANCEL_REQUESTED",
   ] as const)("blocks close while a message is %s", (state) => {
-    expect(() => closeExchange(exchange, [message({ state })], "client")).toThrowError(CloseRejectedError);
+    expect(() => closeExchange(exchange, [message({ state })], owner)).toThrowError(CloseRejectedError);
   });
 
   it("rejects messages from other exchanges in close checks", () => {
     expect(() =>
-      closeExchange(exchange, [message({ exchangeId: `ho_${uid.slice(0, -1)}W` })], "client"),
+      closeExchange(exchange, [message({ exchangeId: `ho_${uid.slice(0, -1)}W` })], owner),
     ).toThrowError(CloseRejectedError);
   });
 });

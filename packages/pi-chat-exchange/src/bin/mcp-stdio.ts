@@ -8,7 +8,7 @@
  *
  * stdout is reserved for MCP protocol frames; diagnostics go to stderr.
  */
-import { runStdioServer } from "../adapters/mcp/server.js";
+import { runStdioServer } from "../control/mcp/server.js";
 
 runStdioServer().catch((error: unknown) => {
   console.error("pi-chat-exchange MCP stdio server failed:", error);

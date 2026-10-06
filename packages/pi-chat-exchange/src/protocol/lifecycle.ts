@@ -24,8 +24,8 @@
  * - Safe requeue (CLAIMED → QUEUED) is legal only with a validated
  *   definitely-not-attempted attempt record — evidence, not assertion.
  * - Cancellation is split: a request (CANCEL_REQUESTED) is never a
- *   confirmation. After dispatch may have begun, only the agent side can
- *   confirm CANCELLED. Owner abandonment is a separate administrative
+ *   confirmation. After dispatch may have begun, independently authorized
+ *   runtime evidence must confirm CANCELLED. Owner abandonment is a separate administrative
  *   disposition; it never resolves execution ambiguity or cancels a runtime.
  *
  * Transitions split into two groups:
@@ -35,6 +35,7 @@
  *   attempt, endpoint, and lease.
  */
 
+import type { ExchangeAction } from "./capabilities.js";
 export const MESSAGE_STATES = [
   "CREATED",
   "QUEUED",
@@ -66,9 +67,7 @@ export const FINISHED_MESSAGE_STATES: readonly MessageState[] = [
 /** Quarantined: neither finished nor retryable; requires reconciliation. */
 export const QUARANTINED_MESSAGE_STATES: readonly MessageState[] = ["DELIVERY_UNKNOWN"];
 
-/** Which side may perform the transition. */
-export type TransitionAuthority = "client" | "agent" | "any";
-
+/** Each transition requires distinct scoped host grants, never a role label. */
 /**
  * Lease evidence class required from the guard:
  * - "none": no attempt/lease correlation needed (administrative move);
@@ -98,12 +97,10 @@ export type TransitionEvidenceKind =
   | "reconciled_delivered"
   | "reconciled_not_executed";
 export interface TransitionRequirement {
-  readonly authority: TransitionAuthority;
+  readonly actions: readonly ExchangeAction[];
   readonly lease: LeaseEvidence;
   readonly evidence: TransitionEvidenceKind;
 }
-
-const NONE: TransitionRequirement = { authority: "any", lease: "none", evidence: "none" };
 
 /**
  * The single source of truth for transition legality, keyed `"FROM>TO"`.
@@ -111,44 +108,40 @@ const NONE: TransitionRequirement = { authority: "any", lease: "none", evidence:
  * expose the two legality tiers.
  */
 export const TRANSITION_REQUIREMENTS: Readonly<Record<string, TransitionRequirement>> = {
-  // Evidence-free moves.
-  "CREATED>QUEUED": { authority: "any", lease: "none", evidence: "none" },
-  "QUEUED>CLAIMED": { authority: "agent", lease: "none", evidence: "none" },
-  "QUEUED>CANCELLED": { authority: "client", lease: "none", evidence: "none" },
-  "CLAIMED>CANCEL_REQUESTED": { authority: "client", lease: "none", evidence: "none" },
-  "DISPATCHING>CANCEL_REQUESTED": { authority: "client", lease: "none", evidence: "none" },
-  "ACCEPTED>CANCEL_REQUESTED": { authority: "client", lease: "none", evidence: "none" },
-  "RUNNING>CANCEL_REQUESTED": { authority: "client", lease: "none", evidence: "none" },
+  "CREATED>QUEUED": { actions: ["exchange_send"], lease: "none", evidence: "none" },
+  "QUEUED>CLAIMED": { actions: ["message_claim"], lease: "none", evidence: "none" },
+  "QUEUED>CANCELLED": { actions: ["exchange_cancel"], lease: "none", evidence: "none" },
+  "CLAIMED>CANCEL_REQUESTED": { actions: ["exchange_cancel"], lease: "none", evidence: "none" },
+  "DISPATCHING>CANCEL_REQUESTED": { actions: ["exchange_cancel"], lease: "none", evidence: "none" },
+  "ACCEPTED>CANCEL_REQUESTED": { actions: ["exchange_cancel"], lease: "none", evidence: "none" },
+  "RUNNING>CANCEL_REQUESTED": { actions: ["exchange_cancel"], lease: "none", evidence: "none" },
 
-  // Claim administration: safe requeue/release only with a definitely
-  // not-attempted attempt record.
-  "CLAIMED>QUEUED": { authority: "agent", lease: "recorded", evidence: "not_attempted" },
-  "CLAIMED>CANCELLED": { authority: "agent", lease: "recorded", evidence: "not_attempted" },
+  // Safe release/cancellation still requires proven no attempt.
+  "CLAIMED>QUEUED": { actions: ["lease_release"], lease: "recorded", evidence: "not_attempted" },
+  "CLAIMED>CANCELLED": { actions: ["cancel_confirm"], lease: "recorded", evidence: "not_attempted" },
 
-  // Dispatch: the durable start marker must exist before any adapter effect;
-  // a crash after the marker but before the state write is quarantined.
-  "CLAIMED>DISPATCHING": { authority: "agent", lease: "current", evidence: "dispatch_started" },
-  "CLAIMED>DELIVERY_UNKNOWN": { authority: "agent", lease: "recorded", evidence: "transport_ambiguous" },
-  // Transport outcome of a started dispatch.
-  "DISPATCHING>ACCEPTED": { authority: "agent", lease: "current", evidence: "transport_delivered" },
-  "DISPATCHING>DELIVERY_UNKNOWN": { authority: "agent", lease: "recorded", evidence: "transport_ambiguous" },
-  "DISPATCHING>FAILED": { authority: "agent", lease: "current", evidence: "transport_failed" },
+  // Pre-effect marker and live fencing remain required.
+  "CLAIMED>DISPATCHING": { actions: ["dispatch_mark_started"], lease: "current", evidence: "dispatch_started" },
+  "CLAIMED>DELIVERY_UNKNOWN": { actions: ["delivery_report"], lease: "recorded", evidence: "transport_ambiguous" },
+  "DISPATCHING>ACCEPTED": { actions: ["delivery_report", "activity_report"], lease: "current", evidence: "transport_delivered" },
+  "DISPATCHING>DELIVERY_UNKNOWN": { actions: ["delivery_report"], lease: "recorded", evidence: "transport_ambiguous" },
+  "DISPATCHING>FAILED": { actions: ["delivery_report"], lease: "current", evidence: "transport_failed" },
 
-  // Runtime progress and settlement (agent authority only).
-  "ACCEPTED>RUNNING": { authority: "agent", lease: "current", evidence: "runtime_progress" },
-  "ACCEPTED>SETTLED": { authority: "agent", lease: "current", evidence: "runtime_progress" },
-  "RUNNING>SETTLED": { authority: "agent", lease: "current", evidence: "runtime_progress" },
-  "SETTLED>RESULT_AVAILABLE": { authority: "agent", lease: "current", evidence: "result_published" },
+  "ACCEPTED>RUNNING": { actions: ["activity_report"], lease: "current", evidence: "runtime_progress" },
+  "ACCEPTED>SETTLED": { actions: ["settlement_report"], lease: "current", evidence: "runtime_progress" },
+  "RUNNING>SETTLED": { actions: ["settlement_report"], lease: "current", evidence: "runtime_progress" },
+  "SETTLED>RESULT_AVAILABLE": { actions: ["result_publish"], lease: "current", evidence: "result_published" },
 
-  // Cancellation confirmation after a request: agent-side evidence only.
-  "CANCEL_REQUESTED>CANCELLED": { authority: "agent", lease: "current", evidence: "cancel_confirmed" },
-  "CANCEL_REQUESTED>DELIVERY_UNKNOWN": { authority: "agent", lease: "recorded", evidence: "transport_ambiguous" },
-  "CANCEL_REQUESTED>FAILED": { authority: "agent", lease: "current", evidence: "transport_failed" },
-  "CANCEL_REQUESTED>SETTLED": { authority: "agent", lease: "current", evidence: "runtime_progress" },
+  // Started cancellation additionally requires scoped runtime-settlement authority
+  // in core; proven never-attempted cancellation does not create a runtime fact.
+  "CANCEL_REQUESTED>CANCELLED": { actions: ["cancel_confirm"], lease: "current", evidence: "cancel_confirmed" },
+  "CANCEL_REQUESTED>DELIVERY_UNKNOWN": { actions: ["delivery_report"], lease: "recorded", evidence: "transport_ambiguous" },
+  "CANCEL_REQUESTED>FAILED": { actions: ["delivery_report"], lease: "current", evidence: "transport_failed" },
+  "CANCEL_REQUESTED>SETTLED": { actions: ["settlement_report"], lease: "current", evidence: "runtime_progress" },
 
-  // Quarantine resolution: explicit reconciliation, never lease expiry reuse.
-  "DELIVERY_UNKNOWN>ACCEPTED": { authority: "agent", lease: "recorded", evidence: "reconciled_delivered" },
-  "DELIVERY_UNKNOWN>FAILED": { authority: "agent", lease: "recorded", evidence: "reconciled_not_executed" },
+  // Factual reconciliation is never retry permission or owner abandonment.
+  "DELIVERY_UNKNOWN>ACCEPTED": { actions: ["ambiguity_resolve", "activity_report"], lease: "recorded", evidence: "reconciled_delivered" },
+  "DELIVERY_UNKNOWN>FAILED": { actions: ["ambiguity_resolve"], lease: "recorded", evidence: "reconciled_not_executed" },
 };
 
 /**

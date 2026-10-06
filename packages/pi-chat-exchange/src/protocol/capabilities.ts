@@ -1,98 +1,81 @@
 /**
- * Capability ports (frozen v2).
- *
- * Two narrow, disjoint authorities over an exchange:
- *
- * - the CLIENT port (the requesting side of an exchange, whatever product or
- *   adapter it is reached through) may send, inspect, list, request
- *   cancellation of, and read results of its messages, and — as separate
- *   optional capabilities — normally close or administratively archive;
- * - the AGENT port (the consuming side) alone holds dispatch, lease, runtime
- *   settlement, result publication, ambiguity reconciliation, and
- *   cancellation confirmation.
- *
- * The ports are plain data contracts: authority is a literal discriminant and
- * operations are closed lists. There is deliberately no inheritance
- * framework, no shared base port, and no product name anywhere — the generic
- * future surface is `exchange_send/get/list/cancel/result`, bound per
- * adapter. Explicit close and unresolved archive are distinct optional
- * capabilities; neither is part of the base client surface.
- *
- * These are capability DECLARATIONS only: core rules remain the enforcement
- * authority at runtime, and compile-time checks are a development aid, never
- * an authorization mechanism.
+ * Action/capability contracts (PH-0003). Endpoint peers have no protocol role.
+ * These plain contexts are TRUSTED HOST INPUT, not self-issued credentials.
+ * The future host authenticates identity and loads grants transactionally.
+ * Interface implementation and support advertisement confer no authority.
  */
-import type { Exchange } from "./entities.js";
+import { Type } from "@sinclair/typebox";
+import { EndpointRefSchema, type EndpointRef } from "./entities.js";
+import { EXCHANGE_ID_PATTERN, MESSAGE_ID_PATTERN, ATTEMPT_ID_PATTERN } from "./identity.js";
+const ExchangeIdSchema = Type.String({ pattern: EXCHANGE_ID_PATTERN.source });
+const MessageIdSchema = Type.String({ pattern: MESSAGE_ID_PATTERN.source });
+const AttemptIdSchema = Type.String({ pattern: ATTEMPT_ID_PATTERN.source });
 
-export type ExchangeAuthority = "client" | "agent";
+export const CONTROL_OPERATIONS = ["exchange_send", "exchange_get", "exchange_list", "exchange_cancel", "exchange_result"] as const;
+export const OPTIONAL_CONTROL_CAPABILITIES = ["exchange_close", "exchange_archive"] as const;
+export const ENDPOINT_OPERATIONS = ["message_claim", "dispatch_mark_started", "delivery_report", "activity_report", "settlement_report", "result_publish", "lease_release", "ambiguity_resolve", "cancel_confirm"] as const;
+export type ControlOperation = (typeof CONTROL_OPERATIONS)[number];
+export type OptionalControlCapability = (typeof OPTIONAL_CONTROL_CAPABILITIES)[number];
+export type EndpointOperation = (typeof ENDPOINT_OPERATIONS)[number];
+export type ExchangeAction = ControlOperation | OptionalControlCapability | EndpointOperation;
+export type AttemptAction = Exclude<EndpointOperation, "message_claim">;
 
-/** Authority a port declaration exercises over an {@link Exchange}. */
-export type PortAuthority = ExchangeAuthority;
-
-export const CLIENT_OPERATIONS = [
-  "exchange_send",
-  "exchange_get",
-  "exchange_list",
-  "exchange_cancel",
-  "exchange_result",
-] as const;
-
-export type ClientOperation = (typeof CLIENT_OPERATIONS)[number];
-
-/**
- * Normal close and unresolved archive are separate optional owner capabilities.
- * No control API for either is implemented in this phase.
- */
-export const OPTIONAL_CLIENT_CAPABILITIES = ["exchange_close", "exchange_archive"] as const;
-
-export type OptionalClientCapability = (typeof OPTIONAL_CLIENT_CAPABILITIES)[number];
-
-export const AGENT_OPERATIONS = [
-  "message_claim",
-  "dispatch_mark_started",
-  "delivery_report",
-  "activity_report",
-  "settlement_report",
-  "result_publish",
-  "lease_release",
-  "ambiguity_resolve",
-  "cancel_confirm",
-] as const;
-
-export type AgentOperation = (typeof AGENT_OPERATIONS)[number];
-
-/** Narrow client-side port contract. */
-export interface ClientPort {
-  readonly authority: "client";
-  readonly operations: readonly ClientOperation[];
-  readonly optionalCapabilities?: readonly OptionalClientCapability[];
+/** Declaration only: not a grant and not an implementation of these operations. */
+export interface ControlSurfaceDeclaration {
+  readonly operations: readonly ControlOperation[];
+  readonly optionalCapabilities?: readonly OptionalControlCapability[];
+}
+export type CollectionScope = { readonly kind: "collection" };
+export type ExchangeScope = { readonly kind: "exchange"; readonly exchangeId: string };
+export type OwnerScope = { readonly kind: "owner"; readonly exchangeId: string; readonly ownerId: string };
+export type MessageScope = { readonly kind: "message"; readonly exchangeId: string; readonly messageId: string };
+export type DestinationScope = { readonly kind: "destination"; readonly exchangeId: string; readonly messageId: string; readonly endpoint: EndpointRef };
+export type AttemptScope = { readonly kind: "attempt"; readonly exchangeId: string; readonly messageId: string; readonly attemptId: string; readonly endpoint: EndpointRef };
+export type ScopeForAction<A extends ExchangeAction> =
+  A extends "exchange_list" ? CollectionScope :
+  A extends "exchange_close" | "exchange_archive" ? OwnerScope :
+  A extends "exchange_cancel" ? MessageScope :
+  A extends "message_claim" ? DestinationScope :
+  A extends AttemptAction ? AttemptScope : ExchangeScope;
+export type AuthorizationScope = ScopeForAction<ExchangeAction>;
+export type ActionGrant = { [A in ExchangeAction]: {
+  readonly action: A;
+  readonly principalId: string;
+  readonly scope: ScopeForAction<A>;
+} }[ExchangeAction];
+export interface AuthorizationContext {
+  readonly principalId: string;
+  readonly grants: readonly ActionGrant[];
 }
 
-/** Narrow agent-side port contract; disjoint from {@link ClientPort}. */
-export interface AgentPort {
-  readonly authority: "agent";
-  readonly operations: readonly AgentOperation[];
-}
+const strict = { additionalProperties: false } as const;
+const principal = Type.String({ minLength: 1, maxLength: 256 });
+const collectionScope = Type.Object({ kind: Type.Literal("collection") }, strict);
+const exchangeScope = Type.Object({ kind: Type.Literal("exchange"), exchangeId: ExchangeIdSchema }, strict);
+const ownerScope = Type.Object({ kind: Type.Literal("owner"), exchangeId: ExchangeIdSchema, ownerId: principal }, strict);
+const messageScope = Type.Object({ kind: Type.Literal("message"), exchangeId: ExchangeIdSchema, messageId: MessageIdSchema }, strict);
+const destinationScope = Type.Object({ kind: Type.Literal("destination"), exchangeId: ExchangeIdSchema, messageId: MessageIdSchema, endpoint: EndpointRefSchema }, strict);
+const attemptScope = Type.Object({ kind: Type.Literal("attempt"), exchangeId: ExchangeIdSchema, messageId: MessageIdSchema, attemptId: AttemptIdSchema, endpoint: EndpointRefSchema }, strict);
+const actions = (names: readonly string[]) => Type.Union(names.map((name) => Type.Literal(name)));
+export const ActionGrantSchema = Type.Union([
+  Type.Object({ action: actions(["exchange_send", "exchange_get", "exchange_result"]), principalId: principal, scope: exchangeScope }, strict),
+  Type.Object({ action: Type.Literal("exchange_list"), principalId: principal, scope: collectionScope }, strict),
+  Type.Object({ action: actions(OPTIONAL_CONTROL_CAPABILITIES), principalId: principal, scope: ownerScope }, strict),
+  Type.Object({ action: Type.Literal("exchange_cancel"), principalId: principal, scope: messageScope }, strict),
+  Type.Object({ action: Type.Literal("message_claim"), principalId: principal, scope: destinationScope }, strict),
+  Type.Object({ action: actions(ENDPOINT_OPERATIONS.filter((action) => action !== "message_claim")), principalId: principal, scope: attemptScope }, strict),
+]);
+export const AuthorizationContextSchema = Type.Object({ principalId: principal, grants: Type.Array(ActionGrantSchema) }, strict);
 
-export function isClientOperation(name: string): name is ClientOperation {
-  return (CLIENT_OPERATIONS as readonly string[]).includes(name);
+export function isControlOperation(name: string): name is ControlOperation {
+  return (CONTROL_OPERATIONS as readonly string[]).includes(name);
 }
-
-export function isAgentOperation(name: string): name is AgentOperation {
-  return (AGENT_OPERATIONS as readonly string[]).includes(name);
+export function isEndpointOperation(name: string): name is EndpointOperation {
+  return (ENDPOINT_OPERATIONS as readonly string[]).includes(name);
 }
-
-/** Frozen invariant: the two ports share no operation names. */
-export function assertPortDisjointness(): void {
-  const overlap = CLIENT_OPERATIONS.filter((operation) => isAgentOperation(operation));
-  if (overlap.length > 0) {
-    throw new Error(`port ownership violation: ${overlap.join(", ")}`);
-  }
-  const leaked = AGENT_OPERATIONS.filter((operation) => isClientOperation(operation));
-  if (leaked.length > 0) {
-    throw new Error(`port ownership violation: ${leaked.join(", ")}`);
-  }
-  if ((OPTIONAL_CLIENT_CAPABILITIES as readonly string[]).some((capability) => isAgentOperation(capability))) {
-    throw new Error("optional client capability collides with agent operations");
+/** Catalog separation is a development check, not host authorization. */
+export function assertOperationSeparation(): void {
+  if ([...CONTROL_OPERATIONS, ...OPTIONAL_CONTROL_CAPABILITIES].some(isEndpointOperation)) {
+    throw new Error("control and endpoint action catalogs overlap");
   }
 }

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpError } from "@modelcontextprotocol/sdk/types.js";
-import { createExchangeMcpServer } from "../../../src/adapters/mcp/server.js";
+import { createExchangeMcpServer } from "../../../src/control/mcp/server.js";
 
 const HOST_LABEL = "test-host";
 const EXPECTED_PING = {

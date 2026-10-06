@@ -12,16 +12,17 @@ Status (this package):
   `hr_` for Result, additive `msg_/att_/rcpt_/evt_`), the evidence-gated
   message lifecycle with fail-closed `DELIVERY_UNKNOWN` quarantine, generic
   EndpointRef / Lease / Receipt / Consumer / Event schemas, neutral
-  Client/Agent capability ports. See [docs/protocol-v2.md](docs/protocol-v2.md).
+  action-scoped authorization and independent endpoint capability support. See
+  [docs/protocol-v2.md](docs/protocol-v2.md).
 - **Pure core rules** — transition legality with correlated evidence
   (message/attempt/endpoint/lease fencing), explicit exchange close,
   non-mutating immutable result reads, publish-once results, plus the
   in-memory idempotency REFERENCE store. See [docs/architecture.md](docs/architecture.md).
-- **Adapters as seams** — MCP: strictly the retained `ping` smoke over stdio;
-  Pi: contract documentation only (no runtime Pi API use, no install). See
-  [docs/adapter-contracts.md](docs/adapter-contracts.md) and
-  [docs/source-reuse-audit.md](docs/source-reuse-audit.md) for why no
-  third-party composition is claimed.
+- **Separate planes** — MCP control surface: strictly retained `ping` smoke;
+  Pi endpoint: declaration/documentation only. No ChatGPT endpoint implementation.
+  See [docs/adapter-contracts.md](docs/adapter-contracts.md),
+  [docs/chat-bridge-audit-ph0003.md](docs/chat-bridge-audit-ph0003.md) and
+  [docs/source-reuse-audit.md](docs/source-reuse-audit.md) for pinned source evidence.
 - **Deferred** — the durable host (broker/storage/API server), every
   exchange operation beyond `ping`, and real client-product acceptance
   (NOT_RUN).
@@ -29,30 +30,34 @@ Status (this package):
 ## Architecture
 
 ```text
-src/bin        composition only (stdio MCP entrypoint)
-src/adapters   mcp = ping smoke only · pi = contract docs only
-src/core       pure rules + in-memory idempotency reference
-src/protocol   neutral schemas, lifecycle tables, capability ports
+src/bin          composition only (stdio MCP entrypoint)
+src/control/mcp  ping-only control/API surface
+src/endpoints/pi endpoint integration contract only
+src/core         pure evidence/authorization rules + in-memory reference
+src/protocol     neutral entities/lifecycle/action grants/support declarations
 ```
 
 Dependency direction (gate-enforced from the TypeScript AST, with negative
-fixtures proving rejection): `bin → adapters → core → protocol`; protocol
-never reaches core/adapters; core never reaches adapters; the adapters never
-reach each other; protocol/core stay product-neutral.
+fixtures proving rejection): `bin → control/endpoints → core → protocol`.
+Protocol/core cannot reach outer layers; control and endpoints cannot reach
+each other; endpoints cannot depend on peer integrations or the MCP SDK.
+Protocol/core stay product/transport neutral.
 
 Ownership boundaries (frozen):
 
-- The **client port** sends, inspects, lists, requests cancellation, and
-  reads results. Explicit close is a separate optional capability. It can
-  never fabricate execution outcomes.
-- The **agent port** alone claims, marks durable dispatch-start, reports
-  delivery/activity/settlement, publishes results, releases leases,
-  reconciles ambiguity, and confirms cancellation.
-- **Core rules** are the only legality authority; compile-time checks are a
-  development aid, never an authorization mechanism.
-- Reads never mutate lifecycle state; there is no CONSUMED; an Exchange
-  closes only when every message is finished (nothing in flight, nothing
-  quarantined).
+- Conversations and runtimes can be peer endpoints without equal capabilities.
+  MCP invocation is not delivery to the invoking conversation.
+- Request, delivery, runtime reporting, result publication, owner close and
+  owner archive require separate principal-bound, exact-scope host grants.
+  Caller labels, interfaces and capability advertisements are NOT authentication.
+- Correlated evidence, latest claims/fencing and disposition remain independent
+  preconditions. Dispatch intent precedes effects; ambiguous delivery never retries.
+- Result is immutable processing evidence; a reply/follow-up is another Message.
+  Reads never consume/close. Normal close requires every Message to be finished.
+- The authorized `ABANDONED_UNRESOLVED` disposition preserves unknown facts while
+  disabling protocol activity; it is not cancellation or normal close.
+- Persistence, authentication, admission policy and real endpoint integration
+  remain unimplemented.
 
 ## Usage
 

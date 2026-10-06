@@ -10,6 +10,11 @@ for layering and [protocol-v1.md](protocol-v1.md) for the superseded v1.
 is superseded by [quarantine-hotfix-ph0003.md](quarantine-hotfix-ph0003.md).
 No identity format, outcome vocabulary or normal close precondition changes.
 
+**Approved PH-0003 convergence:** Client/Agent labels become scoped action grants;
+MCP is a control surface, not conversation delivery. Peer endpoint support is
+independent of authorization and factual evidence. Entity/identity schemas and
+the corrected lifecycle edges remain unchanged. See [chat-bridge-audit-ph0003.md](chat-bridge-audit-ph0003.md).
+
 ## 1. Identity (compatibility preserved)
 
 | Entity | Prefix | Status |
@@ -39,14 +44,15 @@ finished `CANCELLED` / `FAILED` (with `RESULT_AVAILABLE`). There is no
 `CONSUMED`: reads never mutate lifecycle state.
 
 Transition legality is a two-tier table (`TRANSITION_REQUIREMENTS` in
-`src/protocol/lifecycle.ts`): evidence-free moves are licensed by state shape
-alone (`canTransition`); every other move cites an evidence class validated by
-core rules (`isLegalTransition` + `assertMessageTransition`). Highlights:
+`src/protocol/lifecycle.ts`): shape-only helpers (`canTransition`,
+`isLegalTransition`) answer structural legality, never authorize mutations.
+Every actual transition checks scoped grants; evidence-bearing moves additionally
+check their correlated factual evidence. Highlights:
 
-- `CLAIMED → QUEUED` / `CLAIMED → CANCELLED`: agent authority + recorded
+- `CLAIMED → QUEUED` / `CLAIMED → CANCELLED`: scoped release/confirm grant + recorded
   lease + a consistent `not_attempted` / `pending` attempt (the only safe
   requeue). Contradictory transport facts cannot be laundered by the marker.
-- `CLAIMED → DISPATCHING`: agent authority + **current** lease + durable
+- `CLAIMED → DISPATCHING`: scoped dispatch-start grant + **current** lease + durable
   `started` dispatch marker (marked BEFORE any adapter effect).
 - `DISPATCHING → ACCEPTED`: current authoritative fenced lease + transport
   `delivered` **and independently correlated runtime `accepted` evidence**.
@@ -64,18 +70,22 @@ core rules (`isLegalTransition` + `assertMessageTransition`). Highlights:
   `settled|runtime_error|cancelled|interrupted`. A dispatch marker is not proof
   of execution. `SETTLED → RESULT_AVAILABLE` additionally requires a validated
   correlated immutable Result loaded from successful publication.
-- `DELIVERY_UNKNOWN → ACCEPTED/FAILED`: agent authority + recorded lease +
-  correlated transport evidence + **explicit reconciliation evidence**.
+- `DELIVERY_UNKNOWN → ACCEPTED/FAILED`: scoped reconciliation grant + recorded lease +
+  correlated transport evidence + **explicit reconciliation evidence**. Acceptance
+  additionally requires an independent scoped runtime-progress grant and evidence.
   `DELIVERY_UNKNOWN → CANCELLED` is prohibited (PH-0003 authorized hotfix):
   owner intent/reconciliation text is not execution evidence. Administrative
   abandonment is a separate disposition, never an execution-state transition.
   No exit to retryable states; no automatic retry anywhere.
-- Cancellation: `QUEUED → CANCELLED` (client; nothing dispatched) is the only
-  evidence-free cancel. From `CLAIMED/DISPATCHING/ACCEPTED/RUNNING` the
-  client may only `→ CANCEL_REQUESTED`; confirmation
+- Cancellation: `QUEUED → CANCELLED` (cancellation-request grant; nothing dispatched)
+  is evidence-free but NOT permission-free. From `CLAIMED/DISPATCHING/ACCEPTED/RUNNING`
+  the requester may only `→ CANCEL_REQUESTED`; confirmation requires a separately
+  scoped cancellation-confirmation grant.
   (`CANCEL_REQUESTED → CANCELLED`) needs either provably not-attempted
   dispatch (`not_attempted` plus `pending`) or a started/delivered attempt with
   correlated runtime `cancelled` confirmation; ambiguity remains quarantined.
+  Started runtime cancellation ALSO requires settlement-report authority;
+  no-attempt cancellation does not synthesize a runtime event.
   Failure/settlement requires its own evidence, not the request. Queued
   cancellation also rejects contradictory presented dispatch evidence.
 
@@ -89,9 +99,13 @@ but never authorize retry or dispatch.
 These helpers validate supplied snapshots, not persistence/authentication.
 The future host must authenticate the principal, load the current message,
 attempt, latest claim, complete exchange message set and published result itself,
-then check-and-commit atomically. Never accept `authority`, `currentLease`, or
+then check-and-commit atomically. Never accept `authorization`, `currentLease`, or
 published-result proof directly from an external adapter as authoritative.
 Concurrent revision/CAS and durable fencing allocation remain unimplemented.
+Request-only moves need no synthetic lease input. Attempt-backed moves still
+require validated recorded/current lease evidence according to the unchanged
+transition table.
+
 ## 3. Entities (src/protocol/entities.ts)
 
 - `Exchange { exchangeId, state OPEN|CLOSED, createdAt, closedAt? }`
@@ -176,16 +190,52 @@ rejected at core publication/read boundaries. Publication requires a
 settlement-grade runtime outcome; reading returns immutable snapshots without
 recording semantic completion.
 
-## 5. Capability ports (src/protocol/capabilities.ts)
+## 5. Action grants and endpoint support
 
-- Client: `exchange_send`, `exchange_get`, `exchange_list`,
-  `exchange_cancel` (request), `exchange_result`. `exchange_close` and
-  `exchange_archive` are distinct optional capabilities, declared but not
-  implemented as control APIs. Archive records disposition, not cancellation.
-- Agent: `message_claim`, `dispatch_mark_started`, `delivery_report`,
-  `activity_report`, `settlement_report`, `result_publish`, `lease_release`,
-  `ambiguity_resolve`, `cancel_confirm`.
-- Disjoint by construction; `assertPortDisjointness` is the frozen invariant.
+Closed `CONTROL_OPERATIONS`: `exchange_send/get/list/cancel/result`. Optional
+`exchange_close` and `exchange_archive` remain separate grants and unimplemented
+control APIs. `ENDPOINT_OPERATIONS`: claim, dispatch-start, delivery report,
+runtime activity/settlement, publication, lease release, factual reconciliation
+and cancellation confirmation. Catalog separation is checked by
+`assertOperationSeparation`; it does NOT impose protocol roles.
+
+`AuthorizationContext { principalId, grants[] }`; each grant has
+`{ action, principalId, scope }`. Actions and scopes are a closed discriminated
+union, validated at typecheck and runtime. Send/get/result require Exchange
+scope; cancel requires Message scope; claim requires Message+destination scope;
+endpoint mutations require Message+Attempt+recipient scope (all include Exchange).
+Close/archive require owner scope and bind ownerId to the context principal.
+Listing declares collection permission; future host filtering is still required.
+Different principal/Exchange/Message/Attempt/endpoint incarnation cannot reuse
+a grant. Delivery authority alone cannot assert runtime acceptance.
+
+**Contexts are not credentials.** The future host authenticates identities,
+maps sender/destination/owner/consumer bindings, loads current grants and
+authoritative snapshots and supplies contexts to pure core rules transactionally.
+Caller-provided grants, adapter kind, implemented interface or support claims
+cannot establish any of those facts. No host/authentication service exists here.
+
+`EndpointDeclaration { kind, capabilities }` advertises independent delivery,
+observation, cancellation, follow-up and result-production support.
+Support is `supported|unsupported|unknown`; optional/missing means unknown.
+No method or advertisement creates evidence or grants. Pi declares only a
+binding shape; no implemented capabilities are advertised. No ChatGPT endpoint
+is implemented. Known delivery with unknown execution cannot be mislabeled
+DELIVERY_UNKNOWN or manufacture runtime acceptance/settlement. Unsupported
+workflows may be rejected by future admission policy before effects.
+
+## 5a. Result versus conversational reply
+
+Result remains processing evidence/output for one Message/Attempt. Publication
+requires its scoped grant, settlement-grade outcome and immutable replay/conflict
+validation. The future host must check publication and RESULT_AVAILABLE transition
+together against authoritative settled Message/Attempt/runtime facts; the helper
+alone is not proof of execution.
+
+Reply/follow-up communication is another Message in the same Exchange, with
+its own ID, reversed or otherwise explicit from/to and independent evidence.
+No automatic Result-to-Message conversion, reply send, read-consumption or close
+exists. This needs no change to Message/Result/EndpointRef wire schemas.
 
 ## 6. Superseded v1 semantics (documented)
 
@@ -205,7 +255,7 @@ invariants survive as `entities.test.ts` and `capabilities.test.ts`);
 was extended (namespace scoping, immutable records, strict digest input).
 Retained unchanged: the 11 identity/encoder tests
 (`identity.test.ts`, hotfix-regression included) and the MCP smoke tests
-(`test/adapters/mcp/`, service label updated to the project rename).
+(`test/control/mcp/`, moved by PH-0003 without smoke behavior changes).
 
 ## 7. Security rules (frozen, carried from v1)
 

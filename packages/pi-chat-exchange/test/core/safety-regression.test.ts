@@ -3,13 +3,14 @@ import { assertMessageTransition, readResult } from "../../src/core/rules.js";
 import { canonicalDigest } from "../../src/protocol/idempotency.js";
 import { InMemoryIdempotencyStore } from "../../src/core/reference.js";
 
+import { fixtureAuthorization } from "../fixtures/authorization.js";
 const uid = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const now = "2026-10-06T00:00:00Z";
 const endpoint = { adapter: "generic", endpointId: "durable", instanceId: "live" };
 const lease = { consumerId: "c", instanceId: "live", fencingToken: 1, expiresAt: "2026-10-06T01:00:00Z" };
 const attempt = { attemptId: `att_${uid}`, messageId: `msg_${uid}`, endpoint, lease, dispatch: "started" as const, transport: "ambiguous" as const, createdAt: now };
 const message = { messageId: attempt.messageId, exchangeId: `ho_${uid}`, to: endpoint, state: "DISPATCHING" as const };
-const guard = { authority: "agent" as const, now, lease, currentLease: lease, attempt };
+const guard = { authorization: fixtureAuthorization(message.exchangeId, message.messageId, attempt.attemptId, endpoint), now, lease, currentLease: lease, attempt };
 const result = { resultId: `hr_${uid}`, exchangeId: message.exchangeId, messageId: message.messageId, attemptId: attempt.attemptId, source: endpoint, transport: "delivered" as const, runtime: "settled" as const, body: "x", resultDigest: "a".repeat(64), settledAt: now };
 
 describe("fail-closed review regressions", () => {

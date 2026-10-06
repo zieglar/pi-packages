@@ -106,22 +106,22 @@ describe("message lifecycle (protocol v2)", () => {
       if (requirement.lease !== "none") {
         expect(requirement.evidence).not.toBe("none");
       }
-      expect(["client", "agent", "any"]).toContain(requirement.authority);
+      expect(requirement.actions.length).toBeGreaterThan(0);
       expect(["none", "recorded", "current"]).toContain(requirement.lease);
     }
   });
 
-  it("dispatch progress requires runtime authority; only requests are client-side", () => {
-    expect(TRANSITION_REQUIREMENTS["CLAIMED>DISPATCHING"]?.authority).toBe("agent");
-    expect(TRANSITION_REQUIREMENTS["DISPATCHING>ACCEPTED"]?.authority).toBe("agent");
-    expect(TRANSITION_REQUIREMENTS["RUNNING>SETTLED"]?.authority).toBe("agent");
-    expect(TRANSITION_REQUIREMENTS["DISPATCHING>CANCEL_REQUESTED"]?.authority).toBe("client");
-    expect(TRANSITION_REQUIREMENTS["QUEUED>CANCELLED"]?.authority).toBe("client");
+  it("separates request, dispatch, acceptance and settlement grants", () => {
+    expect(TRANSITION_REQUIREMENTS["CLAIMED>DISPATCHING"]?.actions).toEqual(["dispatch_mark_started"]);
+    expect(TRANSITION_REQUIREMENTS["DISPATCHING>ACCEPTED"]?.actions).toEqual(["delivery_report", "activity_report"]);
+    expect(TRANSITION_REQUIREMENTS["RUNNING>SETTLED"]?.actions).toEqual(["settlement_report"]);
+    expect(TRANSITION_REQUIREMENTS["DISPATCHING>CANCEL_REQUESTED"]?.actions).toEqual(["exchange_cancel"]);
+    expect(TRANSITION_REQUIREMENTS["QUEUED>CANCELLED"]?.actions).toEqual(["exchange_cancel"]);
   });
 
   it("quarantine resolution requires reconciliation-grade authority", () => {
-    expect(TRANSITION_REQUIREMENTS["DELIVERY_UNKNOWN>ACCEPTED"]?.authority).toBe("agent");
-    expect(TRANSITION_REQUIREMENTS["DELIVERY_UNKNOWN>FAILED"]?.authority).toBe("agent");
+    expect(TRANSITION_REQUIREMENTS["DELIVERY_UNKNOWN>ACCEPTED"]?.actions).toEqual(["ambiguity_resolve", "activity_report"]);
+    expect(TRANSITION_REQUIREMENTS["DELIVERY_UNKNOWN>FAILED"]?.actions).toEqual(["ambiguity_resolve"]);
     expect(isLegalTransition("DELIVERY_UNKNOWN", "CANCELLED")).toBe(false);
     expect(TRANSITION_REQUIREMENTS["DELIVERY_UNKNOWN>CANCELLED"]).toBeUndefined();
     for (const key of ["DELIVERY_UNKNOWN>ACCEPTED", "DELIVERY_UNKNOWN>FAILED"]) {

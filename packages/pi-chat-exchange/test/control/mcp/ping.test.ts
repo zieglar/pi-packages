@@ -6,7 +6,7 @@ import {
   PingResultSchema,
   defaultHostLabel,
   ping,
-} from "../../../src/adapters/mcp/ping.js";
+} from "../../../src/control/mcp/ping.js";
 
 const EXPECTED = {
   service: "pi-chat-exchange",
