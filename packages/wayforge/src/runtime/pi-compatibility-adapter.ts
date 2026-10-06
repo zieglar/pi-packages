@@ -1,10 +1,14 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+  classifyResolvedProviderMessage,
+  type TransportFailureClassification,
+} from "../recovery/transport-failure-classifier.js";
 import type { ModelDecision } from "../policy/model-policy.js";
 import {
   augmentAdvisorFailureDiagnostic, observeAdvisorResponse, observePreparedTokens,
   type AdvisorPreparedTokenObservation,
 } from "../trace/advisor-diagnostics.js";
-import type { ExecutionResult } from "../types/result.js";
+import type { ExecutionResult, Failure } from "../types/result.js";
 import { failure, normalizeError } from "../types/result.js";
 import type {
   MainSessionModelPort,
@@ -99,6 +103,31 @@ export class PiCompatibilityAdapter implements MainSessionModelPort, NestedModel
         ...(request.signal !== undefined ? { signal: request.signal } : {}),
       });
       const message = await events.result();
+      const terminalStopReason = readMessageString(message, "stopReason") ??
+        (readMessageString(message, "errorMessage") !== undefined ? "error" : "stop");
+      const classification = classifyResolvedProviderMessage(
+        {
+          provider: readMessageString(message, "provider") ?? request.provider,
+          modelId: readMessageString(message, "model") ?? request.modelId,
+          stopReason: terminalStopReason,
+          ...(readMessageString(message, "errorMessage") !== undefined
+            ? { errorMessage: readMessageString(message, "errorMessage") }
+            : {}),
+        },
+        { provider: request.provider, modelId: request.modelId },
+      );
+      const nonTransportUnknownStopReason = classification.classification === "unknown" &&
+        classification.code === "unsupported_stop_reason";
+      if (classification.classification !== "successful_result" && !nonTransportUnknownStopReason) {
+        return failure(augmentAdvisorFailureDiagnostic(transportFailureToFailure(classification), () => ({
+          stream: "resolved",
+          stopReason: terminalStopReason,
+          reasoning: request.thinking,
+          logicalBudget: request.budgetLimit,
+          sdkMaxTokens: request.budgetLimit,
+          ...prepared,
+        })));
+      }
       const text = message.content
         .filter((block): block is { type: "text"; text: string } => block.type === "text")
         .map((block) => block.text)
@@ -126,5 +155,104 @@ export class PiCompatibilityAdapter implements MainSessionModelPort, NestedModel
         ...prepared,
       })));
     }
+  }
+}
+
+function readMessageString(message: unknown, key: string): string | undefined {
+  try {
+    const value = (message as Record<string, unknown>)[key];
+    return typeof value === "string" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function transportFailureToFailure(classification: TransportFailureClassification): Failure {
+  const detail = classification.detail === undefined ? "" : `: ${classification.detail}`;
+  switch (classification.classification) {
+    case "transient_throttle":
+      return {
+        kind: "rate_limit",
+        scope: "provider",
+        confidence: classification.confidence,
+        code: classification.code,
+        message: `provider invocation was throttled${detail}`,
+        ...(classification.retryAfterMs !== undefined ? { retryAfterMs: classification.retryAfterMs } : {}),
+      };
+    case "transient_provider":
+      return {
+        kind: "provider",
+        scope: "provider",
+        confidence: classification.confidence,
+        code: classification.code,
+        message: `provider invocation failed${detail}`,
+        ...(classification.retryAfterMs !== undefined ? { retryAfterMs: classification.retryAfterMs } : {}),
+      };
+    case "transient_connection":
+      return {
+        kind: "network",
+        scope: "provider",
+        confidence: classification.confidence,
+        code: classification.code,
+        message: `provider connection or stream failed${detail}`,
+        ...(classification.retryAfterMs !== undefined ? { retryAfterMs: classification.retryAfterMs } : {}),
+      };
+    case "authentication":
+      return {
+        kind: "authentication",
+        scope: "account",
+        confidence: classification.confidence,
+        code: classification.code,
+        message: `provider authentication failed${detail}`,
+      };
+    case "economic_quota":
+      return {
+        kind: "usage_limit",
+        scope: "account",
+        confidence: classification.confidence,
+        code: classification.code,
+        message: `provider quota or billing limit was reached${detail}`,
+      };
+    case "context_overflow":
+      return {
+        kind: "context_overflow",
+        scope: "model",
+        confidence: classification.confidence,
+        code: classification.code,
+        message: "provider context overflow",
+      };
+    case "cancelled":
+      return {
+        kind: "cancellation",
+        scope: "invocation",
+        confidence: classification.confidence,
+        code: classification.code,
+        message: "provider invocation was cancelled",
+      };
+    case "tool_failure":
+      return {
+        kind: "tool",
+        scope: "invocation",
+        confidence: classification.confidence,
+        code: classification.code,
+        message: "tool execution failed",
+      };
+    case "incomplete_result":
+      return {
+        kind: "validation",
+        scope: "invocation",
+        confidence: classification.confidence,
+        code: classification.code,
+        message: "provider returned an incomplete terminal result",
+      };
+    case "unknown":
+    case "successful_result":
+      return {
+        kind: "unknown",
+        scope: "system",
+        confidence: "ambiguous",
+        code: classification.code,
+        message: classification.detail ?? "provider invocation outcome is unknown",
+      };
   }
 }

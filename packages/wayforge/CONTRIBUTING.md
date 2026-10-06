@@ -60,6 +60,20 @@ run `npm test`, `npm run typecheck`, `npm run build`,
 `node tooling/check-workspace.mjs`. Alpha 1 currently requires the package cwd.
 Do not alter runtime to conceal unrelated validation failure: stop and report.
 
+### Main transport recovery checks
+
+For any change touching provider failure classification or the Pi compatibility boundary, review:
+
+> Main-only; post-native-retry boundary; classification separate from recovery authority; Worker replay forbidden; Advisor retry forbidden; ordinary Pi unaffected; account recovery excluded; runtime health separate from historical evidence.
+
+Ask specifically:
+
+- Does this remain passive classification, or does it acquire model-switch, continuation, budget, cooldown, account, Worker, Advisor, or completion authority?
+- Is provider/model attribution exact, with no inference from aliases, error text, tool output, or account names?
+- Are resolved error-bearing assistant messages rejected before semantic parsing while cancellation and non-error incomplete outcomes remain distinguishable?
+- Are raw provider bodies, credentials, headers, prompts, and unsanitized paths excluded from durable/diagnostic output?
+- Do the architecture gate and focused regression tests prove no second `setModel`, recovery execution, or Advisor replenishment path was introduced?
+
 ## Decision vocabulary
 
 | Decision | Action |

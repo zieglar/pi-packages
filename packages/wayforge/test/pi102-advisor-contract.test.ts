@@ -9,6 +9,7 @@ import type { NestedModelOutput } from "../src/runtime/ports.js";
 import { buildAdvisorDiagnosticRecord, readAdvisorFailureDiagnostic } from "../src/trace/advisor-diagnostics.js";
 import { createInvocation } from "../src/kernel/invocation-context.js";
 import { capabilityId, invocationId, routeId, taskId } from "../src/types/identity.js";
+import type { Failure } from "../src/types/result.js";
 
 const request = { provider: "anthropic", modelId: "claude-sonnet-4-20250514", thinking: "high" as const, prompt: "synthetic prompt must never persist", budgetLimit: 800 };
 const model: Model<"anthropic-messages"> = {
@@ -57,18 +58,27 @@ async function diagnosticForInvalid(output: NestedModelOutput) {
     workspaceDigest: "b".repeat(64), ...readAdvisorFailureDiagnostic(reviewed.failure), parseValid: false });
 }
 
+function diagnosticForTransportFailure(failure: Failure) {
+  return buildAdvisorDiagnosticRecord({ invocationId: "advisor", candidateDigest: "a".repeat(64), candidateRevision: 1,
+    workspaceDigest: "b".repeat(64), ...readAdvisorFailureDiagnostic(failure), parseValid: false });
+}
+
 describe("installed Pi 1.0.2 Advisor token and usage contract", () => {
   it("distinguishes the 800 logical allowance / SDK option from the transformed prepared cap", async () => {
     const harness = installedPiHarness();
     const result = await harness.adapter.stream(request);
-    expect(result.ok).toBe(true); // Pi resolves its error-terminal message.
-    if (!result.ok) throw new Error("expected SDK terminal message");
+    expect(result.ok).toBe(false); // Pi resolves its error-terminal message; TR1 must not treat it as success.
+    if (result.ok) throw new Error("expected typed transport failure");
+    expect(result.failure.kind).toBe("provider");
+    expect(result.failure.code).toBe("transport_stream_error");
     expect(harness.payload()?.max_tokens).toBe(17184);
     expect(harness.payload()?.thinking).toMatchObject({ type: "enabled", budget_tokens: 16160 });
     expect(harness.stream.mock.calls[0]?.[2]).toMatchObject({ reasoning: "high", maxTokens: 800 });
-    const diagnostic = await diagnosticForInvalid(result.value);
+    const diagnostic = diagnosticForTransportFailure(result.failure);
     expect(diagnostic.request).toEqual({ reasoning: "high", logicalBudget: 800, sdkMaxTokens: 800,
       preparedMaxTokens: 17184, preparedMaxTokensField: "max_tokens" });
+    expect(diagnostic.stopReason).toBe("error");
+    expect(diagnostic.stream).toBe("resolved");
     expect(harness.offlineFetch).toHaveBeenCalledTimes(1);
     expect(harness.observerReturn()).toBeUndefined();
     expect(harness.payloadUnchanged()).toBe(true);
@@ -79,9 +89,10 @@ describe("installed Pi 1.0.2 Advisor token and usage contract", () => {
   it("omits provider usage when Pi initializes zeros without receiving provider usage", async () => {
     const harness = installedPiHarness();
     const result = await harness.adapter.stream(request);
-    if (!result.ok) throw new Error("expected SDK terminal message");
-    expect(result.value.usage).toEqual({ inputTokens: 0, outputTokens: 0 }); // unchanged SDK accounting
-    const diagnostic = await diagnosticForInvalid(result.value);
+    if (result.ok) throw new Error("expected typed transport failure");
+    expect(result.failure.kind).toBe("provider");
+    expect(result.failure.code).toBe("transport_stream_error");
+    const diagnostic = diagnosticForTransportFailure(result.failure);
     expect(diagnostic.usage).toBeUndefined();
     expect(diagnostic.stopReason).toBe("error");
     expect(diagnostic.stream).toBe("resolved");

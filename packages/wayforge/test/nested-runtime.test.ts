@@ -236,7 +236,13 @@ describe("nested invoker", () => {
 describe("pi compatibility adapter (sentinel nested runtime path)", () => {
   const fakeModel = { id: "claude-haiku", api: "anthropic" } as never;
 
-  function makeRegistry(result: unknown = { content: [{ type: "text", text: "hello" }], usage: { input: 3, output: 4 } }) {
+  function makeRegistry(result: unknown = {
+    content: [{ type: "text", text: "hello" }],
+    usage: { input: 3, output: 4 },
+    provider: "anthropic",
+    model: "claude-haiku",
+    stopReason: "stop",
+  }) {
     const streamResult = {
       result: () => Promise.resolve(result),
     };
@@ -314,5 +320,54 @@ describe("pi compatibility adapter (sentinel nested runtime path)", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.failure.kind).toBe("cancellation");
+  });
+
+  it("treats a resolved error-bearing assistant message as a typed transport failure", async () => {
+    const { ctx, pi } = makeRegistry({
+      content: [],
+      usage: { input: 3, output: 0 },
+      provider: "anthropic",
+      model: "claude-haiku",
+      stopReason: "error",
+      errorMessage: "provider returned 503 after response started",
+    });
+    const adapter = new PiCompatibilityAdapter(pi, ctx);
+    const result = await adapter.stream({
+      provider: "anthropic",
+      modelId: "claude-haiku",
+      thinking: "low",
+      prompt: "x",
+      budgetLimit: 5,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.failure.kind).toBe("provider");
+    expect(result.failure.confidence).toBe("certain");
+    expect(result.failure.code).toBe("transport_stream_error");
+    expect(result.failure.message).toContain("provider returned 503");
+  });
+
+  it("does not pass a resolved aborted assistant message into semantic output", async () => {
+    const { ctx, pi } = makeRegistry({
+      content: [{ type: "text", text: "not-a-verdict" }],
+      usage: { input: 3, output: 1 },
+      provider: "anthropic",
+      model: "claude-haiku",
+      stopReason: "aborted",
+    });
+    const adapter = new PiCompatibilityAdapter(pi, ctx);
+    const result = await adapter.stream({
+      provider: "anthropic",
+      modelId: "claude-haiku",
+      thinking: "low",
+      prompt: "x",
+      budgetLimit: 5,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.failure.kind).toBe("cancellation");
+    expect(result.failure.code).toBe("aborted");
   });
 });

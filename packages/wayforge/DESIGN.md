@@ -90,6 +90,7 @@ assignment of every implementation class.
 | Recovery policy | Wayforge's pure RecoveryCoordinator | [Planner](src/recovery/recovery-coordinator.ts). Decisions are not transitions. |
 | Recovery execution | Explicit Wayforge execution/transition owners | [Executor](src/recovery/runtime-recovery-executor.ts), [WakeupService](src/recovery/wakeup-service.ts). Live worker failure handling calls `plan`; autonomous executor `run` is not wired there. |
 | Health/cooldown and route eligibility | Wayforge | [Registry](src/recovery/health-registry.ts), [passive routes](src/adapters/passive-account-adapter.ts). This does not establish shared multi-session account-health authority. |
+| Transport failure classification | Wayforge passive classifier | [Classifier](src/recovery/transport-failure-classifier.ts). Classification is not route fallback, cooldown mutation, continuation, budget, account activation, Worker replay, or Advisor retry authority. |
 | Provider transport and model runtime | Pi runtime | [Compatibility boundary](src/runtime/pi-compatibility-adapter.ts), [nested invoker](src/runtime/nested-invoker.ts). |
 | Account inventory, credential storage, activation semantics | Pi Accounts when integrated; Pi auth otherwise | [Protocol client](src/adapters/pi-accounts-adapter.ts). Wayforge consumes the seam; this adapter is not live account-recovery wiring. |
 | Worker execution and child-session lifecycle | pi-subagents, consumed through a Wayforge adapter | [Public delegation boundary](src/adapters/pi-subagent-worker-adapter.ts). No independent child lifecycle mechanism is implied. |
@@ -176,6 +177,10 @@ and transport internals do not cross this boundary. Evidence:
 
 Freezing governance does not reopen either contract or wire account recovery.
 
+**CONTRACT — Main Transport Recovery (TR0/TR1):** the only authorized recovery class is an owned governed **Main** request after Pi-native retry/recovery has declined continuation at the supported `agent_before_settle` boundary. TR1 classification is passive: it distinguishes attributable transient throttle/provider/connection failures, authentication, economic quota, context overflow, cancellation, tool failure, incomplete results, success, and unknown without switching models, consuming budgets, opening or clearing cooldowns, requesting continuation, activating accounts, replaying Workers, or retrying the one-shot Advisor.
+
+Worker transport-looking failures never authorize automatic relaunch because child work may have side effects. Ordinary Pi remains unaffected: no owned governed Main invocation means no Wayforge cooldown, failure-driven model switch, or continuation injection. Runtime route health remains workflow-runtime-private and is not durable history; historical classification evidence is descriptive and non-authorizing. Evidence: [classifier](src/recovery/transport-failure-classifier.ts), [adapter outcome interpretation](src/runtime/pi-compatibility-adapter.ts), [classification tests](test/transport-failure-classifier.test.ts), [resolved-result regression](test/nested-runtime.test.ts), and [Pi 1.0.2 contract tests](test/pi102-advisor-contract.test.ts).
+
 ## Durable-state boundary
 
 **PRINCIPLE: runtime-useful != durable-safe.** Persist only bounded,
@@ -233,6 +238,11 @@ Keep these boundaries explicit:
 
 - **Recovery policy != recovery execution:** a plan does not grant execution
   authority or prove that a retry happened.
+- **Transport classification != recovery execution:** a typed provider/model outcome does not
+  by itself switch routes, mutate health, consume budget, request continuation, replay
+  Worker work, or replenish Advisor review.
+- **Runtime health != historical evidence:** cooldown/visited state is task-runtime-private;
+  persisted facts describe settled outcomes and cannot authorize later eligibility or replay.
 - **Route selection != credential ownership:** choosing eligibility does not
   authorize credential storage, activation internals, or provider-account mutation.
 - **Completion readiness != Advisor semantic judgment:** independent inputs to

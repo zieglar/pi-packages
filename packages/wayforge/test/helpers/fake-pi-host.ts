@@ -53,8 +53,11 @@ export interface ModelShape {
 export interface FakeModelMessage {
   readonly content: readonly { readonly type: string; readonly text?: string; readonly thinking?: string }[];
   readonly usage: { readonly input: number; readonly output: number };
+  readonly provider?: string;
+  readonly model?: string;
   readonly stopReason?: string;
 }
+
 type LifecycleHook = (event?: unknown, ctx?: unknown) => void | Promise<void>;
 type StreamSimpleHandler = (prompt: string) => Promise<FakeModelMessage>;
 
@@ -128,7 +131,11 @@ export class FakePiHost {
             ? hostThis.modelShape
             : undefined,
         streamSimple: (_model, context) => ({
-          result: () => this.streamSimpleHandler(context.messages[0]?.content ?? ""),
+          result: () => this.streamSimpleHandler(context.messages[0]?.content ?? "").then((message) => ({
+            ...message,
+            provider: message.provider ?? this.modelShape?.provider ?? "test-provider",
+            model: message.model ?? this.modelShape?.id ?? "test-model",
+          })),
         }),
       },
       ui: {

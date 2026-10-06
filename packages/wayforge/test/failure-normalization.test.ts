@@ -138,6 +138,20 @@ describe("conservative error normalization", () => {
     expect(normalizeError(new TypeError("fetch failed")).kind).toBe("network");
   });
 
+  it("maps structured 402 responses to economic quota exhaustion", () => {
+    const f = normalizeError({ status: 402, message: "payment required" });
+    expect(f.kind).toBe("usage_limit");
+    expect(f.scope).toBe("account");
+    expect(f.confidence).toBe("certain");
+    expect(f.code).toBe("http_402");
+  });
+
+  it("does not classify text-only HTTP status strings", () => {
+    expect(normalizeError(new Error("HTTP 429: rate limit")).kind).toBe("unknown");
+    expect(normalizeError(new Error("HTTP 503: service unavailable")).kind).toBe("unknown");
+    expect(normalizeError(new Error("HTTP 402: quota exhausted")).kind).toBe("unknown");
+  });
+
   it("maps server errors to provider failures", () => {
     const f = normalizeError({ status: 503, message: "upstream unavailable" });
     expect(f.kind).toBe("provider");

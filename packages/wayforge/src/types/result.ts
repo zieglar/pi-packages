@@ -151,6 +151,9 @@ export function normalizeError(error: unknown): Failure {
   if (status === 401 || status === 403) {
     return { kind: "authentication", scope: "account", confidence: "certain", code: `http_${status}`, message };
   }
+  if (status === 402) {
+    return { kind: "usage_limit", scope: "account", confidence: "certain", code: "http_402", message, ...timing };
+  }
   if (status === 429) {
     if (/usage|quota|credit|plan/i.test(rawMessage)) {
       return { kind: "usage_limit", scope: "account", confidence: "certain", code: "usage_exhausted", message, ...timing };
