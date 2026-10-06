@@ -1,5 +1,21 @@
 # Wayforge
 
+Wayforge is a **durable, policy-driven execution orchestration layer for Pi**.
+**Pi-first, agent-portable.** Pi is the current supported host.
+
+## Project governance
+
+The normative [Design Constitution](DESIGN.md) defines identity, ownership,
+authority/privacy boundaries, and deliberate contract reopening.
+[Contributing](CONTRIBUTING.md) defines issue/PR gates, the
+[current U1 operating protocol](CONTRIBUTING.md#current-u1-operational-protocol),
+and [known friction](CONTRIBUTING.md#known-friction-and-u1-evidence).
+The [Constitution proposal](docs/design-constitution-proposal.md) is historical
+and non-normative. Controlled real-project dogfood is accepted; U2 daily-driver
+support and account recovery are not implied.
+
+## Historical foundation
+
 Deterministic agent-orchestration kernel. Phase 1A established the kernel:
 invocation and capability contracts, pure role/model policies, typed failures and
 recovery planning, health cooldown ownership, versioned durable-state contracts,
@@ -41,7 +57,7 @@ workflow runtime factory (single composition root)
   ├─ PiSubagentWorkerAdapter ─ pi-subagents/delegation event contract
   ├─ PiAdvisorAdapter ─────── NestedInvoker + strict verdict schema
   ├─ PassiveAccountAdapter ── read-only eligible routes
-  └─ RuntimeRecoveryExecutor ─ executes coordinator decisions, bounded
+  └─ RuntimeRecoveryExecutor ─ owns bounded executor API; live path uses plan only
 
 InvocationContext ── RolePolicy ──> ExecutionRequirement
                                     ModelPolicy ──> ModelDecision
@@ -80,7 +96,8 @@ touched.
 | `npm run test:watch` | Watch mode |
 | `npm run typecheck` | `tsc --noEmit` over `src` and `test` |
 | `npm run build` | Emit `dist/` from `src` |
-| `npm run check:architecture` | Static ownership-boundary gates (9) |
+| `npm run check:architecture` | Static ownership-boundary gates (19) |
+| `npm run check:alpha1` | Durable restart / drift evidence gate (package cwd) |
 | `npm run check:alpha0` | Assisted-dogfood preconditions gate |
 | `npm run verify` | Architecture gates, tests, typecheck, build |
 | `npm run verify:alpha0` | Full verify plus the Alpha 0 gate |
@@ -111,13 +128,17 @@ explicit delegation). Other terminal Worker statuses surface as derived
 `worker_structured_output_failed`, `worker_acceptance_failed`,
 `worker_cancelled`, and `worker_interrupted`.
 
-**Advisor diagnostics** — `advisors_unavailable` / `no_advisor_route` mean no
-eligible route for the advisor role; `advisor_not_triggered` means the request
-did not satisfy the trigger policy (e.g. a `beforeDone: true` call before
-completion is attempted); `invalid_advisor_verdict` means the model's response
-did not parse against the strict verdict schema — resend with clearer
-instructions. `completion_gate_failed` means a latest validation is failing or
-no approving advisor verdict exists yet.
+**Advisor diagnostics** — In governed tasks `wayforge_advise` returns
+`advisor_reserved_for_completion` without a provider call. Record passing
+workspace-bound validation and use `wayforge_complete` for the authoritative
+review. `advisors_unavailable` / `no_advisor_route` indicate missing capacity;
+`invalid_advisor_verdict` indicates strict parsing failed. The authoritative
+review is synchronously claimed once and never replenished:
+`advisor_changes_requested` is terminal for this task's completion review,
+and another attempt returns `completion_review_spent`. Corrected work must
+enter a new governed task/candidate lifecycle; do not retry or manually reset
+the claim. Standalone non-governed advice retains its separate trigger policy.
+See [U1 protocol](CONTRIBUTING.md#current-u1-operational-protocol).
 
 **General** — `wayforge_task_status` shows the sanitized snapshot (status,
 children, budget, validations, verdicts) at any point; with a `taskId` it
@@ -133,14 +154,13 @@ deliberately.
 
 ## Verification
 
-`npm run verify` runs the architecture checker (9 gates: single `setModel(`
-callsite in the adapter; no `pi-ai` transport imports; Pi API imports confined
-to the adapter, extension entry, and tool surface; no forbidden
-lifecycle/fallback members in adapters or recovery; single `RecoveryCoordinator`,
-`HealthRegistry`, and `HealthProjector` construction sites in the runtime
-factory; live-Pi components constructed only in the extension entry; and
-pi-subagents imports confined to the public `pi-subagents/delegation`
-contract), the full test suite, typecheck, and build.
+`npm run verify` runs the architecture checker (19 gates), the full test
+suite, typecheck, and build. Gates enforce the single Pi compatibility/model
+mutation boundary, narrow adapter imports, single composition owners, durable
+completion writes/CAS, accounts protocol confinement, and reserved one-shot
+Advisor dispatch/diagnostics. See [the checker](scripts/check-architecture.mjs)
+for the executable inventory. When the local pnpm shim is unavailable, run
+the equivalent npm commands individually as listed in CONTRIBUTING.md.
 
 Tests cover invocation derivation (depth/budget/cancellation), capability and
 policy resolution, failure normalization (including conservative ambiguous
@@ -158,6 +178,11 @@ sequencing-only controller, the runtime factory, the fail-closed ownership
 guard, the extension tool surface, and the Alpha 0 gate.
 
 ## Out of scope (Phase 1B.1)
+
+This historical phase list is not the current feature inventory: later
+phases added durable state, leases, drift checks, completion authority, and
+startup reconciliation. Current boundaries are in [DESIGN.md](DESIGN.md);
+supported U1 surfaces and limitations are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 No autonomous restart or resume after host or Pi exits, no ambient account-plugin
 adaptation (active `pi-multi-account`/`pi-shift-router`/`pi-advisor-flow`

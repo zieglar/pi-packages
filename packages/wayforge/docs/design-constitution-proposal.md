@@ -1,10 +1,17 @@
 # Wayforge Design Constitution — Proposal
 
-Status: proposal for operator review. Every claim below is labeled
-**EXISTING PRINCIPLE** (demonstrated by production composition, frozen
-contracts, gates, tests, or accepted git history) or **PROPOSED GOVERNANCE
-RULE** (a new rule proposed for future issues/PRs). Nothing labeled PROPOSED
-is historical architecture.
+**Status: historical, non-normative derivation record.** Superseded by the
+frozen [Design Constitution](../DESIGN.md) and
+[contributor gates / U1 protocol](../CONTRIBUTING.md) in HANDOFF 38164.
+
+The original proposal below is retained unchanged as evidence of the U1
+work product, not as current architecture or competing normative guidance.
+Its EXISTING PRINCIPLE / PROPOSED GOVERNANCE RULE labels reflect the
+proposal stage; adoption, corrections, and implementation/protocol distinctions
+are governed by the successor documents. In particular, the recovery path
+currently calls `plan`, not autonomous `run`; adapter policy disclaimers do
+not disclaim all Wayforge policy ownership; upstream existence is not a
+necessary condition for every feature; one-shot review is frozen, not retryable.
 
 ## Purpose
 
