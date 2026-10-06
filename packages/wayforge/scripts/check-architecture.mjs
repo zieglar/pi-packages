@@ -29,7 +29,7 @@
  *   gate 13 durable task completion literals/evidence writers live only in
  *           completion/completion-authority.ts (worker outcomes excluded);
  *   gate 14 completion CAS callsites live only in the completion authority;
- *   gate 15 no pi-accounts package or protocol string appears in production.
+ *   gate 15 versioned accounts protocol strings appear only in the dedicated adapter;
  *   gate 16 completion budget reservation callsites belong to the controller;
  *   gate 17 authoritative review dispatch belongs to the authority callback;
  *   gate 18 governed manual advice refuses before any review dispatch;
@@ -59,6 +59,8 @@ const DELEGATION_EXPORT = "pi-subagents/delegation";
 const DURABLE_COMPOSITION_PATH = "runtime/durable-composition.ts";
 const PI_ACCOUNTS_RE = /(^|\/)pi-accounts(\/|$)|@narumitw\//;
 const PI_ACCOUNTS_CONTENT_RE = /pi-accounts|@narumitw\//i;
+const PI_ACCOUNTS_ADAPTER_PATH = "adapters/pi-accounts-adapter.ts";
+const ACCOUNTS_PROTOCOL_RE = /\baccounts:(?:topology|activation):v1\b/;
 const COMPLETION_AUTHORITY_PATH = "completion/completion-authority.ts";
 const COMPLETED_STATUS_RE = /\bstatus\s*:\s*["']completed["']/g;
 const WORKFLOW_COMPLETED_WRITE_RE = /\.setStatus\s*\(\s*["']completed["']\s*\)/g;
@@ -188,9 +190,12 @@ for (const file of files) {
     }
   }
 
-  // Gate 15: reject account package/protocol strings, not only imports.
-  if (PI_ACCOUNTS_CONTENT_RE.test(content)) {
-    violations.push(`${relPath}: pi-accounts dependency or protocol strings are forbidden`);
+  // Gate 15: only the narrow protocol adapter may name the EventBus channels.
+  if (PI_ACCOUNTS_CONTENT_RE.test(content) && relPath !== PI_ACCOUNTS_ADAPTER_PATH) {
+    violations.push(`${relPath}: pi-accounts dependency references are forbidden outside ${PI_ACCOUNTS_ADAPTER_PATH}`);
+  }
+  if (ACCOUNTS_PROTOCOL_RE.test(content) && relPath !== PI_ACCOUNTS_ADAPTER_PATH) {
+    violations.push(`${relPath}: accounts protocol channels are only permitted in ${PI_ACCOUNTS_ADAPTER_PATH}`);
   }
 
   // Gate 2, 3, 9 & 11: import restrictions.

@@ -326,14 +326,14 @@ describe("architecture gates over production source", () => {
     expect(result.stdout).toContain("19 gates passed");
   });
 
-  it("fails on pi-accounts protocol strings even when they are not imports", () => {
+  it("fails when an accounts protocol channel appears outside the dedicated adapter", () => {
     const dir = fixture({
       "extension.ts": "const completion = new CompletionAuthority(options);\n",
-      "runtime/rogue.ts": "export const protocol = \"pi-accounts://rotate\";\n",
+      "runtime/rogue.ts": "export const protocol = \"accounts:topology:v1\";\n",
     });
     const result = runChecker(dir);
     expect(result.status).not.toBe(0);
-    expect(result.stdout).toContain("pi-accounts");
+    expect(result.stdout).toContain("accounts protocol channels");
   });
 
 });
