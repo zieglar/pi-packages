@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { ensureBuilt } from "./helpers/ensure-built.js";
 import { FilesystemDurableTaskStore } from "../src/durable/filesystem-task-store.js";
 import { captureWorkspaceCheckpoint } from "../src/durable/workspace-checkpoint.js";
 import type { TaskLease } from "../src/durable/contracts.js";
@@ -179,7 +180,7 @@ async function pollStore(
   }
 }
 
-beforeAll(() => execFileSync("npm", ["run", "build"], { cwd: process.cwd(), stdio: "pipe" }));
+beforeAll(() => ensureBuilt());
 afterEach(() => {
   roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true }));
 });

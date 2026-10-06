@@ -21,6 +21,38 @@ It explicitly does not cover:
 - runtime diagnostics or event streams, which are not substitutes for
   authoritative task state.
 
+## Entry and session controls (U2.1)
+
+- Plain `pi` starts with Default Governed Mode **OFF**.
+- `pi --wayforge` explicitly starts the initial retained TUI/RPC session **ON**.
+- `/wayforge on` and `/wayforge off` change future ordinary-turn routing only;
+  OFF does **not** cancel or modify an active governed task.
+- Bare `/wayforge` and `/wayforge status` show the same bounded status/help:
+  mode, live entry eligibility, durable authority, and command syntax.
+- `/wayforge <objective>` remains explicit entry. Only exact trimmed,
+  case-sensitive `on`, `off`, and `status` are reserved; `on boarding` is an
+  objective, and bare `/wayforge` never toggles mode.
+
+With ON, eligible ordinary interactive/RPC text enters the existing governed
+workflow. Extension-origin messages bypass this routing structurally. Slash
+command/skill/template syntax remains Pi-owned; TUI built-ins and bash controls
+also stay in Pi's native dispatch. Active non-terminal work continues in its
+current task. After terminal status or a completion `changes_requested` refusal
+observed in this session, the next eligible turn creates a new task/candidate;
+the old review is never reset. Historical negative-review evidence does not
+authorize this routing.
+
+Mode is extension-private, never durable. Fresh/replacement sessions and reloads
+start OFF unless a new initial launch explicitly supplies `--wayforge`; command
+toggles do not carry over. Print startup with the flag is visibly rejected and
+stays OFF; the print prompt remains ordinary Pi input, not governed acceptance.
+
+Entry errors consume the original turn instead of falling through to ordinary
+execution. A late error may leave an admitted task, so inspect status before
+continuing; no rollback, retry, or account recovery is implied. Turn mode OFF
+explicitly if ordinary execution is desired. These are operator controls, not
+new Completion Authority or recovery contracts.
+
 ## Tools
 
 Two tools, both returning sanitized JSON and never raw provider data:

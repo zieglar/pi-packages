@@ -8,6 +8,7 @@ import {
   SUBAGENT_DELEGATION_RESPONSE_EVENT,
 } from "pi-subagents/delegation";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { ensureBuilt } from "./helpers/ensure-built.js";
 import { serializeTaskState, type AuthoritativeTaskState } from "../src/durable/state.js";
 import { FilesystemDurableTaskStore } from "../src/durable/filesystem-task-store.js";
 import { captureWorkspaceCheckpoint } from "../src/durable/workspace-checkpoint.js";
@@ -189,7 +190,7 @@ async function expectRefused(
   expect((await harness.state()).status).toBe(expectedDurableStatus);
 }
 
-beforeAll(() => execFileSync("npm", ["run", "build"], { cwd: process.cwd(), stdio: "pipe" }));
+beforeAll(() => ensureBuilt());
 afterEach(() => {
   vi.restoreAllMocks();
   roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true }));

@@ -84,6 +84,8 @@ function makeHarness(
   const setModel = vi.fn(async () => true);
 
   const pi = {
+    registerFlag: (_name: string, _options: { type: "boolean" | "string"; default?: boolean | string }) => undefined,
+    getFlag: (_name: string) => false as boolean | undefined,
     registerTool: (tool: ToolDefinition) => tools.push(tool),
     registerCommand: (name: string, options: Omit<RegisteredCommand, "name">) =>
       commands.set(name, { name, handler: options.handler }),
@@ -147,7 +149,7 @@ function makeHarness(
   } as unknown as ExtensionContext;
 
   const fire = async (event: string) => {
-    await Promise.all((listeners.get(event) ?? []).map((handler) => handler(undefined as never, ctx)));
+    await Promise.all((listeners.get(event) ?? []).map((handler) => handler({ type: event, reason: "startup" } as never, ctx)));
   };
   const tool = (name: string) => {
     const found = tools.find((candidate) => candidate.name === name);
@@ -244,7 +246,13 @@ describe("wayforgeExtension runtime", () => {
     expect(early.isError).toBe(true);
     expect(JSON.stringify(early.content)).toContain("workflow_not_started");
     await h.commands.get("wayforge")?.handler("   ", h.ctx);
-    expect(h.notify).toHaveBeenCalledWith("Usage: /wayforge <objective>", "warning");
+    // U2.1: bare /wayforge renders the shared session status (typed, no model call)
+    // instead of the pre-U2.1 usage warning.
+    const bareCall = h.notify.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("default governed mode: off"),
+    );
+    expect(bareCall).toBeDefined();
+    expect(bareCall?.[1]).toBe("info");
     expect(h.setModel).not.toHaveBeenCalled();
   });
   it("refuses governed start when durable authority is unavailable while durable diagnostics remain usable", async () => {

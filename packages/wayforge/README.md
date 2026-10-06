@@ -96,13 +96,55 @@ touched.
 | `npm run test:watch` | Watch mode |
 | `npm run typecheck` | `tsc --noEmit` over `src` and `test` |
 | `npm run build` | Emit `dist/` from `src` |
-| `npm run check:architecture` | Static ownership-boundary gates (19) |
+| `npm run check:architecture` | Static ownership-boundary gates (21) |
 | `npm run check:alpha1` | Durable restart / drift evidence gate (package cwd) |
 | `npm run check:alpha0` | Assisted-dogfood preconditions gate |
 | `npm run verify` | Architecture gates, tests, typecheck, build |
 | `npm run verify:alpha0` | Full verify plus the Alpha 0 gate |
 | `npm run pi:version` | Print the installed project-local Pi version |
 | `scripts/pi1-dev.sh [args]` | Launch isolated project-local Pi |
+
+## Entry and Default Governed Mode (U2.1)
+
+`/wayforge <objective>` remains the explicit governed entry. U2.1 adds a
+session-scoped Default Governed Mode over the same entry path — never a second
+governance mechanism:
+
+| Surface | Meaning |
+| --- | --- |
+| `pi` | ordinary Pi; Default Governed Mode is OFF |
+| `pi --wayforge` | the session starts with Default Governed Mode ON (native extension flag) |
+| `/wayforge on` / `/wayforge off` | toggle session mode; never persisted across sessions |
+| `/wayforge` or `/wayforge status` | bounded status: mode, active governed task, durable authority |
+| `/wayforge <objective>` | explicit governed task (the words `on`, `off`, and `status` are reserved as exact single-word objectives) |
+
+With mode ON, an eligible top-level operator turn enters the existing
+governed-entry path (`startWorkflow` → the existing WorkflowController,
+validation, Advisor, and Completion Authority). Routing authority is explicit
+session mode plus structured input-source provenance — never prompt-content
+classification. Wayforge's own injected messages (source `extension`) bypass
+routing, so entry is exactly once and never recursive.
+
+Slash command/skill/template syntax stays Pi-owned. Images and queued steer/follow-up
+delivery are preserved. New/resumed/forked sessions and reloads start OFF; the
+original launch flag is not replayed into those unrelated extension instances.
+Behavioral guarantees:
+
+- **Fail-closed**: if governed entry fails (ownership guard, durable authority
+  unavailable, admission or workflow failure, unexpected internal error), the
+  original prompt is consumed with a visible typed failure — it never falls
+  through to ordinary ungoverned execution.
+- **Mode is not task state**: `/wayforge off` (decision O0) only changes
+  routing for future turns; an active governed task is untouched.
+- **Terminal tasks release entry**: after `completed`/`cancelled`/`blocked`,
+  or after this session receives an authoritative `changes_requested`
+  completion refusal, the next eligible turn starts a NEW governed task and
+  candidate lifecycle. Historical negative-review evidence never authorizes
+  routing; the old task's one-shot review is never reset or re-reviewed
+  (see [DESIGN.md](DESIGN.md)).
+- **Print mode**: `pi --wayforge --print …` is rejected with a visible notice;
+  Default Governed Mode stays OFF (one-shot print lifetime cannot host
+  governed completion).
 
 ## Alpha 0 troubleshooting
 

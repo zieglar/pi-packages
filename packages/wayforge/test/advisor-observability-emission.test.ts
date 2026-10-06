@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { ensureBuilt } from "./helpers/ensure-built.js";
 import { serializeTaskState, type AuthoritativeTaskState } from "../src/durable/state.js";
 import { FilesystemDurableTaskStore } from "../src/durable/filesystem-task-store.js";
 import { captureWorkspaceCheckpoint } from "../src/durable/workspace-checkpoint.js";
@@ -197,7 +198,7 @@ async function createHarness(options: { readonly providerFailure?: Failure; read
   };
 }
 
-beforeAll(() => execFileSync("npm", ["run", "build"], { cwd: process.cwd(), stdio: "pipe" }));
+beforeAll(() => ensureBuilt());
 afterEach(() => {
   roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true }));
 });

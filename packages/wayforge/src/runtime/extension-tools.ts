@@ -13,6 +13,8 @@ export interface WayforgeToolDeps {
   readonly getDurableStore: () => DurableTaskStore | undefined;
   /** Stable sanitized reason code captured when durable authority failed to init. */
   readonly getGovernedUnavailable: () => string | undefined;
+  /** Session-local observation of the authoritative completion refusal, never historical evidence. */
+  readonly onCompletionChangesRequested?: (runtime: WorkflowRuntime) => void;
 }
 
 interface ToolPayload {
@@ -233,7 +235,12 @@ export function createWayforgeTools(deps: WayforgeToolDeps): ToolDefinition[] {
         const current = runtime();
         if (current === undefined) return toolResult({ ok: false, error: "workflow_not_started" });
         const completed = await current.controller.complete();
-        if (!completed.ok) return toolResult({ ok: false, failure: completed.failure });
+        if (!completed.ok) {
+          if (completed.failure.code === "advisor_changes_requested") {
+            deps.onCompletionChangesRequested?.(current);
+          }
+          return toolResult({ ok: false, failure: completed.failure });
+        }
         return toolResult({ ok: true, summary: completed.value.summary });
       },
     }),

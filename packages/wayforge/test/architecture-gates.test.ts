@@ -48,6 +48,13 @@ describe("architecture gates over production source", () => {
     expect(result.stdout).toContain("completion budget reservation");
   });
 
+  it("rejects governed-entry routing outside the extension entry", () => {
+    const result = runChecker(fixture({
+      "runtime/rogue-entry.ts": 'pi.on("input", async () => ({ action: "handled" }));\npi.registerFlag("wayforge", { type: "boolean" });',
+    }));
+    expect(result.stdout).toContain("automatic governed entry (input router / --wayforge flag) is owned only by");
+  });
+
   it("rejects negative-review history writes outside the completion authority", () => {
     const result = runChecker(fixture({
       "recovery/rogue.ts": "const next = { ...state, negativeReview: record };",
@@ -112,7 +119,7 @@ describe("architecture gates over production source", () => {
       "adapters/rogue.ts": "const e = log.emit(\"budget_changed\", { taskId });",
     }));
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("20 gates passed");
+    expect(result.stdout).toContain("21 gates passed");
   });
 
 
@@ -257,7 +264,7 @@ describe("architecture gates over production source", () => {
     });
     const result = runChecker(dir);
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("20 gates passed");
+    expect(result.stdout).toContain("21 gates passed");
   });
 
   it("fails when CompletionAuthority has a second production construction site", () => {
@@ -330,7 +337,7 @@ describe("architecture gates over production source", () => {
     });
     const result = runChecker(dir);
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("20 gates passed");
+    expect(result.stdout).toContain("21 gates passed");
   });
 
   it("fails when an accounts protocol channel appears outside the dedicated adapter", () => {

@@ -38,7 +38,8 @@
  *   gate 20 durable negative-review history is written only by the
  *           completion authority (durable schema and read-only inspection
  *           excepted);
- *           by the workflow controller (non-authoritative side channel).
+ *   gate 21 automatic governed entry (the session input router and the
+ *           `--wayforge` startup flag) is owned only by extension.ts;
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -72,6 +73,8 @@ const COMPLETION_EVIDENCE_WRITE_RE = /\bcompletionEvidence\s*:(?!\s*(?:Type\.|nu
 const STORE_UPDATE_RE = /\.update\s*\(/g;
 const COMPLETION_CAS_SHAPE_RE =
   /\bstatus\s*:\s*["']completed["']|\bcompletionEvidence\s*:(?!\s*(?:Type\.|null\b))/;
+const GOVERNED_ENTRY_RE = /\bon\("input"|registerFlag\(/g;
+const GOVERNED_ENTRY_OWNER_PATH = "extension.ts";
 const NEGATIVE_REVIEW_RE = /\bnegativeReview\b/g;
 const NEGATIVE_REVIEW_ALLOWED = new Set([
   COMPLETION_AUTHORITY_PATH,
@@ -339,6 +342,17 @@ for (const file of files) {
       }
     }
   }
+  // Gate 21: automatic governed entry (input router + --wayforge flag) is
+  // owned only by the extension entry; no second default-governance surface.
+  if (relPath !== GOVERNED_ENTRY_OWNER_PATH) {
+    const code = stripComments(content);
+    for (const match of code.matchAll(GOVERNED_ENTRY_RE)) {
+      violations.push(
+        `${relPath}:${lineOf(content, match.index ?? 0)}: automatic governed entry (input router / --wayforge flag) is owned only by ${GOVERNED_ENTRY_OWNER_PATH}`,
+      );
+    }
+  }
+
   // Gate 20: durable negative-review history is owned only by the completion
   // authority; the durable schema and read-only inspection may reference it.
   if (!NEGATIVE_REVIEW_ALLOWED.has(relPath)) {
@@ -418,4 +432,4 @@ if (violations.length > 0) {
   process.exit(1);
 }
 
-console.log(`ARCHITECTURE OK: 20 gates passed (scanned ${files.length} files)`);
+console.log(`ARCHITECTURE OK: 21 gates passed (scanned ${files.length} files)`);

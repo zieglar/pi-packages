@@ -21,6 +21,16 @@ interface WayforgeExtensionState {
   startupScanStarted?: boolean;
   /** Stable sanitized reason code when durable authority failed to initialize. */
   durableUnavailable?: string;
+  /**
+   * U2.1 Default Governed Mode: session-private routing preference, never
+   * durable, never task state. Explicit operator authority only — OFF by
+   * default, ON via `pi --wayforge` or `/wayforge on`.
+   */
+  defaultGovernedMode: boolean;
+  modeInitialized?: boolean;
+  entryInProgress?: boolean;
+  /** This session observed a settled authoritative refusal; no durable history authorizes entry. */
+  readonly completionRefusedRuntimes: WeakSet<WorkflowRuntime>;
 }
 
 /** Durable-composition overrides for isolated profiles and deterministic tests. */
@@ -90,7 +100,7 @@ function observedRoutes(
   ];
 }
 
-async function startWorkflow(
+async function admitWorkflow(
   pi: Parameters<ExtensionFactory>[0],
   ctx: ExtensionContext,
   state: WayforgeExtensionState,
@@ -191,30 +201,151 @@ async function startWorkflow(
   return runtime;
 }
 
+/** Shared guarded entry; reserve admission synchronously before any store awaits. */
+async function startWorkflow(
+  pi: Parameters<ExtensionFactory>[0], ctx: ExtensionContext,
+  state: WayforgeExtensionState, objective: string, overrides: WayforgeExtensionOverrides,
+): Promise<WorkflowRuntime> {
+  if (state.entryInProgress === true) throw new Error("governed entry is already in progress");
+  state.entryInProgress = true;
+  try {
+    return await admitWorkflow(pi, ctx, state, objective, overrides);
+  } finally {
+    state.entryInProgress = false;
+  }
+}
+
 /**
  * The Wayforge Alpha 0 extension. Native Main execution stays untouched;
  * Wayforge adds `/wayforge`, a narrow tool surface, and lifecycle tracking.
  * The fail-closed ownership guard runs on every session start, and the sole
  * parent model-change path remains MainModelController -> adapter.setModel.
  */
+/** Live representable terminal workflow statuses; suspended/resuming are durable-only recovery states. */
+function runtimeTerminal(runtime: WorkflowRuntime): boolean {
+  const status = runtime.controller.status().status;
+  return status === "completed" || status === "cancelled" || status === "blocked";
+}
+
+/** New task eligibility comes only from live status or this session's authoritative completion result. */
+function runtimeReplaceable(state: WayforgeExtensionState, runtime: WorkflowRuntime): boolean {
+  return runtimeTerminal(runtime) || state.completionRefusedRuntimes.has(runtime);
+}
+
+/** One shared status renderer for bare `/wayforge` and `/wayforge status`. */
+function renderWayforgeStatus(state: WayforgeExtensionState): string {
+  const runtime = state.runtime;
+  const taskLine = runtime === undefined
+    ? "active governed task: no"
+    : state.completionRefusedRuntimes.has(runtime)
+      ? `active governed task: no (last task ${runtime.controller.taskId}: changes_requested; next entry creates a new task)`
+      : runtimeTerminal(runtime)
+        ? `active governed task: no (last task ${runtime.controller.taskId}: ${runtime.controller.status().status})`
+        : `active governed task: yes (${runtime.controller.taskId}, ${runtime.controller.status().status})`;
+  const durableLine = state.durable !== undefined && state.durableUnavailable === undefined
+    ? "durable authority: available"
+    : `durable authority: unavailable (${state.durableUnavailable ?? "durable_authority_unavailable"})`;
+  return [
+    "Wayforge session status:",
+    `default governed mode: ${state.defaultGovernedMode ? "on" : "off"}`,
+    taskLine,
+    durableLine,
+    "Controls: /wayforge <objective> | /wayforge on | /wayforge off | /wayforge status. pi --wayforge starts a session on. Session-scoped; never persisted across sessions.",
+  ].join("\n");
+}
+
+/** Initialize session Default Governed Mode once from the native --wayforge flag. */
+function initializeDefaultGovernedMode(
+  pi: Parameters<ExtensionFactory>[0],
+  state: WayforgeExtensionState,
+  ctx: ExtensionContext,
+  reason?: string,
+): void {
+  if (state.modeInitialized === true) return;
+  state.modeInitialized = true;
+  // Pi replays CLI flags when constructing replacement sessions. Only the
+  // original startup consumes launch authority; new/resume/fork/reload start OFF.
+  if (reason !== undefined && reason !== "startup") return;
+  if (pi.getFlag("wayforge") !== true) return;
+  if (ctx.mode === "print" || ctx.mode === "json") {
+    // Print mode's supported UI notify is a no-op; stderr is its visible channel.
+    process.stderr.write("Default Governed Mode (--wayforge) is unsupported in print mode; this session starts with it off.\n");
+    ctx.ui.notify(
+      "Default Governed Mode (--wayforge) is unsupported in print mode; this session starts with it off.",
+      "warning",
+    );
+    return;
+  }
+  state.defaultGovernedMode = true;
+  ctx.ui.notify(
+    "default governed mode: on (--wayforge) — eligible ordinary operator turns enter governed execution for this session; /wayforge off disables it",
+    "info",
+  );
+}
+
+/** The governed-start user message shared by explicit entry and default routing. */
+function governedStartMessage(objective: string): string {
+  return [
+    `Wayforge workflow started (objective: ${objective}).`,
+    "Work on it directly or with the Wayforge tools:",
+    "- wayforge_delegate_workers: bounded Worker delegation",
+    "- wayforge_record_validation: record each validation command result",
+    "- wayforge_advise: advisor review (beforeDone gates completion)",
+    "- wayforge_task_status: sanitized snapshot",
+    "- wayforge_tasks: sanitized historical durable task list (read-only)",
+    "- wayforge_complete / wayforge_cancel",
+    "Completion requires passing validations and an approving advisor verdict.",
+  ].join("\n");
+}
+
 function wayforgeExtensionBody(
   pi: Parameters<ExtensionFactory>[0],
   overrides: WayforgeExtensionOverrides,
 ): void {
-  const state: WayforgeExtensionState = { taskSequence: 0, sink: new WorkflowDiskSink() };
+  const state: WayforgeExtensionState = {
+    taskSequence: 0,
+    sink: new WorkflowDiskSink(),
+    defaultGovernedMode: false,
+    completionRefusedRuntimes: new WeakSet(),
+  };
+
+  pi.registerFlag("wayforge", {
+    type: "boolean",
+    default: false,
+    description: "Start this Pi session with Default Governed Mode on: eligible ordinary operator turns enter Wayforge governed execution (session-scoped, not persisted)",
+  });
 
   for (const tool of createWayforgeTools({
     getRuntime: () => state.runtime,
     getGuardFailures: () => state.guardFailures,
     getDurableStore: () => state.durable?.store,
     getGovernedUnavailable: () => state.durableUnavailable,
+    onCompletionChangesRequested: (runtime) => state.completionRefusedRuntimes.add(runtime),
   })) {
     pi.registerTool(tool);
   }
 
   pi.registerCommand("wayforge", {
-    description: "Start an assisted Wayforge Alpha 0 workflow: /wayforge <objective>",
+    description:
+      "Wayforge entry and session mode: /wayforge <objective> starts a governed task; " +
+      "/wayforge on|off toggles session-scoped Default Governed Mode; /wayforge or /wayforge status " +
+      "shows mode, active task, and durable authority; pi --wayforge starts a session on",
     handler: async (args, ctx) => {
+      const trimmed = args.trim();
+      if (trimmed === "" || trimmed === "status") {
+        ctx.ui.notify(renderWayforgeStatus(state), "info");
+        return;
+      }
+      if (trimmed === "on" || trimmed === "off") {
+        state.defaultGovernedMode = trimmed === "on";
+        ctx.ui.notify(
+          state.defaultGovernedMode
+            ? "default governed mode: on — eligible ordinary operator turns now enter governed execution for this session"
+            : "default governed mode: off — future ordinary turns stay ordinary; any active governed task is untouched",
+          "info",
+        );
+        return;
+      }
       if (state.guardFailures !== undefined) {
         ctx.ui.notify(
           `Wayforge is disabled: the ownership guard failed closed.\n${state.guardFailures.join("\n")}`,
@@ -230,14 +361,14 @@ function wayforgeExtensionBody(
         );
         return;
       }
-      if (state.runtime !== undefined) {
+      if (state.runtime !== undefined && !(await runtimeReplaceable(state, state.runtime))) {
         ctx.ui.notify(
           "A Wayforge workflow is already active; cancel it with the wayforge_cancel tool first.",
           "warning",
         );
         return;
       }
-      const objective = args.trim();
+      const objective = trimmed;
       if (objective.length === 0) {
         ctx.ui.notify("Usage: /wayforge <objective>", "warning");
         return;
@@ -248,23 +379,64 @@ function wayforgeExtensionBody(
         ctx.ui.notify(`Wayforge failed to start: ${error instanceof Error ? error.message : "unknown error"}`, "error");
         return;
       }
-      pi.sendUserMessage(
-        [
-          `Wayforge workflow started (objective: ${objective}).`,
-          "Work on it directly or with the Wayforge tools:",
-          "- wayforge_delegate_workers: bounded Worker delegation",
-          "- wayforge_record_validation: record each validation command result",
-          "- wayforge_advise: advisor review (beforeDone gates completion)",
-          "- wayforge_task_status: sanitized snapshot",
-          "- wayforge_tasks: sanitized historical durable task list (read-only)",
-          "- wayforge_complete / wayforge_cancel",
-          "Completion requires passing validations and an approving advisor verdict.",
-        ].join("\n"),
-      );
+      pi.sendUserMessage(governedStartMessage(objective));
     },
   });
 
-  pi.on("session_start", (_event, ctx) => {
+  // U2.1 Default Governed Entry: total, fail-closed top-level turn router.
+  // Eligibility is explicit (session mode + operator source provenance +
+  // no active non-terminal runtime) — never prompt-content classification.
+  pi.on("input", async (event, ctx) => {
+    try {
+      if (state.defaultGovernedMode !== true) return;
+      if (event.source === "extension") return;
+      const objective = event.text.trim();
+      if (objective.length === 0) {
+        if (event.images?.length) throw new Error("a textual governed objective is required");
+        return;
+      }
+      // Leave command/skill/template syntax to Pi, including unknown RPC slash inputs.
+      if (objective.startsWith("/")) return;
+      if (state.runtime !== undefined && !(await runtimeReplaceable(state, state.runtime))) return;
+      if (
+        state.guardFailures !== undefined ||
+        state.durable === undefined ||
+        state.durableUnavailable !== undefined
+      ) {
+        ctx.ui.notify(
+          "Default governed entry failed: Wayforge governed execution is unavailable " +
+            `(${state.durableUnavailable ?? "durable_authority_unavailable"}); ` +
+            "the prompt was not executed and nothing ran ungoverned. Resolve Wayforge " +
+            "availability or turn default mode off with /wayforge off.",
+          "error",
+        );
+        return { action: "handled" };
+      }
+      await startWorkflow(pi, ctx, state, objective, overrides);
+      const message = governedStartMessage(objective);
+      pi.sendUserMessage(
+        event.images?.length
+          ? [{ type: "text", text: message }, ...event.images]
+          : message,
+        { deliverAs: event.streamingBehavior ?? "followUp" },
+      );
+      return { action: "handled" };
+    } catch {
+      // Pi catches escaped input-handler exceptions and continues ordinary execution.
+      // Reporting is best effort; neither notification nor stderr failure may escape.
+      const message = "Default governed entry failed (governed_entry_failed). " +
+        "The original prompt was consumed; inspect /wayforge status before continuing.";
+      try {
+        ctx.ui.notify(message, "error");
+      } catch {
+        try { process.stderr.write(`${message}\n`); } catch { /* consume even if reporting is unavailable */ }
+      }
+      return { action: "handled" };
+    }
+  });
+
+  pi.on("session_start", (event, ctx) => {
+    initializeDefaultGovernedMode(pi, state, ctx, event.reason);
     const guard = checkOwnershipGuard({
       tools: pi.getAllTools().map((tool) => ({
         name: tool.name,

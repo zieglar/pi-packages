@@ -1,7 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { InputEvent, ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 /**
  * Minimal in-process Pi host double for exercising the REAL Wayforge
@@ -13,6 +13,22 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
  * model, model registry, cwd, and UI notifier. Nothing here replaces
  * Wayforge components — the composition under test is entirely real.
  */
+
+export type FakeInputSource = "interactive" | "rpc" | "extension";
+
+export interface FakeInputEvent {
+  readonly type: "input";
+  readonly text: string;
+  readonly source: FakeInputSource;
+  readonly streamingBehavior?: "steer" | "followUp";
+  readonly images?: InputEvent["images"];
+}
+
+export type FakeInputResult =
+  | { readonly action: "continue" }
+  | { readonly action: "handled" };
+
+type InputHandler = (event: FakeInputEvent, ctx: unknown) => Promise<{ action: string } | void> | { action: string } | void;
 
 export interface RecordedNotification {
   readonly level: "info" | "warning" | "error";
@@ -47,8 +63,16 @@ export class FakePiHost {
   readonly commands: FakeCommand[] = [];
   readonly notifications: RecordedNotification[] = [];
   readonly userMessages: string[] = [];
+  readonly userMessageDeliveries: { content: string | unknown[]; options?: { deliverAs?: "steer" | "followUp" } }[] = [];
+  readonly ordinaryExecutions: string[] = [];
+  readonly inputErrors: string[] = [];
+  readonly lifecycleErrors: unknown[] = [];
+  mode: "tui" | "rpc" | "json" | "print" = "tui";
   readonly delegationHandlers = new Map<string, Set<(data: unknown) => void>>();
   private readonly lifecycle = new Map<string, LifecycleHook[]>();
+  private readonly inputHandlers: InputHandler[] = [];
+  private readonly flagDefinitions = new Map<string, { type: "boolean" | "string"; default?: boolean | string; description?: string }>();
+  private readonly flagValues = new Map<string, boolean | string>();
   private sequence = 0;
   private streamSimpleHandler: StreamSimpleHandler = async () => {
     throw new Error("not used by these tests");
@@ -66,7 +90,7 @@ export class FakePiHost {
     },
   };
 
-  readonly model: ModelShape = {
+  modelShape: ModelShape | undefined = {
     provider: "test-provider",
     id: "test-model",
     reasoning: true,
@@ -75,7 +99,7 @@ export class FakePiHost {
 
   readonly ctx: {
     cwd: string;
-    model: ModelShape;
+    model: ModelShape | undefined;
     thinkingLevel: "medium";
     modelRegistry: {
       find: (provider: string, modelId: string) => ModelShape | undefined;
@@ -85,18 +109,24 @@ export class FakePiHost {
       ) => { result(): Promise<FakeModelMessage> };
     };
     ui: { notify: (message: string, level: "info" | "warning" | "error") => void };
+    mode: "tui" | "rpc" | "json" | "print";
   };
 
   constructor(readonly cwd: string) {
-    const model = this.model;
+    const hostThis = this;
     const notifications = this.notifications;
     this.ctx = {
       cwd,
-      model,
+      get model() {
+        return hostThis.modelShape;
+      },
       thinkingLevel: "medium",
       modelRegistry: {
         find: (provider, modelId) =>
-          provider === model.provider && modelId === model.id ? model : undefined,
+          hostThis.modelShape !== undefined &&
+          provider === hostThis.modelShape.provider && modelId === hostThis.modelShape.id
+            ? hostThis.modelShape
+            : undefined,
         streamSimple: (_model, context) => ({
           result: () => this.streamSimpleHandler(context.messages[0]?.content ?? ""),
         }),
@@ -106,6 +136,9 @@ export class FakePiHost {
           notifications.push({ level, message });
         },
       },
+      get mode() {
+        return hostThis.mode;
+      },
     };
   }
 
@@ -113,30 +146,101 @@ export class FakePiHost {
     this.tools.push(tool);
   };
 
-  registerCommand = (name: string, command: { description: string; handler: FakeCommand["handler"] }): void => {
-    this.commands.push({ name, description: command.description, handler: command.handler });
+  registerCommand = (
+    name: string,
+    command: {
+      description: string;
+      handler: FakeCommand["handler"];
+      sourceInfo?: FakeCommand["sourceInfo"];
+    },
+  ): void => {
+    this.commands.push({
+      name,
+      description: command.description,
+      handler: command.handler,
+      ...(command.sourceInfo !== undefined ? { sourceInfo: command.sourceInfo } : {}),
+    });
   };
 
   on = (event: string, handler: LifecycleHook): void => {
+    if (event === "input") {
+      this.inputHandlers.push(handler as InputHandler);
+      return;
+    }
     const list = this.lifecycle.get(event) ?? [];
     list.push(handler);
     this.lifecycle.set(event, list);
   };
 
-  sendUserMessage = (text: string): void => {
+  registerFlag = (
+    name: string,
+    options: { type: "boolean" | "string"; default?: boolean | string; description?: string },
+  ): void => {
+    this.flagDefinitions.set(name, options);
+    if (options.default !== undefined && !this.flagValues.has(name)) {
+      this.flagValues.set(name, options.default);
+    }
+  };
+
+  getFlag = (name: string): boolean | string | undefined => this.flagValues.get(name);
+
+  /** Test seam: simulate `pi --<flag>` startup values. */
+  setFlagValue = (name: string, value: boolean | string): void => {
+    this.flagValues.set(name, value);
+  };
+
+  /** Pi-parity input reduction: first `handled` wins; handler throws are swallowed to continue. */
+  async emitInput(
+    text: string, source: FakeInputSource,
+    options: Pick<InputEvent, "images" | "streamingBehavior"> = {},
+  ): Promise<FakeInputResult> {
+    const event: FakeInputEvent = { type: "input", text, source, ...options };
+    for (const handler of [...this.inputHandlers]) {
+      try {
+        const result = await handler(event, this.ctx);
+        if (result?.action === "handled") return { action: "handled" };
+      } catch (error) {
+        this.inputErrors.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    return { action: "continue" };
+  }
+
+  /**
+   * Wayforge injection entry. Records the message, then routes it through the
+   * input handlers with source "extension" exactly like Pi's prompt() path,
+   * so tests can prove reentrancy guards.
+   */
+  sendUserMessage = (content: string | ({ type: "text"; text: string } | NonNullable<InputEvent["images"]>[number])[], options?: { deliverAs?: "steer" | "followUp" }): void => {
+    this.userMessageDeliveries.push({ content, ...(options === undefined ? {} : { options }) });
+    const text = typeof content === "string" ? content : content.filter((part) => part.type === "text").map((part) => (part as { text: string }).text).join("\n");
     this.userMessages.push(text);
+    void this.emitInput(text, "extension");
+  };
+
+  /**
+   * Ordinary operator turn: full prompt parity. Returns the disposition and,
+   * on continue, records that the ordinary agent executed the original text.
+   */
+  async submitUserTurn(text: string, source: FakeInputSource = "interactive"): Promise<FakeInputResult> {
+    const reduced = await this.emitInput(text, source);
+    if (reduced.action === "handled") return { action: "handled" };
+    this.ordinaryExecutions.push(text);
+    return { action: "continue" };
   };
 
   getAllTools = (): ToolDefinition[] =>
-    this.tools.map((tool) => ({
-      ...tool,
-      sourceInfo: { source: "wayforge", path: `${this.cwd}/dist/extension.js` },
-    })) as ToolDefinition[];
+    this.tools.map((tool) => {
+      const existing = (tool as unknown as Record<string, unknown>).sourceInfo;
+      return existing === undefined
+        ? ({ ...tool, sourceInfo: { source: "wayforge", path: `${this.cwd}/dist/extension.js` } } as ToolDefinition)
+        : tool;
+    });
 
   getCommands = (): FakeCommand[] =>
     this.commands.map((command) => ({
       ...command,
-      sourceInfo: { source: "wayforge", path: `${this.cwd}/dist/extension.js` },
+      sourceInfo: command.sourceInfo ?? { source: "wayforge", path: `${this.cwd}/dist/extension.js` },
     }));
   setModel = async (): Promise<boolean> => true;
 
@@ -149,8 +253,10 @@ export class FakePiHost {
     return `session-${this.sequence}`;
   }
 
-  async emitLifecycle(event: string, ctx: unknown = this.ctx): Promise<void> {
-    for (const handler of this.lifecycle.get(event) ?? []) await handler({}, ctx);
+  async emitLifecycle(event: string, ctx: unknown = this.ctx, payload: Record<string, unknown> = {}): Promise<void> {
+    for (const handler of this.lifecycle.get(event) ?? []) {
+      try { await handler(payload, ctx); } catch (error) { this.lifecycleErrors.push(error); }
+    }
   }
 
   async runCommand(name: string, args: string): Promise<void> {

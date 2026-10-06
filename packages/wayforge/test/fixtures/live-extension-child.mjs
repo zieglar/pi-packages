@@ -57,6 +57,8 @@ function makeHost(cwd) {
   const delegationHandlers = new Map();
   const model = { provider: "test-provider", id: "test-model", reasoning: true, name: "Test Model" };
   const host = {
+    registerFlag: () => undefined,
+    getFlag: () => false,
     registerTool: (tool) => tools.push(tool),
     registerCommand: (name, command) => commands.push({ name, ...command }),
     on: (event, handler) => {
