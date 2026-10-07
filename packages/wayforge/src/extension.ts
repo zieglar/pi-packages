@@ -261,11 +261,17 @@ function initializeDefaultGovernedMode(
   ctx: ExtensionContext,
   reason?: string,
 ): void {
+  // Replacement lifecycle boundaries never inherit the previous session's
+  // default governed mode; only the original startup consumes --wayforge.
+  // Fail-safe OFF: any non-startup or missing reason resets and ends here,
+  // so a future new reason cannot silently carry ON state forward.
+  if (reason !== "startup") {
+    state.defaultGovernedMode = false;
+    state.modeInitialized = true;
+    return;
+  }
   if (state.modeInitialized === true) return;
   state.modeInitialized = true;
-  // Pi replays CLI flags when constructing replacement sessions. Only the
-  // original startup consumes launch authority; new/resume/fork/reload start OFF.
-  if (reason !== undefined && reason !== "startup") return;
   if (pi.getFlag("wayforge") !== true) return;
   if (ctx.mode === "print" || ctx.mode === "json") {
     // Print mode's supported UI notify is a no-op; stderr is its visible channel.

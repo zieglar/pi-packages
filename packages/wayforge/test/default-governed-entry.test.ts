@@ -253,6 +253,19 @@ describe("default governed mode state and grammar", () => {
     expect(harness.host.ordinaryExecutions).toEqual(["would be governed"]);
     expect(harness.runtimes).toHaveLength(0);
   });
+  it.each(["new", "resume", "fork", "reload"] as const)("resets default governed mode OFF when a %s session replaces a --wayforge startup session in the same runtime", async (reason) => {
+    const harness = await createHarness({ flag: true });
+    expect(statusBody(harness.notifications())).toContain("default governed mode: on (--wayforge)");
+    expect(harness.runtimes).toHaveLength(0);
+
+    await harness.host.emitLifecycle("session_start", harness.host.ctx, { reason });
+
+    const result = await harness.turn("ordinary input after in-process session replacement");
+    expect(result.action).toBe("continue");
+    expect(harness.host.ordinaryExecutions).toEqual(["ordinary input after in-process session replacement"]);
+    expect(harness.runtimes).toHaveLength(0);
+  });
+
   it.each(["new", "resume", "fork", "reload"] as const)("does not reapply the launch flag on a %s session boundary", async (reason) => {
     const harness = await createHarness({ flag: true, startReason: reason });
     const result = await harness.turn("ordinary in replacement session");

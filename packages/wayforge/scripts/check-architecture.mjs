@@ -40,8 +40,9 @@
  *           excepted);
  *   gate 21 automatic governed entry (the session input router and the
  *           `--wayforge` startup flag) is owned only by extension.ts;
- *   gate 22 ModelPolicy and TR2 route-health/eligibility components remain
- *           pure and cannot import or name execution authorities.
+ *   gate 22 ModelPolicy, TR1 transport-failure classification, and TR2
+ *           route-health/eligibility components remain pure and cannot
+ *           import or name execution authorities.
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -84,7 +85,8 @@ const NEGATIVE_REVIEW_ALLOWED = new Set([
   "durable/inspection.ts",
 ]);
 const MODEL_POLICY_PATH = "policy/model-policy.ts";
-const TR2_HEALTH_PATHS = new Set([
+const PASSIVE_BOUNDARY_PATHS = new Set([
+  "recovery/transport-failure-classifier.ts",
   "recovery/health-registry.ts",
   "recovery/health-projector.ts",
   "recovery/main-route-eligibility.ts",
@@ -376,7 +378,7 @@ for (const file of files) {
     }
   }
 
-  // Gate 22: policy ordering and TR2 route health/eligibility remain passive.
+  // Gate 22: policy ordering, TR1 classification, and TR2 route health/eligibility remain passive.
   const tr2Code = stripComments(content);
   if (relPath === MODEL_POLICY_PATH) {
     const match = MODEL_POLICY_AUTHORITY_RE.exec(tr2Code);
@@ -386,11 +388,11 @@ for (const file of files) {
       );
     }
   }
-  if (TR2_HEALTH_PATHS.has(relPath)) {
+  if (PASSIVE_BOUNDARY_PATHS.has(relPath)) {
     const match = ROUTE_HEALTH_AUTHORITY_RE.exec(tr2Code);
     if (match !== null) {
       violations.push(
-        `${relPath}:${lineOf(content, match.index)}: TR2 route health/eligibility may not own model, continuation, budget, account, completion, or recovery execution authority (${match[0]})`,
+        `${relPath}:${lineOf(content, match.index)}: TR1 classification and TR2 route health/eligibility may not own model, continuation, budget, account, completion, or recovery execution authority (${match[0]})`,
       );
     }
   }
