@@ -264,6 +264,9 @@ describe("default governed mode state and grammar", () => {
     expect(result.action).toBe("continue");
     expect(harness.host.ordinaryExecutions).toEqual(["ordinary input after in-process session replacement"]);
     expect(harness.runtimes).toHaveLength(0);
+    const listed = await harness.store.list();
+    if (!listed.ok) throw new Error("store list failed");
+    expect(listed.value).toHaveLength(0);
   });
 
   it.each(["new", "resume", "fork", "reload"] as const)("does not reapply the launch flag on a %s session boundary", async (reason) => {
