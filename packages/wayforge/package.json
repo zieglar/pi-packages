@@ -18,7 +18,8 @@
     "check:alpha1": "node scripts/check-alpha1.mjs",
     "verify": "pnpm run check:architecture && pnpm test && pnpm run typecheck && pnpm run build",
     "verify:alpha0": "pnpm run verify && pnpm run check:alpha0",
-    "pi:version": "node -p \"JSON.parse(require('fs').readFileSync('node_modules/@earendil-works/pi-coding-agent/package.json','utf8')).version\""
+    "pi:version": "node -p \"JSON.parse(require('fs').readFileSync('node_modules/@earendil-works/pi-coding-agent/package.json','utf8')).version\"",
+    "check:baseline": "node scripts/check-baseline.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.0.2",
