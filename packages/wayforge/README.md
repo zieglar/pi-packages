@@ -100,6 +100,7 @@ touched.
 | `npm run check:alpha1` | Durable restart / drift evidence gate (package cwd) |
 | `npm run check:alpha0` | Assisted-dogfood preconditions gate |
 | `npm run check:baseline` | Read-only git baseline invariants gate for handoffs (see `--help`) |
+| `npm run check:release` | Verify release eligibility and exact hosted-CI evidence without mutation (see `--help`) |
 | `npm run verify` | Architecture gates, tests, typecheck, build |
 | `npm run verify:alpha0` | Full verify plus the Alpha 0 gate |
 | `npm run pi:version` | Print the installed project-local Pi version |
