@@ -230,6 +230,20 @@ of liveness. Diagnostic events and runtime observations are not substitutes
 for authoritative task state. See also [continuation packages](src/recovery/continuation.ts)
 and [redaction](src/trace/redaction.ts).
 
+## Residency and non-amplification (DH-0)
+
+**CONTRACT — HANDOFF 58241:** durability is not a residency requirement.
+Wayforge-owned working state must be bounded independently of cold history and
+historical payload bytes; Wayforge must not amplify Pi-owned history through
+cumulative projections or unnecessary copies. The normative
+[DH-0 contract](docs/dh0-residency-contract.md) defines ownership, active/cold
+boundaries, the source-backed projection inventory, acceptance predicates and
+DH-1/DH-2 roadmap. Known runtime gaps are explicitly deferred, not claimed fixed.
+
+The existing authoritative durable schema and frozen completion, accounts and
+transport contracts remain valid and unopened. DH is independent of TR3 and
+1B.4B. This freeze changes no runtime behavior and grants no Pi residency control.
+
 ## Roles and separations of authority
 
 **PRINCIPLE: role != model.** Main, Worker, and Advisor are semantic roles;
