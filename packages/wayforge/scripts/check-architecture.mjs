@@ -40,6 +40,8 @@
  *           excepted);
  *   gate 21 automatic governed entry (the session input router and the
  *           `--wayforge` startup flag) is owned only by extension.ts;
+ *   gate 22 ModelPolicy and TR2 route-health/eligibility components remain
+ *           pure and cannot import or name execution authorities.
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -81,6 +83,16 @@ const NEGATIVE_REVIEW_ALLOWED = new Set([
   "durable/state.ts",
   "durable/inspection.ts",
 ]);
+const MODEL_POLICY_PATH = "policy/model-policy.ts";
+const TR2_HEALTH_PATHS = new Set([
+  "recovery/health-registry.ts",
+  "recovery/health-projector.ts",
+  "recovery/main-route-eligibility.ts",
+]);
+const MODEL_POLICY_AUTHORITY_RE =
+  /\b(?:HealthRegistry|HealthProjector|Date\.now|MainModelController|PiCompatibilityAdapter|CompletionAuthority|PiAccountsAdapter|RuntimeRecoveryExecutor|setModel|sendUserMessage|continueSession|fallbacksLeft|retriesLeft)\b/;
+const ROUTE_HEALTH_AUTHORITY_RE =
+  /\b(?:MainModelController|PiCompatibilityAdapter|CompletionAuthority|PiAccountsAdapter|RuntimeRecoveryExecutor|setModel|sendUserMessage|continueSession|fallbacksLeft|retriesLeft)\b/;
 const DURABLE_OWNER_TYPES = [
   "WakeupService",
   "StartupRecoveryScanner",
@@ -363,6 +375,25 @@ for (const file of files) {
       );
     }
   }
+
+  // Gate 22: policy ordering and TR2 route health/eligibility remain passive.
+  const tr2Code = stripComments(content);
+  if (relPath === MODEL_POLICY_PATH) {
+    const match = MODEL_POLICY_AUTHORITY_RE.exec(tr2Code);
+    if (match !== null) {
+      violations.push(
+        `${relPath}:${lineOf(content, match.index)}: ModelPolicy must remain pure and may not own clocks, health, or execution authority (${match[0]})`,
+      );
+    }
+  }
+  if (TR2_HEALTH_PATHS.has(relPath)) {
+    const match = ROUTE_HEALTH_AUTHORITY_RE.exec(tr2Code);
+    if (match !== null) {
+      violations.push(
+        `${relPath}:${lineOf(content, match.index)}: TR2 route health/eligibility may not own model, continuation, budget, account, completion, or recovery execution authority (${match[0]})`,
+      );
+    }
+  }
   for (const ownerType of DURABLE_OWNER_TYPES) {
     for (const match of countConstructor(content, ownerType)) {
       const line = lineOf(content, match.index ?? 0);
@@ -432,4 +463,4 @@ if (violations.length > 0) {
   process.exit(1);
 }
 
-console.log(`ARCHITECTURE OK: 21 gates passed (scanned ${files.length} files)`);
+console.log(`ARCHITECTURE OK: 22 gates passed (scanned ${files.length} files)`);

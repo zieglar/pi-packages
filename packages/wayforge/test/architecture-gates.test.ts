@@ -41,6 +41,24 @@ describe("architecture gates over production source", () => {
     expect(result.stdout).toContain("ARCHITECTURE OK");
     expect(result.stdout).toMatch(/scanned \d+ files/i);
   });
+
+  it("rejects clock or health authority inside ModelPolicy", () => {
+    const result = runChecker(fixture({
+      "policy/model-policy.ts":
+        "import { HealthRegistry } from \"../recovery/health-registry.js\";\nconst now = Date.now();\n",
+    }));
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain("ModelPolicy must remain pure");
+  });
+
+  it("rejects execution authority inside TR2 health and eligibility components", () => {
+    const result = runChecker(fixture({
+      "recovery/main-route-eligibility.ts":
+        "import { MainModelController } from \"../runtime/main-model-controller.js\";\n",
+    }));
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain("TR2 route health/eligibility may not own");
+  });
   it("rejects completion-budget reservation outside the controller owner", () => {
     const result = runChecker(fixture({
       "runtime/rogue.ts": "const context = parent.reserveCompletionBudget();",
@@ -119,7 +137,7 @@ describe("architecture gates over production source", () => {
       "adapters/rogue.ts": "const e = log.emit(\"budget_changed\", { taskId });",
     }));
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("21 gates passed");
+    expect(result.stdout).toContain("22 gates passed");
   });
 
 
@@ -264,7 +282,7 @@ describe("architecture gates over production source", () => {
     });
     const result = runChecker(dir);
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("21 gates passed");
+    expect(result.stdout).toContain("22 gates passed");
   });
 
   it("fails when CompletionAuthority has a second production construction site", () => {
@@ -337,7 +355,7 @@ describe("architecture gates over production source", () => {
     });
     const result = runChecker(dir);
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("21 gates passed");
+    expect(result.stdout).toContain("22 gates passed");
   });
 
   it("fails when an accounts protocol channel appears outside the dedicated adapter", () => {

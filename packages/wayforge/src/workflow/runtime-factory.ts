@@ -14,6 +14,7 @@ import { HealthProjector } from "../recovery/health-projector.js";
 import { HealthRegistry } from "../recovery/health-registry.js";
 import { RecoveryCoordinator, type RecoveryBudget } from "../recovery/recovery-coordinator.js";
 import { RuntimeRecoveryExecutor } from "../recovery/runtime-recovery-executor.js";
+import { MainRouteEligibility } from "../recovery/main-route-eligibility.js";
 import { capabilityId, invocationId, type TaskId } from "../types/identity.js";
 import type { ExecutionRoute } from "./contracts.js";
 import { WorkflowEventLog, type WorkflowEvent } from "./events.js";
@@ -54,6 +55,7 @@ export interface WorkflowRuntimeInput {
 export interface WorkflowRuntime {
   readonly controller: WorkflowController;
   readonly health: HealthRegistry;
+  readonly mainEligibility: MainRouteEligibility;
   readonly log: WorkflowEventLog;
   readonly state: WorkflowTaskState;
   readonly recovery: RuntimeRecoveryExecutor;
@@ -81,6 +83,7 @@ export function createWorkflowRuntime(input: WorkflowRuntimeInput): WorkflowRunt
   });
 
   const health = new HealthRegistry(now);
+  const mainEligibility = new MainRouteEligibility(health);
   const projector = new HealthProjector(health);
   const coordinator = new RecoveryCoordinator();
   const recovery = new RuntimeRecoveryExecutor(coordinator, projector, health, log, {
@@ -160,6 +163,7 @@ export function createWorkflowRuntime(input: WorkflowRuntimeInput): WorkflowRunt
   return {
     controller,
     health,
+    mainEligibility,
     log,
     state,
     recovery,

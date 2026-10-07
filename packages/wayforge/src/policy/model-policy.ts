@@ -3,6 +3,7 @@ import type { CapabilityDescriptor } from "../kernel/capability-catalog.js";
 import type { ExecutionRequirement } from "./role-policy.js";
 import type { CapabilityId, RouteId } from "../types/identity.js";
 import type { InvocationRole, ModelTier, ThinkingLevel } from "../types/execution.js";
+import { transportEndpointKey } from "../types/transport-route.js";
 
 /** One statically configured model route. */
 export interface StaticModelRoute {
@@ -32,10 +33,20 @@ export type ModelPolicyFailure =
       readonly kind: "capability_mismatch";
       readonly routeId: RouteId;
       readonly reason: string;
+    }
+  | {
+      readonly kind: "duplicate_endpoint";
+      readonly provider: string;
+      readonly modelId: string;
+      readonly routeIds: readonly [RouteId, RouteId];
     };
 
 export type ModelResolution =
   | { readonly ok: true; readonly decision: ModelDecision }
+  | { readonly ok: false; readonly failure: ModelPolicyFailure };
+
+export type ModelCandidatesResolution =
+  | { readonly ok: true; readonly candidates: readonly ModelDecision[] }
   | { readonly ok: false; readonly failure: ModelPolicyFailure };
 
 function satisfies(
@@ -79,49 +90,101 @@ export class ModelPolicy {
   private readonly routes: readonly StaticModelRoute[];
 
   constructor(routes: readonly StaticModelRoute[]) {
-    this.routes = [...routes];
+    const seenRouteIds = new Set<RouteId>();
+    for (const route of routes) {
+      if (seenRouteIds.has(route.routeId)) {
+        throw new Error(`duplicate route id: ${route.routeId}`);
+      }
+      seenRouteIds.add(route.routeId);
+    }
+    this.routes = Object.freeze(routes.map((route) => Object.freeze({ ...route })));
   }
 
-  resolve(
+  candidates(
     requirement: ExecutionRequirement,
     catalog: typeof CapabilityCatalog,
-  ): ModelResolution {
-    const route = this.routes.find((r) => r.capabilityId === requirement.capabilityId);
-    if (!route) {
-      return {
-        ok: false,
-        failure: { kind: "no_route", capabilityId: requirement.capabilityId },
-      };
-    }
-    const cap = catalog.get(route.capabilityId);
+  ): ModelCandidatesResolution {
+    const matching = this.routes.filter((route) => route.capabilityId === requirement.capabilityId);
+    if (matching.length === 0) return { ok: true, candidates: [] };
+
+    const cap = catalog.get(requirement.capabilityId);
     if (!cap) {
       return {
         ok: false,
         failure: {
           kind: "capability_mismatch",
-          routeId: route.routeId,
+          routeId: matching[0]!.routeId,
           reason: "route capability missing from catalog",
         },
       };
     }
-    const check = satisfies(cap, route, requirement);
-    if (!check.ok) {
-      return {
-        ok: false,
-        failure: { kind: "capability_mismatch", routeId: route.routeId, reason: check.reason },
-      };
-    }
-    return {
-      ok: true,
-      decision: {
+
+    const candidates: ModelDecision[] = [];
+    let firstMismatch: { readonly routeId: RouteId; readonly reason: string } | undefined;
+    for (const route of matching) {
+      const check = satisfies(cap, route, requirement);
+      if (!check.ok) {
+        firstMismatch ??= { routeId: route.routeId, reason: check.reason };
+        continue;
+      }
+      candidates.push(Object.freeze({
         routeId: route.routeId,
         provider: route.provider,
         modelId: route.modelId,
         tier: route.tier,
         thinking: route.thinking,
         capabilityId: route.capabilityId,
-        budget: { limit: route.budgetLimit },
-      },
-    };
+        budget: Object.freeze({ limit: route.budgetLimit }),
+      }));
+    }
+
+    if (candidates.length === 0 && firstMismatch !== undefined) {
+      return {
+        ok: false,
+        failure: {
+          kind: "capability_mismatch",
+          routeId: firstMismatch.routeId,
+          reason: firstMismatch.reason,
+        },
+      };
+    }
+
+    if (requirement.role === "main") {
+      const endpoints = new Map<string, ModelDecision>();
+      for (const candidate of candidates) {
+        const key = transportEndpointKey(candidate.provider, candidate.modelId);
+        const duplicate = endpoints.get(key);
+        if (duplicate !== undefined) {
+          return {
+            ok: false,
+            failure: {
+              kind: "duplicate_endpoint",
+              provider: candidate.provider,
+              modelId: candidate.modelId,
+              routeIds: [duplicate.routeId, candidate.routeId],
+            },
+          };
+        }
+        endpoints.set(key, candidate);
+      }
+    }
+
+    return { ok: true, candidates: Object.freeze(candidates) };
+  }
+
+  resolve(
+    requirement: ExecutionRequirement,
+    catalog: typeof CapabilityCatalog,
+  ): ModelResolution {
+    const candidates = this.candidates(requirement, catalog);
+    if (!candidates.ok) return candidates;
+    const decision = candidates.candidates[0];
+    if (decision === undefined) {
+      return {
+        ok: false,
+        failure: { kind: "no_route", capabilityId: requirement.capabilityId },
+      };
+    }
+    return { ok: true, decision };
   }
 }

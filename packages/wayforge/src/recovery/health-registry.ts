@@ -65,6 +65,9 @@ export class HealthRegistry {
   recordRoute(id: string, update: HealthUpdate): void {
     this.record("route", id, update);
   }
+  clearRoute(id: string): void {
+    this.records.delete(keyOf("route", id));
+  }
   recordAccount(id: string, update: HealthUpdate): void {
     this.record("account", id, update);
   }

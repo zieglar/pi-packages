@@ -5,10 +5,11 @@ import {
   SUBAGENT_DELEGATION_RESPONSE_EVENT,
   type SubagentDelegationRequest,
 } from "pi-subagents/delegation";
+import type { ModelDecision } from "../src/policy/model-policy.js";
 import { createWorkflowRuntime } from "../src/workflow/runtime-factory.js";
 import type { MainModelController } from "../src/runtime/main-model-controller.js";
 import type { NestedModelRequest, NestedModelOutput } from "../src/runtime/ports.js";
-import { invocationId, routeId, taskId } from "../src/types/identity.js";
+import { capabilityId, invocationId, routeId, taskId } from "../src/types/identity.js";
 import type { ExecutionRoute } from "../src/workflow/contracts.js";
 import { success } from "../src/types/result.js";
 
@@ -162,5 +163,21 @@ describe("createWorkflowRuntime", () => {
     const after = await runtime.controller.delegateWorkers({ prompts: ["x"] });
     expect(after.ok).toBe(false);
     if (!after.ok) expect(after.failure.code).toBe("no_worker_route");
+
+    const mainFallback: ModelDecision = {
+      routeId: routeId("rt-main-fallback"),
+      provider: "sentinel",
+      modelId: "main-fallback",
+      tier: "flagship",
+      thinking: "medium",
+      capabilityId: capabilityId("cap-main"),
+      budget: { limit: 800 },
+    };
+    runtime.health.recordRoute(mainFallback.routeId, { status: "cooldown", cooldownMs: 60_000 });
+    expect(runtime.mainEligibility.alternatives({
+      candidates: [mainFallback],
+      currentEndpoint: { provider: mainRoute.provider, modelId: mainRoute.modelId },
+      visitedEndpoints: new Set(),
+    })).toEqual([]);
   });
 });

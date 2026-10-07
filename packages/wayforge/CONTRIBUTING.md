@@ -62,7 +62,7 @@ Do not alter runtime to conceal unrelated validation failure: stop and report.
 
 ### Main transport recovery checks
 
-For any change touching provider failure classification or the Pi compatibility boundary, review:
+For any change touching provider failure classification, Main route policy, runtime health/eligibility, or the Pi compatibility boundary, review:
 
 > Main-only; post-native-retry boundary; classification separate from recovery authority; Worker replay forbidden; Advisor retry forbidden; ordinary Pi unaffected; account recovery excluded; runtime health separate from historical evidence.
 
@@ -72,6 +72,10 @@ Ask specifically:
 - Is provider/model attribution exact, with no inference from aliases, error text, tool output, or account names?
 - Are resolved error-bearing assistant messages rejected before semantic parsing while cancellation and non-error incomplete outcomes remain distinguishable?
 - Are raw provider bodies, credentials, headers, prompts, and unsanitized paths excluded from durable/diagnostic output?
+- Does `ModelPolicy` preserve immutable declaration order and reject duplicate Main `provider + modelId` endpoints without consulting clocks or health?
+- Do only attributable transient throttle/provider/connection classifications open a route-local cooldown bounded at 30 seconds, with exact attributed `stop`/`toolUse` proof required to clear it?
+- Are current and visited endpoints excluded independently of cooldown, so single-route users receive no fabricated fallback and cooldown expiry cannot produce `A → B → A`?
+- Does eligibility remain account-agnostic, runtime-private, read-only, and free of model switching, continuation, budget reservation, account activation, Worker replay, or Advisor retry?
 - Do the architecture gate and focused regression tests prove no second `setModel`, recovery execution, or Advisor replenishment path was introduced?
 
 ## Decision vocabulary
