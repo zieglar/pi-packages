@@ -99,6 +99,7 @@ touched.
 | `npm run check:architecture` | Static ownership-boundary gates (21) |
 | `npm run check:alpha1` | Durable restart / drift evidence gate (package cwd) |
 | `npm run check:alpha0` | Assisted-dogfood preconditions gate |
+| `npm run check:baseline` | Read-only git baseline invariants gate for handoffs (see `--help`) |
 | `npm run verify` | Architecture gates, tests, typecheck, build |
 | `npm run verify:alpha0` | Full verify plus the Alpha 0 gate |
 | `npm run pi:version` | Print the installed project-local Pi version |

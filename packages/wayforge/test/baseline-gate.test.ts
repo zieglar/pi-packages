@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
-const CHECKER = fileURLToPath(new URL("../scripts/check-baseline.mjs", import.meta.url));
+// Overridable so mutation evidence can point the same suite at a deliberately
+// wrong checker (see COVERAGE RED runs in handoff 64831 evidence).
+const CHECKER = process.env.BASELINE_GATE_CHECKER ?? fileURLToPath(new URL("../scripts/check-baseline.mjs", import.meta.url));
 
 const tempDirs: string[] = [];
 
@@ -206,5 +208,107 @@ describe("baseline gate", () => {
 
     expect(result.status).toBe(2);
     expect(result.stderr + result.stdout).toContain("git");
+  });
+
+  // C-11 (64831): branch truth comes from an independently chosen fixture
+  // branch, observed through git — never from a hardcoded "main" literal.
+  it("binds branch reporting to independently observed git state", () => {
+    const { repo } = initRepo();
+    git(repo, ["checkout", "-b", "feature/independent"]);
+    const observed = git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]);
+    expect(observed).toBe("feature/independent");
+
+    expect(runChecker(["--repo", repo, "--branch", observed]).status).toBe(0);
+
+    const result = runChecker(["--repo", repo, "--branch", "main", "--json"]);
+    expect(result.status).toBe(1);
+    const parsed = JSON.parse(result.stdout) as {
+      failures: { invariant: string; expected: string; actual: string }[];
+    };
+    expect(parsed.failures).toHaveLength(1);
+    expect(parsed.failures[0]?.invariant).toBe("branch");
+    expect(parsed.failures[0]?.expected).toBe("main");
+    expect(parsed.failures[0]?.actual).toBe(observed);
+  });
+
+  // C-16 (64831): real divergent history (ahead 1, behind 1); the checker's
+  // reported actuals must equal independent git observation, killing any
+  // implementation that echoes CLI expectations back as actuals.
+  it("binds ahead/behind actuals to independently constructed divergence", () => {
+    const { repo } = initRepo();
+    const remote = withPushedRemote(repo);
+    commitFile(repo, "local-diverge.txt", "local\n", "local diverge");
+    const other = tempDir("baseline-gate-diverge-");
+    git(".", ["clone", remote, other]);
+    git(other, ["config", "user.email", "gate@example.invalid"]);
+    git(other, ["config", "user.name", "Baseline Gate Test"]);
+    commitFile(other, "remote-diverge.txt", "remote\n", "remote diverge");
+    git(other, ["push", "origin", "main"]);
+    git(repo, ["fetch", "origin"]);
+
+    const ahead = git(repo, ["rev-list", "--count", "origin/main..HEAD"]);
+    const behind = git(repo, ["rev-list", "--count", "HEAD..origin/main"]);
+    expect(Number(ahead)).toBeGreaterThan(0);
+    expect(Number(behind)).toBeGreaterThan(0);
+
+    expect(
+      runChecker(["--repo", repo, "--upstream", "origin/main", "--ahead", ahead, "--behind", behind]).status,
+    ).toBe(0);
+
+    const result = runChecker([
+      "--repo", repo, "--upstream", "origin/main",
+      "--ahead", String(Number(ahead) + 1),
+      "--behind", String(Number(behind) + 1),
+      "--json",
+    ]);
+    expect(result.status).toBe(1);
+    const parsed = JSON.parse(result.stdout) as {
+      failures: { invariant: string; expected: string; actual: string }[];
+    };
+    const byInvariant = Object.fromEntries(parsed.failures.map((failure) => [failure.invariant, failure]));
+    expect(byInvariant.ahead?.actual).toBe(ahead);
+    expect(byInvariant.behind?.actual).toBe(behind);
+    expect(byInvariant.ahead?.expected).toBe(String(Number(ahead) + 1));
+    expect(byInvariant.behind?.expected).toBe(String(Number(behind) + 1));
+  });
+
+  // C-1 (64831): --upstream-head PASS/FAIL against a local bare remote; the
+  // failure must name the invariant and expose independently observed truth.
+  it("covers --upstream-head pass and fail against independent observation", () => {
+    const { repo } = initRepo();
+    withPushedRemote(repo);
+    const upstreamSha = git(repo, ["rev-parse", "origin/main"]);
+
+    expect(runChecker(["--repo", repo, "--upstream", "origin/main", "--upstream-head", upstreamSha]).status).toBe(0);
+
+    const wrongSha = commitFile(repo, "local-only.txt", "local\n", "local only");
+    expect(wrongSha).not.toBe(upstreamSha);
+    const result = runChecker(["--repo", repo, "--upstream", "origin/main", "--upstream-head", wrongSha, "--json"]);
+    expect(result.status).toBe(1);
+    const parsed = JSON.parse(result.stdout) as {
+      failures: { invariant: string; expected: string; actual: string }[];
+    };
+    expect(parsed.failures).toHaveLength(1);
+    expect(parsed.failures[0]?.invariant).toBe("upstream HEAD");
+    expect(parsed.failures[0]?.expected).toBe(wrongSha);
+    expect(parsed.failures[0]?.actual).toBe(upstreamSha);
+  });
+
+  // C-13 (64831): mechanical proof the checker is read-only — git state is
+  // identical before and after a passing and a failing invocation.
+  it("leaves repository state untouched across passing and failing checks", () => {
+    const { repo, headSha } = initRepo();
+    withPushedRemote(repo);
+    const snapshot = () => ({
+      head: git(repo, ["rev-parse", "HEAD"]),
+      branch: git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]),
+      refs: git(repo, ["for-each-ref"]),
+      status: git(repo, ["status", "--porcelain"]),
+    });
+
+    const before = snapshot();
+    expect(runChecker(["--repo", repo, "--branch", "main", "--head", headSha, "--clean"]).status).toBe(0);
+    expect(runChecker(["--repo", repo, "--head", "0".repeat(40)]).status).toBe(1);
+    expect(snapshot()).toEqual(before);
   });
 });
