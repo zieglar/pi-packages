@@ -1,6 +1,4 @@
 import { constants, type DatabaseSync, type StatementSync } from "node:sqlite";
-import { isPromise } from "node:util/types";
-import { promiseHooks } from "node:v8";
 
 export type TransactionStage = "begin" | "callback" | "commit" | "rollback";
 export type TransactionOutcome = "ROLLED_BACK" | "COMMITTED" | "INDETERMINATE";
@@ -87,63 +85,19 @@ function rollbackOwnedTransaction(db: DatabaseSync, cause: unknown): void {
   }
 }
 
-const nativeThen = Promise.prototype.then;
-const observerConstructor = Object.freeze({ [Symbol.species]: Promise });
-const discardPromiseResult = (): undefined => undefined;
-
-// No thenable assimilation. Only branded native Promises can enter this path.
-// Shadow species without invoking getters, and restore the exact descriptor.
-function observeNativePromise(promise: Promise<unknown>): boolean {
-  const constructor = Object.getOwnPropertyDescriptor(promise, "constructor");
-  if (constructor !== undefined && !constructor.configurable) return false;
-  if (constructor === undefined && !Object.isExtensible(promise)) return false;
-  Object.defineProperty(promise, "constructor", {
-    value: observerConstructor, configurable: true,
-  });
-  try {
-    // Discard BOTH outcomes; forwarding fulfillment could assimilate user values.
-    nativeThen.call(promise, discardPromiseResult, discardPromiseResult);
-    return true;
-  } finally {
-    if (constructor === undefined) Reflect.deleteProperty(promise, "constructor");
-    else Object.defineProperty(promise, "constructor", constructor);
+// Void-only runtime acceptance. The returned value is never read, called,
+// awaited, assimilated, or modified: only its identity against `undefined`
+// is inspected, so hostile objects and Proxies expose no behavior here.
+function assertVoidResult(result: unknown): void {
+  if (result !== undefined) {
+    throw new Error("storage transaction callbacks must be synchronous and return undefined");
   }
 }
 
-function runVoidCallback(callback: () => void): void {
-  const observed = new WeakSet<Promise<unknown>>();
-  let observing = false;
-  let observationFailed = false;
-  const observe = (promise: Promise<unknown>): boolean => {
-    if (observed.has(promise)) return true;
-    // Attaching a native reaction initializes another Promise; do not recurse.
-    if (observing) return true;
-    observing = true;
-    try {
-      if (!observeNativePromise(promise)) return false;
-      observed.add(promise);
-      return true;
-    } finally { observing = false; }
-  };
-  // Initialization occurs before callback code can freeze the new Promise or
-  // install unmodifiable constructor/species accessors. Never throw from a hook.
-  const stop = promiseHooks.onInit((promise) => {
-    try { if (!observe(promise)) observationFailed = true; }
-    catch { observationFailed = true; }
-  });
-  try {
-    const result: unknown = callback();
-    if (result !== undefined) {
-      // A pre-existing native Promise is observed only if safely shadowable.
-      // Unmodifiable pre-existing Promises require creator-owned rejection handling.
-      if (isPromise(result)) observe(result);
-      throw new Error("storage transaction callbacks must be synchronous and return undefined");
-    }
-    if (observationFailed) throw new Error("native Promise rejection observation failed");
-  } finally { stop(); }
-}
-
-/** Only an undefined callback result is accepted at runtime; the helper returns void.
+/** Strictly synchronous. Only an `undefined` callback result is accepted at runtime.
+ * Unsupported results roll back before COMMIT without reading, calling, awaiting,
+ * assimilating, or modifying the value. Promise lifecycle ownership — including
+ * rejection handling — stays with the code that creates the Promise.
  * Normal return means COMMITTED. Errors carry conservative outcomes and retry policy.
  * This private primitive owns the connection's authorizer for its duration.
  * Raw connection owners are privileged; callbacks should use only the scoped handle.
@@ -197,7 +151,7 @@ export function withImmediateTransaction(db: DatabaseSync, callback: (tx: Transa
         }
         return constants.SQLITE_OK;
       });
-      runVoidCallback(() => callback(tx));
+      assertVoidResult(callback(tx));
       if (controlAttempted) throw new Error("callback attempted owned transaction control");
       if (!db.isTransaction) throw new Error("owned transaction ended unexpectedly");
     } catch (error) {

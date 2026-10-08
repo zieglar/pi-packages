@@ -9,11 +9,26 @@ import { withImmediateTransaction } from "../../src/storage/transaction.js";
 
 const roots: string[] = [];
 function location() {
-  const directory = mkdtempSync(join(realpathSync(tmpdir()), "ce-r3-return-"));
+  const directory = mkdtempSync(join(realpathSync(tmpdir()), "ce-r4-return-"));
   roots.push(directory);
   return { directory, filename: "store.sqlite" };
 }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+
+const transactionUrl = new URL("../../src/storage/transaction.ts", import.meta.url).href;
+
+/** Strict subprocesses prove process-level rejection behavior without crashing this suite. */
+function strictSubprocess(body: string, options: { directory: string; filename: string }) {
+  return spawnSync(process.execPath, ["--unhandled-rejections=strict", "--input-type=module", "-e", `
+    import { DatabaseSync } from 'node:sqlite';
+    import { withImmediateTransaction } from ${JSON.stringify(transactionUrl)};
+    const db = new DatabaseSync(${JSON.stringify(join(options.directory, options.filename))});
+    db.exec('CREATE TABLE item(id TEXT PRIMARY KEY)');
+    let propertyCalls = 0, failure, retained, statement;
+    ${body}
+    db.close();
+  `], { encoding: "utf8", timeout: 10_000 });
+}
 
 it.each(["implicit", "explicit"])("F7: accepts only %s undefined return and commits", (kind) => {
   const db = openStorageConnection(location());
@@ -30,7 +45,7 @@ it.each(["implicit", "explicit"])("F7: accepts only %s undefined return and comm
 });
 
 it.each([
-  ["null", null], ["boolean", false], ["number", 0], ["NaN", NaN],
+  ["null", null], ["false", false], ["true", true], ["number", 0], ["NaN", NaN],
   ["string", "done"], ["bigint", 1n], ["symbol", Symbol("done")],
   ["object", {}], ["array", []], ["function", () => undefined],
 ] as const)("F7: rejects unsupported %s return and synchronously rolls back", (_name, value) => {
@@ -62,9 +77,9 @@ it.each(["then getter", "rejecting thenable", "dynamic Proxy", "hostile Proxy", 
       // Required counterexample: property presence and Promise assimilation differ.
       expect("then" in value).toBe(false);
     } else if (kind === "hostile Proxy") {
-      value = new Proxy({}, { get: trap, has: trap, getPrototypeOf: trap, getOwnPropertyDescriptor: trap, ownKeys: trap });
+      value = new Proxy({}, { get: trap, has: trap, getPrototypeOf: trap, getOwnPropertyDescriptor: trap, ownKeys: trap, defineProperty: trap, deleteProperty: trap });
     } else if (kind === "hostile function Proxy") {
-      value = new Proxy(() => undefined, { get: trap, has: trap, getPrototypeOf: trap });
+      value = new Proxy(() => undefined, { get: trap, has: trap, getPrototypeOf: trap, defineProperty: trap });
     } else {
       const revoked = Proxy.revocable({}, {});
       revoked.revoke();
@@ -83,113 +98,171 @@ it.each(["then getter", "rejecting thenable", "dynamic Proxy", "hostile Proxy", 
   },
 );
 
-const nativeCases = [
-  ["resolved", "return Promise.resolve('unsupported');"],
-  ["rejected", "return Promise.reject(new Error('native rejection'));"],
-  ["throwing constructor", `const p = Promise.reject(new Error('constructor rejection'));
-    Object.defineProperty(p, 'constructor', { get() { propertyCalls++; throw new Error('constructor getter'); } }); return p;`],
-  ["throwing species", `const p = Promise.reject(new Error('species rejection'));
-    Object.defineProperty(p, 'constructor', { value: { get [Symbol.species]() { propertyCalls++; throw new Error('species getter'); } } }); return p;`],
-  ["overridden then", `const p = Promise.reject(new Error('override rejection'));
-    Object.defineProperty(p, 'then', { value() { propertyCalls++; throw new Error('overridden then'); } }); return p;`],
-  ["native throwing then getter", `const p = Promise.reject(new Error('then rejection'));
-    Object.defineProperty(p, 'then', { get() { propertyCalls++; throw new Error('then getter'); } }); return p;`],
-  ["hostile subclass", `class Hostile extends Promise { static get [Symbol.species]() { propertyCalls++; throw new Error('subclass species'); } }
-    return new Hostile((_resolve, reject) => reject(new Error('subclass rejection')));`],
-  ["cross realm", "return runInNewContext(\"Promise.reject(new Error('realm rejection'))\");"],
-  ["fulfilled payload later thenable", `const payload = {}; const p = Promise.resolve(payload);
-    Object.defineProperty(payload, 'then', { value(_resolve, reject) { propertyCalls++; reject(new Error('must not assimilate payload')); } }); return p;`],
-  ["fulfilled payload throwing then getter", `const payload = {}; const p = Promise.resolve(payload);
-    Object.defineProperty(payload, 'then', { get() { propertyCalls++; throw new Error('must not read payload then'); } }); return p;`],
-  ["frozen native", "return Object.freeze(Promise.reject(new Error('frozen rejection')));"],
-  ["Proxy around native", `return new Proxy(Promise.reject(new Error('proxied rejection')), {
-    get() { propertyCalls++; throw new Error('proxy getter'); }, has() { propertyCalls++; throw new Error('proxy has'); }
-  });`],
-  ["async continuation", `return (async () => {
-    await Promise.resolve();
-    try { tx.exec("INSERT INTO item VALUES ('after')"); } catch { handleDenied = true; }
-    try { statement.run('retained'); } catch { statementDenied = true; }
-    throw new Error('continuation rejection');
-  })();`],
-  ["pre-existing ordinary", "return existing;"],
-  ["pre-existing configurable accessor", "return existing;"],
-  ["pre-existing unmodifiable, creator-handled boundary", "return existing;"],
-  ["pre-existing nonextensible, creator-handled boundary", "return existing;"],
-  ["pre-existing data descriptor", "return existing;"],
+it("F7: an unsupported returned object is never mutated", () => {
+  const db = openStorageConnection(location());
+  try {
+    db.exec("CREATE TABLE item(id TEXT PRIMARY KEY)");
+    const value = {};
+    const before = Reflect.ownKeys(value);
+    expect(() => withImmediateTransaction(db, () => value)).toThrow();
+    expect(Reflect.ownKeys(value)).toEqual(before);
+    expect(Object.isExtensible(value)).toBe(true);
+  } finally { db.close(); }
+});
+
+it("F7: the helper installs no Promise initialization hook", () => {
+  const db = openStorageConnection(location());
+  try {
+    db.exec("CREATE TABLE item(id TEXT PRIMARY KEY)");
+    let initialized = 0;
+    const stop = promiseHooks.onInit(() => { initialized++; });
+    try {
+      // A returned native Promise is not observed: no reaction Promise is created.
+      const created = Promise.resolve();
+      const baseline = initialized;
+      expect(() => withImmediateTransaction(db, (tx) => {
+        tx.exec("INSERT INTO item VALUES ('one')");
+        return created;
+      })).toThrow(expect.objectContaining({ outcome: "ROLLED_BACK" }));
+      expect(initialized).toBe(baseline);
+      expect(Object.hasOwn(created, "constructor")).toBe(false);
+      // A Promise created inside a committing callback is left entirely alone.
+      let inner: Promise<void> | undefined;
+      withImmediateTransaction(db, (tx) => {
+        tx.exec("INSERT INTO item VALUES ('two')");
+        inner = new Promise<void>(() => undefined);
+      });
+      expect(Object.hasOwn(inner!, "constructor")).toBe(false);
+      expect(initialized).toBe(baseline + 1);
+    } finally { stop(); }
+    expect(db.prepare("SELECT count(*) AS n FROM item").get()).toEqual({ n: 1 });
+  } finally { db.close(); }
+});
+
+/** `create` makes the Promise; the harness then attaches creator-owned rejection
+ *  handling; `poison` only afterwards installs hostile accessors, so the sabotage
+ *  observed by the helper is never triggered by the test's own handling. */
+const creatorHandledCases = [
+  ["resolved", "existing = Promise.resolve('unsupported');", ""],
+  ["rejected", "existing = Promise.reject(new Error('native rejection'));", ""],
+  ["throwing constructor getter", "existing = Promise.reject(new Error('constructor rejection'));",
+    `Object.defineProperty(existing, 'constructor', { get() { propertyCalls++; throw new Error('constructor getter'); } });`],
+  ["throwing species getter", "existing = Promise.reject(new Error('species rejection'));",
+    `Object.defineProperty(existing, 'constructor', { value: { get [Symbol.species]() { propertyCalls++; throw new Error('species getter'); } } });`],
+  ["overridden then", "existing = Promise.reject(new Error('override rejection'));",
+    `Object.defineProperty(existing, 'then', { value() { propertyCalls++; throw new Error('overridden then'); } });`],
+  ["throwing then getter", "existing = Promise.reject(new Error('then rejection'));",
+    `Object.defineProperty(existing, 'then', { get() { propertyCalls++; throw new Error('then getter'); } });`],
+  ["hostile subclass", `class Hostile extends Promise {
+      static #armed = false;
+      static arm() { Hostile.#armed = true; }
+      static get [Symbol.species]() { if (Hostile.#armed) { propertyCalls++; throw new Error('subclass species'); } return Promise; }
+    }
+    existing = new Hostile((_resolve, reject) => reject(new Error('subclass rejection')));`,
+    "existing.constructor.arm();"],
+  ["cross realm", "existing = runInNewContext(\"Promise.reject(new Error('realm rejection'))\");", ""],
+  ["frozen native", "existing = Promise.reject(new Error('frozen rejection'));", "Object.freeze(existing);"],
+  ["fulfilled payload thenable", "const payload = {}; existing = Promise.resolve(payload);",
+    `Object.defineProperty(payload, 'then', { get() { propertyCalls++; throw new Error('must not read payload then'); } });`],
+  ["Proxy around native", `const inner = Promise.reject(new Error('proxied rejection'));
+    Promise.prototype.then.call(inner, () => undefined, () => undefined);
+    skipAttach = true;
+    existing = new Proxy(inner, { get() { propertyCalls++; throw new Error('proxy getter'); }, has() { propertyCalls++; throw new Error('proxy has'); } });`,
+    ""],
 ] as const;
 
-it.each(nativeCases)("F7-A: %s is rejected with zero writes and strict subprocess survival", (name, body) => {
+it.each(creatorHandledCases)(
+  "F7-A: creator-handled %s Promise return is rejected with zero writes and strict subprocess survival", (_name, create, poison) => {
+    const options = location();
+    const child = strictSubprocess(`
+      import { runInNewContext } from 'node:vm';
+      let existing, skipAttach = false;
+      ${create}
+      // The creator owns rejection handling; Chat Exchange never suppresses it.
+      if (!skipAttach) Promise.prototype.then.call(existing, () => undefined, () => undefined);
+      ${poison}
+      const ownConstructorBefore = Object.hasOwn(existing, 'constructor');
+      let unhandled = 0, handleDenied = false, statementDenied = false;
+      process.on('unhandledRejection', () => { unhandled++; });
+      try { withImmediateTransaction(db, tx => {
+        retained = tx;
+        statement = tx.prepare('INSERT INTO item VALUES (?)');
+        statement.run('before');
+        return existing;
+      }); } catch (error) { failure = { outcome: error.outcome, retryable: error.retryable, stage: error.stage }; }
+      const synchronous = { count: db.prepare('SELECT count(*) AS n FROM item').get().n, active: db.isTransaction };
+      try { retained.exec("INSERT INTO item VALUES ('retained-handle')"); } catch { handleDenied = true; }
+      try { statement.run('retained-statement'); } catch { statementDenied = true; }
+      withImmediateTransaction(db, () => { db.exec("INSERT INTO item VALUES ('reuse')"); });
+      await new Promise(resolve => setImmediate(resolve));
+      console.log(JSON.stringify({ failure, synchronous,
+        count: db.prepare('SELECT count(*) AS n FROM item').get().n,
+        unhandled, propertyCalls, handleDenied, statementDenied,
+        mutated: Object.hasOwn(existing, 'constructor') !== ownConstructorBefore }));
+    `, options);
+    expect(child.error).toBeUndefined();
+    expect(child.signal).toBeNull();
+    expect(child.status, child.stderr).toBe(0);
+    expect(JSON.parse(child.stdout.trim())).toEqual({
+      failure: { outcome: "ROLLED_BACK", retryable: false, stage: "callback" },
+      synchronous: { count: 0, active: false },
+      // Only the post-rollback reuse row is committed.
+      count: 1,
+      unhandled: 0, propertyCalls: 0, handleDenied: true, statementDenied: true, mutated: false,
+    });
+  },
+);
+
+it("F7: an async callback continuation cannot use the revoked handle and is creator-owned", () => {
   const options = location();
-  const transactionUrl = new URL("../../src/storage/transaction.ts", import.meta.url).href;
-  const child = spawnSync(process.execPath, ["--unhandled-rejections=strict", "--input-type=module", "-e", `
-    import { DatabaseSync } from 'node:sqlite';
-    import { runInNewContext } from 'node:vm';
-    import { isDeepStrictEqual } from 'node:util';
-    import { withImmediateTransaction } from ${JSON.stringify(transactionUrl)};
-    const db = new DatabaseSync(${JSON.stringify(join(options.directory, options.filename))});
-    db.exec('CREATE TABLE item(id TEXT PRIMARY KEY)');
-    let propertyCalls = 0, unhandled = 0, handleDenied = false, statementDenied = false;
-    let retained, statement, failure, existing;
-    process.on('unhandledRejection', () => { unhandled++; });
-    const name = ${JSON.stringify(name)};
-    if (name.startsWith('pre-existing')) {
-      existing = Promise.reject(new Error('pre-existing rejection'));
-      if (name.includes('creator-handled')) {
-        Promise.prototype.then.call(existing, undefined, () => undefined);
-        if (name.includes('nonextensible')) Object.freeze(existing);
-        else Object.defineProperty(existing, 'constructor', { get() { propertyCalls++; throw new Error('unmodifiable getter'); } });
-      } else if (name.includes('configurable')) {
-        Object.defineProperty(existing, 'constructor', { configurable: true, get() { propertyCalls++; throw new Error('configurable getter'); } });
-      } else if (name.includes('data descriptor')) {
-        Object.defineProperty(existing, 'constructor', { value: {}, configurable: true, writable: true, enumerable: true });
-      }
-    }
-    const before = existing && Object.getOwnPropertyDescriptor(existing, 'constructor');
+  const child = strictSubprocess(`
+    let handleDenied = false, statementDenied = false, resumed = false;
+    const continuation = (async () => {
+      await Promise.resolve();
+      resumed = true;
+      try { retained.exec("INSERT INTO item VALUES ('after')"); } catch { handleDenied = true; }
+      try { statement.run('retained'); } catch { statementDenied = true; }
+      throw new Error('continuation rejection');
+    });
     try { withImmediateTransaction(db, tx => {
       retained = tx;
       statement = tx.prepare('INSERT INTO item VALUES (?)');
       statement.run('before');
-      ${body}
-    }); } catch (error) { failure = { outcome: error.outcome, retryable: error.retryable, stage: error.stage }; }
-    const synchronous = { count: db.prepare('SELECT count(*) AS n FROM item').get().n, active: db.isTransaction };
-    try { retained.exec("INSERT INTO item VALUES ('retained-handle')"); } catch { handleDenied = true; }
-    try { statement.run('retained-statement'); } catch { statementDenied = true; }
-    withImmediateTransaction(db, tx => {
-      try { retained.exec("INSERT INTO item VALUES ('during-reuse')"); } catch { handleDenied = true; }
-      try { statement.run('during-reuse'); } catch { statementDenied = true; }
-    });
+      const promise = continuation();
+      // Creator-owned handling, declared by the callback author, not the helper.
+      Promise.prototype.then.call(promise, undefined, () => undefined);
+      return promise;
+    }); } catch (error) { failure = { outcome: error.outcome, stage: error.stage }; }
+    const synchronous = { count: db.prepare('SELECT count(*) AS n FROM item').get().n, resumed };
+    let unhandled = 0;
+    process.on('unhandledRejection', () => { unhandled++; });
     await new Promise(resolve => setImmediate(resolve));
-    const after = existing && Object.getOwnPropertyDescriptor(existing, 'constructor');
-    const descriptorRestored = isDeepStrictEqual(before, after);
-    console.log(JSON.stringify({ failure, synchronous, count: db.prepare('SELECT count(*) AS n FROM item').get().n,
-      unhandled, propertyCalls, handleDenied, statementDenied, descriptorRestored }));
-    db.close();
-  `], { encoding: "utf8", timeout: 10_000 });
-  expect(child.error).toBeUndefined();
-  expect(child.signal).toBeNull();
+    console.log(JSON.stringify({ failure, synchronous, resumed, handleDenied, statementDenied, unhandled,
+      count: db.prepare('SELECT count(*) AS n FROM item').get().n }));
+  `, options);
   expect(child.status, child.stderr).toBe(0);
   expect(JSON.parse(child.stdout.trim())).toEqual({
-    failure: { outcome: "ROLLED_BACK", retryable: false, stage: "callback" },
-    synchronous: { count: 0, active: false }, count: 0,
-    unhandled: 0, propertyCalls: 0, handleDenied: true, statementDenied: true, descriptorRestored: true,
+    failure: { outcome: "ROLLED_BACK", stage: "callback" },
+    // Rollback and revocation are synchronous, before the continuation resumes.
+    synchronous: { count: 0, resumed: false },
+    resumed: true, handleDenied: true, statementDenied: true, unhandled: 0, count: 0,
   });
 });
 
-it.each(["commit", "throw", "unsupported"])("F7: initialization observer is removed after %s", (path) => {
-  const db = openStorageConnection(location());
-  try {
-    const run = () => withImmediateTransaction(db, () => {
-      if (path === "throw") throw new Error("callback failure");
-      if (path === "unsupported") return {};
-    });
-    if (path === "commit") run(); else expect(run).toThrow();
-    let initialized = 0;
-    const stop = promiseHooks.onInit(() => { initialized++; });
-    try {
-      // A leaked observer would initialize an additional rejection-handler Promise.
-      const value = new Promise<void>(() => undefined);
-      expect(initialized).toBe(1);
-      expect(Object.hasOwn(value, "constructor")).toBe(false);
-    } finally { stop(); }
-  } finally { db.close(); }
-});
+it.each(["inside the callback", "outside the callback"])(
+  "F7: an unrelated unhandled rejection created %s keeps unchanged process behavior", (placement) => {
+    const options = location();
+    const reject = "void Promise.reject(new Error('unrelated subsystem'));";
+    const child = strictSubprocess(`
+      ${placement === "inside the callback"
+        ? `withImmediateTransaction(db, tx => { tx.exec("INSERT INTO item VALUES ('one')"); ${reject} });`
+        : `withImmediateTransaction(db, tx => { tx.exec("INSERT INTO item VALUES ('one')"); });\n      ${reject}`}
+      await new Promise(resolve => setImmediate(resolve));
+      console.log('unexpectedly survived');
+    `, options);
+    // Identical in both placements: the helper never consumes a caller's rejection.
+    expect(child.status).not.toBe(0);
+    expect(child.stderr).toContain("unrelated subsystem");
+    expect(child.stdout).not.toContain("unexpectedly survived");
+  },
+);

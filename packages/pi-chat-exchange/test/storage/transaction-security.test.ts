@@ -54,7 +54,7 @@ it("F4: unexpected inactive transaction is indeterminate and invalidates connect
   expect(() => db.prepare("SELECT 1")).toThrow();
 });
 
-it("F7: rejected returned Promise is observed without process unhandledRejection", () => {
+it("F7: a rejected returned Promise rolls back and leaves rejection handling to its creator", () => {
   const options = location();
   const transactionUrl = new URL("../../src/storage/transaction.ts", import.meta.url).href;
   const output = execFileSync(process.execPath, ["--input-type=module", "-e", `
@@ -67,7 +67,10 @@ it("F7: rejected returned Promise is observed without process unhandledRejection
     let rejected = false;
     try { withImmediateTransaction(db, () => {
       db.exec("INSERT INTO item VALUES ('one')");
-      return Promise.reject(new Error('async failure'));
+      const promise = Promise.reject(new Error('async failure'));
+      // The creator owns the Promise lifecycle, including its rejection.
+      promise.catch(() => undefined);
+      return promise;
     }); } catch { rejected = true; }
     const count = db.prepare('SELECT count(*) AS n FROM item').get().n;
     await new Promise(resolve => setImmediate(resolve));
@@ -107,14 +110,20 @@ it("F7: async continuation cannot use a revoked handle or retained statement", a
     let resumed = false;
     let handleDenied = false;
     let statementDenied = false;
-    expect(() => withImmediateTransaction(db, async (tx) => {
+    let continuation: Promise<void> | undefined;
+    expect(() => withImmediateTransaction(db, (tx) => {
       const statement = tx.prepare("INSERT INTO item VALUES (?)");
       statement.run("before");
-      await Promise.resolve();
-      resumed = true;
-      try { tx.exec("INSERT INTO item VALUES ('after')"); } catch { handleDenied = true; }
-      try { statement.run("retained"); } catch { statementDenied = true; }
-      throw new Error("continuation rejection must be observed");
+      continuation = (async () => {
+        await Promise.resolve();
+        resumed = true;
+        try { tx.exec("INSERT INTO item VALUES ('after')"); } catch { handleDenied = true; }
+        try { statement.run("retained"); } catch { statementDenied = true; }
+        throw new Error("continuation rejection is creator-owned");
+      })();
+      // The callback author owns the Promise it created, including rejection.
+      continuation.catch(() => undefined);
+      return continuation;
     })).toThrowError(expect.objectContaining({ outcome: "ROLLED_BACK" }));
     // Rollback and revocation happen synchronously, before the continuation.
     expect(resumed).toBe(false);

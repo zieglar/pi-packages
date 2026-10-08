@@ -1,4 +1,4 @@
-# Private storage security boundaries (CE-0002-B1-R3)
+# Private storage security boundaries (CE-0002-B1-R4)
 
 This is a private SQLite foundation, not a delivery/dispatch implementation.
 The public protocol and lifecycle vocabulary are unchanged.
@@ -85,26 +85,26 @@ Unsupported results cause synchronous rollback and capability revocation. Object
 rejection does not read `.then`, invoke getters/Proxy traps, or assimilate thenables.
 TypeScript's `void` callback type alone is not enforcement.
 
-On the approved Node engine, a callback-scoped V8 Promise initialization hook
-observes newly created native Promises before callback code can freeze them or
-install constructor/species accessors. Observation temporarily shadows the native
-Promise's constructor with an inert intrinsic species holder, attaches intrinsic
-reactions that discard both outcomes, and restores the exact original descriptor.
-It never calls an overridden `.then` or forwards fulfillment into assimilation.
-A reentrancy guard prevents observing observer-created reactions; the hook is
-removed on every callback exit. No global unhandled-rejection handler is installed.
-Strict-mode file-backed subprocess tests cover constructor/species poisoning,
-subclasses, cross-realm Promises, frozen Promises, and asynchronous continuations.
+The helper installs **no global runtime observation**. It does not install V8
+Promise hooks or `async_hooks`, does not attach Promise reactions, does not alter
+process rejection handling, and never consumes an unrelated Promise rejection.
+An unsupported return value is compared against `undefined` by identity only: it is
+never read, called, awaited, assimilated, or modified. Strict-mode subprocess tests
+assert that an unrelated unhandled rejection behaves identically whether it is
+created inside or outside a transaction callback.
 
-**Boundary:** a native Promise created before the callback is observed only when
-its constructor can safely be shadowed. Pre-existing Promises with unmodifiable
-constructors or nonextensible objects must already have creator-owned rejection
-handling; the helper rejects them without invoking their accessors. Hostile
-process-level changes to intrinsics or competing native hooks are not sandboxed.
-No guarantee is made for arbitrary hostile objects or generic Promise assimilation.
-Async continuations and retained statements cannot use the revoked handle, even
-during later reuse. Detached async work and separately captured privileged raw
-connections remain outside the execution-containment boundary.
+**Promise ownership boundary:** a callback that creates a Promise violates the
+synchronous transaction contract if it returns that Promise. The helper guarantees
+synchronous rollback on unsupported return values; it does **not** guarantee that a
+rejected Promise created by caller code will be handled. Creator-owned rejection
+handling is required, and an unhandled rejection from caller-created asynchronous
+work is not a transaction commit failure. No claim is made that arbitrary hostile
+native Promises are safely observed, because none are observed at all.
+
+**Boundary:** async continuations and retained statements cannot use the revoked
+handle, even during later reuse, but detached async work keeps running and is not
+sandboxed. Hostile process-level changes to intrinsics, and separately captured
+privileged raw connections, remain outside the execution-containment boundary.
 
 F6 failed-initialization artifact recovery, F8 general budgets, F9 architecture
 negative-oracle hardening, and all B2 features remain deferred.
