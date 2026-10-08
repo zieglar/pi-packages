@@ -667,3 +667,111 @@ it("accepts bound SQL punctuation without injection", () => {
   expect(createMessage(store, input)).toEqual({ ...created, disposition: "REPLAYED" });
   expect(reader.prepare("SELECT idempotency_key FROM message").get()).toEqual({ idempotency_key: "key'); DROP TABLE message; --" });
 });
+
+/** Quote every SQL value as text so corrupt int64 values remain observable. */
+function losslessSnapshot(db: DatabaseSync) {
+  return ["message", "idempotency_record", "exchange", "audit_event"].map((table) => {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all().map((row) => {
+      const name = String(row.name).replaceAll('"', '""');
+      return `quote("${name}") AS "${name}"`;
+    });
+    return db.prepare(`SELECT ${columns.join(", ")} FROM ${table} ORDER BY rowid`).all();
+  });
+}
+
+const unsafeIntegerMutations = [
+  ["payload length", "UPDATE message SET payload_length=9007199254740992", false],
+  ["Message revision", "UPDATE message SET private_revision=9007199254740992", false],
+  ["record revision", "UPDATE idempotency_record SET private_revision=9007199254740992 WHERE idempotency_key='m'", false],
+  ["Exchange revision", "UPDATE exchange SET private_revision=9007199254740992", true],
+] as const;
+
+it.each(unsafeIntegerMutations)("R1 classifies unsafe %s as corruption without writes", (_name, sql, newKey) => {
+  const { store, reader, exchangeId } = fixture();
+  const input = request(exchangeId, { idempotencyKey: "m" });
+  createMessage(store, input);
+  store.database.exec(sql);
+  const before = losslessSnapshot(reader), count = changes(store.database);
+  failed(() => createMessage(store, { ...input, idempotencyKey: newKey ? "new" : "m" }), "STORAGE_IDEMPOTENCY_CORRUPT");
+  expect(losslessSnapshot(reader)).toEqual(before);
+  expect(changes(store.database)).toBe(count);
+  expect(store.database.isTransaction).toBe(false);
+});
+
+it.each(unsafeIntegerMutations)("R1 uncertain rollback overrides unsafe %s corruption", (_name, sql, newKey) => {
+  const { store, reader, exchangeId } = fixture();
+  const input = request(exchangeId, { idempotencyKey: "m" });
+  createMessage(store, input);
+  store.database.exec(sql);
+  const before = losslessSnapshot(reader);
+  const original = store.database.exec.bind(store.database);
+  store.database.exec = (statement) => {
+    if (statement === "ROLLBACK") throw Error("SENSITIVE_SECRET");
+    original(statement);
+  };
+  failed(() => createMessage(store, { ...input, idempotencyKey: newKey ? "new" : "m" }), "STORAGE_TRANSACTION_FAILED", "INDETERMINATE");
+  expect(losslessSnapshot(reader)).toEqual(before);
+  expect(() => store.database.prepare("SELECT 1")).toThrow();
+  failed(() => createMessage(store, input), "STORAGE_TRANSACTION_FAILED", "INDETERMINATE");
+});
+
+it("N1 contains an actual copy-cleanup failure without masking the primary error", () => {
+  const { store, reader, exchangeId } = fixture();
+  const before = snapshot(reader);
+  const original = store.database.prepare.bind(store.database);
+  let cleanupCalls = 0, insertCalls = 0;
+  store.database.prepare = (sql) => {
+    const statement = original(sql);
+    if (sql.startsWith("INSERT INTO message")) {
+      const run = statement.run.bind(statement);
+      statement.run = ((...args: Parameters<typeof run>) => {
+        insertCalls++;
+        const copy = args[6] as Uint8Array;
+        Object.defineProperty(copy, "fill", { value: () => {
+          cleanupCalls++;
+          throw Error("SENSITIVE_SECRET cleanup");
+        } });
+        run(...args); // Real INSERT, followed by an injected primary failure.
+        throw new ConditionalMutationError("primary Message insert failure");
+      }) as unknown as typeof statement.run;
+    }
+    return statement;
+  };
+  let published: MessageCreation | undefined;
+  const error = failed(() => { published = createMessage(store, request(exchangeId)); }, "STORAGE_CONDITIONAL_MUTATION_FAILED");
+  expect((error as Error).message).toBe("primary Message insert failure");
+  expect(cleanupCalls).toBe(1);
+  expect(insertCalls).toBe(1);
+  expect(published).toBeUndefined();
+  expect(snapshot(reader)).toEqual(before);
+});
+
+it.each(["9007199254740991", "9223372036854775807", "-9223372036854775808"])("R1 refuses invalid payload length %s losslessly", (integer) => {
+  const { store, reader, exchangeId } = fixture();
+  const input = request(exchangeId, { idempotencyKey: "m" });
+  createMessage(store, input);
+  // Privileged negative boundary fixture bypasses only the length CHECK.
+  store.database.exec(`PRAGMA ignore_check_constraints=ON; UPDATE message SET payload_length=${integer}; PRAGMA ignore_check_constraints=OFF`);
+  const before = losslessSnapshot(reader);
+  failed(() => createMessage(store, input), "STORAGE_IDEMPOTENCY_CORRUPT");
+  expect(losslessSnapshot(reader)).toEqual(before);
+});
+
+it("R1 leaves arbitrary driver decoding exceptions as transaction failures", () => {
+  const { store, reader, exchangeId } = fixture();
+  const input = request(exchangeId);
+  createMessage(store, input);
+  const before = snapshot(reader);
+  const original = store.database.prepare.bind(store.database);
+  store.database.prepare = (sql) => {
+    const statement = original(sql);
+    if (sql.includes("FROM message WHERE message_id")) {
+      statement.get = (() => {
+        throw Object.assign(new RangeError("SENSITIVE_SECRET driver error"), { code: "ERR_OUT_OF_RANGE" });
+      }) as typeof statement.get;
+    }
+    return statement;
+  };
+  failed(() => createMessage(store, input), "STORAGE_TRANSACTION_FAILED");
+  expect(snapshot(reader)).toEqual(before);
+});

@@ -245,27 +245,43 @@ function storedEndpoint(json: unknown): EndpointRef {
   return Object.freeze(parsed as EndpointRef);
 }
 
+/** Strict canonical unsigned decimal text from SQLite INTEGER projection.
+ * Check range losslessly before conversion; arbitrary driver failures are not
+ * translated to corruption. Schema-v1 revisions are compared as exact text. */
+function safeStoredInteger(value: unknown): number {
+  if (typeof value !== "string" || !/^(?:0|[1-9][0-9]{0,18})$/.test(value)) corrupt();
+  const integer = BigInt(value);
+  if (integer > BigInt(Number.MAX_SAFE_INTEGER)) corrupt();
+  return Number(integer);
+}
+
 /** Validate durable Message consistency BEFORE comparing the incoming digest.
  * Replay precedes admission: historical identity is not execution authority,
  * and privileged raw writes remain unauthenticated by this validation. */
 function replayMessage(tx: TransactionHandle, request: NormalizedMessageRequest): MessageCreation | undefined {
-  const row = tx.prepare("SELECT * FROM idempotency_record WHERE namespace=? AND idempotency_key=?")
-    .get(request.namespace, request.idempotencyKey);
+  // B1 deliberately exposes no setReadBigInts capability. Cast INTEGER columns
+  // to decimal text in these S3-only projections before the driver decodes them.
+  const row = tx.prepare(
+    "SELECT namespace, idempotency_key, request_digest, entity_id, created_at, CAST(private_revision AS TEXT) AS private_revision FROM idempotency_record WHERE namespace=? AND idempotency_key=?",
+  ).get(request.namespace, request.idempotencyKey);
   if (row === undefined) return undefined;
   if (Object.keys(row).length !== 6 || row.namespace !== request.namespace ||
-      row.idempotency_key !== request.idempotencyKey || row.private_revision !== 1 ||
+      row.idempotency_key !== request.idempotencyKey || row.private_revision !== "1" ||
       typeof row.request_digest !== "string" || !SHA256_HEX_PATTERN.test(row.request_digest) ||
       typeof row.entity_id !== "string" || !MESSAGE_ID_PATTERN.test(row.entity_id) ||
       typeof row.created_at !== "string") corrupt();
 
-  const stored = tx.prepare("SELECT * FROM message WHERE message_id=?").get(row.entity_id);
-  if (stored === undefined || Object.keys(stored).length !== 11 || stored.private_revision !== 1 ||
+  const stored = tx.prepare(
+    "SELECT message_id, exchange_id, from_endpoint_json, to_endpoint_json, state, payload_digest, CAST(payload_length AS TEXT) AS payload_length, payload_body, created_at, idempotency_key, CAST(private_revision AS TEXT) AS private_revision FROM message WHERE message_id=?",
+  ).get(row.entity_id);
+  if (stored === undefined) corrupt();
+  const payloadLength = safeStoredInteger(stored.payload_length);
+  if (Object.keys(stored).length !== 11 || stored.private_revision !== "1" ||
       stored.message_id !== row.entity_id || stored.exchange_id !== request.exchangeId ||
       stored.idempotency_key !== row.idempotency_key || stored.created_at !== row.created_at ||
       typeof stored.payload_digest !== "string" || !SHA256_HEX_PATTERN.test(stored.payload_digest) ||
-      typeof stored.payload_length !== "number" || !Number.isSafeInteger(stored.payload_length) ||
-      stored.payload_length < 0 || !types.isUint8Array(stored.payload_body) ||
-      stored.payload_body.byteLength !== stored.payload_length ||
+      !types.isUint8Array(stored.payload_body) ||
+      stored.payload_body.byteLength !== payloadLength ||
       createHash("sha256").update(stored.payload_body).digest("hex") !== stored.payload_digest) corrupt();
 
   const candidate = {
@@ -275,7 +291,7 @@ function replayMessage(tx: TransactionHandle, request: NormalizedMessageRequest)
     to: storedEndpoint(stored.to_endpoint_json),
     state: stored.state,
     payloadDigest: stored.payload_digest,
-    payloadLength: stored.payload_length,
+    payloadLength,
     createdAt: stored.created_at,
     ...(stored.idempotency_key === null ? {} : { idempotencyKey: stored.idempotency_key }),
   } as unknown as Message;
@@ -301,9 +317,11 @@ function replayMessage(tx: TransactionHandle, request: NormalizedMessageRequest)
 /** Admission for NEW creation only. No disposition object is fabricated: the
  * presence of the administrative row alone permanently refuses new activity. */
 function admitExchange(tx: TransactionHandle, exchangeId: string): void {
-  const row = tx.prepare("SELECT * FROM exchange WHERE exchange_id=?").get(exchangeId);
+  const row = tx.prepare(
+    "SELECT exchange_id, state, created_at, closed_at, CAST(private_revision AS TEXT) AS private_revision FROM exchange WHERE exchange_id=?",
+  ).get(exchangeId);
   if (row === undefined) throw new CreationDomainError("STORAGE_EXCHANGE_NOT_FOUND");
-  if (Object.keys(row).length !== 5 || row.private_revision !== 1 || row.exchange_id !== exchangeId ||
+  if (Object.keys(row).length !== 5 || row.private_revision !== "1" || row.exchange_id !== exchangeId ||
       !((row.state === "OPEN" && row.closed_at === null) ||
         (row.state === "CLOSED" && typeof row.closed_at === "string"))) corrupt();
   const exchange = {
