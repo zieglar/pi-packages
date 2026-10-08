@@ -6,15 +6,18 @@
  * declarations, dynamic import(), and require() calls) — not regexes — and
  * dependency direction is enforced TRANSITIVELY (through barrels):
  *
- *   protocol <- core <- control/endpoints <- bin
+ *   protocol <- core <- private storage/control/endpoints <- bin
  *
- * 1. Protocol/core cannot reach outer layers or composition, transitively.
- * 2. Control surfaces and endpoint integrations cannot reach each other.
- * 3. One endpoint integration cannot depend on a different endpoint integration.
- * 4. Protocol/core stay product-neutral and free of transport SDK dependencies.
- * 5. Endpoint integrations cannot require MCP SDK; no runtime Pi coupling here.
- * 6. MCP control/bin remain environment-free and strictly ping-only.
- * 7. Runtime dependencies must be exactly pinned.
+ * 1. Protocol/core cannot reach private storage, filesystem/SQLite drivers,
+ *    outer layers, or composition, transitively.
+ * 2. Private storage cannot reach control surfaces, endpoint integrations, or bin.
+ * 3. The public package barrel cannot expose private storage transitively.
+ * 4. Control surfaces and endpoint integrations cannot reach each other.
+ * 5. One endpoint integration cannot depend on a different endpoint integration.
+ * 6. Protocol/core stay product-neutral and free of transport SDK dependencies.
+ * 7. Endpoint integrations cannot require MCP SDK; no runtime Pi coupling here.
+ * 8. MCP control/bin remain environment-free and strictly ping-only.
+ * 9. Runtime dependencies must be exactly pinned.
  *
  * Negative fixtures in scripts/fixtures/*.fixture.ts prove the gate REJECTS
  * violations (each fixture declares its role and must trigger >= 1 rule).
@@ -30,6 +33,7 @@ const errors = [];
 
 const FORBIDDEN_EXTERNAL = /^@earendil-works\//;
 const MCP_SDK = /^@modelcontextprotocol\//;
+const STORAGE_DRIVER = /^node:(?:fs|fs\/promises|sqlite)$/;
 const PRODUCT_IDENTIFIER = /mcp|^pi(?:$|Session|Runtime|Provider|Conversation)|stdio|tunnel|chatgpt|openai|claude|codex|moshi|herdr|wayforge|sendusermessage/i;
 const PRODUCT_STRING =
   /chatgpt|openai|claude|codex|modelcontextprotocol|@earendil-works|sendusermessage|moshi|herdr|wayforge|\bmcp\b|\bpi\b|piSession|\bstdio\b/i;
@@ -133,10 +137,11 @@ function reaches(fromPath, predicate, seen = new Set()) {
 
 const isProtocol = (path) => path.startsWith(join(srcRoot, "protocol"));
 const isCore = (path) => path.startsWith(join(srcRoot, "core"));
+const isStorage = (path) => path.startsWith(join(srcRoot, "storage") + "/");
 const isControl = (path) => path.startsWith(join(srcRoot, "control") + "/");
 const isEndpoints = (path) => path.startsWith(join(srcRoot, "endpoints") + "/");
 const isBin = (path) => path.startsWith(join(srcRoot, "bin") + "/");
-const isOuter = (path) => isControl(path) || isEndpoints(path) || isBin(path);
+const isOuter = (path) => isStorage(path) || isControl(path) || isEndpoints(path) || isBin(path);
 const isMcp = (path) => path.startsWith(join(srcRoot, "control", "mcp") + "/");
 
 function applyRules(file, bucket) {
@@ -148,6 +153,15 @@ function applyRules(file, bucket) {
     }
     if (MCP_SDK.test(spec) && (isProtocol(file.path) || isCore(file.path) || file.roleDir === join(srcRoot, "protocol") || file.roleDir === join(srcRoot, "core"))) {
       push("protocol/core must not depend on the MCP SDK (adapter-neutral layers)");
+    }
+    if (
+      STORAGE_DRIVER.test(spec) &&
+      (isProtocol(file.path) ||
+        isCore(file.path) ||
+        file.roleDir === join(srcRoot, "protocol") ||
+        file.roleDir === join(srcRoot, "core"))
+    ) {
+      push("protocol/core must not depend on filesystem or SQLite storage drivers");
     }
   }
   if (file.envAccess.length > 0 && (isMcp(file.path) || file.roleDir === join(srcRoot, "control", "mcp") || file.roleDir === join(srcRoot, "bin"))) {
@@ -162,6 +176,24 @@ function applyRules(file, bucket) {
     if (reaches(file.path, isOuter)) {
       push("core must not reach outer layers (transitively, barrels included)");
     }
+  }
+  const inStorageRole =
+    isStorage(file.path) ||
+    file.roleDir === join(srcRoot, "storage") ||
+    file.roleDir.startsWith(join(srcRoot, "storage") + "/");
+  if (inStorageRole) {
+    if (reaches(file.path, (target) => isControl(target) || isEndpoints(target) || isBin(target))) {
+      push("private storage must not reach control, endpoint, or composition layers");
+    }
+    if (file.external.some((spec) => MCP_SDK.test(spec) || FORBIDDEN_EXTERNAL.test(spec))) {
+      push("private storage must not depend on MCP or Pi runtime packages");
+    }
+  }
+  if (
+    (file.path === join(srcRoot, "index.ts") || file.roleDir === srcRoot) &&
+    reaches(file.path, isStorage)
+  ) {
+    push("the public package barrel must not expose private storage");
   }
   const inControlRole = isControl(file.path) || file.roleDir.startsWith(join(srcRoot, "control") + "/");
   const inEndpointRole = isEndpoints(file.path) || file.roleDir.startsWith(join(srcRoot, "endpoints") + "/");
@@ -222,6 +254,9 @@ try {
   console.error(`package.json: unreadable or malformed manifest: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
 }
+if (manifest.engines?.node !== "24.21.0") {
+  errors.push(`package.json: durable storage requires engines.node to be exactly "24.21.0", found "${String(manifest.engines?.node)}"`);
+}
 for (const [name, version] of Object.entries(manifest.dependencies ?? {})) {
   if (!/^\d+\.\d+\.\d+$/.test(version)) {
     errors.push(`package.json: runtime dependency ${name} must be exactly pinned, found "${version}"`);
@@ -260,6 +295,6 @@ if (errors.length > 0) {
   for (const error of errors.sort()) console.error(`  - ${error}`);
   process.exitCode = 1;
 } else {
-  console.log("PI-CHAT-EXCHANGE CONTRACT OK: protocol<-core<-control/endpoints, plane and endpoint separation, neutral protocol/core, no Pi coupling, ping-only MCP, pinned deps");
+  console.log("PI-CHAT-EXCHANGE CONTRACT OK: private storage boundary, protocol<-core direction, plane and endpoint separation, neutral protocol/core, no Pi coupling, ping-only MCP, pinned deps");
   for (const proof of provedFixtures.sort()) console.log(`  fixture rejected: ${proof}`);
 }

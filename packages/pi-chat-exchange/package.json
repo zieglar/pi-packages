@@ -2,13 +2,14 @@
   "name": "@zieglar/pi-chat-exchange",
   "version": "0.1.0",
   "private": true,
-  "description": "Generic chat-exchange protocol: Exchange aggregate with independently tracked messages, attempts, and immutable results; frozen contracts plus pure core rules and a minimal MCP ping smoke. Durable host deferred.",
+  "description": "Generic chat-exchange protocol with pure core rules, a private durable SQLite foundation, and a minimal MCP ping smoke.",
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": "24.21.0"
   },
   "scripts": {
     "test": "vitest run",
+    "test:storage": "vitest run test/storage",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "tsc -p tsconfig.build.json",
@@ -20,7 +21,7 @@
     "@sinclair/typebox": "0.34.52"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "24.19.1",
     "typescript": "5.9.3",
     "vitest": "4.1.11"
   }
