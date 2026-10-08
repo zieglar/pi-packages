@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -19,7 +19,7 @@ import {
 const roots: string[] = [];
 
 function storeLocation(): { directory: string; filename: string } {
-  const root = mkdtempSync(join(tmpdir(), "pi-chat-exchange-connection-"));
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "pi-chat-exchange-connection-"));
   roots.push(root);
   return { directory: join(root, "database"), filename: "store.sqlite" };
 }

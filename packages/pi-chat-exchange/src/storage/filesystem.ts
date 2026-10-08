@@ -1,5 +1,7 @@
 import {
-  existsSync,
+  closeSync,
+  constants,
+  openSync,
   lstatSync,
   mkdirSync,
   statfsSync,
@@ -72,6 +74,26 @@ export interface DatabasePathOptions {
   readonly filename: string;
 }
 
+export function pathStat(path: string): Stats | undefined {
+  return lstatSync(path, { throwIfNoEntry: false });
+}
+
+function assertRealAncestors(directory: string): void {
+  const parent = dirname(directory);
+  if (parent !== directory) assertRealAncestors(parent);
+  const stat = pathStat(directory);
+  if (stat !== undefined && (stat.isSymbolicLink() || !stat.isDirectory())) {
+    throw new FilesystemSafetyError("database path components must be real directories");
+  }
+}
+
+// O_EXCL refuses a preexisting name (including dangling links); O_NOFOLLOW
+// protects the final component. SQLite opens by pathname afterwards: not a
+// defense against concurrent path replacement by an equivalently privileged actor.
+export function exclusivelyCreateDatabase(path: string): void {
+  closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600));
+}
+
 export function prepareDatabasePath(options: DatabasePathOptions): string {
   if (!isAbsolute(options.directory)) {
     throw new FilesystemSafetyError("an explicit absolute database directory is required");
@@ -91,8 +113,9 @@ export function prepareDatabasePath(options: DatabasePathOptions): string {
     throw new FilesystemSafetyError("durable storage requires an explicit non-production-Pi directory");
   }
 
+  assertRealAncestors(directory);
   withRestrictiveUmask(() => {
-    if (!existsSync(directory)) mkdirSync(directory, { mode: 0o700 });
+    if (pathStat(directory) === undefined) mkdirSync(directory, { mode: 0o700 });
   });
 
   const directoryStat = lstatSync(directory);
@@ -112,8 +135,8 @@ export function prepareDatabasePath(options: DatabasePathOptions): string {
 
 export function assertSecureDatabaseArtifacts(databasePath: string): void {
   for (const path of [databasePath, `${databasePath}-wal`, `${databasePath}-shm`]) {
-    if (!existsSync(path)) continue;
-    const stat = lstatSync(path);
+    const stat = pathStat(path);
+    if (stat === undefined) continue;
     if (stat.isSymbolicLink() || !stat.isFile()) {
       throw new FilesystemSafetyError(`${path} must be a regular file, not a symlink`);
     }

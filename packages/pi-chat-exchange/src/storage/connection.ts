@@ -2,6 +2,8 @@ import { DatabaseSync, type SQLOutputValue } from "node:sqlite";
 import {
   assertSecureDatabaseArtifacts,
   prepareDatabasePath,
+  exclusivelyCreateDatabase,
+  pathStat,
   withRestrictiveUmask,
   type DatabasePathOptions,
 } from "./filesystem.js";
@@ -49,6 +51,7 @@ function initializeWriterPolicy(db: DatabaseSync, busyTimeoutMs: number): void {
     PRAGMA journal_mode=WAL;
     PRAGMA synchronous=FULL;
     PRAGMA foreign_keys=ON;
+    PRAGMA recursive_triggers=ON;
     PRAGMA trusted_schema=OFF;
     PRAGMA busy_timeout=${busyTimeoutMs};
     PRAGMA wal_autocheckpoint=${WAL_AUTOCHECKPOINT_PAGES};
@@ -60,6 +63,7 @@ function initializeWriterPolicy(db: DatabaseSync, busyTimeoutMs: number): void {
   assertPragma(db, "journal_mode", "wal");
   assertPragma(db, "synchronous", 2);
   assertPragma(db, "foreign_keys", 1);
+  assertPragma(db, "recursive_triggers", 1);
   assertPragma(db, "trusted_schema", 0);
   assertPragma(db, "busy_timeout", busyTimeoutMs);
   assertPragma(db, "wal_autocheckpoint", WAL_AUTOCHECKPOINT_PAGES);
@@ -69,7 +73,11 @@ function initializeWriterPolicy(db: DatabaseSync, busyTimeoutMs: number): void {
   }
 }
 
-export function openStorageConnection(options: StorageConnectionOptions): DatabaseSync {
+export function openStorageConnection(
+  options: StorageConnectionOptions,
+  validateExisting?: (db: DatabaseSync) => void,
+  createExclusive = false,
+): DatabaseSync {
   const busyTimeoutMs = options.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS;
   if (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 1 || busyTimeoutMs > MAX_BUSY_TIMEOUT_MS) {
     throw new ConnectionPolicyError(
@@ -82,12 +90,26 @@ export function openStorageConnection(options: StorageConnectionOptions): Databa
 
   const databasePath = prepareDatabasePath(options);
   assertSecureDatabaseArtifacts(databasePath);
+  if (createExclusive || pathStat(databasePath) === undefined) {
+    if (validateExisting !== undefined) throw new ConnectionPolicyError("existing store disappeared before writer open");
+    exclusivelyCreateDatabase(databasePath);
+  }
 
   let db: DatabaseSync | undefined;
   try {
     db = withRestrictiveUmask(
       () => new DatabaseSync(databasePath, { defensive: true, timeout: busyTimeoutMs }),
     );
+    // Revalidate identity/compatibility before persistent writer PRAGMAs.
+    // A read transaction gives these checks one consistent schema/data snapshot.
+    if (validateExisting !== undefined) {
+      db.exec("BEGIN");
+      try {
+        validateExisting(db);
+      } finally {
+        db.exec("ROLLBACK");
+      }
+    }
     initializeWriterPolicy(db, busyTimeoutMs);
     assertSecureDatabaseArtifacts(databasePath);
     return db;

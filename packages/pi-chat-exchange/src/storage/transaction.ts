@@ -1,25 +1,33 @@
-import type { DatabaseSync } from "node:sqlite";
+import { constants, type DatabaseSync, type StatementSync } from "node:sqlite";
+import { isPromise } from "node:util/types";
 
 export type TransactionStage = "begin" | "callback" | "commit" | "rollback";
+export type TransactionOutcome = "ROLLED_BACK" | "COMMITTED" | "INDETERMINATE";
 
 export class StorageTransactionError extends Error {
   readonly code: "STORAGE_TRANSACTION_BUSY" | "STORAGE_TRANSACTION_FAILED";
   readonly stage: TransactionStage;
+  readonly outcome: TransactionOutcome;
+  readonly retryable: boolean;
 
   constructor(
     message: string,
     stage: TransactionStage,
-    options?: ErrorOptions & { readonly busy?: boolean },
+    options?: ErrorOptions & { readonly busy?: boolean; readonly outcome?: TransactionOutcome },
   ) {
     super(message, options);
     this.name = "StorageTransactionError";
-    this.code = options?.busy === true ? "STORAGE_TRANSACTION_BUSY" : "STORAGE_TRANSACTION_FAILED";
+    this.outcome = options?.outcome ?? "INDETERMINATE";
+    this.retryable = options?.busy === true && this.outcome === "ROLLED_BACK";
+    this.code = this.retryable ? "STORAGE_TRANSACTION_BUSY" : "STORAGE_TRANSACTION_FAILED";
     this.stage = stage;
   }
 }
 
 export class ConditionalMutationError extends Error {
   readonly code = "STORAGE_CONDITIONAL_MUTATION_FAILED";
+  readonly outcome = "ROLLED_BACK";
+  readonly retryable = false;
 
   constructor(message: string) {
     super(message);
@@ -27,35 +35,80 @@ export class ConditionalMutationError extends Error {
   }
 }
 
-function isBusyError(error: unknown): boolean {
-  if (typeof error !== "object" || error === null) return false;
-  const candidate = error as { errcode?: unknown; message?: unknown };
-  return (
-    candidate.errcode === 5 ||
-    (typeof candidate.message === "string" && /database is (?:locked|busy)/i.test(candidate.message))
-  );
+// Only synchronous operations are exposed; neither the connection, authorizer,
+// transaction controls nor iterators can escape through this capability.
+export interface TransactionHandle {
+  exec(sql: string): void;
+  prepare(sql: string): Pick<StatementSync, "run" | "get" | "all">;
 }
 
-function rollbackActiveTransaction(db: DatabaseSync, cause: unknown): void {
-  if (!db.isTransaction) return;
-  try {
-    db.exec("ROLLBACK");
-  } catch (rollbackError) {
-    throw new StorageTransactionError("failed to roll back an active storage transaction", "rollback", {
-      cause: new AggregateError([cause, rollbackError], "transaction and rollback both failed"),
+const invalidated = new WeakSet<DatabaseSync>();
+function invalidate(db: DatabaseSync): void {
+  invalidated.add(db);
+  try { db.close(); } catch {
+    // If close itself fails, poison authorization as well as helper reuse.
+    try { db.setAuthorizer(() => constants.SQLITE_DENY); } catch { /* already unusable */ }
+  }
+}
+
+function transactionActive(db: DatabaseSync, stage: TransactionStage, cause?: unknown): boolean {
+  try { return db.isTransaction; } catch (error) {
+    invalidate(db);
+    throw new StorageTransactionError("cannot establish owned transaction state", stage, {
+      cause: new AggregateError([cause, error], "transaction state is unreadable"),
+      outcome: "INDETERMINATE",
     });
   }
 }
 
-function isPromiseLike(value: unknown): boolean {
-  return (
-    (typeof value === "object" && value !== null && "then" in value) ||
-    (typeof value === "function" && "then" in value)
-  );
+function isBusyError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const candidate = error as { errcode?: unknown };
+  return typeof candidate.errcode === "number" && (candidate.errcode & 0xff) === 5;
 }
 
-export function withImmediateTransaction<T>(db: DatabaseSync, callback: () => T): T {
-  if (db.isTransaction) {
+function rollbackOwnedTransaction(db: DatabaseSync, cause: unknown): void {
+  if (!transactionActive(db, "rollback", cause)) {
+    invalidate(db);
+    throw new StorageTransactionError("owned transaction ended unexpectedly", "callback", {
+      cause, outcome: "INDETERMINATE",
+    });
+  }
+  try {
+    db.exec("ROLLBACK");
+    if (db.isTransaction) throw new Error("transaction remains active after ROLLBACK");
+  } catch (rollbackError) {
+    invalidate(db);
+    throw new StorageTransactionError("failed to prove storage transaction rollback", "rollback", {
+      cause: new AggregateError([cause, rollbackError], "transaction and rollback both failed"),
+      outcome: "INDETERMINATE",
+    });
+  }
+}
+
+function observePromiseLike(value: unknown): boolean {
+  if (isPromise(value)) {
+    // Use the native method, not an overridden .then/.catch property.
+    void Promise.prototype.then.call(value, undefined, () => undefined);
+    return true;
+  }
+  if ((typeof value === "object" && value !== null && "then" in value) ||
+      (typeof value === "function" && "then" in value)) {
+    void Promise.resolve(value).catch(() => undefined);
+    return true;
+  }
+  return false;
+}
+
+/** Normal return means COMMITTED. Errors carry a conservative outcome and retry policy.
+ * This private primitive owns the connection's authorizer for its duration.
+ * Raw connection owners are privileged; callbacks should use only the scoped handle.
+ */
+export function withImmediateTransaction<T>(db: DatabaseSync, callback: (tx: TransactionHandle) => T): T {
+  if (invalidated.has(db)) {
+    throw new StorageTransactionError("storage connection is invalidated", "begin");
+  }
+  if (transactionActive(db, "begin")) {
     throw new StorageTransactionError("nested storage transactions are not allowed", "begin");
   }
 
@@ -63,54 +116,88 @@ export function withImmediateTransaction<T>(db: DatabaseSync, callback: () => T)
     db.exec("BEGIN IMMEDIATE");
   } catch (error) {
     throw new StorageTransactionError("failed to begin an immediate storage transaction", "begin", {
-      cause: error,
-      busy: isBusyError(error),
+      cause: error, busy: isBusyError(error), outcome: "ROLLED_BACK",
     });
   }
 
-  let result: T;
-  try {
-    result = callback();
-    if (isPromiseLike(result)) {
-      throw new StorageTransactionError(
-        "storage transaction callbacks must be synchronous and must not return a Promise",
-        "callback",
-      );
-    }
-  } catch (error) {
-    rollbackActiveTransaction(db, error);
-    if (error instanceof StorageTransactionError || error instanceof ConditionalMutationError) {
-      throw error;
-    }
-    throw new StorageTransactionError("storage transaction callback failed", "callback", {
-      cause: error,
-    });
-  }
+  let capabilityActive = true;
+  let ownerControl = false;
+  let controlAttempted = false;
+  const assertActive = (): void => {
+    if (!capabilityActive) throw new StorageTransactionError("transaction handle is revoked", "callback");
+    if (!db.isTransaction) throw new StorageTransactionError("owned transaction ended unexpectedly", "callback");
+  };
+  const tx: TransactionHandle = Object.freeze({
+    exec(sql: string): void { assertActive(); db.exec(sql); },
+    prepare(sql: string): Pick<StatementSync, "run" | "get" | "all"> {
+      assertActive();
+      const statement = db.prepare(sql);
+      return Object.freeze({
+        // Parameters extracts the named overload; the cast retains both overloads.
+        // Every supplied argument is forwarded unchanged to SQLite's typed method.
+        run: ((...args: Parameters<StatementSync["run"]>) => { assertActive(); return statement.run(...args); }) as StatementSync["run"],
+        get: ((...args: Parameters<StatementSync["get"]>) => { assertActive(); return statement.get(...args); }) as StatementSync["get"],
+        all: ((...args: Parameters<StatementSync["all"]>) => { assertActive(); return statement.all(...args); }) as StatementSync["all"],
+      });
+    },
+  });
 
   try {
-    db.exec("COMMIT");
-  } catch (error) {
-    const remainedActive = db.isTransaction;
-    if (remainedActive) rollbackActiveTransaction(db, error);
-    throw new StorageTransactionError(
-      remainedActive
-        ? "storage transaction commit failed and the active transaction was rolled back"
-        : "storage transaction commit failed after SQLite ended the transaction",
-      "commit",
-      { cause: error, busy: isBusyError(error) },
-    );
-  }
+    let result: T;
+    try {
+      // SQLite authorizes parsed actions, including previously prepared statements
+      // invalidated by setAuthorizer. Not a SQL-prefix/regex filter.
+      db.setAuthorizer((action) => {
+        if (!ownerControl && (action === constants.SQLITE_TRANSACTION || action === constants.SQLITE_SAVEPOINT)) {
+          controlAttempted = true;
+          return constants.SQLITE_DENY;
+        }
+        return constants.SQLITE_OK;
+      });
+      result = callback(tx);
+      if (observePromiseLike(result)) {
+        throw new Error("storage transaction callbacks must be synchronous and must not return a Promise");
+      }
+      if (controlAttempted) throw new Error("callback attempted owned transaction control");
+      if (!db.isTransaction) throw new Error("owned transaction ended unexpectedly");
+    } catch (error) {
+      capabilityActive = false;
+      ownerControl = true;
+      rollbackOwnedTransaction(db, error);
+      if (error instanceof ConditionalMutationError) throw error;
+      throw new StorageTransactionError("storage transaction callback failed; " + (error instanceof Error ? error.message : "unsupported failure"), "callback", {
+        cause: error, outcome: "ROLLED_BACK",
+      });
+    } finally {
+      capabilityActive = false;
+      ownerControl = true;
+    }
 
-  if (db.isTransaction) {
-    const error = new StorageTransactionError(
-      "SQLite reported an active transaction after COMMIT",
-      "commit",
-    );
-    rollbackActiveTransaction(db, error);
-    throw error;
+    try {
+      db.exec("COMMIT");
+    } catch (error) {
+      if (!transactionActive(db, "commit", error)) {
+        invalidate(db);
+        throw new StorageTransactionError("commit failed with an indeterminate outcome", "commit", {
+          cause: error, outcome: "INDETERMINATE",
+        });
+      }
+      rollbackOwnedTransaction(db, error);
+      throw new StorageTransactionError("commit failed; active transaction rolled back", "commit", {
+        cause: error, busy: isBusyError(error), outcome: "ROLLED_BACK",
+      });
+    }
+    if (transactionActive(db, "commit")) {
+      invalidate(db);
+      throw new StorageTransactionError("active transaction after COMMIT; outcome indeterminate", "commit");
+    }
+    return result;
+  } finally {
+    capabilityActive = false;
+    if (!invalidated.has(db)) {
+      try { db.setAuthorizer(null); } catch { invalidate(db); }
+    }
   }
-
-  return result;
 }
 
 export function requireSingleRowChange(

@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -19,7 +19,7 @@ const roots: string[] = [];
 const STORE_UUID = "018f5f43-52f8-7c5a-8f64-9d5e06d24a9a";
 
 function storeLocation(): { directory: string; filename: string } {
-  const root = mkdtempSync(join(tmpdir(), "pi-chat-exchange-store-"));
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "pi-chat-exchange-store-"));
   roots.push(root);
   return { directory: join(root, "database"), filename: "store.sqlite" };
 }

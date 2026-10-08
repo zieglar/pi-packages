@@ -7,6 +7,7 @@ import {
   openSync,
   rmSync,
   symlinkSync,
+  realpathSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,7 +23,7 @@ import {
 const roots: string[] = [];
 
 function temporaryRoot(): string {
-  const root = mkdtempSync(join(tmpdir(), "pi-chat-exchange-storage-"));
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "pi-chat-exchange-storage-"));
   roots.push(root);
   return root;
 }
