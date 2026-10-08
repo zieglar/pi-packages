@@ -23,16 +23,15 @@ afterEach(() => {
 });
 
 describe("BEGIN IMMEDIATE transaction primitive", () => {
-  it("commits a synchronous callback result", () => {
+  it("commits a synchronous void callback", () => {
     const db = openStorageConnection(storeLocation());
     try {
       db.exec("CREATE TABLE item (id TEXT PRIMARY KEY)");
       const result = withImmediateTransaction(db, () => {
         expect(db.isTransaction).toBe(true);
         db.prepare("INSERT INTO item VALUES (?)").run("one");
-        return "committed";
       });
-      expect(result).toBe("committed");
+      expect(result).toBeUndefined();
       expect(db.isTransaction).toBe(false);
       expect(db.prepare("SELECT count(*) AS count FROM item").get()).toEqual({ count: 1 });
     } finally {

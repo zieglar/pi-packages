@@ -1,5 +1,6 @@
 import { constants, type DatabaseSync, type StatementSync } from "node:sqlite";
 import { isPromise } from "node:util/types";
+import { promiseHooks } from "node:v8";
 
 export type TransactionStage = "begin" | "callback" | "commit" | "rollback";
 export type TransactionOutcome = "ROLLED_BACK" | "COMMITTED" | "INDETERMINATE";
@@ -86,25 +87,68 @@ function rollbackOwnedTransaction(db: DatabaseSync, cause: unknown): void {
   }
 }
 
-function observePromiseLike(value: unknown): boolean {
-  if (isPromise(value)) {
-    // Use the native method, not an overridden .then/.catch property.
-    void Promise.prototype.then.call(value, undefined, () => undefined);
+const nativeThen = Promise.prototype.then;
+const observerConstructor = Object.freeze({ [Symbol.species]: Promise });
+const discardPromiseResult = (): undefined => undefined;
+
+// No thenable assimilation. Only branded native Promises can enter this path.
+// Shadow species without invoking getters, and restore the exact descriptor.
+function observeNativePromise(promise: Promise<unknown>): boolean {
+  const constructor = Object.getOwnPropertyDescriptor(promise, "constructor");
+  if (constructor !== undefined && !constructor.configurable) return false;
+  if (constructor === undefined && !Object.isExtensible(promise)) return false;
+  Object.defineProperty(promise, "constructor", {
+    value: observerConstructor, configurable: true,
+  });
+  try {
+    // Discard BOTH outcomes; forwarding fulfillment could assimilate user values.
+    nativeThen.call(promise, discardPromiseResult, discardPromiseResult);
     return true;
+  } finally {
+    if (constructor === undefined) Reflect.deleteProperty(promise, "constructor");
+    else Object.defineProperty(promise, "constructor", constructor);
   }
-  if ((typeof value === "object" && value !== null && "then" in value) ||
-      (typeof value === "function" && "then" in value)) {
-    void Promise.resolve(value).catch(() => undefined);
-    return true;
-  }
-  return false;
 }
 
-/** Normal return means COMMITTED. Errors carry a conservative outcome and retry policy.
+function runVoidCallback(callback: () => void): void {
+  const observed = new WeakSet<Promise<unknown>>();
+  let observing = false;
+  let observationFailed = false;
+  const observe = (promise: Promise<unknown>): boolean => {
+    if (observed.has(promise)) return true;
+    // Attaching a native reaction initializes another Promise; do not recurse.
+    if (observing) return true;
+    observing = true;
+    try {
+      if (!observeNativePromise(promise)) return false;
+      observed.add(promise);
+      return true;
+    } finally { observing = false; }
+  };
+  // Initialization occurs before callback code can freeze the new Promise or
+  // install unmodifiable constructor/species accessors. Never throw from a hook.
+  const stop = promiseHooks.onInit((promise) => {
+    try { if (!observe(promise)) observationFailed = true; }
+    catch { observationFailed = true; }
+  });
+  try {
+    const result: unknown = callback();
+    if (result !== undefined) {
+      // A pre-existing native Promise is observed only if safely shadowable.
+      // Unmodifiable pre-existing Promises require creator-owned rejection handling.
+      if (isPromise(result)) observe(result);
+      throw new Error("storage transaction callbacks must be synchronous and return undefined");
+    }
+    if (observationFailed) throw new Error("native Promise rejection observation failed");
+  } finally { stop(); }
+}
+
+/** Only an undefined callback result is accepted at runtime; the helper returns void.
+ * Normal return means COMMITTED. Errors carry conservative outcomes and retry policy.
  * This private primitive owns the connection's authorizer for its duration.
  * Raw connection owners are privileged; callbacks should use only the scoped handle.
  */
-export function withImmediateTransaction<T>(db: DatabaseSync, callback: (tx: TransactionHandle) => T): T {
+export function withImmediateTransaction(db: DatabaseSync, callback: (tx: TransactionHandle) => void): void {
   if (invalidated.has(db)) {
     throw new StorageTransactionError("storage connection is invalidated", "begin");
   }
@@ -143,7 +187,6 @@ export function withImmediateTransaction<T>(db: DatabaseSync, callback: (tx: Tra
   });
 
   try {
-    let result: T;
     try {
       // SQLite authorizes parsed actions, including previously prepared statements
       // invalidated by setAuthorizer. Not a SQL-prefix/regex filter.
@@ -154,10 +197,7 @@ export function withImmediateTransaction<T>(db: DatabaseSync, callback: (tx: Tra
         }
         return constants.SQLITE_OK;
       });
-      result = callback(tx);
-      if (observePromiseLike(result)) {
-        throw new Error("storage transaction callbacks must be synchronous and must not return a Promise");
-      }
+      runVoidCallback(() => callback(tx));
       if (controlAttempted) throw new Error("callback attempted owned transaction control");
       if (!db.isTransaction) throw new Error("owned transaction ended unexpectedly");
     } catch (error) {
@@ -191,7 +231,6 @@ export function withImmediateTransaction<T>(db: DatabaseSync, callback: (tx: Tra
       invalidate(db);
       throw new StorageTransactionError("active transaction after COMMIT; outcome indeterminate", "commit");
     }
-    return result;
   } finally {
     capabilityActive = false;
     if (!invalidated.has(db)) {

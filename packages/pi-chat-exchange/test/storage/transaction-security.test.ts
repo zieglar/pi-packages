@@ -122,7 +122,7 @@ it("F7: async continuation cannot use a revoked handle or retained statement", a
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect({ resumed, handleDenied, statementDenied }).toEqual({ resumed: true, handleDenied: true, statementDenied: true });
     expect(db.prepare("SELECT count(*) AS n FROM item").get()).toEqual({ n: 0 });
-    expect(() => withImmediateTransaction(db, (tx) => tx.prepare("INSERT INTO item VALUES (?)").run("reuse"))).not.toThrow();
+    expect(() => withImmediateTransaction(db, (tx) => { tx.prepare("INSERT INTO item VALUES (?)").run("reuse"); })).not.toThrow();
   } finally { db.close(); }
 });
 

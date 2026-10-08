@@ -1,4 +1,4 @@
-# Private storage security boundaries (CE-0002-B1-R2)
+# Private storage security boundaries (CE-0002-B1-R3)
 
 This is a private SQLite foundation, not a delivery/dispatch implementation.
 The public protocol and lifecycle vocabulary are unchanged.
@@ -79,12 +79,32 @@ Deliberately replacing its authorizer or using a separate privileged connection
 is outside the prevention boundary; unexpected transaction state is nevertheless
 detected conservatively. Independent privileged connections are not sandboxed.
 
-Promise/thenable results are rejected and their rejection is observed without
-making the helper async. Native Promises are observed through the native method,
-not an overridden `.then`. Rollback and capability revocation occur synchronously;
-async continuations and retained statements cannot use the owned handle, even
-when the connection is reused later. Detached async work not returned by the
-callback, or a separately captured privileged raw connection, is not sandboxed.
+The callback return contract is **void-only**: runtime acceptance requires exactly
+`undefined`. No other primitive, object, function, Promise, or thenable is accepted.
+Unsupported results cause synchronous rollback and capability revocation. Object
+rejection does not read `.then`, invoke getters/Proxy traps, or assimilate thenables.
+TypeScript's `void` callback type alone is not enforcement.
+
+On the approved Node engine, a callback-scoped V8 Promise initialization hook
+observes newly created native Promises before callback code can freeze them or
+install constructor/species accessors. Observation temporarily shadows the native
+Promise's constructor with an inert intrinsic species holder, attaches intrinsic
+reactions that discard both outcomes, and restores the exact original descriptor.
+It never calls an overridden `.then` or forwards fulfillment into assimilation.
+A reentrancy guard prevents observing observer-created reactions; the hook is
+removed on every callback exit. No global unhandled-rejection handler is installed.
+Strict-mode file-backed subprocess tests cover constructor/species poisoning,
+subclasses, cross-realm Promises, frozen Promises, and asynchronous continuations.
+
+**Boundary:** a native Promise created before the callback is observed only when
+its constructor can safely be shadowed. Pre-existing Promises with unmodifiable
+constructors or nonextensible objects must already have creator-owned rejection
+handling; the helper rejects them without invoking their accessors. Hostile
+process-level changes to intrinsics or competing native hooks are not sandboxed.
+No guarantee is made for arbitrary hostile objects or generic Promise assimilation.
+Async continuations and retained statements cannot use the revoked handle, even
+during later reuse. Detached async work and separately captured privileged raw
+connections remain outside the execution-containment boundary.
 
 F6 failed-initialization artifact recovery, F8 general budgets, F9 architecture
 negative-oracle hardening, and all B2 features remain deferred.
