@@ -1,8 +1,20 @@
+import { createHash } from "node:crypto";
+import { types } from "node:util";
 import { Value } from "@sinclair/typebox/value";
-import { EventSchema, ExchangeSchema, SHA256_HEX_PATTERN, type Exchange } from "../protocol/entities.js";
-import { generateEntityId, generateHandoffId, EXCHANGE_ID_PATTERN } from "../protocol/identity.js";
+import {
+  EndpointRefSchema, EventSchema, ExchangeSchema, MessageSchema, SHA256_HEX_PATTERN,
+  type EndpointRef, type Exchange, type Message,
+} from "../protocol/entities.js";
+import { assertExchangeActive } from "../core/rules.js";
+import {
+  generateEntityId, generateHandoffId, EXCHANGE_ID_PATTERN, MESSAGE_ID_PATTERN,
+} from "../protocol/identity.js";
 import { canonicalDigest, type IdempotentCreateRecord } from "../protocol/idempotency.js";
-import { normalizeCreateExchangeRequest, type NormalizedExchangeRequest } from "./creation-request.js";
+import {
+  copyCapturedMessagePayloadForPersistence, normalizeCreateExchangeRequest,
+  normalizeCreateMessageRequest,
+  type NormalizedExchangeRequest, type NormalizedMessageRequest,
+} from "./creation-request.js";
 import type { DurableStore } from "./store.js";
 import {
   ConditionalMutationError, StorageTransactionError, requireSingleRowChange,
@@ -24,14 +36,26 @@ interface PrivateCreationSeams {
   readonly afterAuditInsert?: () => void;
 }
 
+type CreationDomainCode =
+  | "STORAGE_IDEMPOTENCY_CORRUPT"
+  | "IDEMPOTENCY_KEY_CONFLICT"
+  | "STORAGE_EXCHANGE_NOT_FOUND"
+  | "EXCHANGE_DISPOSITION_REJECTED";
+
+/** Fixed sanitized details: never a SQL message, stored value, or payload byte. */
+const DOMAIN_DETAIL: Record<CreationDomainCode, string> = {
+  STORAGE_IDEMPOTENCY_CORRUPT: "stored Exchange creation is inconsistent; operator review required",
+  IDEMPOTENCY_KEY_CONFLICT: "creation idempotency key conflicts with a valid stored request",
+  STORAGE_EXCHANGE_NOT_FOUND: "creation requires an existing durable Exchange",
+  EXCHANGE_DISPOSITION_REJECTED: "administrative disposition rejected: the Exchange is not open",
+};
+
 class CreationDomainError extends Error {
   readonly outcome = "ROLLED_BACK";
   readonly retryable = false;
-  readonly code: "STORAGE_IDEMPOTENCY_CORRUPT" | "IDEMPOTENCY_KEY_CONFLICT";
-  constructor(code: "STORAGE_IDEMPOTENCY_CORRUPT" | "IDEMPOTENCY_KEY_CONFLICT") {
-    super(code === "STORAGE_IDEMPOTENCY_CORRUPT"
-      ? "stored Exchange creation is inconsistent; operator review required"
-      : "creation idempotency key conflicts with a valid stored request");
+  readonly code: CreationDomainCode;
+  constructor(code: CreationDomainCode) {
+    super(DOMAIN_DETAIL[code]);
     this.name = "CreationDomainError";
     this.code = code;
   }
@@ -184,5 +208,264 @@ export function createExchange(store: DurableStore, input: unknown, privateSeams
   }
   // Both callback paths assign captured; never construct results with reads
   // after commit, nor publish a candidate on any helper failure.
+  return captured!;
+}
+
+export interface MessageCreation {
+  readonly disposition: "CREATED" | "REPLAYED";
+  readonly message: Message;
+  readonly record: IdempotentCreateRecord;
+}
+
+interface PrivateMessageCreationSeams {
+  readonly now?: () => string;
+  readonly afterMessageInsert?: () => void;
+  readonly afterIdempotencyInsert?: () => void;
+  readonly afterAuditInsert?: () => void;
+}
+
+/** Only generated identity and time; every other field comes from the request. */
+interface TrustedMessageCreationMetadata {
+  readonly messageId: string;
+  readonly createdAt: string;
+}
+
+/** Stored endpoint JSON is data, never trusted structure: parse then schema-check. */
+function storedEndpoint(json: unknown): EndpointRef {
+  if (typeof json !== "string") corrupt();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return corrupt();
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed) ||
+      Object.getPrototypeOf(parsed) !== Object.prototype ||
+      !Value.Check(EndpointRefSchema, parsed)) corrupt();
+  return Object.freeze(parsed as EndpointRef);
+}
+
+/** Validate durable Message consistency BEFORE comparing the incoming digest.
+ * Replay precedes admission: historical identity is not execution authority,
+ * and privileged raw writes remain unauthenticated by this validation. */
+function replayMessage(tx: TransactionHandle, request: NormalizedMessageRequest): MessageCreation | undefined {
+  const row = tx.prepare("SELECT * FROM idempotency_record WHERE namespace=? AND idempotency_key=?")
+    .get(request.namespace, request.idempotencyKey);
+  if (row === undefined) return undefined;
+  if (Object.keys(row).length !== 6 || row.namespace !== request.namespace ||
+      row.idempotency_key !== request.idempotencyKey || row.private_revision !== 1 ||
+      typeof row.request_digest !== "string" || !SHA256_HEX_PATTERN.test(row.request_digest) ||
+      typeof row.entity_id !== "string" || !MESSAGE_ID_PATTERN.test(row.entity_id) ||
+      typeof row.created_at !== "string") corrupt();
+
+  const stored = tx.prepare("SELECT * FROM message WHERE message_id=?").get(row.entity_id);
+  if (stored === undefined || Object.keys(stored).length !== 11 || stored.private_revision !== 1 ||
+      stored.message_id !== row.entity_id || stored.exchange_id !== request.exchangeId ||
+      stored.idempotency_key !== row.idempotency_key || stored.created_at !== row.created_at ||
+      typeof stored.payload_digest !== "string" || !SHA256_HEX_PATTERN.test(stored.payload_digest) ||
+      typeof stored.payload_length !== "number" || !Number.isSafeInteger(stored.payload_length) ||
+      stored.payload_length < 0 || !types.isUint8Array(stored.payload_body) ||
+      stored.payload_body.byteLength !== stored.payload_length ||
+      createHash("sha256").update(stored.payload_body).digest("hex") !== stored.payload_digest) corrupt();
+
+  const candidate = {
+    messageId: stored.message_id,
+    exchangeId: stored.exchange_id,
+    from: storedEndpoint(stored.from_endpoint_json),
+    to: storedEndpoint(stored.to_endpoint_json),
+    state: stored.state,
+    payloadDigest: stored.payload_digest,
+    payloadLength: stored.payload_length,
+    createdAt: stored.created_at,
+    ...(stored.idempotency_key === null ? {} : { idempotencyKey: stored.idempotency_key }),
+  } as unknown as Message;
+  if (!Value.Check(MessageSchema, candidate)) corrupt();
+  // Recompute the stored request identity from the durable row: a stored digest
+  // that no valid stored request can produce is corruption, never a conflict.
+  const storedDigest = canonicalDigest({
+    op: "chat-exchange/message.create", v: 1, exchangeId: candidate.exchangeId,
+    from: candidate.from, to: candidate.to,
+    payloadDigest: candidate.payloadDigest, payloadLength: candidate.payloadLength,
+  });
+  if (row.request_digest !== storedDigest) corrupt();
+  if (row.request_digest !== request.requestDigest) {
+    throw new CreationDomainError("IDEMPOTENCY_KEY_CONFLICT");
+  }
+  return Object.freeze({
+    disposition: "REPLAYED",
+    message: Object.freeze(candidate),
+    record: Object.freeze({ entityId: row.entity_id, requestDigest: row.request_digest, createdAt: row.created_at }),
+  });
+}
+
+/** Admission for NEW creation only. No disposition object is fabricated: the
+ * presence of the administrative row alone permanently refuses new activity. */
+function admitExchange(tx: TransactionHandle, exchangeId: string): void {
+  const row = tx.prepare("SELECT * FROM exchange WHERE exchange_id=?").get(exchangeId);
+  if (row === undefined) throw new CreationDomainError("STORAGE_EXCHANGE_NOT_FOUND");
+  if (Object.keys(row).length !== 5 || row.private_revision !== 1 || row.exchange_id !== exchangeId ||
+      !((row.state === "OPEN" && row.closed_at === null) ||
+        (row.state === "CLOSED" && typeof row.closed_at === "string"))) corrupt();
+  const exchange = {
+    exchangeId: row.exchange_id,
+    state: row.state,
+    createdAt: row.created_at,
+    ...(row.closed_at === null ? {} : { closedAt: row.closed_at }),
+  } as unknown as Exchange;
+  if (!Value.Check(ExchangeSchema, exchange)) corrupt();
+  if (tx.prepare("SELECT exchange_id FROM disposition WHERE exchange_id=?").get(exchangeId) !== undefined) {
+    throw new CreationDomainError("EXCHANGE_DISPOSITION_REJECTED");
+  }
+  try {
+    assertExchangeActive(exchange);
+  } catch {
+    // Frozen core owns the rule; storage publishes only the sanitized refusal.
+    throw new CreationDomainError("EXCHANGE_DISPOSITION_REJECTED");
+  }
+}
+
+function nextAuditSequence(tx: TransactionHandle, exchangeId: string): number {
+  const row = tx.prepare("SELECT MAX(sequence) AS maximum FROM audit_event WHERE exchange_id=?").get(exchangeId);
+  const maximum = row?.maximum ?? null;
+  if (maximum !== null && (typeof maximum !== "number" || !Number.isSafeInteger(maximum) || maximum < 1)) corrupt();
+  const sequence = (maximum ?? 0) + 1;
+  if (!Number.isSafeInteger(sequence) || sequence < 1) corrupt();
+  return sequence;
+}
+
+/** The only durable payload path. The fresh copy is bound once, verified against
+ * the normalized digest and length, then best-effort cleared. Cleanup is hygiene,
+ * not secure erasure, and never changes the owning transaction's classification. */
+function persistCapturedMessageSnapshot(
+  tx: TransactionHandle,
+  request: NormalizedMessageRequest,
+  trusted: TrustedMessageCreationMetadata,
+): void {
+  const copy = copyCapturedMessagePayloadForPersistence(request);
+  try {
+    if (copy.byteLength !== request.payloadLength ||
+        createHash("sha256").update(copy).digest("hex") !== request.payloadDigest) {
+      throw new Error("persistence copy failed digest or length validation");
+    }
+    requireSingleRowChange(tx.prepare(
+      "INSERT INTO message(message_id, exchange_id, from_endpoint_json, to_endpoint_json, state, payload_digest, payload_length, payload_body, created_at, idempotency_key, private_revision) VALUES (?, ?, ?, ?, 'CREATED', ?, ?, ?, ?, ?, 1)",
+    ).run(
+      trusted.messageId, request.exchangeId, request.fromEndpointJson, request.toEndpointJson,
+      request.payloadDigest, request.payloadLength, copy, trusted.createdAt, request.idempotencyKey,
+    ), "Message insert");
+  } finally {
+    try { copy.fill(0); } catch { /* cleanup must never replace a failure classification */ }
+  }
+}
+
+/** Private, trusted-host Message creation. No authentication, admission bypass,
+ * queueing, dispatch, delivery, resolution API, or public control binding.
+ * Results escape only after the accepted helper confirms COMMITTED. */
+export function createMessage(store: DurableStore, input: unknown, privateSeams: PrivateMessageCreationSeams = {}): MessageCreation {
+  const request = normalizeCreateMessageRequest(input);
+  let message: Message;
+  let eventId: string;
+  let hooks: {
+    afterMessageInsert: (() => void) | undefined;
+    afterIdempotencyInsert: (() => void) | undefined;
+    afterAuditInsert: (() => void) | undefined;
+  };
+  try {
+    hooks = {
+      afterMessageInsert: privateSeams.afterMessageInsert,
+      afterIdempotencyInsert: privateSeams.afterIdempotencyInsert,
+      afterAuditInsert: privateSeams.afterAuditInsert,
+    };
+    if (Object.values(hooks).some((value) => value !== undefined && typeof value !== "function")) {
+      throw new Error("invalid private hook");
+    }
+    const createdAt = (privateSeams.now ?? (() => new Date().toISOString()))();
+    if (typeof createdAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(createdAt) ||
+        !Number.isFinite(Date.parse(createdAt)) || new Date(createdAt).toISOString() !== createdAt) {
+      throw new Error("invalid private clock");
+    }
+    const time = Date.parse(createdAt);
+    message = Object.freeze({
+      messageId: generateEntityId("msg_", time),
+      exchangeId: request.exchangeId,
+      from: request.from,
+      to: request.to,
+      state: "CREATED",
+      payloadDigest: request.payloadDigest,
+      payloadLength: request.payloadLength,
+      createdAt,
+      idempotencyKey: request.idempotencyKey,
+    });
+    eventId = generateEntityId("evt_", time);
+  } catch {
+    throw new StorageTransactionError("creation candidate generation failed", "begin", { outcome: "ROLLED_BACK" });
+  }
+
+  let captured: MessageCreation | undefined;
+  let domainFailure: CreationDomainError | ConditionalMutationError | undefined;
+  try {
+    withImmediateTransaction(store.database, (tx) => {
+      try {
+        const existing = replayMessage(tx, request);
+        if (existing !== undefined) {
+          captured = existing;
+          return; // Exactly undefined, including replay.
+        }
+        admitExchange(tx, request.exchangeId);
+        // An existing Message holding this Exchange-scoped key without its own
+        // record is orphan durable state: refuse it, never adopt or repair it.
+        if (tx.prepare("SELECT message_id FROM message WHERE exchange_id=? AND idempotency_key=?")
+          .get(request.exchangeId, request.idempotencyKey) !== undefined) corrupt();
+        if (!Value.Check(MessageSchema, message)) {
+          throw new Error("creation candidate failed frozen schema validation");
+        }
+        persistCapturedMessageSnapshot(tx, request, { messageId: message.messageId, createdAt: message.createdAt });
+        hook(hooks.afterMessageInsert);
+        requireSingleRowChange(tx.prepare(
+          "INSERT INTO idempotency_record(namespace, idempotency_key, request_digest, entity_id, created_at, private_revision) VALUES (?, ?, ?, ?, ?, 1)",
+        ).run(request.namespace, request.idempotencyKey, request.requestDigest, message.messageId, message.createdAt), "idempotency insert");
+        hook(hooks.afterIdempotencyInsert);
+        const sequence = nextAuditSequence(tx, message.exchangeId);
+        const event = {
+          eventId, exchangeId: message.exchangeId, sequence, kind: "message_created",
+          subjectId: message.messageId, createdAt: message.createdAt,
+          digest: message.payloadDigest, length: message.payloadLength,
+        };
+        if (!Value.Check(EventSchema, event)) {
+          throw new Error("audit candidate failed frozen schema validation");
+        }
+        requireSingleRowChange(tx.prepare(
+          "INSERT INTO audit_event(event_id, exchange_id, sequence, kind, subject_id, created_at, digest, length, private_revision) VALUES (?, ?, ?, 'message_created', ?, ?, ?, ?, 1)",
+        ).run(eventId, message.exchangeId, sequence, message.messageId, message.createdAt,
+          message.payloadDigest, message.payloadLength), "audit insert");
+        hook(hooks.afterAuditInsert);
+        captured = Object.freeze({
+          disposition: "CREATED", message,
+          record: Object.freeze({ entityId: message.messageId, requestDigest: request.requestDigest, createdAt: message.createdAt }),
+        });
+        // No return value: B1 runtime enforces exactly undefined.
+      } catch (error) {
+        if (error instanceof CreationDomainError || error instanceof ConditionalMutationError) {
+          domainFailure = error;
+          throw error;
+        }
+        // SQLite messages, hook failures and arbitrary objects are not retained.
+        throw new Error("Message creation callback failed");
+      }
+    });
+  } catch (error) {
+    if (error instanceof ConditionalMutationError && error === domainFailure) throw error;
+    if (error instanceof StorageTransactionError) {
+      if (error.outcome === "ROLLED_BACK" && domainFailure !== undefined && error.cause === domainFailure) {
+        throw domainFailure;
+      }
+      // INDETERMINATE always wins over nested domain failures. B1 alone owns
+      // rollback classification, connection invalidation and retry eligibility.
+      throw new StorageTransactionError("Message creation transaction failed", error.stage, {
+        outcome: error.outcome, busy: error.retryable,
+      });
+    }
+    throw new StorageTransactionError("Message creation transaction outcome is unknown", "callback");
+  }
   return captured!;
 }

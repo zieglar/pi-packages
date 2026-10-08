@@ -151,6 +151,16 @@ class CapturedMessage implements NormalizedMessageRequest {
     });
     Object.freeze(this);
   }
+
+  /**
+   * Private-field access is the runtime provenance brand: plain lookalikes,
+   * prototype-forged objects, Proxy wrappers (revoked or not) and foreign
+   * classes all fail here without invoking any caller-controlled trap or
+   * getter. Only a fresh independent copy leaves this module.
+   */
+  static copyPayloadForPersistence(value: NormalizedMessageRequest): Uint8Array {
+    return new Uint8Array((value as CapturedMessage).#payload);
+  }
 }
 
 /** Trusted-host, private normalization only: no authentication or SQL writes. */
@@ -176,4 +186,19 @@ export function normalizeCreateMessageRequest(input: unknown): NormalizedMessage
   const to = normalizeEndpoint(fields.to, "to");
   const copiedBytes = copyPayload(fields.payload);
   return new CapturedMessage(exchangeId, idempotencyKey, from, to, copiedBytes);
+}
+
+/**
+ * Package-private persistence bridge for the durable storage writer only.
+ * Never exported through a public barrel and never given SQLite knowledge.
+ * The caller receives a one-use fresh copy; the authoritative snapshot and the
+ * original caller bytes are never returned, reread, or otherwise exposed.
+ */
+export function copyCapturedMessagePayloadForPersistence(normalized: NormalizedMessageRequest): Uint8Array {
+  try {
+    return CapturedMessage.copyPayloadForPersistence(normalized);
+  } catch {
+    // Provenance and allocation failures are indistinguishable to the caller.
+    return reject("payload: unrecognized normalized request provenance");
+  }
 }

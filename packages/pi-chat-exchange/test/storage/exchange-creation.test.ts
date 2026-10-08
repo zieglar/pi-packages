@@ -266,7 +266,9 @@ it("has no public creation export, Message creation or payload accessor", () => 
   const barrel = readFileSync(new URL("../../src/index.ts", import.meta.url), "utf8");
   const source = readFileSync(new URL("../../src/storage/creation.ts", import.meta.url), "utf8");
   expect(barrel).not.toMatch(/storage|creation/);
-  expect(source).not.toMatch(/INSERT\s+INTO\s+message|export\s+function\s+(?:createMessage|resolve\w+Creation)/i);
+  // S3-A supersedes the Message-INSERT and createMessage clauses; premature
+  // resolution implementation remains refused here.
+  expect(source).not.toMatch(/export\s+function\s+resolve\w+Creation/i);
   expect(source).not.toContain("#payload");
 });
 
