@@ -3,6 +3,8 @@
 This is a private SQLite foundation, not a delivery/dispatch implementation.
 The public protocol and lifecycle vocabulary are unchanged.
 
+See [storage-contract.md](storage-contract.md) for the consolidated accepted durable storage contract (CE-0002-B2-S6-2).
+
 ## Immutability and compatibility
 
 Every writer enables and reads back `recursive_triggers=ON`. This causes
