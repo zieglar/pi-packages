@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -19,6 +20,14 @@ const BUSY_MS = 5_000;
 const WORKER_MS = 20_000;
 const TEST_MS = 90_000;
 const TABLES = ["message", "idempotency_record", "audit_event", "exchange", "disposition"] as const;
+const DISPOSITION_TABLES = [...TABLES, "attempt", "evidence_envelope", "reconciliation"] as const;
+const dispositionIds = {
+  attemptId: "att_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  envelopeId: "env_fresh-disposition",
+  reconciliationId: "rec_fresh-disposition",
+} as const;
+const dispositionEvidenceJson = JSON.stringify({ observation: "test-only administrative fixture" });
+const dispositionEvidenceDigest = createHash("sha256").update(dispositionEvidenceJson).digest("hex");
 const SECRETS = ["SENSITIVE_PRODUCER", "SENSITIVE_CONSUMER", "SELECT", "INSERT", "payload_body"] as const;
 const key = "fresh-state-key";
 const from = { adapter: "pi", endpointId: "SENSITIVE_PRODUCER" };
@@ -87,10 +96,10 @@ const namespace = (active: Fixture) => JSON.stringify(["message.create", active.
 /** CAST quote() to TEXT for every cell, including every SQLite INTEGER: no
  * JavaScript Number decoding, unsafe integer rounding, or quote() type
  * assumption. Names come only from the fixed table list and SQLite metadata. */
-function snapshot(reader: DatabaseSync) {
+function snapshot(reader: DatabaseSync, tables: readonly (typeof DISPOSITION_TABLES)[number][] = TABLES) {
   reader.exec("BEGIN");
   try {
-    return TABLES.map((table) => {
+    return tables.map((table) => {
       const columns = reader.prepare(`PRAGMA table_info("${table}")`).all().map((row) => String(row.name));
       const projections = columns.map((name) => {
         const quoted = `"${name.replaceAll('"', '""')}"`;
@@ -148,14 +157,14 @@ function capturedError(action: () => unknown): Error & { code?: string; outcome?
 
 /** Finite readiness and lifetime, early-exit rejection, line-framed readiness.
  * Correctness comes from the explicit release barrier, never elapsed time. */
-function launch(script: string, active: Fixture, tag: string, extra: Record<string, unknown>): Worker {
+function launch(script: string | readonly string[], active: Fixture, tag: string, extra: Record<string, unknown>): Worker {
   const releasePath = join(active.root, `${tag}.release`);
   const config = {
     tag, storeUrl, creationUrl, directory: active.directory, filename: "store.sqlite",
     busyTimeoutMs: BUSY_MS, waitMs: WORKER_MS,
     readyPath: join(active.root, `${tag}.ready`), releasePath, ...extra,
   };
-  const child = spawn(process.execPath, ["--import", register, script, JSON.stringify(config)], {
+  const child = spawn(process.execPath, ["--import", register, ...(typeof script === "string" ? [script] : script), JSON.stringify(config)], {
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stdout = "", stderr = "", pending = "";
@@ -231,6 +240,124 @@ async function closeExternally(active: Fixture, sequence: number) {
     .toEqual({ state: "CLOSED", closed_at: closedAt });
 }
 
+/** Inline solely to keep R1's authorized diff in this file. This is privileged
+ * schema-v1 fixture construction, not attempt/evidence/reconciliation product
+ * behavior. The accepted Store opener retains every connection security check. */
+const dispositionWorkerSource = String.raw`
+import { existsSync, writeFileSync } from "node:fs";
+let store;
+const emit = (value) => process.stdout.write(JSON.stringify(value) + "\n");
+try {
+  const config = JSON.parse(process.argv[1]);
+  const { openStore } = await import(config.storeUrl);
+  store = openStore({ directory: config.directory, filename: config.filename, busyTimeoutMs: config.busyTimeoutMs });
+  const db = store.database;
+  const policy = {
+    foreignKeys: db.prepare("PRAGMA foreign_keys").get().foreign_keys,
+    trustedSchema: db.prepare("PRAGMA trusted_schema").get().trusted_schema,
+    recursiveTriggers: db.prepare("PRAGMA recursive_triggers").get().recursive_triggers,
+  };
+  if (policy.foreignKeys !== 1 || policy.trustedSchema !== 0 || policy.recursiveTriggers !== 1) {
+    throw new Error("fixture connection policy rejected");
+  }
+  writeFileSync(config.readyPath, "", { flag: "wx" });
+  emit({ event: "ready", tag: config.tag });
+  const idle = new Int32Array(new SharedArrayBuffer(4));
+  const deadline = Date.now() + config.waitMs;
+  while (!existsSync(config.releasePath)) {
+    if (Date.now() > deadline) throw new Error("fixture release barrier expired");
+    Atomics.wait(idle, 0, 0, 5);
+  }
+  db.exec("BEGIN IMMEDIATE");
+  const single = (result) => {
+    if (result.changes !== 1 && result.changes !== 1n) throw new Error("fixture insert refused");
+  };
+  // schema.ts: attempt.message_id owns the existing Message. Its composite
+  // (message_id, attempt_id) key is referenced by both evidence and reconciliation.
+  single(db.prepare(
+    "INSERT INTO attempt(attempt_id, message_id, endpoint_json, consumer_id, instance_id, fencing_token, lease_expires_at, dispatch, transport, created_at, private_revision) VALUES (?, ?, ?, 'fixture-consumer', 'fixture-instance', 1, ?, 'not_attempted', 'pending', ?, 1)",
+  ).run(config.attemptId, config.messageId, config.endpointJson, config.recordedAt, config.recordedAt));
+  // Both composite FKs must agree; JSON/digest and observation time are fixture data.
+  single(db.prepare(
+    "INSERT INTO evidence_envelope(envelope_id, exchange_id, message_id, attempt_id, evidence_kind, evidence_digest, evidence_json, observed_at, private_revision) VALUES (?, ?, ?, ?, 'fixture-observation', ?, ?, ?, 1)",
+  ).run(config.envelopeId, config.exchangeId, config.messageId, config.attemptId, config.evidenceDigest, config.evidenceJson, config.recordedAt));
+  // No evidence_application or result is required by this accepted schema FK chain.
+  single(db.prepare(
+    "INSERT INTO reconciliation(reconciliation_id, exchange_id, message_id, attempt_id, evidence_envelope_id, basis, resolved_at, private_revision) VALUES (?, ?, ?, ?, ?, 'test-only administrative fixture', ?, 1)",
+  ).run(config.reconciliationId, config.exchangeId, config.messageId, config.attemptId, config.envelopeId, config.recordedAt));
+  single(db.prepare(
+    "INSERT INTO disposition(exchange_id, status, owner_id, recorded_at, reason, reconciliation_id, unresolved_json, private_revision) VALUES (?, 'ABANDONED_UNRESOLVED', 'owner', ?, 'test-only administrative fixture', ?, '[]', 1)",
+  ).run(config.exchangeId, config.recordedAt, config.reconciliationId));
+  db.exec("COMMIT");
+  store.close();
+  store = undefined;
+  emit({ event: "result", stage: "disposition", tag: config.tag, committed: true, policy });
+} catch {
+  // Never inspect, retain, serialize, or rethrow SQL/endpoint values or causes.
+  try { if (store?.database.isTransaction) store.database.exec("ROLLBACK"); } catch {}
+  process.exitCode = 4;
+  emit({ event: "result", stage: "disposition", code: "DISPOSITION_FIXTURE_FAILED" });
+} finally {
+  try { store?.close(); } catch { process.exitCode = 4; }
+}
+`;
+
+/** Read-only confirmation of every administrative row, its ownership and INTEGER
+ * fields, alongside all five B1 tables. Not a product resolution assertion. */
+function dispositionEvidence(active: Fixture, original: ReturnType<typeof createMessage>) {
+  const { reader } = active;
+  const messageId = original.message.messageId;
+  expect(DISPOSITION_TABLES.map((table) =>
+    reader.prepare(`SELECT CAST(count(*) AS TEXT) AS n FROM "${table}"`).get()!.n,
+  )).toEqual(["1", "2", "2", "1", "1", "1", "1", "1"]);
+  expect(reader.prepare("SELECT state, closed_at FROM exchange WHERE exchange_id=?").get(active.exchangeId))
+    .toEqual({ state: "OPEN", closed_at: null });
+  expect(reader.prepare(
+    "SELECT d.exchange_id, d.status, d.owner_id, d.recorded_at, d.reason, d.reconciliation_id, d.unresolved_json," +
+    " CAST(d.private_revision AS TEXT) AS disposition_revision, r.message_id, r.attempt_id, r.evidence_envelope_id," +
+    " r.basis, r.resolved_at, CAST(r.private_revision AS TEXT) AS reconciliation_revision," +
+    " e.exchange_id AS evidence_exchange, e.message_id AS evidence_message, e.attempt_id AS evidence_attempt," +
+    " e.evidence_kind, e.evidence_digest, e.evidence_json, e.observed_at, CAST(e.private_revision AS TEXT) AS evidence_revision," +
+    " a.endpoint_json, a.consumer_id, a.instance_id, CAST(a.fencing_token AS TEXT) AS token," +
+    " a.lease_expires_at, a.dispatch, a.transport, a.created_at, CAST(a.private_revision AS TEXT) AS attempt_revision" +
+    " FROM disposition d JOIN reconciliation r ON r.reconciliation_id=d.reconciliation_id AND r.exchange_id=d.exchange_id" +
+    " JOIN evidence_envelope e ON e.envelope_id=r.evidence_envelope_id AND e.exchange_id=r.exchange_id" +
+    " AND e.message_id=r.message_id AND e.attempt_id=r.attempt_id" +
+    " JOIN attempt a ON a.attempt_id=r.attempt_id AND a.message_id=r.message_id" +
+    " JOIN message m ON m.message_id=a.message_id AND m.exchange_id=d.exchange_id WHERE d.exchange_id=?",
+  ).all(active.exchangeId)).toEqual([{
+    exchange_id: active.exchangeId, status: "ABANDONED_UNRESOLVED", owner_id: "owner",
+    recorded_at: closedAt, reason: "test-only administrative fixture",
+    reconciliation_id: dispositionIds.reconciliationId, unresolved_json: "[]", disposition_revision: "1",
+    message_id: messageId, attempt_id: dispositionIds.attemptId, evidence_envelope_id: dispositionIds.envelopeId,
+    basis: "test-only administrative fixture", resolved_at: closedAt, reconciliation_revision: "1",
+    evidence_exchange: active.exchangeId, evidence_message: messageId, evidence_attempt: dispositionIds.attemptId,
+    evidence_kind: "fixture-observation", evidence_digest: dispositionEvidenceDigest,
+    evidence_json: dispositionEvidenceJson, observed_at: closedAt, evidence_revision: "1",
+    endpoint_json: JSON.stringify(to), consumer_id: "fixture-consumer", instance_id: "fixture-instance",
+    token: "1", lease_expires_at: closedAt, dispatch: "not_attempted", transport: "pending",
+    created_at: closedAt, attempt_revision: "1",
+  }]);
+  expect(reader.prepare(
+    "SELECT m.message_id, CAST(m.payload_length AS TEXT) AS length, CAST(m.private_revision AS TEXT) AS revision, r.entity_id, r.idempotency_key, r.request_digest, r.created_at, CAST(r.private_revision AS TEXT) AS record_revision FROM message m JOIN idempotency_record r ON r.entity_id=m.message_id AND r.namespace=? AND r.idempotency_key=m.idempotency_key AND r.created_at=m.created_at",
+  ).all(namespace(active))).toEqual([{
+    message_id: messageId, length: "4", revision: "1", entity_id: messageId, idempotency_key: key,
+    request_digest: original.record.requestDigest, created_at: original.record.createdAt,
+    record_revision: "1",
+  }]);
+  expect(reader.prepare(
+    "SELECT CAST(count(*) AS TEXT) AS n FROM idempotency_record r WHERE r.namespace=? AND NOT EXISTS (SELECT 1 FROM message m WHERE m.message_id=r.entity_id AND m.idempotency_key=r.idempotency_key)",
+  ).get(namespace(active))!.n).toBe("0");
+  expect(reader.prepare(
+    "SELECT CAST(sequence AS TEXT) AS n, kind, subject_id FROM audit_event WHERE exchange_id=? ORDER BY sequence",
+  ).all(active.exchangeId)).toEqual([
+    { n: "1", kind: "exchange_opened", subject_id: active.exchangeId },
+    { n: "2", kind: "message_created", subject_id: messageId },
+  ]);
+  expect(reader.prepare("PRAGMA integrity_check").all()).toEqual([{ integrity_check: "ok" }]);
+  expect(reader.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+}
+
 afterEach(async () => {
   const completed = await Promise.all(workers.splice(0).map(async (worker) => {
     if (worker.child.exitCode === null && worker.child.signalCode === null) worker.child.kill("SIGKILL");
@@ -246,7 +373,7 @@ afterEach(async () => {
   for (const report of completed) if (report !== undefined) expect(report.signal).toBeNull();
 });
 
-it("F2: an externally committed disposition change is observed without reopening the Store", async () => {
+it("F2-A: an externally committed Exchange CLOSE is observed without reopening the Store", async () => {
   const active = fixture();
   const original = createMessage(active.store, request(active));
   const uuid = active.store.storeUuid;
@@ -256,7 +383,7 @@ it("F2: an externally committed disposition change is observed without reopening
   // Same never-reopened handle: new creation must read the CURRENT row state.
   expect(capturedError(() => createMessage(active.store, { ...request(active), idempotencyKey: "post-close-key" })))
     .toMatchObject({ code: "EXCHANGE_DISPOSITION_REJECTED", outcome: "ROLLED_BACK", retryable: false });
-  // Historical replay precedence survives the disposition change.
+  // Historical replay precedence survives the Exchange close.
   const replay = createMessage(active.store, request(active));
   expect(replay.disposition).toBe("REPLAYED");
   expect(replay.message).toEqual(original.message);
@@ -268,13 +395,63 @@ it("F2: an externally committed disposition change is observed without reopening
     kinds: ["exchange_opened", "message_created", "exchange_closed"],
   })).toEqual([{ message_id: original.message.messageId, length: "4", revision: "1" }]);
 
-  // Schema restriction, recorded rather than worked around: an administrative
-  // `disposition` row requires an existing reconciliation (ON DELETE RESTRICT
-  // foreign key), whose attempt/evidence chain is outside S4-2 authority.
+  // A missing reconciliation is rejected by the disposition FK (787). This
+  // negative fixture is not disposition-row freshness evidence: F2-B below
+  // commits the complete schema-valid test-only dependency chain instead.
   expect(capturedError(() => active.raw.prepare(
     "INSERT INTO disposition(exchange_id, status, owner_id, recorded_at, reason, reconciliation_id, unresolved_json) VALUES (?, 'ABANDONED_UNRESOLVED', 'owner', ?, 'characterization', 'rec_missing', '[]')",
   ).run(active.exchangeId, closedAt))).toMatchObject({ code: "ERR_SQLITE_ERROR", errcode: 787 });
   expect(snapshot(active.reader)).toEqual(before);
+}, TEST_MS);
+
+it("F2-B: an externally committed disposition rejects new creation while Exchange stays OPEN", async () => {
+  const active = fixture();
+  const originalStore = active.store;
+  const originalDatabase = active.store.database;
+  const uuid = active.store.storeUuid;
+  const original = createMessage(active.store, request(active));
+  expect(evidence(active, {
+    state: "OPEN", closed: false, messages: 1, kinds: ["exchange_opened", "message_created"],
+  })).toEqual([{ message_id: original.message.messageId, length: "4", revision: "1" }]);
+  const initial = snapshot(active.reader, DISPOSITION_TABLES);
+  expect(initial.slice(4)).toEqual([[], [], [], []]); // no disposition or supporting chain
+  const worker = launch(["--input-type=module", "--eval", dispositionWorkerSource], active, "fresh-disposition", {
+    exchangeId: active.exchangeId, messageId: original.message.messageId, ...dispositionIds,
+    recordedAt: closedAt, endpointJson: JSON.stringify(to),
+    evidenceJson: dispositionEvidenceJson, evidenceDigest: dispositionEvidenceDigest,
+  });
+  await worker.ready;
+  expect(worker.child.pid).toBeTypeOf("number");
+  expect(worker.child.pid).not.toBe(process.pid);
+  // Ready means this process opened its own Store. Nothing is committed before release.
+  expect(snapshot(active.reader, DISPOSITION_TABLES)).toEqual(initial);
+  writeFileSync(worker.releasePath, "");
+  const report = await worker.done;
+  cleanExit(report, active, "fresh-disposition");
+  expect(report.lines).toEqual([
+    { event: "ready", tag: "fresh-disposition" },
+    { event: "result", stage: "disposition", tag: "fresh-disposition", committed: true,
+      policy: { foreignKeys: 1, trustedSchema: 0, recursiveTriggers: 1 } },
+  ]);
+  // The independent reader sees the whole committed chain, not merely worker stdout.
+  dispositionEvidence(active, original);
+  const before = snapshot(active.reader, DISPOSITION_TABLES);
+  expect(before.slice(0, 4)).toEqual(initial.slice(0, 4)); // Message/record/audit/OPEN Exchange untouched
+  const changes = active.store.database.prepare("SELECT CAST(total_changes() AS TEXT) AS n").get()!.n;
+
+  expect(capturedError(() => createMessage(active.store, { ...request(active), idempotencyKey: "post-disposition-key" })))
+    .toMatchObject({ code: "EXCHANGE_DISPOSITION_REJECTED", outcome: "ROLLED_BACK", retryable: false });
+  expect(snapshot(active.reader, DISPOSITION_TABLES)).toEqual(before);
+  const replay = createMessage(active.store, request(active));
+  expect(replay.disposition).toBe("REPLAYED");
+  expect(replay.message).toEqual(original.message);
+  expect(replay.record).toEqual(original.record);
+  expect(snapshot(active.reader, DISPOSITION_TABLES)).toEqual(before);
+  expect(active.store.database.prepare("SELECT CAST(total_changes() AS TEXT) AS n").get()!.n).toBe(changes);
+  expect(active.store).toBe(originalStore);
+  expect(active.store.database).toBe(originalDatabase);
+  expect(active.store.storeUuid).toBe(uuid);
+  dispositionEvidence(active, original); // OPEN plus disposition isolates its admission branch
 }, TEST_MS);
 
 it("F3: an externally committed Message and record replay through the open Store", async () => {
