@@ -67,6 +67,14 @@ afterEach(() => {
 function assertClean(value: unknown, root: string, label: string): void {
   const seen = new Set<unknown>();
   const walk = (current: unknown): string[] => {
+    // Byte collections are detected before generic object traversal: numeric
+    // index enumeration would hide the byte sequence, and serialized output
+    // must not be reduced to a length alone. Buffer is covered through its
+    // Uint8Array relationship.
+    if (current instanceof Uint8Array) return [
+      Buffer.from(current).toString("hex"),
+      Array.from(current).join(", "),
+    ];
     if (current === null || typeof current !== "object") {
       return [typeof current === "string" || typeof current === "number" ? String(current) : ""];
     }
@@ -76,7 +84,9 @@ function assertClean(value: unknown, root: string, label: string): void {
     return parts;
   };
   const corpus = walk(value).join(" ") + " " + JSON.stringify(value, (_key, nested) =>
-    nested instanceof Uint8Array ? `BYTES:${nested.length}` : nested);
+    nested instanceof Uint8Array
+      ? `BYTES:${nested.length}:${Buffer.from(nested).toString("hex")}:${Array.from(nested).join(", ")}`
+      : nested);
   for (const secret of SECRETS) expect(corpus, `${label}: leaked ${secret}`).not.toContain(secret);
   expect(corpus, `${label}: leaked database path`).not.toContain(root);
   expect(corpus, `${label}: leaked SQL`).not.toMatch(/\bSELECT\b|\bINSERT\b|\bUPDATE\b|\bDELETE\b/);
@@ -269,4 +279,37 @@ it("control: the sweep detects secrets in a stack trace", () => {
   const poisoned = new Error("creation failed");
   poisoned.stack = `Error: creation failed\n    at secret (${SECRET_INJECTION}/file.ts:1:1)`;
   expect(() => assertCleanError(poisoned, "/tmp/none", "control")).toThrow();
+});
+
+it("control A: raw Uint8Array payload leak is rejected", () => {
+  // The exact shape the previous sweep missed.
+  const poisoned = { message: { payload: Uint8Array.from(PAYLOAD) } };
+  expect(() => assertClean(poisoned, "/tmp/none", "control A")).toThrow();
+});
+
+it("control B: raw Buffer payload leak is rejected", () => {
+  // Buffer is covered through its Uint8Array relationship.
+  const poisoned = { message: { payload: Buffer.from(PAYLOAD) } };
+  expect(() => assertClean(poisoned, "/tmp/none", "control B")).toThrow();
+});
+
+it("control C: hexadecimal payload leak is rejected", () => {
+  const poisoned = { message: { payloadHex: "0708090a" } };
+  expect(() => assertClean(poisoned, "/tmp/none", "control C")).toThrow();
+});
+
+it("control D: decimal byte-sequence leak is rejected", () => {
+  const poisoned = { message: { note: "7, 8, 9, 10" } };
+  expect(() => assertClean(poisoned, "/tmp/none", "control D")).toThrow();
+});
+
+it("control: legitimate public fields are not false positives", () => {
+  // A public digest is hexadecimal; payloadLength is a number. Neither is a
+  // leak, and neither endpoint identity is classified as a secret (M3).
+  const publicShape = {
+    messageId: "m1", exchangeId: "x1", from, to,
+    payloadDigest: "deadbeef".repeat(8), payloadLength: PAYLOAD.length,
+    createdAt: "2026-10-09T00:00:00Z", state: "OPEN", disposition: "CREATED",
+  };
+  expect(() => assertClean(publicShape, "/tmp/none", "control public")).not.toThrow();
 });
