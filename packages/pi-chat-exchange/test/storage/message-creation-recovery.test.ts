@@ -1,14 +1,14 @@
 import { spawn } from "node:child_process";
 import type { ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, it } from "vitest";
 import { createExchange, createMessage } from "../../src/storage/creation.js";
-import { initializeStore } from "../../src/storage/store.js";
+import { initializeStore, openStore } from "../../src/storage/store.js";
 
 /** S5-1 only: cross-process write-lock recovery after a real SIGKILL, and
  * reader-transaction isolation across that death. No product recovery API,
@@ -31,6 +31,7 @@ const register = fileURLToPath(new URL("./support/register-ts.mjs", import.meta.
 const crashScript = fileURLToPath(new URL("./support/crash-worker.mjs", import.meta.url));
 const creatorScript = fileURLToPath(new URL("./support/concurrency-worker.mjs", import.meta.url));
 const contenderScript = fileURLToPath(new URL("./support/recovery-contender.mjs", import.meta.url));
+const replayScript = fileURLToPath(new URL("./support/recovery-replay.mjs", import.meta.url));
 const storeUrl = new URL("../../src/storage/store.ts", import.meta.url).href;
 const creationUrl = new URL("../../src/storage/creation.ts", import.meta.url).href;
 const from = { adapter: "pi", endpointId: "producer-1" };
@@ -512,4 +513,232 @@ it("keeps recovery validation test-only with no production recovery API", () => 
     // No recovery API, retry loop, scheduler or kill path exists in production.
     expect(source).not.toMatch(/SIGKILL|process\.kill|reopenExchange|recoverExchange|recoverStore|scheduleRecovery|setTimeout|setInterval/);
   }
+});
+
+/** S5-2: exact lstat-level inventory of the database directory. The main
+ * database must be a regular file; optional WAL/SHM are accepted as regular
+ * files; rollback journals, symlinks, unknown artifacts and test markers in
+ * the database directory are infrastructure failures. */
+function dbArtifacts(active: Scenario) {
+  return Object.fromEntries(readdirSync(active.directory).sort().map((name) => {
+    if (!/^store\.sqlite(-wal|-shm)?$/.test(name)) infrastructure("RECOVERY_UNEXPECTED_DB_ARTIFACT");
+    const stats = lstatSync(join(active.directory, name));
+    if (stats.isSymbolicLink() || !stats.isFile()) infrastructure("RECOVERY_UNEXPECTED_DB_ARTIFACT");
+    return [name, { file: true }];
+  }));
+}
+function assertDbArtifacts(active: Scenario): void {
+  const inventory = dbArtifacts(active);
+  expect(inventory["store.sqlite"]).toEqual({ file: true });
+  expect(existsSync(join(active.directory, "store.sqlite-journal"))).toBe(false);
+}
+
+it("R3: committed history survives a K5 crash while the uncommitted triple is absent", async () => {
+  const active = scenario(true);
+  const baseline = snapshot(active);
+  expect(counts(active)).toEqual({ messages: "1", records: "1", created: "1", audits: "2" });
+  assertDbArtifacts(active); // established WAL-backed baseline before the crash
+
+  const writer = await parkWriter(active, "k5-after-audit-insert",
+    { messages: "2", records: "2", created: "2", audits: "3" });
+  const preKill = dbArtifacts(active); // observable WAL state at the boundary
+  expect(preKill["store.sqlite"]).toEqual({ file: true });
+  // WAL/SHM are optional; their presence is recorded, never required.
+
+  await sigkill(writer);
+  // Before any recovery open: no manual artifact cleanup has occurred.
+  assertDbArtifacts(active);
+  expect(snapshot(active)).toEqual(baseline);
+
+  // Recovery through the accepted Store opener on a fresh connection.
+  const recovered = openStore({ directory: active.directory, filename: "store.sqlite", busyTimeoutMs: BUSY_TIMEOUT_MS });
+  try {
+    expect(snapshot(active)).toEqual(baseline);
+    expect(counts(active)).toEqual({ messages: "1", records: "1", created: "1", audits: "2" });
+  } finally {
+    recovered.close();
+  }
+  assertDbArtifacts(active);
+  expect(losslessIntegers(active)).toEqual([
+    { message_id: active.reader.prepare("SELECT message_id FROM message").get()!.message_id,
+      revision: "1", length: String(PAYLOAD.length) },
+  ]);
+  assertDurableConsistency(active);
+}, TEST_TIMEOUT_MS);
+
+/** Independent replay identity facts from the read-only reader: the accepted
+ * public Message/record identity plus durable row evidence. */
+function replayOracle(active: Scenario) {
+  const namespace = JSON.stringify(["message.create", active.exchangeId]);
+  return {
+    message: active.reader.prepare(
+      "SELECT message_id, created_at, CAST(private_revision AS TEXT) AS revision, CAST(payload_length AS TEXT) AS length FROM message",
+    ).get()!,
+    record: active.reader.prepare(
+      "SELECT entity_id, request_digest, created_at, CAST(private_revision AS TEXT) AS revision FROM idempotency_record WHERE namespace=? AND idempotency_key=?",
+    ).get(namespace, KEY)!,
+  };
+}
+
+/** A replay worker's reported identity must match the durable rows exactly;
+ * stdout can never substitute for durable evidence. */
+function assertReportedReplayIsDurable(active: Scenario, result: Record<string, unknown>): void {
+  expect(result).toMatchObject({ event: "result", stage: "replay", disposition: "REPLAYED", writes: 0 });
+  const oracle = replayOracle(active);
+  expect(result.entityId).toBe(result.messageId);
+  expect({ messageId: result.messageId, createdAt: result.createdAt })
+    .toEqual({ messageId: oracle.message.message_id, createdAt: oracle.message.created_at });
+  expect({ entityId: result.entityId, requestDigest: result.requestDigest, recordCreatedAt: result.recordCreatedAt })
+    .toEqual({
+      entityId: oracle.record.entity_id, requestDigest: oracle.record.request_digest,
+      recordCreatedAt: oracle.record.created_at,
+    });
+}
+
+
+it("R4: durable idempotency replays through Store close/reopen and concurrent processes", async () => {
+  const active = scenario();
+  // One accepted-API creation in this parent, then the authoritative oracle.
+  const original = (() => {
+    const store = openStore({ directory: active.directory, filename: "store.sqlite", busyTimeoutMs: BUSY_TIMEOUT_MS });
+    try {
+      return createMessage(store, {
+        exchangeId: active.exchangeId, from, to,
+        payload: Uint8Array.from(PAYLOAD), idempotencyKey: KEY,
+      });
+    } finally {
+      store.close();
+    }
+  })();
+  expect(original.disposition).toBe("CREATED");
+  const baseline = snapshot(active);
+  expect(counts(active)).toEqual({ messages: "1", records: "1", created: "1", audits: "2" });
+
+  // Explicit close happened above; a brand new connection replays from
+  // durable rows only. The parent's replay is also worker-local write-free.
+  const reopened = openStore({ directory: active.directory, filename: "store.sqlite", busyTimeoutMs: BUSY_TIMEOUT_MS });
+  try {
+    expect(reopened.database).not.toBeUndefined(); // a brand new Store connection, not a cache
+    const changesBefore = reopened.database.prepare("SELECT CAST(total_changes() AS TEXT) AS n").get()!.n;
+    const replay = createMessage(reopened, {
+      exchangeId: active.exchangeId, from, to,
+      payload: Uint8Array.from(PAYLOAD), idempotencyKey: KEY,
+    });
+    expect(replay.disposition).toBe("REPLAYED");
+    expect(replay.message).toEqual(original.message);
+    expect(replay.record).toEqual(original.record);
+    expect(reopened.database.prepare("SELECT CAST(total_changes() AS TEXT) AS n").get()!.n).toBe(changesBefore);
+  } finally {
+    reopened.close();
+  }
+  expect(snapshot(active)).toEqual(baseline);
+
+  // Two independent OS processes, each with its own Store connection, replay
+  // concurrently. Both must replay the original identity with zero writes.
+  const first = launch(active, "replay-one", { script: [replayScript] });
+  const second = launch(active, "replay-two", { script: [replayScript] });
+  await Promise.all([first.ready, second.ready]);
+  writeFileSync(join(active.root, "replay-one.release"), "", { flag: "wx", mode: 0o600 });
+  writeFileSync(join(active.root, "replay-two.release"), "", { flag: "wx", mode: 0o600 });
+  const [reportOne, reportTwo] = await Promise.all([first.done, second.done]);
+  for (const report of [reportOne, reportTwo]) {
+    expect({ status: report.status, signal: report.signal, stderr: report.stderr }).toEqual({ status: 0, signal: null, stderr: "" });
+    assertNoSecretLeak(report);
+    expect(report.results).toHaveLength(1);
+  }
+  const [resultOne, resultTwo] = [reportOne.results[0]!, reportTwo.results[0]!];
+  assertReportedReplayIsDurable(active, resultOne);
+  assertReportedReplayIsDurable(active, resultTwo);
+  expect(resultOne.messageId).toBe(resultTwo.messageId);
+  expect(resultOne.requestDigest).toBe(resultTwo.requestDigest);
+  expect(resultOne.messageId).toBe(original.message.messageId);
+  expect(resultOne.entityId).toBe(original.record.entityId);
+
+  // The complete durable snapshot is byte-identical to the pre-replay state.
+  expect(snapshot(active)).toEqual(baseline);
+  expect(counts(active)).toEqual({ messages: "1", records: "1", created: "1", audits: "2" });
+  expect(losslessIntegers(active)).toEqual([
+    { message_id: original.message.messageId, revision: "1", length: String(PAYLOAD.length) },
+  ]);
+  assertDurableConsistency(active);
+}, TEST_TIMEOUT_MS);
+
+it("control: a writer that exits before K5 fails as infrastructure failure", async () => {
+  const active = scenario(true);
+  const baseline = snapshot(active);
+  await expect(parkWriter(active, "k5-after-audit-insert",
+    { messages: "2", records: "2", created: "2", audits: "3" },
+    { script: controlScript("process.exit(7);") })).rejects.toThrow("RECOVERY_WORKER_EARLY_EXIT");
+  expect(snapshot(active)).toEqual(baseline);
+  assertDurableConsistency(active);
+}, TEST_TIMEOUT_MS);
+
+it("control: an incorrect K5 boundary marker fails as infrastructure failure", async () => {
+  const active = scenario(true);
+  const baseline = snapshot(active);
+  await expect(parkWriter(active, "k5-after-audit-insert",
+    { messages: "2", records: "2", created: "2", audits: "3" },
+    { script: controlScript('writeFileSync(config.markerPath, "k3-after-message-insert", { flag: "wx", mode: 0o600 });') }))
+    .rejects.toThrow("RECOVERY_MARKER_MISMATCH");
+  expect(snapshot(active)).toEqual(baseline);
+  assertDurableConsistency(active);
+}, TEST_TIMEOUT_MS);
+
+it("control: a writer that commits no boundary evidence fails as infrastructure failure", async () => {
+  const active = scenario(true);
+  const baseline = snapshot(active);
+  // A worker that parks without publishing marker/evidence never counts as a
+  // reached boundary; the bounded observer rejects the missing marker.
+  await expect(parkWriter(active, "k5-after-audit-insert",
+    { messages: "2", records: "2", created: "2", audits: "3" },
+    { script: controlScript("") })).rejects.toThrow("RECOVERY_MARKER_MISSING");
+  expect(snapshot(active)).toEqual(baseline);
+  assertDurableConsistency(active);
+}, TEST_TIMEOUT_MS);
+
+it("control: a replay worker that exits before readiness fails as infrastructure failure", async () => {
+  const active = scenario();
+  const worker = launch(active, "replay-one", { script: ["--input-type=module", "--eval", "process.exit(7)"] });
+  await expect(worker.ready).rejects.toThrow("RECOVERY_WORKER_INFRASTRUCTURE_FAILURE");
+  const report = await worker.done;
+  expect({ status: report.status, signal: report.signal, lines: report.lines, stderr: report.stderr })
+    .toEqual({ status: 7, signal: null, lines: [], stderr: "" });
+  expect(counts(active)).toEqual({ messages: "0", records: "0", created: "0", audits: "1" });
+  assertDurableConsistency(active);
+}, TEST_TIMEOUT_MS);
+
+it("control: a forged REPLAYED result without matching durable identity fails the test", async () => {
+  const active = scenario(true);
+  const baseline = snapshot(active);
+  const tag = "replay-one";
+  const forged = { event: "result", stage: "replay", tag, disposition: "REPLAYED",
+    messageId: "msg_forged", createdAt: "2026-10-09T22:00:00.000Z", entityId: "msg_forged",
+    requestDigest: "0".repeat(64), recordCreatedAt: "2026-10-09T22:00:00.000Z", writes: 0 };
+  const worker = launch(active, tag, {
+    script: controlScript(`process.stdout.write(JSON.stringify(${JSON.stringify(forged)}) + "\\n");`),
+  });
+  await worker.ready;
+  writeFileSync(join(active.root, `${tag}.release`), "", { flag: "wx", mode: 0o600 });
+  const deadline = Date.now() + MARKER_TIMEOUT_MS;
+  while (worker.lines.every((line) => line.event !== "result")) {
+    expect(Date.now()).toBeLessThan(deadline);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  expect(() => assertReportedReplayIsDurable(active, worker.lines.at(-1)!)).toThrow();
+  expect(snapshot(active)).toEqual(baseline);
+  expect(worker.child.kill("SIGKILL")).toBe(true);
+  await worker.done;
+  assertDurableConsistency(active);
+}, TEST_TIMEOUT_MS);
+
+it("control: unexpected database artifacts or journals fail the inventory check", () => {
+  const active = scenario();
+  writeFileSync(join(active.directory, "store.sqlite-journal"), "", { flag: "wx", mode: 0o600 });
+  expect(() => dbArtifacts(active)).toThrow("RECOVERY_UNEXPECTED_DB_ARTIFACT");
+  rmSync(join(active.directory, "store.sqlite-journal"), { force: true });
+  writeFileSync(join(active.directory, "stale.lock"), "", { flag: "wx", mode: 0o600 });
+  expect(() => dbArtifacts(active)).toThrow("RECOVERY_UNEXPECTED_DB_ARTIFACT");
+  rmSync(join(active.directory, "stale.lock"), { force: true });
+  assertDbArtifacts(active);
+  assertDurableConsistency(active);
 });
