@@ -40,6 +40,9 @@ try {
   const closed = db.prepare(
     "UPDATE exchange SET state='CLOSED', closed_at=? WHERE exchange_id=? AND state='OPEN'",
   ).run(config.closedAt, config.exchangeId);
+  if (Number(closed.changes) !== 1) {
+    throw new Error("exchange close precondition failed: expected exactly one OPEN Exchange");
+  }
   const sequence = db.prepare(
     "SELECT COALESCE(MAX(sequence), 0) + 1 AS next FROM audit_event WHERE exchange_id=?",
   ).get(config.exchangeId).next;

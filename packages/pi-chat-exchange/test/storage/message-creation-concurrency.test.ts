@@ -150,12 +150,24 @@ function launch(script: string, active: Scenario, tag: string, extra: Record<str
 const release = (worker: Launched) => { writeFileSync(worker.releasePath, ""); };
 
 async function readyAll(workers: readonly Launched[]): Promise<void> {
-  await Promise.race([
-    Promise.all(workers.map((worker) => worker.ready)),
-    new Promise((_resolve, reject) => setTimeout(
-      () => reject(new Error("workers did not become ready within the bounded timeout")), PARENT_TIMEOUT_MS,
-    )),
-  ]);
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      // Fail fast: a worker that exits before readiness is an infrastructure
+      // failure, never a scenario outcome.
+      Promise.all(workers.map((worker) => Promise.race([
+        worker.ready,
+        worker.done.then((report) => {
+          throw new Error(`worker ${worker.tag} exited before readiness: ${JSON.stringify(report.result)}`);
+        }),
+      ]))),
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("workers did not become ready within the bounded timeout")), PARENT_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 /** Every worker must exit cleanly; open-stage and barrier failures are explicit
@@ -412,7 +424,7 @@ it("C4 order A: creation commits first and the later close keeps the Message dur
   const closeReport = await closer.done;
 
   expect(creation.disposition).toBe("CREATED");
-  expect(closeReport).toMatchObject({ status: 0, signal: null });
+  expect(closeReport).toMatchObject({ status: 0, signal: null, stderr: "" });
   expect(closeReport.result).toMatchObject({ stage: "close", closedRows: 1, auditRows: 1, sequence: 3 });
   expect(exchangeState(active)).toEqual({ state: "CLOSED", closed: true });
   expect(active.reader.prepare("SELECT message_id FROM message").get()!.message_id).toBe(creation.messageId);
@@ -431,6 +443,7 @@ it("C4 order B: a committed close refuses later creation without any durable wri
   await readyAll([creator, closer]);
   release(closer);
   const closeReport = await closer.done;
+  expect(closeReport.stderr).toBe("");
   release(creator);
   const creation = completed(await creator.done);
 
