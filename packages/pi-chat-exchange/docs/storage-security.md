@@ -110,3 +110,29 @@ privileged raw connections, remain outside the execution-containment boundary.
 
 F6 failed-initialization artifact recovery, F8 general budgets, F9 architecture
 negative-oracle hardening, and all B2 features remain deferred.
+
+
+## Host trust root (CE-0002-B3-P1A)
+
+The v2 store adds a `host-secret` artifact in the private store directory. It
+receives the same artifact enforcement as the database files (real regular
+file, 0600, current-user-owned, no symlinks, exclusive creation with
+O_NOFOLLOW) plus exact length and hex-encoding checks, re-validated on every
+open against the append-only `host_trust_root` fingerprint table. The
+plaintext secret never enters SQLite, results, errors, or logs; only its
+SHA-256 fingerprint is persisted.
+
+Secret loss or rotation is recovered only through the explicit operator
+command (`recoverTrustRoot`): no automatic regeneration, no recovery from a
+normal open, no silent overwrite, no automatic deletion of orphan artifacts.
+Recovery appends a new generation and revokes all existing capabilities, so a
+replacement secret inherits no authority.
+
+**Limitations:** the trust root shares the filesystem trust boundary documented
+above — an attacker with equivalent filesystem authority can replace both the
+database and the secret file consistently, and trust-root fingerprinting does
+not detect that actor. The fingerprint detects accidental or partial
+replacement and unauthorized reset attempts that do not also rewrite the
+database. Crash windows between secret-file creation and the accompanying
+SQLite commit are fail-closed (orphan artifacts block retry until explicit
+operator removal), not self-healing.

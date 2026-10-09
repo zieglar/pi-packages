@@ -226,3 +226,88 @@ B2 scope is not expanded by these entries.
 | K5 uncommitted rollback survives crash | R3 | `bbf28f0` | WAL zero bytes; see CE-STORAGE-WAL-RECOVERY-REGRESSION |
 | Public-surface privacy sweep + binary controls | S6-1 suite (18 tests) | `84e0603`, `f606594` | createExchange error paths: CE-PRIVACY-EXCHANGE-ERROR-COVERAGE |
 | Private storage boundary / no public export | architecture contract gate (19 fixtures) | (workspace gates) | — |
+
+
+## 7. B3-P1A schema v2, explicit migration, and host trust root
+
+Accepted B3-P1A amendment (CE-0002-B3-P1A). Everything in §§1-6 is preserved:
+every v1 table, trigger, index, and row is untouched; v2 only appends new
+schema objects and ledger rows. `store_metadata` is never UPDATEd or DELETEd
+(its v1 immutability trigger would abort the attempt);
+`store_metadata.schema_version` permanently records the schema version at
+initialization (1 for migrated stores, 2 for fresh v2 stores). The live
+schema version is `PRAGMA user_version`, which must equal the highest
+migration-ledger entry.
+
+### Additive v2 schema
+
+New tables: `participant`, `participant_capability` (SHA-256 digests only,
+never plaintext capabilities), `participant_session` (schema only in P1A),
+`exchange_membership`, `participant_ownership`,
+`participant_fencing_high_water`, `delivery_cursor`, `host_trust_root`.
+New append-only/immutability triggers: `participant_identity_immutable`,
+`exchange_membership_immutable`/`_nodelete`,
+`host_trust_root_immutable`/`_nodelete`. The ownership, fencing, and cursor
+tables are inert schema in P1A: no code path reads or writes them before
+B3-P2/P3, and a migration test asserts they are empty.
+
+### Version recognition (normal open)
+
+- Recognized pristine v1 (ledger exactly the v1 row, `user_version` 1,
+  v1 manifest): refused with `STORAGE_MIGRATION_REQUIRED` — migration is
+  never implicit and never runs during a normal open.
+- Migrated v2 (ledger v1 row + v2 migration row, `user_version` 2) or fresh
+  v2 (single v2 foundation row, `user_version` 2): opens after full
+  validation including the host trust root. Migrated and fresh stores share
+  one byte-identical approved manifest (`INITIAL_SCHEMA_SQL + V2_ADDITIVE_SQL`).
+- `user_version` or metadata version above 2: `STORAGE_SCHEMA_TOO_NEW`.
+- Any ledger deviation: `STORAGE_MIGRATION_CHECKSUM_MISMATCH`. Any schema
+  drift (extra, dropped, or altered objects, whitespace-level):
+  `STORAGE_INCOMPATIBLE`. Refusal-over-repair is unchanged.
+
+### Explicit migration (`migrateStore`)
+
+A dedicated host-local entry point, never reachable from `openStore`:
+requires the explicit `{ fromVersion: 1, toVersion: 2 }` path; preflights the
+exact v1 shape on a disposable read-only snapshot (integrity, foreign keys,
+identity, ledger, manifest, restore hold); bootstraps host trust-root
+generation 1; applies the additive DDL, appends the v2 ledger row, and
+advances `user_version` inside one owned BEGIN IMMEDIATE transaction; then
+proves success by a full v2 reopen. Interruption rolls back to a valid v1
+store (still answered by `STORAGE_MIGRATION_REQUIRED`); BUSY / ROLLED_BACK /
+INDETERMINATE propagate unchanged with no retry and no repair. A v2 store is
+structurally unopenable by a v1 binary (`user_version` 2 exceeds v1's
+supported version), so downgrade is impossible.
+
+### Host trust root
+
+The host secret is a 256-bit random value hex-encoded into a `host-secret`
+file inside the private store directory: exclusive creation with O_NOFOLLOW,
+mode 0600, current-user-owned, no symlinks — the same artifact enforcement
+the database itself passes. Only its SHA-256 fingerprint is persisted, in the
+append-only `host_trust_root` table. Every v2 open re-reads the file, repeats
+the artifact checks, and compares the fingerprint: missing file
+`STORAGE_TRUST_ROOT_MISSING`, disagreement `STORAGE_TRUST_ROOT_MISMATCH`,
+insecure artifact `STORAGE_TRUST_ROOT_INSECURE`, preexisting secret during
+initialization/migration/recovery `STORAGE_TRUST_ROOT_AMBIGUOUS` — all fail
+closed with zero writes, no repair, no automatic regeneration, and no secret
+or fingerprint material in any error, result, or log surface.
+
+### Trust-root recovery (`recoverTrustRoot`)
+
+Explicit operator-authorized only: the operator removes any old secret file
+first (the command refuses to overwrite one); the store must be a valid v2
+store; one owned transaction appends generation N+1 with the new fingerprint
+and revokes every existing capability row. A replacement secret inherits no
+authority: previous-generation capabilities fail by revocation and by
+generation binding, and fresh capability issuance is required per
+Participant. Capability issuance itself is B3-P1B scope and does not exist
+yet.
+
+### Limitations
+
+Protection equals the documented filesystem trust boundary
+(`storage-security.md`): an attacker controlling both the database and the
+secret file can rewrite both consistently, and no protection against that
+actor is claimed. `CE-STORAGE-IMMUTABILITY-V2` remains open and unchanged;
+the new v2 tables inherit the same unauthenticated-state limitation.

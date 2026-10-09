@@ -19,35 +19,28 @@ import {
   INITIAL_MIGRATION_NAME,
   INITIAL_SCHEMA_SQL,
   SQLITE_APPLICATION_ID,
+  V2_FOUNDATION_CHECKSUM,
+  V2_FOUNDATION_NAME,
+  V2_FOUNDATION_SQL,
+  V2_MIGRATION_CHECKSUM,
+  V2_MIGRATION_NAME,
 } from "./schema.js";
 import { withImmediateTransaction } from "./transaction.js";
-
-export type StoreLifecycleErrorCode =
-  | "STORAGE_ALREADY_INITIALIZED"
-  | "STORAGE_CORRUPT"
-  | "STORAGE_FOREIGN_STORE"
-  | "STORAGE_INCOMPATIBLE"
-  | "STORAGE_MIGRATION_CHECKSUM_MISMATCH"
-  | "STORAGE_RESTORE_HOLD"
-  | "STORAGE_SCHEMA_TOO_NEW";
-
-export class StoreLifecycleError extends Error {
-  readonly code: StoreLifecycleErrorCode;
-
-  constructor(code: StoreLifecycleErrorCode, message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = "StoreLifecycleError";
-    this.code = code;
-  }
-}
+import { StoreLifecycleError } from "./errors.js";
+import { assertTrustRootAbsent, createHostSecretFile, validateTrustRoot } from "./trust-root.js";
+export { StoreLifecycleError } from "./errors.js";
+export type { StoreLifecycleErrorCode } from "./errors.js";
 
 export interface InitializeStoreOptions extends StorageConnectionOptions {
   /** Private deterministic test seam; production callers omit this. */
   readonly storeUuid?: () => string;
   /** Private deterministic test seam; production callers omit this. */
   readonly now?: () => string;
+  /** Private deterministic test seam; production callers omit this. Must
+   * return exactly 32 bytes; the bytes are hex-encoded into the host secret
+   * file and never persisted in SQLite. */
+  readonly secretBytes?: () => Uint8Array;
 }
-
 export interface DurableStore {
   readonly database: DatabaseSync;
   readonly storeUuid: string;
@@ -55,7 +48,7 @@ export interface DurableStore {
   close(): void;
 }
 
-interface StoreMetadataRow {
+export interface StoreMetadataRow {
   readonly singleton: number;
   readonly store_uuid: string;
   readonly application_id: string;
@@ -63,7 +56,7 @@ interface StoreMetadataRow {
   readonly created_at: string;
 }
 
-const REQUIRED_TABLES = new Set([
+const V1_REQUIRED_TABLES = new Set([
   "attempt",
   "audit_event",
   "current_claim",
@@ -81,27 +74,44 @@ const REQUIRED_TABLES = new Set([
   "store_metadata",
 ]);
 
+const V2_REQUIRED_TABLES = new Set([
+  ...V1_REQUIRED_TABLES,
+  "delivery_cursor",
+  "exchange_membership",
+  "host_trust_root",
+  "participant",
+  "participant_capability",
+  "participant_fencing_high_water",
+  "participant_ownership",
+  "participant_session",
+]);
+
 // Strict compatibility: compare every persisted schema object, including implicit
 // indexes. Root pages are layout, not schema. SQL is intentionally not normalized:
-// even semantically equivalent unauthorized DDL requires an approved migration.
+// even semantically equivalent unauthorized DDL is incompatible.
 function schemaManifest(db: DatabaseSync): string {
   return JSON.stringify(db.prepare(
     "SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type, name",
   ).all());
 }
 
-let approvedManifest: string | undefined;
-function assertApprovedSchema(db: DatabaseSync): void {
-  if (approvedManifest === undefined) {
-    const reference = new DatabaseSync(":memory:");
-    try {
-      reference.exec(INITIAL_SCHEMA_SQL);
-      approvedManifest = schemaManifest(reference);
-    } finally {
-      reference.close();
-    }
+const approvedManifests: { v1?: string; v2?: string } = {};
+function approvedManifest(version: 1 | 2): string {
+  const cached = approvedManifests[version === 1 ? "v1" : "v2"];
+  if (cached !== undefined) return cached;
+  const reference = new DatabaseSync(":memory:");
+  try {
+    reference.exec(version === 1 ? INITIAL_SCHEMA_SQL : V2_FOUNDATION_SQL);
+    const manifest = schemaManifest(reference);
+    approvedManifests[version === 1 ? "v1" : "v2"] = manifest;
+    return manifest;
+  } finally {
+    reference.close();
   }
-  if (schemaManifest(db) !== approvedManifest) {
+}
+
+function assertApprovedSchema(db: DatabaseSync, version: 1 | 2): void {
+  if (schemaManifest(db) !== approvedManifest(version)) {
     throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", "live schema differs from the approved manifest");
   }
 }
@@ -131,11 +141,13 @@ function handle(db: DatabaseSync, metadata: StoreMetadataRow): DurableStore {
   return {
     database: db,
     storeUuid: metadata.store_uuid,
-    schemaVersion: metadata.schema_version,
+    // The validated live schema version (PRAGMA user_version == ledger maximum),
+    // not the initialization-time store_metadata.schema_version, which stays 1
+    // for migrated stores and is never updated.
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     close: () => db.close(),
   };
 }
-
 function assertIntegrity(db: DatabaseSync): void {
   const rows = db.prepare("PRAGMA integrity_check").all();
   if (
@@ -147,7 +159,57 @@ function assertIntegrity(db: DatabaseSync): void {
   }
 }
 
-function readAndValidateStore(db: DatabaseSync): StoreMetadataRow {
+interface MigrationLedgerRow {
+  readonly version: number;
+  readonly name: string;
+  readonly checksum: string;
+}
+
+export type StoreShapeKind = "v1" | "v2";
+export interface StoreShape {
+  readonly kind: StoreShapeKind;
+  readonly metadata: StoreMetadataRow;
+}
+
+function ledgerMatches(
+  migrations: MigrationLedgerRow[],
+  expected: readonly (readonly [number, string, string])[],
+): boolean {
+  return (
+    migrations.length === expected.length &&
+    expected.every(
+      ([version, name, checksum], index) =>
+        migrations[index]?.version === version &&
+        migrations[index]?.name === name &&
+        migrations[index]?.checksum === checksum,
+    )
+  );
+}
+
+function assertRestoreHoldReleased(db: DatabaseSync): void {
+  const restoreHold = db
+    .prepare("SELECT held FROM restore_hold WHERE singleton = 1")
+    .get() as { held?: unknown } | undefined;
+  if (restoreHold?.held === 1) {
+    throw new StoreLifecycleError(
+      "STORAGE_RESTORE_HOLD",
+      "store is under restore hold and cannot be opened writable",
+    );
+  }
+  if (restoreHold?.held !== 0) {
+    throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", "store restore-hold state is invalid");
+  }
+}
+
+/** Classifies a store into exactly one approved shape. Recognition of a
+ * pristine v1 store (STORAGE_MIGRATION_REQUIRED on normal open) is separated
+ * from drift (STORAGE_INCOMPATIBLE), tamper (STORAGE_MIGRATION_CHECKSUM_MISMATCH),
+ * and newer versions (STORAGE_SCHEMA_TOO_NEW). `store_metadata.schema_version`
+ * is the schema version at initialization (1 for migrated stores, 2 for fresh
+ * v2 stores); it is never updated, and the v1 immutability trigger keeps it
+ * that way. The live version is `PRAGMA user_version`, which must equal the
+ * ledger's highest entry. */
+export function classifyStoreShape(db: DatabaseSync): StoreShape {
   assertIntegrity(db);
 
   const sqliteApplicationId = firstColumn(db, "PRAGMA application_id");
@@ -171,7 +233,7 @@ function readAndValidateStore(db: DatabaseSync): StoreMetadataRow {
       .all()
       .map((row) => String(row.name)),
   );
-  for (const table of REQUIRED_TABLES) {
+  for (const table of V1_REQUIRED_TABLES) {
     if (!tables.has(table)) {
       throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", `required private table ${table} is missing`);
     }
@@ -192,10 +254,35 @@ function readAndValidateStore(db: DatabaseSync): StoreMetadataRow {
       `store metadata schema ${metadata.schema_version} is newer than supported schema ${CURRENT_SCHEMA_VERSION}`,
     );
   }
+
+  const migrations = db
+    .prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version")
+    .all() as unknown as MigrationLedgerRow[];
+
+  const shapeVersion = ledgerMatches(migrations, [[1, INITIAL_MIGRATION_NAME, INITIAL_MIGRATION_CHECKSUM]])
+    ? 1
+    : ledgerMatches(migrations, [
+        [1, INITIAL_MIGRATION_NAME, INITIAL_MIGRATION_CHECKSUM],
+        [2, V2_MIGRATION_NAME, V2_MIGRATION_CHECKSUM],
+      ]) || ledgerMatches(migrations, [[2, V2_FOUNDATION_NAME, V2_FOUNDATION_CHECKSUM]])
+      ? 2
+      : undefined;
+  if (shapeVersion === undefined) {
+    throw new StoreLifecycleError(
+      "STORAGE_MIGRATION_CHECKSUM_MISMATCH",
+      "store migration ledger does not match the approved schema",
+    );
+  }
+
+  // Version coherence: the initialization-time metadata version is 1 exactly
+  // when the store began at v1 (whether or not it was migrated since), and 2
+  // exactly when it was initialized at v2.
+  const expectedMetadataVersion = ledgerMatches(migrations, [[2, V2_FOUNDATION_NAME, V2_FOUNDATION_CHECKSUM]])
+    ? 2
+    : 1;
   if (
-    metadata.schema_version !== CURRENT_SCHEMA_VERSION ||
-    sqliteSchemaVersion !== CURRENT_SCHEMA_VERSION ||
-    metadata.schema_version !== sqliteSchemaVersion
+    metadata.schema_version !== expectedMetadataVersion ||
+    sqliteSchemaVersion !== shapeVersion
   ) {
     throw new StoreLifecycleError(
       "STORAGE_INCOMPATIBLE",
@@ -203,37 +290,30 @@ function readAndValidateStore(db: DatabaseSync): StoreMetadataRow {
     );
   }
 
-  const migrations = db
-    .prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version")
-    .all();
-  if (
-    migrations.length !== 1 ||
-    migrations[0]?.version !== CURRENT_SCHEMA_VERSION ||
-    migrations[0]?.name !== INITIAL_MIGRATION_NAME ||
-    migrations[0]?.checksum !== INITIAL_MIGRATION_CHECKSUM
-  ) {
+  const requiredTables = shapeVersion === 1 ? V1_REQUIRED_TABLES : V2_REQUIRED_TABLES;
+  for (const table of requiredTables) {
+    if (!tables.has(table)) {
+      throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", `required private table ${table} is missing`);
+    }
+  }
+  assertApprovedSchema(db, shapeVersion);
+  assertRestoreHoldReleased(db);
+  return { kind: shapeVersion === 1 ? "v1" : "v2", metadata };
+}
+
+/** Normal-open validation: a recognized v1 store is refused with a typed
+ * migration-required result (migration is never implicit); a v2 store must
+ * additionally pass host trust-root validation on every open. */
+function readAndValidateStore(db: DatabaseSync, databasePath: string): StoreMetadataRow {
+  const shape = classifyStoreShape(db);
+  if (shape.kind === "v1") {
     throw new StoreLifecycleError(
-      "STORAGE_MIGRATION_CHECKSUM_MISMATCH",
-      "store migration ledger does not match the approved schema",
+      "STORAGE_MIGRATION_REQUIRED",
+      "store schema v1 requires the explicit approved migration to v2",
     );
   }
-
-  assertApprovedSchema(db);
-
-  const restoreHold = db
-    .prepare("SELECT held FROM restore_hold WHERE singleton = 1")
-    .get() as { held?: unknown } | undefined;
-  if (restoreHold?.held === 1) {
-    throw new StoreLifecycleError(
-      "STORAGE_RESTORE_HOLD",
-      "store is under restore hold and cannot be opened writable",
-    );
-  }
-  if (restoreHold?.held !== 0) {
-    throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", "store restore-hold state is invalid");
-  }
-
-  return metadata;
+  validateTrustRoot(databasePath, db);
+  return shape.metadata;
 }
 
 export function initializeStore(options: InitializeStoreOptions): DurableStore {
@@ -246,6 +326,9 @@ export function initializeStore(options: InitializeStoreOptions): DurableStore {
     );
   }
 
+  // Refuse ambiguous preexisting secrets before creating any artifact (B3-P1A).
+  assertTrustRootAbsent(databasePath);
+
   const storeUuid = (options.storeUuid ?? randomUUID)();
   if (!isStoreUuid(storeUuid)) {
     throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", "store UUID generator returned an invalid UUID");
@@ -253,9 +336,15 @@ export function initializeStore(options: InitializeStoreOptions): DurableStore {
   const appliedAt = (options.now ?? (() => new Date().toISOString()))();
   const db = openStorageConnection(options, undefined, true);
 
+  // Host Trust Root bootstrap (B3-P1A): the secret file is created before the
+  // schema transaction. A crash between the two leaves DB file plus orphan
+  // secret; the next attempt refuses at STORAGE_ALREADY_INITIALIZED or at the
+  // pre-creation absence check — operator review, never automatic cleanup.
+  const secretDigest = createHostSecretFile(databasePath, options.secretBytes);
+
   try {
     withImmediateTransaction(db, (tx) => {
-      tx.exec(INITIAL_SCHEMA_SQL);
+      tx.exec(V2_FOUNDATION_SQL);
       tx.prepare(
         "INSERT INTO store_metadata(singleton, store_uuid, application_id, schema_version, created_at) VALUES (1, ?, ?, ?, ?)",
       ).run(storeUuid, APPLICATION_ID, CURRENT_SCHEMA_VERSION, appliedAt);
@@ -263,16 +352,19 @@ export function initializeStore(options: InitializeStoreOptions): DurableStore {
         "INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
       ).run(
         CURRENT_SCHEMA_VERSION,
-        INITIAL_MIGRATION_NAME,
-        INITIAL_MIGRATION_CHECKSUM,
+        V2_FOUNDATION_NAME,
+        V2_FOUNDATION_CHECKSUM,
         appliedAt,
       );
       tx.prepare("INSERT INTO restore_hold(singleton, held) VALUES (1, 0)").run();
+      tx.prepare(
+        "INSERT INTO host_trust_root(generation, secret_digest, created_at, private_revision) VALUES (1, ?, ?, 1)",
+      ).run(secretDigest, appliedAt);
       tx.exec(
         `PRAGMA application_id=${SQLITE_APPLICATION_ID}; PRAGMA user_version=${CURRENT_SCHEMA_VERSION};`,
       );
     });
-    return handle(db, readAndValidateStore(db));
+    return handle(db, readAndValidateStore(db, databasePath));
   } catch (error) {
     return closeAfterFailure(
       db,
@@ -287,7 +379,7 @@ export function initializeStore(options: InitializeStoreOptions): DurableStore {
 // a disposable DB+WAL snapshot instead; never let SQLite open the rejected source.
 // Concurrent copying is not an atomic backup: corruption fails closed, and the
 // selected original is revalidated before writer setup and before handle return.
-function preflightStore(databasePath: string): StoreMetadataRow {
+function withStoreSnapshot<T>(databasePath: string, validate: (reader: DatabaseSync) => T): T {
   if (pathStat(`${databasePath}-journal`) !== undefined) {
     throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", "rollback-journal recovery requires operator review");
   }
@@ -301,7 +393,7 @@ function preflightStore(databasePath: string): StoreMetadataRow {
     }
     reader = withRestrictiveUmask(() => new DatabaseSync(snapshot, { readOnly: true, defensive: true }));
     reader.exec("PRAGMA trusted_schema=OFF; BEGIN;");
-    return readAndValidateStore(reader);
+    return validate(reader);
   } catch (error) {
     if (error instanceof StoreLifecycleError) throw error;
     throw new StoreLifecycleError("STORAGE_CORRUPT", "read-only store preflight failed", { cause: error });
@@ -309,6 +401,17 @@ function preflightStore(databasePath: string): StoreMetadataRow {
     reader?.close();
     rmSync(directory, { recursive: true, force: true });
   }
+}
+
+function preflightStore(databasePath: string): StoreMetadataRow {
+  return withStoreSnapshot(databasePath, (reader) => readAndValidateStore(reader, databasePath));
+}
+
+/** Shape-only preflight for the explicit migration and trust-root recovery
+ * entry points: classifies the store without demanding migration or a valid
+ * trust root, since those are exactly the states those operations address. */
+export function preflightStoreShape(databasePath: string): StoreShape {
+  return withStoreSnapshot(databasePath, (reader) => classifyStoreShape(reader));
 }
 
 export function openStore(options: StorageConnectionOptions): DurableStore {
@@ -320,7 +423,7 @@ export function openStore(options: StorageConnectionOptions): DurableStore {
 
   const preflight = preflightStore(databasePath);
   const validateWriter = (writer: DatabaseSync): StoreMetadataRow => {
-    const metadata = readAndValidateStore(writer);
+    const metadata = readAndValidateStore(writer, databasePath);
     if (metadata.store_uuid !== preflight.store_uuid) {
       throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", "store identity changed since preflight");
     }

@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 
 export const APPLICATION_ID = "@zieglar/pi-chat-exchange";
 export const SQLITE_APPLICATION_ID = 0x50434558; // "PCEX"
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 export const INITIAL_MIGRATION_NAME = "durable-storage-foundation";
+export const V2_MIGRATION_NAME = "b3-communication-lifecycle-migration";
+export const V2_FOUNDATION_NAME = "b3-communication-lifecycle-foundation";
 
 const REVISION = "private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1)";
 
@@ -228,4 +230,111 @@ BEFORE DELETE ON audit_event BEGIN SELECT RAISE(ABORT, 'audit event is immutable
 
 export const INITIAL_MIGRATION_CHECKSUM = createHash("sha256")
   .update(INITIAL_SCHEMA_SQL, "utf8")
+  .digest("hex");
+
+/**
+ * B3 additive schema-v2 surface (CE-0002-B3-P1A). Every v1 table, trigger,
+ * index, and row is preserved byte-identically; v2 only appends new objects.
+ * `store_metadata` and the v1 ledger row are never UPDATEd or DELETEd: the
+ * accepted v1 immutability triggers make that impossible, and the explicit
+ * migration relies on them. The ownership/fencing/cursor tables are inert
+ * schema in P1A — no code path reads or writes them before B3-P2/P3.
+ */
+export const V2_ADDITIVE_SQL = `
+CREATE TABLE participant (
+  participant_id TEXT PRIMARY KEY,
+  endpoint_adapter TEXT NOT NULL,
+  endpoint_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  ${REVISION},
+  UNIQUE (endpoint_adapter, endpoint_id)
+) STRICT;
+
+CREATE TABLE participant_capability (
+  capability_digest TEXT PRIMARY KEY CHECK (length(capability_digest) = 64),
+  participant_id TEXT NOT NULL REFERENCES participant(participant_id) ON DELETE RESTRICT,
+  scope TEXT NOT NULL CHECK (scope IN ('create', 'bind', 'join', 'attach', 'resume', 'takeover', 'send', 'ack', 'read')),
+  trust_generation INTEGER NOT NULL CHECK (trust_generation >= 1),
+  created_at TEXT NOT NULL,
+  expires_at TEXT,
+  revoked_at TEXT,
+  ${REVISION}
+) STRICT;
+
+CREATE TABLE participant_session (
+  participant_id TEXT NOT NULL REFERENCES participant(participant_id) ON DELETE RESTRICT,
+  session_id TEXT NOT NULL,
+  bound_at TEXT NOT NULL,
+  detached_at TEXT,
+  ${REVISION},
+  PRIMARY KEY (participant_id, session_id)
+) STRICT;
+
+CREATE TABLE exchange_membership (
+  exchange_id TEXT NOT NULL REFERENCES exchange(exchange_id) ON DELETE RESTRICT,
+  participant_id TEXT NOT NULL REFERENCES participant(participant_id) ON DELETE RESTRICT,
+  join_boundary_seq INTEGER NOT NULL CHECK (join_boundary_seq >= 1),
+  created_at TEXT NOT NULL,
+  ${REVISION},
+  PRIMARY KEY (exchange_id, participant_id)
+) STRICT;
+
+CREATE TABLE participant_ownership (
+  participant_id TEXT PRIMARY KEY REFERENCES participant(participant_id) ON DELETE RESTRICT,
+  session_id TEXT NOT NULL,
+  fencing_token INTEGER NOT NULL CHECK (fencing_token >= 1),
+  expires_at TEXT NOT NULL,
+  ${REVISION}
+) STRICT;
+
+CREATE TABLE participant_fencing_high_water (
+  participant_id TEXT PRIMARY KEY REFERENCES participant(participant_id) ON DELETE RESTRICT,
+  fencing_token INTEGER NOT NULL CHECK (fencing_token >= 1),
+  ${REVISION}
+) STRICT;
+
+CREATE TABLE delivery_cursor (
+  exchange_id TEXT NOT NULL REFERENCES exchange(exchange_id) ON DELETE RESTRICT,
+  participant_id TEXT NOT NULL REFERENCES participant(participant_id) ON DELETE RESTRICT,
+  acked_audit_seq INTEGER NOT NULL CHECK (acked_audit_seq >= 0),
+  ${REVISION},
+  PRIMARY KEY (exchange_id, participant_id)
+) STRICT;
+
+CREATE TABLE host_trust_root (
+  generation INTEGER PRIMARY KEY CHECK (generation >= 1),
+  secret_digest TEXT NOT NULL CHECK (length(secret_digest) = 64),
+  created_at TEXT NOT NULL,
+  ${REVISION}
+) STRICT;
+
+CREATE TRIGGER participant_identity_immutable
+BEFORE UPDATE OF participant_id, endpoint_adapter, endpoint_id ON participant
+WHEN NEW.participant_id IS NOT OLD.participant_id
+  OR NEW.endpoint_adapter IS NOT OLD.endpoint_adapter
+  OR NEW.endpoint_id IS NOT OLD.endpoint_id
+BEGIN SELECT RAISE(ABORT, 'participant identity and binding are immutable'); END;
+
+CREATE TRIGGER exchange_membership_immutable
+BEFORE UPDATE ON exchange_membership BEGIN SELECT RAISE(ABORT, 'exchange membership is immutable'); END;
+CREATE TRIGGER exchange_membership_nodelete
+BEFORE DELETE ON exchange_membership BEGIN SELECT RAISE(ABORT, 'exchange membership is immutable'); END;
+
+CREATE TRIGGER host_trust_root_immutable
+BEFORE UPDATE ON host_trust_root BEGIN SELECT RAISE(ABORT, 'host trust root is append-only'); END;
+CREATE TRIGGER host_trust_root_nodelete
+BEFORE DELETE ON host_trust_root BEGIN SELECT RAISE(ABORT, 'host trust root is append-only'); END;
+`;
+
+export const V2_MIGRATION_CHECKSUM = createHash("sha256")
+  .update(V2_ADDITIVE_SQL, "utf8")
+  .digest("hex");
+
+/** A fresh v2 initialization applies exactly the v1 schema plus the additive
+ * v2 surface, so migrated and freshly initialized stores converge to one
+ * byte-identical schema manifest. */
+export const V2_FOUNDATION_SQL = INITIAL_SCHEMA_SQL + V2_ADDITIVE_SQL;
+
+export const V2_FOUNDATION_CHECKSUM = createHash("sha256")
+  .update(V2_FOUNDATION_SQL, "utf8")
   .digest("hex");

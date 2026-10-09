@@ -6,7 +6,8 @@ import { openStorageConnection } from "../../src/storage/connection.js";
 import {
   APPLICATION_ID,
   CURRENT_SCHEMA_VERSION,
-  INITIAL_MIGRATION_CHECKSUM,
+  V2_FOUNDATION_CHECKSUM,
+  V2_FOUNDATION_NAME,
   SQLITE_APPLICATION_ID,
 } from "../../src/storage/schema.js";
 import {
@@ -58,8 +59,8 @@ describe("private durable store schema and lifecycle", () => {
         application_id: APPLICATION_ID,
         schema_version: CURRENT_SCHEMA_VERSION,
       });
-      expect(store.database.prepare("SELECT version, checksum FROM schema_migrations").all()).toEqual([
-        { version: CURRENT_SCHEMA_VERSION, checksum: INITIAL_MIGRATION_CHECKSUM },
+      expect(store.database.prepare("SELECT version, name, checksum FROM schema_migrations").all()).toEqual([
+        { version: CURRENT_SCHEMA_VERSION, name: V2_FOUNDATION_NAME, checksum: V2_FOUNDATION_CHECKSUM },
       ]);
     } finally {
       store.close();
@@ -73,13 +74,21 @@ describe("private durable store schema and lifecycle", () => {
         "attempt",
         "audit_event",
         "current_claim",
+        "delivery_cursor",
         "disposition",
         "evidence_application",
         "evidence_envelope",
         "exchange",
+        "exchange_membership",
         "fencing_high_water",
+        "host_trust_root",
         "idempotency_record",
         "message",
+        "participant",
+        "participant_capability",
+        "participant_fencing_high_water",
+        "participant_ownership",
+        "participant_session",
         "reconciliation",
         "restore_hold",
         "result",

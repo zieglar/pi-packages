@@ -517,11 +517,12 @@ it("keeps recovery validation test-only with no production recovery API", () => 
 
 /** S5-2: exact lstat-level inventory of the database directory. The main
  * database must be a regular file; optional WAL/SHM are accepted as regular
- * files; rollback journals, symlinks, unknown artifacts and test markers in
+ * files; the B3-P1A host-secret trust-root artifact is accepted as a regular
+ * file; rollback journals, symlinks, unknown artifacts and test markers in
  * the database directory are infrastructure failures. */
 function dbArtifacts(active: Scenario) {
   return Object.fromEntries(readdirSync(active.directory).sort().map((name) => {
-    if (!/^store\.sqlite(-wal|-shm)?$/.test(name)) infrastructure("RECOVERY_UNEXPECTED_DB_ARTIFACT");
+    if (!/^(store\.sqlite(-wal|-shm)?|host-secret)$/.test(name)) infrastructure("RECOVERY_UNEXPECTED_DB_ARTIFACT");
     const stats = lstatSync(join(active.directory, name));
     if (stats.isSymbolicLink() || !stats.isFile()) infrastructure("RECOVERY_UNEXPECTED_DB_ARTIFACT");
     return [name, { file: true }];
