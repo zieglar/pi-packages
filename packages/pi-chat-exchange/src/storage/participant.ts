@@ -6,10 +6,10 @@ import {
   classifyCapability,
   currentGenerationInTransaction,
   generateCapability,
-  isP1CapabilityScope,
+  isOperationalCapabilityScope,
   type CapabilityStatus,
   type ReadableHandle,
-  type P1CapabilityScope,
+  type OperationalCapabilityScope,
 } from "./capability.js";
 import { StoreLifecycleError } from "./errors.js";
 import {
@@ -39,8 +39,10 @@ import { deriveCapabilityDigest, digestsMatch, readHostSecretDigest } from "./tr
  *
  * This is the private identity/membership plane only. It deliberately contains
  * no runtime ownership, no leases or fencing, no delivery, no cursors or ACKs,
- * and no adapter wiring: those remain unauthorized B3-P2/P3 scope. The
- * ownership, fencing, and cursor tables stay inert.
+ * and no adapter wiring. Session binding, ownership, leases, and fencing live
+ * in the private B3-P2A plane (`ownership.ts`), which reuses this module's
+ * owned-transaction wrapper and authorization; delivery and cursors remain
+ * unauthorized B3-P3 scope and the cursor table stays inert.
  *
  * Every durable mutation runs inside the accepted `withImmediateTransaction`
  * primitive, so BUSY / ROLLED_BACK / INDETERMINATE classification, connection
@@ -63,7 +65,18 @@ type ParticipantDomainCode =
   | "PARTICIPANT_ENDPOINT_CONFLICT"
   | "PARTICIPANT_BINDING_MISMATCH"
   | "STORAGE_EXCHANGE_NOT_FOUND"
-  | "EXCHANGE_JOIN_REJECTED";
+  | "EXCHANGE_JOIN_REJECTED"
+  // CE-0002-B3-P2A Session binding, ownership, lease, and fencing refusals.
+  | "SESSION_ALREADY_BOUND"
+  | "SESSION_BOUND_TO_OTHER_PARTICIPANT"
+  | "SESSION_NOT_BOUND"
+  | "OWNERSHIP_HELD"
+  | "OWNERSHIP_NOT_CURRENT"
+  | "FENCING_STALE"
+  | "FENCING_EXHAUSTED"
+  | "LEASE_EXPIRED"
+  | "LEASE_CLOCK_REGRESSION"
+  | "STORAGE_OWNERSHIP_CORRUPT";
 
 /** Fixed sanitized details: never a capability, digest, secret, SQL message,
  * stored value, or filesystem path. `CAPABILITY_REJECTED` is deliberately one
@@ -79,6 +92,16 @@ const DOMAIN_DETAIL: Record<ParticipantDomainCode, string> = {
   PARTICIPANT_BINDING_MISMATCH: "Participant endpoint binding is immutable and does not match",
   STORAGE_EXCHANGE_NOT_FOUND: "operation requires an existing durable Exchange",
   EXCHANGE_JOIN_REJECTED: "the Exchange is not open for new membership",
+  SESSION_ALREADY_BOUND: "the Session is already bound to this Participant",
+  SESSION_BOUND_TO_OTHER_PARTICIPANT: "the Session is bound to another Participant",
+  SESSION_NOT_BOUND: "operation requires a currently bound Session",
+  OWNERSHIP_HELD: "the Participant already has a current Owner",
+  OWNERSHIP_NOT_CURRENT: "the Session is not the current Owner of the Participant",
+  FENCING_STALE: "the presented fencing token is not current",
+  FENCING_EXHAUSTED: "the Participant fencing token space is exhausted; operator review required",
+  LEASE_EXPIRED: "the ownership lease has expired",
+  LEASE_CLOCK_REGRESSION: "the operation clock precedes the current lease term",
+  STORAGE_OWNERSHIP_CORRUPT: "stored ownership state is inconsistent; operator review required",
 };
 
 export class ParticipantDomainError extends Error {
@@ -93,7 +116,8 @@ export class ParticipantDomainError extends Error {
   }
 }
 
-function refuse(code: ParticipantDomainCode): never {
+/** @internal Shared with the private B3-P2A ownership plane (`ownership.ts`). */
+export function refuse(code: ParticipantDomainCode): never {
   throw new ParticipantDomainError(code);
 }
 
@@ -104,7 +128,7 @@ function corrupt(): never {
 /** Private synchronous fault boundaries, matching the accepted B2 seam
  * discipline: hooks receive no capabilities or values, and a caller-thrown
  * value is never inspected or retained. */
-function hook(action: (() => void) | undefined): void {
+export function hook(action: (() => void) | undefined): void {
   if (action === undefined) return;
   try {
     if (action() === undefined) return;
@@ -114,11 +138,12 @@ function hook(action: (() => void) | undefined): void {
   throw new Error("private participant hook failed or returned a non-undefined value");
 }
 
-interface ClockSeam {
+export interface ClockSeam {
   readonly now?: () => string;
 }
 
-function clock(seams: ClockSeam): string {
+/** @internal Shared with the private B3-P2A ownership plane. */
+export function clock(seams: ClockSeam): string {
   const value = (seams.now ?? (() => new Date().toISOString()))();
   return requireInstant(value, "now");
 }
@@ -129,7 +154,8 @@ function clock(seams: ClockSeam): string {
  * INDETERMINATE always wins; SQLite text, hook failures, and arbitrary thrown
  * values are never retained or published.
  */
-function runOwned<T>(store: DurableStore, label: string, body: (tx: TransactionHandle) => T): T {
+/** @internal Shared with the private B3-P2A ownership plane. */
+export function runOwned<T>(store: DurableStore, label: string, body: (tx: TransactionHandle) => T): T {
   let captured: { value: T } | undefined;
   let domainFailure: ParticipantDomainError | ConditionalMutationError | StoreLifecycleError | undefined;
   try {
@@ -208,7 +234,8 @@ const PARTICIPANT_BY_ENDPOINT =
 const MEMBERSHIP_BY_KEY =
   "SELECT exchange_id, participant_id, join_boundary_seq, created_at FROM exchange_membership WHERE exchange_id = ? AND participant_id = ?";
 
-function readParticipantRow(handle: ReadableHandle, participantId: string): ParticipantRecord | undefined {
+/** @internal Shared with the private B3-P2A ownership plane. */
+export function readParticipantRow(handle: ReadableHandle, participantId: string): ParticipantRecord | undefined {
   const statement = handle.prepare(PARTICIPANT_BY_ID) as { get(value: string): unknown };
   return participantFromRow(statement.get(participantId) as Record<string, unknown> | undefined);
 }
@@ -295,7 +322,7 @@ export function readCapabilityStatus(
   const fields = captureFields(input, ["capability", "participantId", "scope"], ["capability", "participantId", "scope"], "request");
   const participantId = requireParticipantId(fields.participantId, "participantId");
   const scope = requireText(fields.scope, "scope", 32);
-  if (!isP1CapabilityScope(scope)) return "SCOPE_MISMATCH";
+  if (!isOperationalCapabilityScope(scope)) return "SCOPE_MISMATCH";
   return classifyCapability(store.database, store.databasePath, {
     capability: fields.capability,
     participantId,
@@ -310,10 +337,12 @@ function requireExchangeId(value: unknown, path: string): string {
   return text;
 }
 
-function authorize(
+/** @internal Shared with the private B3-P2A ownership plane. Must run inside
+ * the owned transaction of the mutation it authorizes. */
+export function authorize(
   tx: TransactionHandle,
   store: DurableStore,
-  presentation: { capability: unknown; participantId: string; scope: P1CapabilityScope; now: string },
+  presentation: { capability: unknown; participantId: string; scope: OperationalCapabilityScope; now: string },
 ): void {
   if (classifyCapability(tx, store.databasePath, presentation) !== "VALID") {
     refuse("CAPABILITY_REJECTED");
@@ -604,7 +633,7 @@ export interface IssuedCapability {
    * only its host-keyed digest is persisted. */
   readonly capability: string;
   readonly participantId: string;
-  readonly scope: P1CapabilityScope;
+  readonly scope: OperationalCapabilityScope;
   readonly trustGeneration: number;
   readonly createdAt: string;
   readonly expiresAt?: string;
@@ -640,7 +669,7 @@ export function issueCapability(
   const expiresAt = Object.hasOwn(fields, "expiresAt") ? requireInstant(fields.expiresAt, "expiresAt") : undefined;
   const createdAt = clock(seams);
   const afterCapabilityInsert = seams.afterCapabilityInsert;
-  if (!isP1CapabilityScope(scope)) refuse("CAPABILITY_SCOPE_UNSUPPORTED");
+  if (!isOperationalCapabilityScope(scope)) refuse("CAPABILITY_SCOPE_UNSUPPORTED");
   const capability = generateCapability(seams.tokenBytes);
 
   return runOwned(store, "Capability issuance", (tx) => {
@@ -683,7 +712,7 @@ export function issueCapability(
 
 export interface RevokedCapability {
   readonly participantId: string;
-  readonly scope: P1CapabilityScope;
+  readonly scope: OperationalCapabilityScope;
   readonly revokedAt: string;
 }
 
@@ -700,7 +729,7 @@ export function revokeCapability(store: DurableStore, input: unknown, seams: Clo
   const scope = requireText(fields.scope, "scope", 32);
   const capability = fields.capability;
   const revokedAt = clock(seams);
-  if (!isP1CapabilityScope(scope)) refuse("CAPABILITY_SCOPE_UNSUPPORTED");
+  if (!isOperationalCapabilityScope(scope)) refuse("CAPABILITY_SCOPE_UNSUPPORTED");
 
   return runOwned(store, "Capability revocation", (tx) => {
     if (classifyCapability(tx, store.databasePath, { capability, participantId, scope, now: revokedAt }) !== "VALID") {

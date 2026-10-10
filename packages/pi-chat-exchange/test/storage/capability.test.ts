@@ -97,7 +97,7 @@ describe("Host Capability issuance (B3-P1B)", () => {
     expect(rowCounts(active).capability).toBe("3");
   });
 
-  it("refuses issuance for an unknown Participant and for non-P1 scopes", () => {
+  it("refuses issuance for an unknown Participant and for non-operational scopes", () => {
     const active = fixture();
     const created = participant(active, "endpoint-1").participant;
 
@@ -106,8 +106,9 @@ describe("Host Capability issuance (B3-P1B)", () => {
       "PARTICIPANT_NOT_FOUND",
     );
     // The complete scope vocabulary stays defined in the accepted schema, but
-    // only create/bind/join are operational in P1B.
-    for (const scope of ["attach", "resume", "takeover", "send", "ack", "read"]) {
+    // only create/bind/join (P1B) and attach/resume (CE-0002-B3-P2A) are
+    // operational; takeover stays inactive.
+    for (const scope of ["takeover", "send", "ack", "read"]) {
       expectRefusal(
         () => issueCapability(active.store, { participantId: created.participantId, scope }, { now: () => NOW }),
         "CAPABILITY_SCOPE_UNSUPPORTED",

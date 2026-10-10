@@ -28,7 +28,9 @@ export interface ReadableHandle {
  * - an operator trust-root recovery invalidates every outstanding token twice
  *   over: by revocation (P1A) and by generation binding.
  *
- * Only the P1 scopes are operational in P1B. The remaining scopes exist in the
+ * Only the operational scopes are accepted: the P1 scopes (create, bind,
+ * join) and, since CE-0002-B3-P2A, the Session-ownership scopes attach and
+ * resume. The remaining scopes (takeover, send, ack, read) exist in the
  * accepted schema vocabulary for later phases and are refused here.
  *
  * Verification always happens inside the caller's owned transaction, against
@@ -42,6 +44,18 @@ export type P1CapabilityScope = (typeof P1_CAPABILITY_SCOPES)[number];
 
 export function isP1CapabilityScope(value: unknown): value is P1CapabilityScope {
   return typeof value === "string" && (P1_CAPABILITY_SCOPES as readonly string[]).includes(value);
+}
+
+/** CE-0002-B3-P2A: Session binding/acquisition (`attach`) and owner
+ * renewal/release/verification (`resume`). `takeover` stays inactive. */
+export const P2A_CAPABILITY_SCOPES = ["attach", "resume"] as const;
+export type P2ACapabilityScope = (typeof P2A_CAPABILITY_SCOPES)[number];
+
+export const OPERATIONAL_CAPABILITY_SCOPES = [...P1_CAPABILITY_SCOPES, ...P2A_CAPABILITY_SCOPES] as const;
+export type OperationalCapabilityScope = (typeof OPERATIONAL_CAPABILITY_SCOPES)[number];
+
+export function isOperationalCapabilityScope(value: unknown): value is OperationalCapabilityScope {
+  return typeof value === "string" && (OPERATIONAL_CAPABILITY_SCOPES as readonly string[]).includes(value);
 }
 
 /** Host-local verification detail for the internal status read only. It is
@@ -136,7 +150,7 @@ function instantOf(value: string): number | undefined {
 export interface CapabilityPresentation {
   readonly capability: unknown;
   readonly participantId: string;
-  readonly scope: P1CapabilityScope;
+  readonly scope: OperationalCapabilityScope;
   /** Evaluation instant for expiry, supplied by the operation's clock. */
   readonly now: string;
 }
@@ -157,7 +171,7 @@ export function classifyCapability(
   presentation: CapabilityPresentation,
 ): CapabilityStatus {
   const token = tokenBody(presentation.capability);
-  if (token === undefined || !isP1CapabilityScope(presentation.scope)) return "MALFORMED";
+  if (token === undefined || !isOperationalCapabilityScope(presentation.scope)) return "MALFORMED";
   const now = instantOf(presentation.now);
   if (now === undefined) return "MALFORMED";
 
