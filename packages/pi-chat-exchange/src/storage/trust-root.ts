@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, constants, fsyncSync, openSync, readFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -84,8 +84,9 @@ export function createHostSecretFile(
 }
 
 /** Reads the current host secret through the full artifact policy and returns
- * its digest, or throws a typed trust-root refusal. */
-export function readHostSecretDigest(databasePath: string): string {
+ * the plaintext hex, or throws a typed trust-root refusal. The plaintext never
+ * leaves this module: only digests derived from it are returned to callers. */
+function readValidatedHostSecretHex(databasePath: string): string {
   const path = hostSecretPath(databasePath);
   const stat = pathStat(path);
   if (stat === undefined) {
@@ -125,7 +126,58 @@ export function readHostSecretDigest(databasePath: string): string {
   if (!HOST_SECRET_HEX_PATTERN.test(secretHex)) {
     throw new StoreLifecycleError("STORAGE_TRUST_ROOT_INSECURE", "the host secret has an invalid encoding");
   }
-  return hostSecretDigest(secretHex);
+  return secretHex;
+}
+
+/** Reads the current host secret through the full artifact policy and returns
+ * its SHA-256 fingerprint, or throws a typed trust-root refusal. */
+export function readHostSecretDigest(databasePath: string): string {
+  return hostSecretDigest(readValidatedHostSecretHex(databasePath));
+}
+
+/** Capability digest derivation (CE-0002-B3-P1B).
+ *
+ * A Host Capability is a 256-bit random bearer token. Only an HMAC-SHA256
+ * digest keyed by the host secret is persisted, so the stored digest is
+ * useless without the host trust root: copying `participant_capability` rows
+ * into another store (or keeping them across an operator trust-root recovery)
+ * cannot reproduce a verifying digest. The derivation binds the token to the
+ * trust generation, the Participant, and the exact scope, so a token is never
+ * transferable across generations, Participants, or scopes.
+ *
+ * The plaintext token and the host secret never enter SQLite, results, errors,
+ * or logs. Callers receive only this digest.
+ */
+export function deriveCapabilityDigest(
+  databasePath: string,
+  binding: {
+    readonly generation: number;
+    readonly participantId: string;
+    readonly scope: string;
+    readonly token: string;
+  },
+): string {
+  const secretHex = readValidatedHostSecretHex(databasePath);
+  return createHmac("sha256", secretHex)
+    .update(
+      [
+        "chat-exchange/capability",
+        "v1",
+        String(binding.generation),
+        binding.participantId,
+        binding.scope,
+        binding.token,
+      ].join("\n"),
+      "utf8",
+    )
+    .digest("hex");
+}
+
+/** Constant-time comparison of two equal-length hex digests. Length mismatch
+ * is rejected without comparing, and never reveals which digest was shorter. */
+export function digestsMatch(left: string, right: string): boolean {
+  if (left.length !== right.length) return false;
+  return timingSafeEqual(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
 }
 
 export interface TrustRootRow {

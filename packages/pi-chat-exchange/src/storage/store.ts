@@ -45,6 +45,10 @@ export interface DurableStore {
   readonly database: DatabaseSync;
   readonly storeUuid: string;
   readonly schemaVersion: number;
+  /** Private host-local path of the validated database file. Required by the
+   * B3-P1B capability plane to re-read the host trust root; never part of any
+   * public result, error, or audit surface. */
+  readonly databasePath: string;
   close(): void;
 }
 
@@ -137,7 +141,7 @@ function closeAfterFailure(db: DatabaseSync, error: unknown): never {
   throw error;
 }
 
-function handle(db: DatabaseSync, metadata: StoreMetadataRow): DurableStore {
+function handle(db: DatabaseSync, metadata: StoreMetadataRow, databasePath: string): DurableStore {
   return {
     database: db,
     storeUuid: metadata.store_uuid,
@@ -145,6 +149,7 @@ function handle(db: DatabaseSync, metadata: StoreMetadataRow): DurableStore {
     // not the initialization-time store_metadata.schema_version, which stays 1
     // for migrated stores and is never updated.
     schemaVersion: CURRENT_SCHEMA_VERSION,
+    databasePath,
     close: () => db.close(),
   };
 }
@@ -364,7 +369,7 @@ export function initializeStore(options: InitializeStoreOptions): DurableStore {
         `PRAGMA application_id=${SQLITE_APPLICATION_ID}; PRAGMA user_version=${CURRENT_SCHEMA_VERSION};`,
       );
     });
-    return handle(db, readAndValidateStore(db, databasePath));
+    return handle(db, readAndValidateStore(db, databasePath), databasePath);
   } catch (error) {
     return closeAfterFailure(
       db,
@@ -440,7 +445,7 @@ export function openStore(options: StorageConnectionOptions): DurableStore {
   }
 
   try {
-    return handle(db, validateWriter(db));
+    return handle(db, validateWriter(db), databasePath);
   } catch (error) {
     return closeAfterFailure(
       db,
