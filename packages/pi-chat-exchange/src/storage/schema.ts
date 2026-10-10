@@ -389,6 +389,15 @@ export const V3_FOUNDATION_CHECKSUM = createHash("sha256")
   .update(V3_FOUNDATION_SQL, "utf8")
   .digest("hex");
 
+/** GLOB shape of the accepted canonical UTC instant (the ECMAScript
+ * `toISOString` form). Shape alone proves no calendar validity — and SQLite's
+ * own date parser accepts values JavaScript rejects (hour 24) — so trigger
+ * predicates pair this shape with a `strftime` round trip and an hour < 24
+ * to reach exactly the application parser's notion of canonical.
+ */
+const CANONICAL_INSTANT_GLOB =
+  "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z";
+
 /**
  * B3 additive schema-v4 surface (CE-0002-B3-P2C-A): the irreversible Session
  * lifecycle. Every v1, v2, and v3 object is preserved byte-identically; v4
@@ -410,7 +419,10 @@ export const V3_FOUNDATION_CHECKSUM = createHash("sha256")
  *   `bound_at` never change;
  * - `participant_session_detach_once`: the only permitted UPDATE is the
  *   one-way ATTACHED → DETACHED transition (revision 1 → 2); a detached row
- *   can never revert, be re-detached, or be rewritten;
+ *   can never revert, be re-detached, or be rewritten. The transition also
+ *   requires a canonical UTC `detached_at` — shape, SQLite-parse round
+ *   trip, hour < 24 — no earlier than a canonical `bound_at`, so no
+ *   malformed timestamp can be committed through the detach path;
  * - `participant_session_detach_not_owner`: the current Owner Session cannot
  *   be detached while the ownership row references it;
  * - `participant_ownership_session_attached_insert` /
@@ -419,9 +431,23 @@ export const V3_FOUNDATION_CHECKSUM = createHash("sha256")
  *
  * The triggers only fire on defects or privileged tampering: the storage code
  * performs the equivalent checks first and refuses with typed, zero-write
- * results. They do not protect against an actor able to drop them (the
- * documented `CE-STORAGE-IMMUTABILITY-V2` limitation is unchanged). P2C-A
- * defines no detach operation; it only makes the lifecycle structurally safe.
+ * results.
+ *
+ * Validation boundary (CE-0002-B3-P2C-A-R1): SQLite enforces, on the detach
+ * UPDATE path only, that `detached_at` is a canonical UTC instant (GLOB
+ * shape, `strftime` parse round trip, hour < 24) no earlier than a canonical
+ * `bound_at`; the ordering comparison is safe because canonical instants of
+ * fixed width compare chronologically as text. The insert trigger enforces
+ * only born-ATTACHED, so a privileged writer can still insert a malformed
+ * `bound_at` — the application parser (`session-state.ts`) refuses such a
+ * row on every read, and the detach path refuses it fail-closed. The
+ * triggers protect only while they exist and run: a connection with
+ * `recursive_triggers` disabled bypasses the delete trigger through
+ * conflict-resolution (REPLACE) deletes, and an actor with unrestricted
+ * database write access can drop them outright — no protection is claimed
+ * against that (the documented `CE-STORAGE-IMMUTABILITY-V2` limitation is
+ * unchanged). P2C-A defines no detach operation; it only makes the lifecycle
+ * structurally safe.
  */
 export const V4_ADDITIVE_SQL = `
 CREATE TRIGGER participant_session_insert_attached
@@ -442,7 +468,14 @@ BEGIN SELECT RAISE(ABORT, 'Session binding identity is immutable'); END;
 CREATE TRIGGER participant_session_detach_once
 BEFORE UPDATE ON participant_session
 WHEN NOT (OLD.detached_at IS NULL AND OLD.private_revision IS 1
-  AND NEW.detached_at IS NOT NULL AND NEW.private_revision IS 2)
+  AND NEW.detached_at IS NOT NULL AND NEW.private_revision IS 2
+  AND NEW.detached_at GLOB '${CANONICAL_INSTANT_GLOB}'
+  AND NEW.detached_at IS strftime('%Y-%m-%dT%H:%M:%fZ', NEW.detached_at)
+  AND substr(NEW.detached_at, 12, 2) < '24'
+  AND OLD.bound_at GLOB '${CANONICAL_INSTANT_GLOB}'
+  AND OLD.bound_at IS strftime('%Y-%m-%dT%H:%M:%fZ', OLD.bound_at)
+  AND substr(OLD.bound_at, 12, 2) < '24'
+  AND NEW.detached_at >= OLD.bound_at)
 BEGIN SELECT RAISE(ABORT, 'Session detach is one-way and irreversible'); END;
 
 CREATE TRIGGER participant_session_detach_not_owner

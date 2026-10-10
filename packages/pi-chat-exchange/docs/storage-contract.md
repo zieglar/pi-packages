@@ -695,7 +695,11 @@ that authorize nothing, and the accepted B2 contract is unchanged.
 Migration/recovery/initialization `appliedAt` ledger timestamps likewise
 authorize nothing and are unchanged. Regression pins:
 `test/storage/lease-lock-wait.test.ts` (real OS processes, real writer-lock
-contention, observable initiation, deadline waits).
+contention, observable initiation, deadline waits). Worker initiation
+markers are published atomically (CE-0002-B3-P2C-A-R1): the complete
+marker is staged beside its final path and renamed into place, so a
+parent can never read a partially written marker; the scenarios and
+timing assertions are unchanged.
 
 ### Atomic replacement and fencing transition
 
@@ -783,6 +787,41 @@ tampering (code checks refuse first, typed and zero-write); an actor able to
 drop them is outside the protection claim (`CE-STORAGE-IMMUTABILITY-V2`
 unchanged).
 
+
+### Timestamp validation boundary (CE-0002-B3-P2C-A-R1)
+
+The detach transition is the only write path that can set `detached_at`,
+and schema v4 enforces the accepted canonical representation on it, not
+only the one-way revision transition:
+
+- **SQLite enforces**, on the `participant_session_detach_once` UPDATE path
+  only: `detached_at` is a canonical UTC instant — GLOB shape
+  (`YYYY-MM-DDTHH:MM:SS.mmmZ`), a `strftime` parse round trip (so month 13,
+  February 30, non-leap February 29, day 00, minute 60, and leap seconds
+  are refused rather than silently normalized), and hour < 24 (SQLite's own
+  date parser accepts `24:00:00`; the accepted representation does not) —
+  and `bound_at` is canonical too, with `detached_at >= bound_at` compared
+  as text (safe: fixed-width canonical UTC instants order chronologically
+  as text). NULL and the empty string are refused, and a STRICT TEXT column
+  cannot hold BLOB, so no wrong storage class can reach the predicate as
+  anything but non-matching text.
+- **The application parser enforces** (`session-state.ts`): the same
+  canonicality on every row read — shape, `Date.parse` finiteness, and an
+  `toISOString` round trip for `bound_at` and `detached_at` — plus the
+  identity patterns and the two-state revision matrix. It remains the
+  authority: the insert trigger checks only born-ATTACHED, so a privileged
+  writer can still insert a malformed `bound_at`; such a row is refused as
+  `STORAGE_OWNERSHIP_CORRUPT` on every read, and the detach path refuses it
+  fail-closed.
+
+**Trust boundary.** The triggers protect only while they exist and run. A
+connection with `recursive_triggers` disabled bypasses the delete trigger
+through conflict-resolution (`INSERT OR REPLACE`) deletes; the storage
+connection asserts `recursive_triggers=ON` (with `foreign_keys=ON` and
+`trusted_schema=OFF`) on every open. An actor with unrestricted database
+write access can drop the triggers or rewrite rows directly — no protection
+is claimed against that (`CE-STORAGE-IMMUTABILITY-V2`, unchanged).
+
 ### Version recognition and migration
 
 - Normal open requires v4; v1, v2, and v3 stores refuse
@@ -824,3 +863,8 @@ operation, malformed-state matrix with privacy and zero-write assertions,
 restart persistence, the lifecycle read, v3→v4 / v2→v4 / v1→v4 migrations,
 interruption and per-step atomicity, trust-root continuity, zero-write
 preflight refusal of foreign lifecycle state, and manifest convergence.
+CE-0002-B3-P2C-A-R1 adds the trigger-level timestamp matrix: NULL, empty,
+wrong storage class, malformed, noncanonical, and calendar-invalid
+`detached_at` values, `detached_at` earlier than `bound_at`, and detach
+over a malformed `bound_at` are all refused by SQLite itself, with the
+application-level refusals still pinned.

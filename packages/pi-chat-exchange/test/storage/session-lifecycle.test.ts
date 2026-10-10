@@ -332,6 +332,68 @@ describe("schema v4 lifecycle triggers (privileged writer)", () => {
     });
   });
 
+  it("refuses a detach whose detached_at is malformed, misordered, or written over a malformed bound_at", () => {
+    const w = world();
+    const refuse = "Session detach is one-way and irreversible";
+    const malformedBounds = ["garbage-bound", "", "2026-13-01T00:00:00.000Z", "2026-10-10T00:00:05Z", "2026-10-10T24:00:00.000Z"];
+    withPrivileged(w.active, (db) => {
+      // NULL, empty, wrong storage class, and every noncanonical or
+      // calendar-invalid instant never commit through the detach path
+      // (CE-0002-B3-P2C-A-R1): SQLite now enforces the accepted canonical
+      // representation on the transition, not only the one-way revision.
+      for (const detachedAt of [
+        null, // NULL detached_at alongside revision 2
+        "", // empty
+        5, // wrong storage class (STRICT stores it as text "5.0")
+        "not-a-time", // malformed
+        "2026-10-10 00:00:05.000Z", // space separator
+        "2026-10-10T00:00:05Z", // no milliseconds
+        "2026-10-10T00:00:05.000000Z", // microsecond precision
+        "2026-10-10T00:00:05.000", // no UTC marker
+        "2026-10-10T00:00:05.000+00:00", // offset instead of Z
+        "2026-10-10t00:00:05.000z", // the shape is case-sensitive
+        "2026-13-01T00:00:00.000Z", // month 13
+        "2026-02-30T00:00:00.000Z", // February 30
+        "2027-02-29T00:00:00.000Z", // non-leap February 29
+        "2026-10-10T24:00:00.000Z", // hour 24: SQLite parses it, the accepted representation does not
+        "2026-10-10T00:60:00.000Z", // minute 60
+        "2026-06-30T23:59:60.000Z", // leap second
+        at(-1), // earlier than bound_at
+      ] as const) {
+        expectTriggerAbort(
+          () =>
+            db
+              .prepare("UPDATE participant_session SET detached_at = ?, private_revision = 2 WHERE session_id = ?")
+              .run(detachedAt, S1),
+          refuse,
+        );
+      }
+      // Control: bound_at itself remains the earliest permitted detach.
+      rawDetach(db, w.participantId, S1, at(0));
+
+      // The insert trigger checks only born-ATTACHED, so a privileged writer
+      // can still insert a malformed bound_at; the detach path refuses that
+      // row fail-closed, and no read ever adopts it.
+      malformedBounds.forEach((boundAt, index) => {
+        const sessionId = `${S_UNKNOWN.slice(0, -1)}${"ABCDEFGH"[index]!}`;
+        db.prepare(
+          "INSERT INTO participant_session(participant_id, session_id, bound_at, detached_at, private_revision) VALUES (?, ?, ?, NULL, 1)",
+        ).run(w.participantId, sessionId, boundAt);
+        expectTriggerAbort(() => rawDetach(db, w.participantId, sessionId, at(5)), refuse);
+        expectRefusal(
+          () => readSessionLifecycle(w.active.store, { participantId: w.participantId, sessionId }),
+          "STORAGE_OWNERSHIP_CORRUPT",
+        );
+      });
+    });
+    expect(rowCounts(w.active).session).toBe(String(3 + malformedBounds.length));
+    expect(readSessionLifecycle(w.active.store, { participantId: w.participantId, sessionId: S1 })).toEqual({
+      state: "DETACHED",
+      boundAt: at(0),
+      detachedAt: at(0),
+    });
+  });
+
   it("creates Session rows ATTACHED only, and never reuses a Session ID", () => {
     const w = world();
     withPrivileged(w.active, (db) => {

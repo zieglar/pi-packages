@@ -262,6 +262,11 @@ self-detach). P3 is not started.
   the current Owner Session cannot be detached; an ownership row can never
   reference a detached Session. Session IDs are therefore never reused. No
   table rebuild, no new column, no new capability scope.
+  R1: the transition also requires a canonical `detached_at` no earlier than
+  a canonical `bound_at`, enforced by SQLite itself — see
+  `docs/storage-contract.md` §12 for the exact SQLite-versus-application
+  validation boundary, the `recursive_triggers` requirement, and the
+  privileged-writer trust limits.
 - **Ownership interaction (Q5 formalized).** The current Owner — live,
   expired, legacy, or clock-regressed — cannot be detached while the
   ownership row references it; the way out is the existing release or

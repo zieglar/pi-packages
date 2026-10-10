@@ -19,6 +19,11 @@ import { SESSION_ID_PATTERN } from "./participant-identity.js";
  * This module has no dependency on the refusal vocabulary of the
  * Participant/ownership planes: parsing returns `undefined` for malformed
  * rows and each caller classifies the refusal with its own typed code.
+ * Canonicality is shared with the schema: the v4
+ * `participant_session_detach_once` trigger enforces the same
+ * canonical-instant rule on the detach UPDATE path (see `schema.ts` for the
+ * exact SQLite-versus-application boundary); this parser remains the
+ * authority for every row read.
  */
 
 export type SessionLifecycleState = "ATTACHED" | "DETACHED";

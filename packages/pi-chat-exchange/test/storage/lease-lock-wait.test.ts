@@ -198,7 +198,11 @@ async function runWorker(
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   expect(existsSync(startedPath), `worker ${tag} never initiated; stderr=${stderr}`).toBe(true);
-  return { done, initiatedAt: readFileSync(startedPath, "utf8") };
+  // The marker is published by rename (atomic), so a read can never observe
+  // a partially written file; this assertion pins that contract.
+  const initiatedAt = readFileSync(startedPath, "utf8");
+  expect(Number.isFinite(Date.parse(initiatedAt)), `worker ${tag} published an incomplete marker; content=${JSON.stringify(initiatedAt)}`).toBe(true);
+  return { done, initiatedAt };
 }
 
 describe("B3-P2B-R1 transaction-time clock under real lock contention", () => {

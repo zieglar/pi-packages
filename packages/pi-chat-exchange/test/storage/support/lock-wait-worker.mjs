@@ -6,7 +6,7 @@
 // initiated before a deadline while its owned transaction later serialized
 // after it, blocked on the SQLite writer lock. Only sanitized structured
 // results leave this process: no capability, SQL text, or error detail.
-import { writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 
 const config = JSON.parse(process.argv[2]);
 const { openStore } = await import(config.storeUrl);
@@ -23,7 +23,15 @@ const store = openStore({
 });
 try {
   const op = config.op === "renew" ? ownership.renewLease : ownership.takeoverOwnership;
-  writeFileSync(config.startedPath, new Date().toISOString(), { flag: "wx", mode: 0o600 });
+  // Atomic publication (CE-0002-B3-P2C-A-R1): write the complete marker to a
+  // staging path, close it, then rename into place. A direct write to the
+  // marker path has a create-then-fill window on POSIX (the file exists
+  // before its content lands), which the parent could read as empty; rename
+  // publishes the complete file in one step.
+  const initiatedAt = new Date().toISOString();
+  const stagingPath = `${config.startedPath}.staging`;
+  writeFileSync(stagingPath, initiatedAt, { flag: "wx", mode: 0o600 });
+  renameSync(stagingPath, config.startedPath);
   const lease = op(store, config.request);
   emit({
     event: "result",
