@@ -480,9 +480,14 @@ export function createParticipant(
   const participantId = generateParticipantId(Date.parse(createdAt));
 
   return runOwned(store, "Participant creation", (tx) => {
-    const replayed = replayParticipant(tx, request);
-    if (replayed !== undefined) return replayed;
-
+    // CE-0002-B3-P1B-R1 (MAJOR-1): current authorization precedes every
+    // protected result, including an idempotent replay. A sponsored request
+    // must present a currently valid `create` capability before any stored
+    // Participant identity or binding is disclosed, so an idempotency key is
+    // never an authorization credential. Deliberate error-precedence change:
+    // for sponsored requests, CAPABILITY_REJECTED now outranks replay,
+    // conflict, and corruption classification. Unsponsored host-local
+    // creation keeps its accepted semantics unchanged.
     if (request.sponsor !== undefined) {
       authorize(tx, store, {
         capability: request.sponsor.capability,
@@ -491,6 +496,9 @@ export function createParticipant(
         now: createdAt,
       });
     }
+    const replayed = replayParticipant(tx, request);
+    if (replayed !== undefined) return replayed;
+
     if (readParticipantByEndpointRow(tx, request.adapter, request.endpointId) !== undefined) {
       refuse("PARTICIPANT_ENDPOINT_CONFLICT");
     }
@@ -538,6 +546,13 @@ export interface EndpointBinding {
 
 /**
  * Authorized affirmation of a Participant's immutable Endpoint binding.
+ *
+ * VALIDATION-ONLY: despite the imperative name (kept stable in R1 — the
+ * accepted API is not renamed), this operation never creates, changes, or
+ * removes a binding and performs zero writes. The binding is established
+ * exactly once, atomically with identity creation in `createParticipant`.
+ * This operation only verifies, under a current `bind` capability, that the
+ * presented Endpoint identity is the one already durably bound.
  *
  * The binding itself is established once, at creation, and is immutable by the
  * accepted `participant_identity_immutable` trigger and the
@@ -837,10 +852,18 @@ export function joinExchange(store: DurableStore, input: unknown, seams: JoinExc
   const afterAuditInsert = seams.afterAuditInsert;
 
   return runOwned(store, "Exchange membership join", (tx) => {
+    // CE-0002-B3-P1B-R1 (MAJOR-1): current `join` authorization precedes every
+    // protected result, including an idempotent replay, so no forged, expired,
+    // revoked, wrong-scope, wrong-Participant, or wrong-generation capability
+    // can obtain REPLAYED Membership data and an idempotency key is never an
+    // authorization credential. Deliberate error-precedence change:
+    // CAPABILITY_REJECTED now outranks replay, conflict, and corruption
+    // classification on this path; within the authorized replay path the
+    // accepted corruption-before-conflict ordering is unchanged.
+    authorize(tx, store, { capability, participantId, scope: "join", now: createdAt });
     const replayed = replayJoin(tx, namespace, idempotencyKey, requestDigest, exchangeId);
     if (replayed !== undefined) return replayed;
 
-    authorize(tx, store, { capability, participantId, scope: "join", now: createdAt });
     if (readParticipantRow(tx, participantId) === undefined) refuse("PARTICIPANT_NOT_FOUND");
     admitExchangeForJoin(tx, exchangeId);
     // An existing membership without its own idempotency record is orphan
