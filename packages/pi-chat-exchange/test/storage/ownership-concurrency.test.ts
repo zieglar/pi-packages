@@ -49,7 +49,7 @@ interface Report {
   readonly result: Record<string, unknown>;
 }
 
-function launch(active: Fixture, tag: string, request: Record<string, unknown>, now: string, op: "acquire" | "renew" = "acquire") {
+function launch(active: Fixture, tag: string, request: Record<string, unknown>, now: string, op: "acquire" | "renew" | "takeover" = "acquire") {
   const readyPath = join(active.root, `${tag}.ready`);
   const releasePath = join(active.root, `${tag}.release`);
   const config = {
@@ -112,7 +112,7 @@ async function race(active: Fixture, participantId: string, attach: string, now:
   const reports = await Promise.all(workers.map((worker) => worker.done));
   for (const report of reports) {
     expect({ status: report.status, stderr: report.stderr, stage: report.result.stage })
-      .toEqual({ status: 0, stderr: "", stage: "acquire" });
+      .toEqual({ status: 0, stderr: "", stage: "op" });
     // Sanitized output only.
     expect(JSON.stringify(report.result)).not.toContain(attach);
   }
@@ -157,7 +157,7 @@ describe("B3-P2A concurrent acquisition (independent processes)", () => {
     const reports = await Promise.all(workers.map((worker) => worker.done));
     for (const report of reports) {
       expect({ status: report.status, stderr: report.stderr, stage: report.result.stage })
-        .toEqual({ status: 0, stderr: "", stage: "acquire" });
+        .toEqual({ status: 0, stderr: "", stage: "op" });
       expect(JSON.stringify(report.result)).not.toContain(resume1);
     }
     const [renewed, acquisition] = reports.map((report) => report.result);
@@ -175,6 +175,99 @@ describe("B3-P2A concurrent acquisition (independent processes)", () => {
         expiresAt: at(180),
         leaseStartedAt: at(60),
       });
+    } finally {
+      reopened.close();
+    }
+    expect(rowCounts(active)).toMatchObject({ ownership: "1", fencing: "1" });
+  }, TEST_TIMEOUT_MS);
+});
+
+describe("B3-P2B concurrent takeover (independent processes)", () => {
+  it("admits exactly one takeover winner over an expired Owner, with the next fencing token", async () => {
+    const { active, participantId, attach } = prepared();
+    acquireOwnership(
+      active.store,
+      { participantId, sessionId: SESSIONS[0], capability: attach, leaseTtlSeconds: 30 },
+      { now: () => at(0) },
+    ); // S0, token 1, term [0, 30) — expired by race time
+    // Each challenger holds a takeover capability durably bound to its own
+    // Session, issued before the parent writer closes.
+    const takeoverCaps = SESSIONS.slice(0, WORKERS).map(
+      (sessionId) => capabilityFor(active, participantId, "takeover", { sessionId }),
+    );
+    active.store.close();
+    const workers = SESSIONS.slice(0, WORKERS).map((sessionId, index) =>
+      launch(active, `t${index}`, { participantId, sessionId, capability: takeoverCaps[index] }, at(200), "takeover"),
+    );
+    await Promise.all(workers.map((worker) => worker.ready));
+    for (const worker of workers) worker.release();
+    const reports = await Promise.all(workers.map((worker) => worker.done));
+    for (const report of reports) {
+      expect({ status: report.status, stderr: report.stderr, stage: report.result.stage })
+        .toEqual({ status: 0, stderr: "", stage: "op" });
+      for (const cap of takeoverCaps) expect(JSON.stringify(report.result)).not.toContain(cap);
+    }
+    const results = reports.map((report) => report.result);
+    const winners = results.filter((result) => result.disposition === "TAKEN_OVER");
+    expect(winners).toHaveLength(1);
+    expect(winners[0]).toMatchObject({ fencingToken: 2, expiresAt: at(320) });
+    for (const loser of results.filter((result) => result.disposition !== "TAKEN_OVER")) {
+      // The winner's fresh lease is live, so a serialized loser faces a live
+      // Owner; a contender that never got the lock is BUSY.
+      expect(["OWNERSHIP_HELD", "STORAGE_TRANSACTION_BUSY"]).toContain(loser.code);
+      expect(loser.outcome).toBe("ROLLED_BACK");
+    }
+    const reopened = openStore({ directory: active.directory, filename: active.filename });
+    try {
+      // Exactly one replacement, exactly one fencing allocation.
+      expect(readCurrentOwnership(reopened, participantId)).toMatchObject({
+        sessionId: winners[0]!.sessionId,
+        fencingToken: 2,
+        leaseStartedAt: at(200),
+      });
+      expect(readFencingHighWater(reopened, participantId)).toBe(2);
+    } finally {
+      reopened.close();
+    }
+    expect(rowCounts(active)).toMatchObject({ ownership: "1", fencing: "1" });
+  }, TEST_TIMEOUT_MS);
+
+  it("a takeover never wins a race against a live lease: renewal stands, takeover refuses", async () => {
+    const { active, participantId, attach, resume1 } = prepared();
+    acquireOwnership(active.store, { participantId, sessionId: SESSIONS[0], capability: attach }, { now: () => at(0) });
+    // Live Owner S0 (term [0, 120)). Race at t=60: renewal extends the live
+    // lease; the takeover must refuse at ANY serialization, because the lease
+    // is live at every instant of the race.
+    const takeoverCap = capabilityFor(active, participantId, "takeover", { sessionId: SESSIONS[1]! });
+    active.store.close();
+    const renewal = launch(active, "renew", { participantId, sessionId: SESSIONS[0], fencingToken: 1, capability: resume1 }, at(60), "renew");
+    const challenger = launch(active, "take", { participantId, sessionId: SESSIONS[1], capability: takeoverCap }, at(60), "takeover");
+    const workers = [renewal, challenger];
+    await Promise.all(workers.map((worker) => worker.ready));
+    for (const worker of workers) worker.release();
+    const reports = await Promise.all(workers.map((worker) => worker.done));
+    for (const report of reports) {
+      expect({ status: report.status, stderr: report.stderr, stage: report.result.stage })
+        .toEqual({ status: 0, stderr: "", stage: "op" });
+      expect(JSON.stringify(report.result)).not.toContain(takeoverCap);
+      expect(JSON.stringify(report.result)).not.toContain(resume1);
+    }
+    const [renewed, takeover] = reports.map((report) => report.result);
+    // The takeover NEVER displaces a live Owner.
+    expect(takeover?.disposition).not.toBe("TAKEN_OVER");
+    expect(takeover?.code).toBe("OWNERSHIP_HELD");
+    // The renewal either lands (serialized first) or times out BUSY.
+    expect(["RENEWED", undefined]).toContain(renewed?.disposition);
+    if (renewed?.disposition === undefined) expect(renewed?.code).toBe("STORAGE_TRANSACTION_BUSY");
+    const reopened = openStore({ directory: active.directory, filename: active.filename });
+    try {
+      const expectedExpiry = renewed?.disposition === "RENEWED" ? at(180) : at(120);
+      expect(readCurrentOwnership(reopened, participantId)).toMatchObject({
+        sessionId: SESSIONS[0],
+        fencingToken: 1,
+        expiresAt: expectedExpiry,
+      });
+      expect(readFencingHighWater(reopened, participantId)).toBe(1);
     } finally {
       reopened.close();
     }

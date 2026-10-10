@@ -23,24 +23,47 @@ import { requireSingleRowChange, type TransactionHandle } from "./transaction.js
 
 /**
  * Session binding, Participant ownership, leases, and fencing
- * (CE-0002-B3-P2A, remediated by CE-0002-B3-P2A-R1). Private storage plane
+ * (CE-0002-B3-P2A, remediated by CE-0002-B3-P2A-R1; takeover added by
+ * CE-0002-B3-P2B). Private storage plane
  * only: nothing here is re-exported from the package barrel, there is no
- * delivery API, no adapter wiring, no background heartbeat, and no takeover.
+ * delivery API, no adapter wiring, and no background heartbeat.
  *
  * Model
  * - A Session is identified by an opaque, non-secret `ses_<ULID>` SessionRef.
  *   It is never a Participant identity and never a credential: every
  *   operation additionally requires a Host Capability of the exact scope,
- *   and a `resume` capability is additionally bound to exactly one Session.
+ *   and `resume`/`takeover` capabilities are additionally bound to exactly one
+ *   Session.
  * - `bindSession` (scope `attach`) durably records that a Session belongs to
  *   one Participant. A Participant may accumulate many historical Sessions; a
  *   Session belongs to exactly one Participant (durably unique since v3).
  * - `acquireOwnership` (scope `attach`) is admitted only when NO ownership
  *   row exists for the Participant (R1 design clarification Q1: replacing any
- *   existing Owner, including an expired one, is takeover and requires P2B;
- *   an existing row is `OWNERSHIP_HELD` while live and
- *   `OWNERSHIP_TAKEOVER_REQUIRED` once expired). It allocates the next
- *   fencing token and writes the lease in the same owned transaction.
+ *   existing Owner, including an expired one, is takeover; an existing row is
+ *   `OWNERSHIP_HELD` while live and `OWNERSHIP_TAKEOVER_REQUIRED` once
+ *   expired). It allocates the next fencing token and writes the lease in the
+ *   same owned transaction.
+ * - `takeoverOwnership` (scope `takeover`, CE-0002-B3-P2B) replaces an EXISTING
+ *   expired or legacy (NULL `lease_started_at`) Owner with a bound target
+ *   Session, atomically allocating exactly high-water + 1 and persisting a new
+ *   lease term in one owned IMMEDIATE transaction. A live Owner refuses
+ *   (`OWNERSHIP_HELD`), a clock-regressed lease refuses
+ *   (`LEASE_CLOCK_REGRESSION`), an absent ownership row refuses
+ *   (`OWNERSHIP_TAKEOVER_INELIGIBLE` — initial acquisition remains the attach
+ *   operation), and corrupt state refuses (`STORAGE_OWNERSHIP_CORRUPT`). There
+ *   is no force takeover of a live Owner. The takeover capability is
+ *   Session-bound to the prospective new Owner Session, consistent with the
+ *   accepted resume model: a Session ID alone never grants takeover authority.
+ * - `reconcileTakeover` is a zero-write, fail-closed reconciliation read for
+ *   an uncertain takeover outcome (for example INDETERMINATE). It classifies
+ *   the current durable relationship to the caller's request evidence
+ *   (Participant, target Session, term boundaries, optional fencing token) as
+ *   COMMITTED / NO_TRACE / EVIDENCE_CONFLICT. It never invents exactly-once
+ *   semantics: a refused and a rolled-back takeover are indistinguishable
+ *   post-hoc (both are zero-write), and a committed-then-superseded takeover
+ *   reports NO_TRACE. Retrying is safe only because every attempt is freshly
+ *   authorized and eligibility-checked; EVIDENCE_CONFLICT is operator review,
+ *   never an automatic retry.
  * - `renewLease`, `releaseOwnership`, and `verifyOwnership` (scope `resume`)
  *   require the current Owner Session, a Session-bound resume capability, the
  *   current fencing token, and an unexpired lease, all evaluated inside the
@@ -423,8 +446,8 @@ export interface AcquireOwnershipSeams extends ClockSeam {
  * R1 acquisition boundary (design clarification Q1): any existing ownership
  * row refuses acquisition — `OWNERSHIP_HELD` while the lease is live at the
  * operation's clock, `OWNERSHIP_TAKEOVER_REQUIRED` once expired (including a
- * legacy v2 row, which is expired at every instant). Replacing an existing
- * Owner is takeover, which is not active in R1. There is no silent adoption.
+ *   legacy v2 row, which is expired at every instant). Replacing an existing
+ *   Owner is `takeoverOwnership` (CE-0002-B3-P2B). There is no silent adoption.
  *
  * The new lease term is persisted: `lease_started_at = now` and
  * `expires_at = now + ttl`.
@@ -587,6 +610,100 @@ export function releaseOwnership(
   });
 }
 
+export interface TakeoverOwnershipSeams extends ClockSeam {
+  readonly afterFencingWrite?: () => void;
+  readonly afterOwnershipWrite?: () => void;
+}
+
+/**
+ * Explicit Owner takeover (CE-0002-B3-P2B), scope `takeover`. Replaces an
+ * EXISTING expired or legacy (NULL `lease_started_at`) Owner with a bound
+ * target Session — never an absent row (initial acquisition remains the
+ * `attach` operation), never a live Owner (no force takeover in this phase),
+ * and never a clock-regressed lease.
+ *
+ * Authorization: a currently valid `takeover` capability durably bound to the
+ * target Session (the prospective new Owner), evaluated inside the same owned
+ * transaction as the replacement. A Session ID alone never grants takeover
+ * authority.
+ *
+ * Atomicity: eligibility, fencing allocation (exactly high-water + 1), and
+ * the Owner replacement commit or roll back as one IMMEDIATE unit — exactly
+ * one winner, no partial fencing allocation, no partial replacement, no token
+ * reuse, overflow refused (`FENCING_EXHAUSTED`), and every refusal path is
+ * zero-write. The high-water and ownership UPDATEs are guarded by the exact
+ * pre-read values, so any interleaved change fails the single-row check and
+ * rolls back rather than adopting foreign state.
+ *
+ * The superseded Session loses current ownership immediately: its fencing
+ * token is stale, and its `resume` capability cannot renew, release, or
+ * verify the new Owner (the durable ownership row decides, never the Session
+ * ID). Historical Session bindings are preserved for audit continuity; no
+ * Participant identity, membership, join boundary, or audit row is touched.
+ *
+ * The new lease term is persisted: `lease_started_at = now` and
+ * `expires_at = now + ttl` (a legacy row's NULL start is replaced, never
+ * reinterpreted).
+ */
+export function takeoverOwnership(
+  store: DurableStore,
+  input: unknown,
+  seams: TakeoverOwnershipSeams = {},
+): OwnershipLease {
+  const fields = captureFields(
+    input,
+    ["participantId", "sessionId", "capability", "leaseTtlSeconds"],
+    ["participantId", "sessionId", "capability"],
+    "request",
+  );
+  const participantId = requireParticipantId(fields.participantId, "participantId");
+  const sessionId = requireSessionId(fields.sessionId, "sessionId");
+  const leaseTtlSeconds = requireLeaseTtl(fields);
+  const capability = fields.capability;
+  const now = clock(seams);
+  const expiresAt = leaseExpiry(now, leaseTtlSeconds);
+  const afterFencingWrite = seams.afterFencingWrite;
+  const afterOwnershipWrite = seams.afterOwnershipWrite;
+
+  return runOwned(store, "Ownership takeover", (tx) => {
+    authorize(tx, store, { capability, participantId, scope: "takeover", now, sessionId });
+    if (readParticipantRow(tx, participantId) === undefined) refuse("PARTICIPANT_NOT_FOUND");
+    const session = sessionRow(tx, participantId, sessionId);
+    if (session === undefined || session.detached) refuse("SESSION_NOT_BOUND");
+    const { ownership: previous, highWater } = loadOwnershipState(tx, participantId);
+    if (previous === undefined) refuse("OWNERSHIP_TAKEOVER_INELIGIBLE");
+    const lease = evaluateLease(previous, now);
+    if (lease === "ACTIVE") refuse("OWNERSHIP_HELD");
+    if (lease === "CLOCK_REGRESSION") refuse("LEASE_CLOCK_REGRESSION");
+    // EXPIRED — including a legacy v2 row (NULL start), which is expired at
+    // every instant and never authorized anything. Takeover replaces it with a
+    // fully persisted v3 term; the NULL start is never reinterpreted.
+    if (highWater >= FENCING_TOKEN_MAX) refuse("FENCING_EXHAUSTED");
+    const fencingToken = highWater + 1;
+
+    requireSingleRowChange(
+      tx
+        .prepare(
+          "UPDATE participant_fencing_high_water SET fencing_token = ?, private_revision = private_revision + 1 WHERE participant_id = ? AND fencing_token = ?",
+        )
+        .run(fencingToken, participantId, highWater),
+      "fencing allocation",
+    );
+    hook(afterFencingWrite);
+
+    requireSingleRowChange(
+      tx
+        .prepare(
+          "UPDATE participant_ownership SET session_id = ?, fencing_token = ?, expires_at = ?, lease_started_at = ?, private_revision = private_revision + 1 WHERE participant_id = ? AND session_id = ? AND fencing_token = ? AND expires_at = ?",
+        )
+        .run(sessionId, fencingToken, expiresAt, now, previous.participantId, previous.sessionId, previous.fencingToken, previous.expiresAt),
+      "ownership takeover",
+    );
+    hook(afterOwnershipWrite);
+    return Object.freeze({ participantId, sessionId, fencingToken, expiresAt, leaseTtlSeconds, leaseStartedAt: now });
+  });
+}
+
 /** Zero-write current-Owner authorization, evaluated in an owned transaction
  * so it observes the same serialized state any mutation would. Returns the
  * durable record exactly as persisted, including the term start. */
@@ -670,5 +787,90 @@ export function readLeaseStatus(store: DurableStore, input: unknown, seams: Cloc
   return readSnapshot(store, (handle) => {
     const { ownership } = loadOwnershipState(handle, pid);
     return ownership === undefined ? "UNOWNED" : evaluateLease(ownership, now);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Takeover reconciliation (zero-write, fail-closed; CE-0002-B3-P2B)
+// ---------------------------------------------------------------------------
+
+/** The durable evidence a takeover request would have persisted. The caller
+ * knows every field from its own request (`now`, TTL) and result; the fencing
+ * token is optional evidence that tightens the match when known. */
+export interface TakeoverEvidence {
+  readonly participantId: string;
+  readonly sessionId: string;
+  readonly leaseStartedAt: string;
+  readonly expiresAt: string;
+  readonly fencingToken?: number;
+}
+
+/** Fail-closed classification of the CURRENT durable relationship between a
+ * takeover request's evidence and the ownership row:
+ * - COMMITTED: the current row matches the evidence exactly (Session, term
+ *   boundaries, and token when presented). A retry of the same logical request
+ *   persists identical evidence, so an exact match is idempotent recognition,
+ *   not a guess. Do not retry.
+ * - NO_TRACE: the current state carries no trace of the request — no row, a
+ *   legacy (NULL-start) row, a different Owner Session, or a same-Session row
+ *   whose term predates the presented evidence (a committed write would have
+ *   advanced the term start). The request did not commit, was refused, or its
+ *   effects were later removed or superseded; these are indistinguishable from
+ *   durable evidence alone. A fresh attempt is evaluated under current
+ *   authorization and eligibility.
+ * - EVIDENCE_CONFLICT: the presented target Session IS the current Owner but
+ *   under different term or token evidence — the current state was installed
+ *   by a different request. Never auto-retry: operator review.
+ */
+export type TakeoverReconciliationCode = "COMMITTED" | "NO_TRACE" | "EVIDENCE_CONFLICT";
+
+export interface TakeoverReconciliation {
+  readonly disposition: TakeoverReconciliationCode;
+  /** The current durable ownership row exactly as persisted (undefined when
+   * none exists). Host-local diagnostic detail; never an authorization. */
+  readonly current: OwnershipRecord | undefined;
+}
+
+/** Zero-write reconciliation after an uncertain takeover outcome (for example
+ * an INDETERMINATE transaction result). Reconciliation never relies on a
+ * Session ID alone: the full evidence tuple (Participant, target Session, term
+ * boundaries, optional fencing token) is compared against the durable row in
+ * one consistent snapshot. It deliberately cannot distinguish a refused from a
+ * rolled-back takeover (both are zero-write) and cannot distinguish a committed
+ * request from a committed retry with identical parameters (they are the same
+ * logical request); both limitations are documented rather than papered over
+ * with invented exactly-once semantics. */
+export function reconcileTakeover(store: DurableStore, input: unknown): TakeoverReconciliation {
+  const fields = captureFields(
+    input,
+    ["participantId", "sessionId", "leaseStartedAt", "expiresAt", "fencingToken"],
+    ["participantId", "sessionId", "leaseStartedAt", "expiresAt"],
+    "request",
+  );
+  const pid = requireParticipantId(fields.participantId, "participantId");
+  const sid = requireSessionId(fields.sessionId, "sessionId");
+  const leaseStartedAt = requireInstant(fields.leaseStartedAt, "leaseStartedAt");
+  const expiresAt = requireInstant(fields.expiresAt, "expiresAt");
+  const fencingToken = Object.hasOwn(fields, "fencingToken")
+    ? requireFencingToken(fields.fencingToken, "fencingToken")
+    : undefined;
+  return readSnapshot(store, (handle) => {
+    const { ownership } = loadOwnershipState(handle, pid);
+    if (ownership === undefined || ownership.leaseStartedAt === null || ownership.sessionId !== sid) {
+      return Object.freeze({ disposition: "NO_TRACE" as const, current: ownership });
+    }
+    // A committed takeover persists exactly the presented term start. A row
+    // whose term start PREDATES the presented start cannot carry this
+    // request's effects (a committed write would have advanced the start), so
+    // the request left no trace — this covers self-takeover reconciliation,
+    // where the pre-takeover row names the same Session under an older term.
+    if (Date.parse(ownership.leaseStartedAt) < Date.parse(leaseStartedAt)) {
+      return Object.freeze({ disposition: "NO_TRACE" as const, current: ownership });
+    }
+    const matches =
+      ownership.leaseStartedAt === leaseStartedAt &&
+      ownership.expiresAt === expiresAt &&
+      (fencingToken === undefined || ownership.fencingToken === fencingToken);
+    return Object.freeze({ disposition: matches ? ("COMMITTED" as const) : ("EVIDENCE_CONFLICT" as const), current: ownership });
   });
 }

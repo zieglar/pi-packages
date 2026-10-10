@@ -115,9 +115,66 @@ rule) are deferred to P2B.
 
 1. Takeover: replace an existing (expired or legacy) Owner under a `takeover`
    capability, allocating the next fencing token and a fresh term; classify
-   and pin the takeover races.
+   and pin the takeover races. **Implemented by CE-0002-B3-P2B** — see below.
 2. Detach: define the ordering rule — a current Owner's binding cannot be
    detached while the ownership row references it (Q5) — and the fate of
    Session-bound resume capabilities at detach.
 3. Lease policy location: if TTL policy must outlive a single request (e.g. a
    store-fixed policy), decide whether it belongs in durable metadata.
+
+## P2B — Takeover implemented (CE-0002-B3-P2B)
+
+Status: **implemented**. The Q1 decision is realized without changing any R1
+boundary: `acquireOwnership` still refuses every existing row; replacement is
+exclusively `takeoverOwnership` under the `takeover` scope.
+
+- **Authority.** The `takeover` scope is operational and Session-bound to the
+  prospective new Owner Session, consistent with the accepted resume model
+  (Q2): issuance requires `sessionId` naming a currently bound Session of the
+  Participant, classification compares the durable binding inside the
+  mutation's transaction, and revocation requires presenting the bound
+  Session. A Session ID alone never grants takeover authority. `send`, `ack`,
+  and `read` remain inactive.
+- **Eligibility.** Only an existing EXPIRED row — including a legacy v2 row
+  (NULL `lease_started_at`, expired at every instant) — may be taken over. A
+  live Owner refuses (`OWNERSHIP_HELD`, evaluated against the persisted term;
+  exact expiry is the boundary), a clock-regressed lease refuses
+  (`LEASE_CLOCK_REGRESSION`), and an absent row refuses
+  (`OWNERSHIP_TAKEOVER_INELIGIBLE`): initial acquisition remains the `attach`
+  operation. No force takeover of a live Owner exists in this phase.
+- **Atomicity.** Eligibility, fencing allocation (exactly high-water + 1,
+  compare-and-set, `FENCING_EXHAUSTED` at the ceiling), and the Owner
+  replacement are one owned IMMEDIATE transaction guarded by the exact
+  pre-read values: exactly one winner, no partial fencing allocation, no
+  partial replacement, no token reuse, zero-write refusals. A takeover racing
+  a renewal of a live lease can never win (the lease is live at every instant
+  of the race).
+- **Supersession.** The previous Session immediately loses current ownership:
+  its fencing token is stale and its `resume` capability cannot renew,
+  release, or verify the new Owner (`OWNERSHIP_NOT_CURRENT` /
+  `FENCING_STALE`). Historical Session bindings, Participant identity,
+  Endpoint binding, Exchange membership, join boundaries, and audit history
+  are untouched; capability rows are never mutated by a takeover.
+- **Recovery.** `reconcileTakeover` is a zero-write, fail-closed
+  reconciliation read over the caller's full request evidence (Participant,
+  target Session, term boundaries, optional fencing token): `COMMITTED` (exact
+  durable match — do not retry), `NO_TRACE` (no trace of the request — a fresh
+  attempt is freshly authorized and eligibility-checked), or
+  `EVIDENCE_CONFLICT` (the target Session is current under different evidence
+  — operator review, never auto-retry). Documented limitations, deliberately
+  not papered over with exactly-once semantics: a refused and a rolled-back
+  takeover leave identical durable state; a committed-then-superseded takeover
+  reports `NO_TRACE`; a committed retry with identical parameters is the same
+  logical request. No background recovery workers.
+- **Legacy ownership.** A migrated v2 row never authorizes and is never
+  repaired; it is takeover-eligible, and takeover replaces it with a fully
+  persisted v3 term at a fencing token strictly greater than the legacy token.
+- Q4 and Q5 are unchanged: an expired Owner cannot release, and there is no
+  detach operation (P2B did not take detach; it remains prerequisite 2).
+
+## P2C prerequisites recorded by P2B
+
+1. Detach semantics (Q5 ordering rule and the fate of Session-bound
+   capabilities at detach).
+2. Lease policy location (prerequisite 3 above, unchanged).
+3. `send`/`ack`/`read` scopes remain for the delivery phases.

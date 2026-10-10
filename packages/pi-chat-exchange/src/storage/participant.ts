@@ -7,6 +7,7 @@ import {
   currentGenerationInTransaction,
   generateCapability,
   isOperationalCapabilityScope,
+  isSessionBoundCapabilityScope,
   type CapabilityStatus,
   type ReadableHandle,
   type OperationalCapabilityScope,
@@ -74,6 +75,7 @@ type ParticipantDomainCode =
   | "OWNERSHIP_HELD"
   | "OWNERSHIP_NOT_CURRENT"
   | "OWNERSHIP_TAKEOVER_REQUIRED"
+  | "OWNERSHIP_TAKEOVER_INELIGIBLE"
   | "FENCING_STALE"
   | "FENCING_EXHAUSTED"
   | "LEASE_EXPIRED"
@@ -100,7 +102,8 @@ const DOMAIN_DETAIL: Record<ParticipantDomainCode, string> = {
   SESSION_NOT_BOUND: "operation requires a currently bound Session",
   OWNERSHIP_HELD: "the Participant already has a current Owner",
   OWNERSHIP_NOT_CURRENT: "the Session is not the current Owner of the Participant",
-  OWNERSHIP_TAKEOVER_REQUIRED: "replacing an existing Owner requires takeover authority, which is not active",
+  OWNERSHIP_TAKEOVER_REQUIRED: "replacing an existing Owner requires takeover authority",
+  OWNERSHIP_TAKEOVER_INELIGIBLE: "takeover requires an existing expired or legacy ownership row; initial acquisition is the attach operation",
   FENCING_STALE: "the presented fencing token is not current",
   FENCING_EXHAUSTED: "the Participant fencing token space is exhausted; operator review required",
   LEASE_EXPIRED: "the ownership lease has expired",
@@ -655,7 +658,8 @@ export interface IssuedCapability {
   readonly trustGeneration: number;
   readonly createdAt: string;
   readonly expiresAt?: string;
-  /** The Session a `resume` capability is durably bound to (R1). */
+  /** The Session a Session-bound (`resume`/`takeover`) capability is durably
+   * bound to (CE-0002-B3-P2A-R1 / B3-P2B). */
   readonly sessionId?: string;
 }
 
@@ -673,12 +677,12 @@ export interface IssueCapabilitySeams extends ClockSeam {
  * generation, inside the same owned transaction that inserts the digest row.
  * No plaintext token or secret is persisted, logged, or audited.
  *
- * Session-bound resume (CE-0002-B3-P2A-R1): a `resume` capability requires
- * `sessionId` and is durably bound to exactly that Session, which must be a
- * currently bound Session of the Participant at issuance. Session binding is a
- * narrowing of authority, never a credential: the bearer token is still
- * required, and a Session ID alone authorizes nothing. `sessionId` is refused
- * for every other scope.
+ * Session-bound scopes (CE-0002-B3-P2A-R1 `resume`; CE-0002-B3-P2B
+ * `takeover`): such a capability requires `sessionId` and is durably bound to
+ * exactly that Session, which must be a currently bound Session of the
+ * Participant at issuance. Session binding is a narrowing of authority, never
+ * a credential: the bearer token is still required, and a Session ID alone
+ * authorizes nothing. `sessionId` is refused for every other scope.
  */
 export function issueCapability(
   store: DurableStore,
@@ -695,8 +699,9 @@ export function issueCapability(
   const scope = requireText(fields.scope, "scope", 32);
   const expiresAt = Object.hasOwn(fields, "expiresAt") ? requireInstant(fields.expiresAt, "expiresAt") : undefined;
   const hasSession = Object.hasOwn(fields, "sessionId");
-  if (scope === "resume" && !hasSession) rejectRequest("sessionId: missing required field");
-  if (scope !== "resume" && hasSession) rejectRequest("sessionId: unknown field");
+  const sessionBound = isSessionBoundCapabilityScope(scope);
+  if (sessionBound && !hasSession) rejectRequest("sessionId: missing required field");
+  if (!sessionBound && hasSession) rejectRequest("sessionId: unknown field");
   const sessionId = hasSession ? requireSessionId(fields.sessionId, "sessionId") : undefined;
   const createdAt = clock(seams);
   const afterCapabilityInsert = seams.afterCapabilityInsert;
@@ -706,9 +711,9 @@ export function issueCapability(
   return runOwned(store, "Capability issuance", (tx) => {
     if (readParticipantRow(tx, participantId) === undefined) refuse("PARTICIPANT_NOT_FOUND");
     if (sessionId !== undefined) {
-      // A resume capability may only be bound to a Session that is currently
-      // bound to this Participant; the durable binding is checked inside the
-      // same transaction that records the capability.
+      // A Session-bound capability may only be bound to a Session that is
+      // currently bound to this Participant; the durable binding is checked
+      // inside the same transaction that records the capability.
       const binding = tx
         .prepare(
           "SELECT detached_at FROM participant_session WHERE participant_id = ? AND session_id = ?",
@@ -761,8 +766,8 @@ export interface RevokedCapability {
 
 /** Explicit host revocation. Revocation is durable and one-way: there is no
  * automatic capability recovery, reissue, or un-revoke path. Revoking a
- * Session-bound `resume` capability requires presenting its bound Session
- * (R1), matching the session check of the capability plane. */
+ * Session-bound (`resume`/`takeover`) capability requires presenting its bound
+ * Session, matching the session check of the capability plane. */
 export function revokeCapability(store: DurableStore, input: unknown, seams: ClockSeam = {}): RevokedCapability {
   const fields = captureFields(
     input,
@@ -776,7 +781,7 @@ export function revokeCapability(store: DurableStore, input: unknown, seams: Clo
   const revokedAt = clock(seams);
   if (!isOperationalCapabilityScope(scope)) refuse("CAPABILITY_SCOPE_UNSUPPORTED");
   const sessionId = Object.hasOwn(fields, "sessionId") ? requireSessionId(fields.sessionId, "sessionId") : undefined;
-  if (scope === "resume" && sessionId === undefined) rejectRequest("sessionId: missing required field");
+  if (isSessionBoundCapabilityScope(scope) && sessionId === undefined) rejectRequest("sessionId: missing required field");
 
   return runOwned(store, "Capability revocation", (tx) => {
     if (classifyCapability(tx, store.databasePath, { capability, participantId, scope, now: revokedAt, ...(sessionId === undefined ? {} : { sessionId }) }) !== "VALID") {

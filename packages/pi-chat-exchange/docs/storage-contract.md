@@ -509,7 +509,7 @@ expiry), the Participant, a bound Session, the Session being the durable
 current Owner (`OWNERSHIP_NOT_CURRENT`), the presented fencing token being
 current (`FENCING_STALE`), and the lease (`LEASE_EXPIRED`,
 `LEASE_CLOCK_REGRESSION`). Ownership is never inferred from a Session ID.
-After supersession every operation by the previous Owner is refused.
+After a takeover (§11) every Owner operation by the previous Session is refused.
 
 Default TTL 120 s, configurable 30–3600 s (request-validated). 30 s is a
 renewal recommendation for hosts, not a scheduler. Time comes only from the
@@ -591,8 +591,8 @@ undetectable (documented limitation, zero-write refusals).
 Participant. Any existing row refuses acquisition: `OWNERSHIP_HELD` while the
 lease is live at the operation's clock, `OWNERSHIP_TAKEOVER_REQUIRED` once
 expired (including legacy v2 rows). A refused acquisition allocates no fencing
-token. `takeover` remains `CAPABILITY_SCOPE_UNSUPPORTED`; P2B is not
-implemented or activated.
+token. **Updated by §11:** CE-0002-B3-P2B activated the `takeover` scope and
+implemented explicit takeover; the acquisition boundary itself is unchanged.
 
 ### Session-bound resume (design clarification Q2)
 
@@ -615,3 +615,95 @@ convergence, conflicting-history migration refusal, durable Session
 uniqueness, a multi-process renewal-vs-acquisition race, missing trust
 generation across all ownership operations, and BUSY/ROLLED_BACK/
 INDETERMINATE classification with privacy and zero-write refusals.
+
+## 11. B3-P2B durable takeover, supersession, and reconciliation
+
+Additive amendment (CE-0002-B3-P2B). No schema change: takeover reuses the
+accepted v3 columns. Everything in §§1-10 is preserved except where §11
+explicitly updates §10.
+
+### Takeover authority
+
+The `takeover` capability scope is operational and Session-bound, consistent
+with the accepted resume model: issuance requires `sessionId` naming a
+currently bound Session of the Participant (the prospective new Owner),
+`sessionId` is refused for non-Session-bound scopes, classification compares
+the durable binding inside the mutation's transaction (`SESSION_MISMATCH`),
+and revocation requires presenting the bound Session. A Session ID alone
+never grants takeover authority; the bearer token, Participant binding,
+scope, trust generation, revocation, and expiry checks are unchanged.
+`send`/`ack`/`read` remain `CAPABILITY_SCOPE_UNSUPPORTED`.
+
+### Takeover eligibility
+
+`takeoverOwnership` replaces an EXISTING ownership row whose lease is expired
+at the operation's clock, including a legacy v2 row (NULL `lease_started_at`,
+expired at every instant). It refuses: a live Owner (`OWNERSHIP_HELD`,
+evaluated against the persisted term — one millisecond before expiry still
+refuses, exact expiry is eligible); a clock-regressed lease
+(`LEASE_CLOCK_REGRESSION`); a Participant with no ownership row
+(`OWNERSHIP_TAKEOVER_INELIGIBLE` — initial acquisition remains the `attach`
+operation); corrupt ownership state (`STORAGE_OWNERSHIP_CORRUPT`, never
+repaired); and any invalid, revoked, expired, wrong-Participant,
+wrong-Session, wrong-scope, or wrong-generation capability
+(`CAPABILITY_REJECTED`). There is no force takeover of a live Owner in this
+phase.
+
+### Atomic replacement and fencing transition
+
+Eligibility, fencing allocation, and the Owner replacement are one owned
+IMMEDIATE transaction: the high-water advances by exactly one (compare-and-set
+on the previous value, `FENCING_EXHAUSTED` at the ceiling) and the ownership
+row is rewritten in place (new Session, new token, `lease_started_at = now`,
+`expires_at = now + ttl`), guarded by the exact pre-read values so any
+interleaved change fails the single-row check and rolls back. Exactly one
+concurrent takeover wins; losers serialize into `OWNERSHIP_HELD` or time out
+as `STORAGE_TRANSACTION_BUSY` (retryable). No partial fencing allocation, no
+partial replacement, no token reuse, zero-write refusals. A takeover racing a
+renewal of a live lease can never win: the lease is live at every instant of
+the race, so the takeover refuses `OWNERSHIP_HELD` regardless of
+serialization order.
+
+### Supersession
+
+After a successful takeover the previous Session is no longer the current
+Owner: its fencing token is stale (`FENCING_STALE`), its `resume` capability
+cannot renew, release, or verify the new Owner (`OWNERSHIP_NOT_CURRENT` — the
+durable ownership row decides, never the Session ID). Historical Session
+bindings are preserved for audit continuity. Takeover never creates a
+Participant, never rewrites Endpoint bindings, Exchange membership, join
+boundaries, or audit history, and never mutates capability rows.
+
+### Recovery and reconciliation
+
+An uncertain takeover outcome (for example an INDETERMINATE transaction
+result) is reconciled explicitly through `reconcileTakeover`, a zero-write
+read that compares the caller's full request evidence (Participant, target
+Session, term boundaries, optional fencing token) against the durable row in
+one consistent snapshot — never a Session ID alone:
+
+- `COMMITTED`: the current row matches the evidence exactly. A retry of the
+  same logical request persists identical evidence, so an exact match is
+  idempotent recognition. Do not retry.
+- `NO_TRACE`: the current state carries no trace of the request (no row, a
+  legacy row, a different Owner Session, or a same-Session row whose term
+  predates the presented evidence). The request did not commit, was refused,
+  or was later superseded — indistinguishable post-hoc. A fresh attempt is
+  safe only because it is freshly authorized and eligibility-checked.
+- `EVIDENCE_CONFLICT`: the target Session is the current Owner under
+  different term or token evidence — installed by a different request. Never
+  auto-retry; operator review.
+
+Documented limitations (fail-closed, no invented exactly-once semantics): a
+refused and a rolled-back takeover leave identical durable state; a committed
+takeover later superseded reports `NO_TRACE`; a committed retry with identical
+parameters is the same logical request and indistinguishable from the
+original commit. There are no background recovery workers.
+
+### Legacy ownership recovery
+
+A migrated v2 ownership row (NULL `lease_started_at`) never authorizes as a
+live lease and is never repaired. It is takeover-eligible: an explicit
+Session-bound takeover replaces it with a fully persisted v3 term
+(`lease_started_at = now`), allocating the fencing token strictly greater
+than the legacy token (the v2 high-water survives migration untouched).

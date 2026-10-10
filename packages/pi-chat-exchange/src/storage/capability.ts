@@ -29,9 +29,11 @@ export interface ReadableHandle {
  *   over: by revocation (P1A) and by generation binding.
  *
  * Only the operational scopes are accepted: the P1 scopes (create, bind,
- * join) and, since CE-0002-B3-P2A, the Session-ownership scopes attach and
- * resume. The remaining scopes (takeover, send, ack, read) exist in the
- * accepted schema vocabulary for later phases and are refused here.
+ * join), the CE-0002-B3-P2A Session-ownership scopes attach and resume, and,
+ * since CE-0002-B3-P2B, the takeover scope. The remaining scopes (send, ack,
+ * read) exist in the accepted schema vocabulary for later phases and are
+ * refused here. `resume` and `takeover` are Session-bound (P2A-R1 model):
+ * they authorize only the Session they were durably issued to.
  *
  * Verification always happens inside the caller's owned transaction, against
  * the same consistent snapshot as the mutation it authorizes. Refusals are a
@@ -47,11 +49,25 @@ export function isP1CapabilityScope(value: unknown): value is P1CapabilityScope 
 }
 
 /** CE-0002-B3-P2A: Session binding/acquisition (`attach`) and owner
- * renewal/release/verification (`resume`). `takeover` stays inactive. */
+ * renewal/release/verification (`resume`). */
 export const P2A_CAPABILITY_SCOPES = ["attach", "resume"] as const;
 export type P2ACapabilityScope = (typeof P2A_CAPABILITY_SCOPES)[number];
 
-export const OPERATIONAL_CAPABILITY_SCOPES = [...P1_CAPABILITY_SCOPES, ...P2A_CAPABILITY_SCOPES] as const;
+/** CE-0002-B3-P2B: explicit Owner takeover. Session-bound like `resume`:
+ * a takeover capability authorizes only the Session it was durably issued to
+ * (the prospective new Owner Session), never a Session presented at will. */
+export const P2B_CAPABILITY_SCOPES = ["takeover"] as const;
+export type P2BCapabilityScope = (typeof P2B_CAPABILITY_SCOPES)[number];
+
+/** Scopes whose authority is durably bound to exactly one Session. */
+export const SESSION_BOUND_CAPABILITY_SCOPES = ["resume", "takeover"] as const;
+export type SessionBoundCapabilityScope = (typeof SESSION_BOUND_CAPABILITY_SCOPES)[number];
+
+export function isSessionBoundCapabilityScope(value: unknown): value is SessionBoundCapabilityScope {
+  return typeof value === "string" && (SESSION_BOUND_CAPABILITY_SCOPES as readonly string[]).includes(value);
+}
+
+export const OPERATIONAL_CAPABILITY_SCOPES = [...P1_CAPABILITY_SCOPES, ...P2A_CAPABILITY_SCOPES, ...P2B_CAPABILITY_SCOPES] as const;
 export type OperationalCapabilityScope = (typeof OPERATIONAL_CAPABILITY_SCOPES)[number];
 
 export function isOperationalCapabilityScope(value: unknown): value is OperationalCapabilityScope {
@@ -158,9 +174,10 @@ export interface CapabilityPresentation {
   readonly scope: OperationalCapabilityScope;
   /** Evaluation instant for expiry, supplied by the operation's clock. */
   readonly now: string;
-  /** CE-0002-B3-P2A-R1: the Session the presenter acts as. Required for the
-   * `resume` scope: a resume capability is valid only for the Session it was
-   * issued to. Never an authorization input for any other scope. */
+  /** CE-0002-B3-P2A-R1 / B3-P2B: the Session the presenter acts as. Required
+   * for the Session-bound scopes (`resume`, `takeover`): such a capability is
+   * valid only for the Session it was issued to. Never an authorization input
+   * for any other scope. */
   readonly sessionId?: string;
 }
 
@@ -214,12 +231,15 @@ export function classifyCapability(
   }
   if (row.participant_id !== presentation.participantId) return "PARTICIPANT_MISMATCH";
   if (row.scope !== presentation.scope) return "SCOPE_MISMATCH";
-  // Session-bound resume (CE-0002-B3-P2A-R1): a resume capability authorizes
-  // only the Session it was durably issued to. A legacy unbound (NULL) or
-  // differently bound resume row can never authorize: fail closed. The check
-  // runs against the durable row inside the caller's transaction, so the
-  // binding cannot be swapped between check and effect.
-  if (presentation.scope === "resume" && row.session_id !== presentation.sessionId) return "SESSION_MISMATCH";
+  // Session-bound scopes (CE-0002-B3-P2A-R1 `resume`; CE-0002-B3-P2B
+  // `takeover`): the capability authorizes only the Session it was durably
+  // issued to. A legacy unbound (NULL) or differently bound row can never
+  // authorize: fail closed. The check runs against the durable row inside the
+  // caller's transaction, so the binding cannot be swapped between check and
+  // effect.
+  if (isSessionBoundCapabilityScope(presentation.scope) && row.session_id !== presentation.sessionId) {
+    return "SESSION_MISMATCH";
+  }
   if (row.trust_generation !== generation.generation) return "WRONG_GENERATION";
   if (row.revoked_at !== null) return "REVOKED";
   if (row.expires_at !== null) {

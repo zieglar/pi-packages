@@ -21,7 +21,7 @@ import {
 } from "../../src/storage/schema.js";
 import { initializeStore, openStore, preflightStoreShape } from "../../src/storage/store.js";
 import { withImmediateTransaction, StorageTransactionError } from "../../src/storage/transaction.js";
-import { acquireOwnership, readCurrentOwnership, readFencingHighWater, readLeaseStatus, renewLease } from "../../src/storage/ownership.js";
+import { acquireOwnership, readCurrentOwnership, readFencingHighWater, readLeaseStatus, reconcileTakeover, renewLease, takeoverOwnership } from "../../src/storage/ownership.js";
 import { issueCapability } from "../../src/storage/participant.js";
 import { createHostSecretFile, hostSecretDigest, hostSecretPath } from "../../src/storage/trust-root.js";
 
@@ -450,6 +450,51 @@ describe("explicit v2 to v3 migration (B3-P2A-R1)", () => {
       migrated.close();
     }
     expect(() => openStore(loc).close()).not.toThrow();
+  });
+
+  it("supports explicit takeover of a migrated legacy Owner (B3-P2B)", () => {
+    const loc = location();
+    initializeV2Store(loc);
+    seedV2Ownership(loc); // P1 owned by S1, token 1, lease_started_at NULL
+    const migrated = migrateV3(loc);
+    try {
+      // Takeover requires a Session-bound takeover capability for the target.
+      const takeover = issueCapability(migrated, { participantId: P1, scope: "takeover", sessionId: S2 }, { now: () => NOW }).capability;
+      const lease = takeoverOwnership(
+        migrated,
+        { participantId: P1, sessionId: S2, capability: takeover },
+        { now: () => NOW },
+      );
+      // The next fencing token is strictly greater than the legacy token, and
+      // the new row carries a persisted v3 lease start.
+      expect(lease).toMatchObject({ sessionId: S2, fencingToken: 2, leaseStartedAt: NOW });
+      expect(readFencingHighWater(migrated, P1)).toBe(2);
+      expect(readLeaseStatus(migrated, { participantId: P1 }, { now: () => NOW })).toBe("ACTIVE");
+      expect(
+        reconcileTakeover(migrated, {
+          participantId: P1,
+          sessionId: S2,
+          leaseStartedAt: NOW,
+          expiresAt: lease.expiresAt,
+          fencingToken: 2,
+        }),
+      ).toMatchObject({ disposition: "COMMITTED" });
+      // The superseded legacy Owner is not current: its resume capability
+      // cannot renew, release, or verify the new Owner.
+      const resume1 = issueCapability(migrated, { participantId: P1, scope: "resume", sessionId: S1 }, { now: () => NOW }).capability;
+      expect(() =>
+        renewLease(migrated, { participantId: P1, sessionId: S1, fencingToken: 1, capability: resume1 }, { now: () => NOW }),
+      ).toThrowError(expect.objectContaining({ code: "OWNERSHIP_NOT_CURRENT" }));
+      // Historical bindings are preserved for audit continuity.
+      expect(
+        migrated.database
+          .prepare("SELECT session_id FROM participant_session WHERE participant_id = ? ORDER BY session_id")
+          .all(P1)
+          .map((row) => row.session_id),
+      ).toEqual([S1, S2]);
+    } finally {
+      migrated.close();
+    }
   });
 
   it("converges to a byte-identical manifest across fresh, chain-migrated, and v2-migrated stores", () => {

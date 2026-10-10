@@ -106,9 +106,9 @@ describe("Host Capability issuance (B3-P1B)", () => {
       "PARTICIPANT_NOT_FOUND",
     );
     // The complete scope vocabulary stays defined in the accepted schema, but
-    // only create/bind/join (P1B) and attach/resume (CE-0002-B3-P2A) are
-    // operational; takeover stays inactive.
-    for (const scope of ["takeover", "send", "ack", "read"]) {
+    // only create/bind/join (P1B), attach/resume (CE-0002-B3-P2A), and
+    // takeover (CE-0002-B3-P2B) are operational; send/ack/read stay inactive.
+    for (const scope of ["send", "ack", "read"]) {
       expectRefusal(
         () => issueCapability(active.store, { participantId: created.participantId, scope }, { now: () => NOW }),
         "CAPABILITY_SCOPE_UNSUPPORTED",
@@ -583,7 +583,7 @@ describe("Host Capability privacy (B3-P1B)", () => {
       ],
       [
         "unsupported scope refusal",
-        () => issueCapability(active.store, { participantId: created.participantId, scope: "takeover" }, { now: () => NOW }),
+        () => issueCapability(active.store, { participantId: created.participantId, scope: "send" }, { now: () => NOW }),
       ],
       [
         "invalid request refusal",

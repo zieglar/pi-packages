@@ -1,13 +1,13 @@
-// Test-only independent-process worker for CE-0002-B3-P2A acquisition races.
+// Test-only independent-process worker for CE-0002-B3-P2A/P2B ownership races.
 // It owns one SQLite connection, opens the store BEFORE announcing readiness,
-// waits for an explicit release barrier, performs exactly one acquireOwnership
-// call, and emits sanitized structured results only: no capability, digest,
-// secret, SQL text, or error message is ever emitted.
+// waits for an explicit release barrier, performs exactly one acquire/renew/
+// takeover call, and emits sanitized structured results only: no capability,
+// digest, secret, SQL text, or error message is ever emitted.
 import { existsSync, writeFileSync } from "node:fs";
 
 const config = JSON.parse(process.argv[2]);
 const { openStore } = await import(config.storeUrl);
-const { acquireOwnership, renewLease } = await import(config.ownershipUrl);
+const { acquireOwnership, renewLease, takeoverOwnership } = await import(config.ownershipUrl);
 
 function emit(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -42,18 +42,20 @@ if (!waitForBarrier(config.releasePath, config.waitMs)) {
   process.exit(3);
 }
 
+const OPS = { acquire: ["ACQUIRED", acquireOwnership], renew: ["RENEWED", renewLease], takeover: ["TAKEN_OVER", takeoverOwnership] };
+
 try {
-  const op = config.op === "renew" ? renewLease : acquireOwnership;
+  const [disposition, op] = OPS[config.op];
   const lease = op(store, config.request, { now: () => config.now });
   emit({
-    event: "result", stage: "acquire", tag: config.tag,
-    disposition: config.op === "renew" ? "RENEWED" : "ACQUIRED",
+    event: "result", stage: "op", tag: config.tag,
+    disposition,
     sessionId: lease.sessionId, fencingToken: lease.fencingToken, expiresAt: lease.expiresAt,
   });
 } catch (error) {
   emit({
-    event: "result", stage: "acquire", tag: config.tag,
-    code: error?.code ?? "UNKNOWN_ACQUIRE_FAILURE",
+    event: "result", stage: "op", tag: config.tag,
+    code: error?.code ?? "UNKNOWN_OPERATION_FAILURE",
     outcome: error?.outcome ?? null,
     retryable: error?.retryable ?? null,
   });

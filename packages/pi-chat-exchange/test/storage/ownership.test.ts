@@ -436,10 +436,25 @@ describe("B3-P2A lease renewal and expiry", () => {
     expect(readLeaseStatus(w.active.store, { participantId: w.participantId }, clockAt(200))).toBe("EXPIRED");
     // No acquisition is admitted while any ownership row exists — not by
     // another Session and not by the expired Owner itself. Replacing any
-    // existing Owner is takeover (Q1), which is not active.
+    // existing Owner is takeover (Q1); P2B activated the takeover scope, but
+    // attach authority is NOT widened by it.
     zeroWrite(w.active, () => acquire(w, S2, 200), "OWNERSHIP_TAKEOVER_REQUIRED");
     zeroWrite(w.active, () => acquire(w, S1, 200), "OWNERSHIP_TAKEOVER_REQUIRED");
     zeroWrite(w.active, () => acquire(w, S2, 200, { leaseTtlSeconds: 30 }), "OWNERSHIP_TAKEOVER_REQUIRED");
+    // Holding a valid Session-bound takeover capability does not widen attach:
+    // acquisition still refuses, and the takeover token is not an attach token.
+    const takeover2 = capabilityFor(w.active, w.participantId, "takeover", { sessionId: S2 });
+    zeroWrite(w.active, () => acquire(w, S2, 200), "OWNERSHIP_TAKEOVER_REQUIRED");
+    zeroWrite(
+      w.active,
+      () =>
+        acquireOwnership(
+          w.active.store,
+          { participantId: w.participantId, sessionId: S2, capability: takeover2 },
+          clockAt(200),
+        ),
+      "CAPABILITY_REJECTED",
+    );
     // The durable state is untouched: same Owner, same token, same expiry.
     expect(readCurrentOwnership(w.active.store, w.participantId)).toMatchObject({
       sessionId: S1,
@@ -448,11 +463,6 @@ describe("B3-P2A lease renewal and expiry", () => {
       leaseStartedAt: at(0),
     });
     expect(readFencingHighWater(w.active.store, w.participantId)).toBe(1);
-    // Issuing a takeover capability stays refused.
-    expectRefusal(
-      () => capabilityFor(w.active, w.participantId, "takeover" as "attach"),
-      "CAPABILITY_SCOPE_UNSUPPORTED",
-    );
   });
 
   it("admits acquisition again after an explicit release, with the next fencing token", () => {
