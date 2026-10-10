@@ -4,6 +4,7 @@ import { StoreLifecycleError } from "./errors.js";
 import { CAPABILITY_PATTERN, HOST_CAPABILITY_BYTES } from "./participant-identity.js";
 import { deriveCapabilityDigest, digestsMatch, readHostSecretDigest } from "./trust-root.js";
 
+import { parseSessionRow, SESSION_COLUMNS } from "./session-state.js";
 /** Minimal read capability: satisfied by the accepted owned-transaction
  * handle and by a privileged read connection, so authorization can be
  * evaluated inside a mutation's transaction and by the host-local status read
@@ -83,6 +84,7 @@ export type CapabilityStatus =
   | "SCOPE_MISMATCH"
   | "PARTICIPANT_MISMATCH"
   | "SESSION_MISMATCH"
+  | "SESSION_DETACHED"
   | "WRONG_GENERATION"
   | "REVOKED"
   | "EXPIRED"
@@ -239,6 +241,31 @@ export function classifyCapability(
   // effect.
   if (isSessionBoundCapabilityScope(presentation.scope) && row.session_id !== presentation.sessionId) {
     return "SESSION_MISMATCH";
+  }
+  // CE-0002-B3-P2C-B (D7): a Session-bound capability is lifecycle-bound.
+  // The persisted `detached_at` of its bound Session is the source of
+  // truth, so a DETACHED Session makes the capability permanently unusable
+  // for every presenter — read-time invalidation only; no capability row is
+  // ever rewritten as a side effect of Detach. The future Session-bound
+  // scopes (`send`, `ack`, `read`) will join
+  // `SESSION_BOUND_CAPABILITY_SCOPES` when they become operational and
+  // inherit this check unchanged. The binding row is read strictly inside the
+  // caller's transaction: a Session-bound capability whose binding is missing
+  // or malformed is inconsistent durable state — refused as corruption,
+  // never adopted (schema v4 makes row deletion trigger-impossible, so this
+  // is privileged tampering or foreign state).
+  if (isSessionBoundCapabilityScope(row.scope) && row.session_id !== null) {
+    const sessionRow = tx
+      .prepare(`${SESSION_COLUMNS} WHERE participant_id = ? AND session_id = ?`)
+      .get(row.participant_id, row.session_id);
+    const binding = sessionRow === undefined ? undefined : parseSessionRow(sessionRow);
+    if (binding === undefined || binding.participantId !== row.participant_id || binding.sessionId !== row.session_id) {
+      throw new StoreLifecycleError(
+        "STORAGE_OWNERSHIP_CORRUPT",
+        "stored Session lifecycle state is inconsistent; operator review required",
+      );
+    }
+    if (binding.state === "DETACHED") return "SESSION_DETACHED";
   }
   if (row.trust_generation !== generation.generation) return "WRONG_GENERATION";
   if (row.revoked_at !== null) return "REVOKED";

@@ -62,6 +62,7 @@ interface World {
   readonly participantId: string;
   readonly attach: string;
   readonly resume1: string;
+  readonly resume2: string;
   readonly takeover2: string;
 }
 
@@ -76,6 +77,7 @@ function world(): World {
     participantId,
     attach,
     resume1: capabilityFor(active, participantId, "resume", { sessionId: S1 }),
+    resume2: capabilityFor(active, participantId, "resume", { sessionId: S2 }),
     takeover2: capabilityFor(active, participantId, "takeover", { sessionId: S2 }),
   };
 }
@@ -148,7 +150,7 @@ interface RunningWorker {
 async function runWorker(
   w: World,
   tag: string,
-  op: "renew" | "takeover",
+  op: "renew" | "takeover" | "detach",
   request: Record<string, unknown>,
 ): Promise<RunningWorker> {
   const startedPath = join(w.active.root, `${tag}.started`);
@@ -394,5 +396,67 @@ describe("B3-P2B-R1 transaction-time clock under real lock contention", () => {
       capability: w.takeover2,
     });
     expect(lease).toMatchObject({ sessionId: S2, fencingToken: 2 });
+  }, TEST_TIMEOUT_MS);
+
+  it("F: a detach initiated before lease expiry but serialized after it still refuses SESSION_IS_CURRENT_OWNER", async () => {
+    const w = world();
+    const expiry = acquireShortLease(w);
+    const expiresAtMs = Date.parse(expiry);
+    const before = durableState(w.active);
+    const blocker = holdWriteLock(w.active, w.participantId);
+    try {
+      await until(expiresAtMs - 2_500);
+      const worker = await runWorker(w, "f", "detach", {
+        participantId: w.participantId,
+        sessionId: S1,
+        capability: w.resume1,
+      });
+      expect(Date.parse(worker.initiatedAt)).toBeLessThan(expiresAtMs);
+      await until(expiresAtMs + 750);
+      blocker.exec("ROLLBACK");
+      const result = await worker.done;
+      // The current Owner is not detachable in ANY lease state (Q5): even
+      // serialized after expiry, the refusal stands and nothing is written.
+      expect(result).toMatchObject({ code: "SESSION_IS_CURRENT_OWNER", outcome: "ROLLED_BACK", retryable: false });
+      expect(JSON.stringify(result)).not.toContain(w.resume1);
+    } finally {
+      blocker.close();
+    }
+    // Zero durable writes; the expired Owner row and high-water stand.
+    expect(durableState(w.active)).toBe(before);
+    expect(readFencingHighWater(w.active.store, w.participantId)).toBe(1);
+  }, TEST_TIMEOUT_MS);
+
+  it("G: a detach of a non-Owner Session serialized after the lock wait commits at the serialization instant", async () => {
+    const w = world();
+    acquireShortLease(w); // S1 owns; S2 is a plain bound non-Owner Session.
+    const blocker = holdWriteLock(w.active, w.participantId);
+    let result: Record<string, unknown>;
+    try {
+      const worker = await runWorker(w, "g", "detach", {
+        participantId: w.participantId,
+        sessionId: S2,
+        capability: w.resume2,
+      });
+      blocker.exec("ROLLBACK");
+      result = await worker.done;
+      expect(result).toMatchObject({ disposition: "DETACHED", sessionId: S2 });
+      // The persisted detach instant is the post-lock serialization instant:
+      // at or after the observed initiation, never a stale pre-lock sample.
+      expect(Date.parse(result.detachedAt as string)).toBeGreaterThanOrEqual(Date.parse(worker.initiatedAt));
+      expect(JSON.stringify(result)).not.toContain(w.resume2);
+    } finally {
+      blocker.close();
+    }
+    // Ownership and fencing are untouched by the detach; the Session row is
+    // DETACHED and never deleted.
+    expect(readCurrentOwnership(w.active.store, w.participantId)).toMatchObject({ sessionId: S1, fencingToken: 1 });
+    expect(readFencingHighWater(w.active.store, w.participantId)).toBe(1);
+    expect(rowCounts(w.active)).toMatchObject({ ownership: "1", fencing: "1", session: "2" });
+    expect(
+      reader(w.active)
+        .prepare("SELECT detached_at IS NOT NULL AND private_revision = 2 AS d FROM participant_session WHERE session_id = ?")
+        .get(S2),
+    ).toEqual({ d: 1 });
   }, TEST_TIMEOUT_MS);
 });

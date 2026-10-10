@@ -3,6 +3,11 @@
 export type StoreLifecycleErrorCode =
   | "STORAGE_ALREADY_INITIALIZED"
   | "STORAGE_CORRUPT"
+  // CE-0002-B3-P2C-B: the capability plane reads the Session lifecycle row
+  // strictly; an inconsistent Session binding surfaces with the same code
+  // the ownership plane uses for the same durable defect, so one malformed
+  // row classifies identically on every operational surface.
+  | "STORAGE_OWNERSHIP_CORRUPT"
   | "STORAGE_FOREIGN_STORE"
   | "STORAGE_INCOMPATIBLE"
   | "STORAGE_MIGRATION_CHECKSUM_MISMATCH"

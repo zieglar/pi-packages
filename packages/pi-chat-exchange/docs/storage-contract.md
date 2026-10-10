@@ -358,7 +358,15 @@ wrong-scope, wrong-Participant, wrong-generation, revoked, and expired
 capabilities are all refused with the single opaque `CAPABILITY_REJECTED`
 classification, so the refusal is not an oracle; the host-local
 `readCapabilityStatus` read retains the detail. Session IDs and Participant
-IDs never authorize anything. Revocation is explicit and one-way; there is no
+IDs never authorize anything. Since CE-0002-B3-P2C-B a Session-bound
+capability (`resume`, `takeover`; the future `send`/`ack`/`read` scopes
+inherit this when they become operational) whose bound Session is DETACHED
+is equally unusable: the persisted `detached_at` is the lifecycle source of
+truth, invalidated at read time with no capability-row rewrites, and the
+host-local status identifies `SESSION_DETACHED` while callers see the same
+opaque classification. A Session-bound capability whose binding row is
+missing or malformed refuses `STORAGE_OWNERSHIP_CORRUPT`. Revocation is
+explicit and one-way; there is no
 automatic capability recovery. After an operator trust-root recovery, previous
 capabilities fail both by revocation and by generation binding, and fresh
 issuance is required per Participant.
@@ -868,3 +876,23 @@ wrong storage class, malformed, noncanonical, and calendar-invalid
 `detached_at` values, `detached_at` earlier than `bound_at`, and detach
 over a malformed `bound_at` are all refused by SQLite itself, with the
 application-level refusals still pinned.
+
+CE-0002-B3-P2C-B adds the authorized detach surface:
+`test/storage/detach-lifecycle.test.ts` (authorization matrix incl. forged /
+expired / revoked / wrong-scope / wrong-Session capabilities; the full
+ownership-interaction matrix incl. no-ownership, released, superseded,
+active / expired / legacy / clock-regressed current Owner, clock regression
+before `bound_at`, corrupt ownership, and serialized concurrent
+release / takeover / renew / detach outcomes; capability lifecycle pins incl.
+`SESSION_DETACHED` host-local status, opaque caller refusals, no bulk
+revocation, and revocation-refuses-like-expiry; and the
+`reconcileDetach` COMMITTED / NO_TRACE / EVIDENCE_CONFLICT matrix);
+`test/storage/detach-crash.test.ts` (real OS-process SIGKILL at the
+before-commit and after-commit boundaries, with durable forensics and
+fail-closed reconciliation: rollback → NO_TRACE + fresh-attempt success,
+commit → COMMITTED + terminal retry refusal); and the lock-wait scenarios
+F and G in `test/storage/lease-lock-wait.test.ts` (real processes, real
+writer lock: a detach serialized after lease expiry still refuses
+`SESSION_IS_CURRENT_OWNER` zero-write, and a non-Owner detach serialized
+after the lock wait commits at the serialization instant without touching
+ownership or fencing).

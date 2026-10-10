@@ -1,5 +1,5 @@
 // Test-only independent-process worker for CE-0002-B3-P2B-R1 lock-wait races.
-// It performs exactly one renewLease/takeoverOwnership call against a real
+// It performs exactly one renewLease/takeoverOwnership/detachSession call
 // file-backed store under the REAL wall clock (no injected clock seam). An
 // observable initiation marker (its content is the real instant immediately
 // before the operation call) lets the parent prove the operation was
@@ -22,7 +22,7 @@ const store = openStore({
   busyTimeoutMs: config.busyTimeoutMs,
 });
 try {
-  const op = config.op === "renew" ? ownership.renewLease : ownership.takeoverOwnership;
+  const op = config.op === "renew" ? ownership.renewLease : config.op === "detach" ? ownership.detachSession : ownership.takeoverOwnership;
   // Atomic publication (CE-0002-B3-P2C-A-R1): write the complete marker to a
   // staging path, close it, then rename into place. A direct write to the
   // marker path has a create-then-fill window on POSIX (the file exists
@@ -32,16 +32,16 @@ try {
   const stagingPath = `${config.startedPath}.staging`;
   writeFileSync(stagingPath, initiatedAt, { flag: "wx", mode: 0o600 });
   renameSync(stagingPath, config.startedPath);
-  const lease = op(store, config.request);
+  const result = op(store, config.request);
   emit({
     event: "result",
     stage: "op",
     tag: config.tag,
-    disposition: config.op === "renew" ? "RENEWED" : "TAKEN_OVER",
-    sessionId: lease.sessionId,
-    fencingToken: lease.fencingToken,
-    leaseStartedAt: lease.leaseStartedAt,
-    expiresAt: lease.expiresAt,
+    disposition: config.op === "renew" ? "RENEWED" : config.op === "detach" ? "DETACHED" : "TAKEN_OVER",
+    sessionId: result.sessionId,
+    ...(config.op === "detach"
+      ? { boundAt: result.boundAt, detachedAt: result.detachedAt }
+      : { fencingToken: result.fencingToken, leaseStartedAt: result.leaseStartedAt, expiresAt: result.expiresAt }),
   });
 } catch (error) {
   emit({

@@ -282,8 +282,79 @@ self-detach). P3 is not started.
   zero-write read over one snapshot returning `ATTACHED` / `DETACHED` /
   `NOT_FOUND` (a foreign pair is `NOT_FOUND`); it validates the
   Participant's ownership state in the same snapshot and authorizes nothing.
-- **Remaining P2C work (P2C-B).** The authorized `detachSession` operation
-  (D4: Session-bound `resume`, self only), the capability-plane lifecycle
-  status (D7), the `SESSION_IS_CURRENT_OWNER` / `SESSION_CLOCK_REGRESSION` /
-  `SESSION_DETACHED` typed codes, detach reconciliation, and the lease-policy
-  documentation (D10/D11).
+- **Remaining P2C work (P2C-B): implemented** by CE-0002-B3-P2C-B — see the
+  next section. P3 (send/ack/read, delivery) is not started.
+
+## B3-P2C-B — Authorized Session Detach (CE-0002-B3-P2C-B)
+
+Status: **implemented**. Realizes the accepted P2C-D0 design decisions D4,
+D7, D10, and D11 without changing any accepted boundary: schema v4 stays
+frozen (no DDL, no new migration, no checksum change), no `detach` capability
+scope exists, and Disconnect is not Detach — Detach is a durable binding
+lifecycle fact of the private storage plane, never a transport event.
+
+- **Operation (D4).** `detachSession(store, request)` performs the one-way
+  ATTACHED → DETACHED transition under the Session's own Session-bound
+  `resume` capability — self only. The capability must authorize exactly its
+  bound Session; a Session ID alone is never a credential. Inside one owned
+  BEGIN IMMEDIATE transaction, in order: transaction-time clock (sampled
+  after the writer lock is acquired), capability validation (trust
+  generation, expiry, revocation, Session binding), Participant identity,
+  Session binding, complete ownership-state validation, the
+  current-Owner refusal, the clock-regression refusal, and the guarded
+  `detached_at IS NULL AND private_revision = 1` → `detached_at = now,`
+  `private_revision = 2` update with exactly one changed row.
+- **Ownership interaction (Q5).** The current Owner — live, expired, legacy
+  (NULL `lease_started_at`), or clock-regressed — refuses
+  `SESSION_IS_CURRENT_OWNER` while the ownership row references its Session,
+  regardless of lease expiry. The way out is the existing release (live
+  Owners only; Q4 preserved: an expired Owner cannot release) or an
+  authorized takeover, after which the superseded former Owner detaches
+  freely. Detach never modifies the ownership row, never touches the fencing
+  high-water, never deletes the Session row, and never mutates capability
+  rows. Concurrent release / takeover / renew outcomes are derived from the
+  serialized durable state; the real-process lock-wait scenarios F and G pin
+  the serialized boundaries.
+- **Capability lifecycle (D7).** Session lifecycle validation is centralized
+  in capability classification: a Session-bound capability whose bound
+  Session is DETACHED is unusable for every presenter. The persisted
+  `detached_at` is the lifecycle source of truth — read-time invalidation
+  only, no bulk revocation, no capability-row rewrites. Caller-visible
+  refusals remain the one opaque `CAPABILITY_REJECTED`; the host-local
+  status read identifies `SESSION_DETACHED`. The future Session-bound
+  scopes (`send`, `ack`, `read` — not implemented in this phase) inherit the
+  check unchanged when they join `SESSION_BOUND_CAPABILITY_SCOPES`. A
+  Session-bound capability whose binding row is missing or malformed refuses
+  `STORAGE_OWNERSHIP_CORRUPT` — never adopted, never repaired. Deliberate
+  error-precedence change (documented, pinned): for a DETACHED Session, the
+  capability-plane refusal now outranks the operation-level
+  `SESSION_NOT_BOUND` that `renewLease` / `releaseOwnership` /
+  `verifyOwnership` / `takeoverOwnership` previously surfaced; `attach`
+  (not Session-bound) still refuses `SESSION_NOT_BOUND` at the operation.
+  Revoking a detached Session's capability refuses exactly like revoking an
+  expired one.
+- **Recovery.** `reconcileDetach(store, evidence)` is the private, read-based,
+  zero-write, fail-closed reconciliation after an uncertain outcome (failure
+  before or after COMMIT, lost response, BUSY, ROLLED_BACK, INDETERMINATE):
+  COMMITTED / NO_TRACE / EVIDENCE_CONFLICT classified from the durable
+  Session state in one snapshot, with ownership coherence validated in the
+  same snapshot (concurrent takeovers and releases are simply part of the
+  observed state). The evidence `detachedAt` is optional: with it, an exact
+  match is COMMITTED and any mismatch is EVIDENCE_CONFLICT (operator
+  review); without it, a DETACHED row is COMMITTED because the terminal
+  durable effect exists. The durable effect is idempotent; the API response
+  is not — a retry of a committed detach refuses `CAPABILITY_REJECTED` — so
+  the discipline is reconcile first, never blindly retry, and a fresh
+  attempt after NO_TRACE is a new full authorization, not a replay. No
+  exactly-once execution is claimed. `reconcileTakeover` is unchanged.
+- **Lease policy (D10/D11).** The host owns lease policy: default TTL 120 s,
+  accepted range 30–3600 s, renewal recommendation 30 s. An adapter may
+  REQUEST a TTL per operation (`leaseTtlSeconds`); the request only computes
+  the new expiry at acquisition or renewal and never reinterprets a stored
+  term. No policy is persisted — there is no policy table and none is
+  planned for this phase. Hosts should schedule renewal well before expiry
+  using the `expiresAt` returned by acquisition and renewal (and re-derive
+  the schedule from each renewal's returned `expiresAt`), because an
+  operation serialized after expiry refuses `LEASE_EXPIRED` and cannot
+  revive the term; the persisted `lease_started_at` / `expires_at` boundaries
+  always decide.

@@ -539,7 +539,11 @@ describe("detached Sessions never regain authority (B3-P2C-A validation)", () =>
     const afterAcquire = rowCounts(w.active);
     expectRefusal(
       () => takeoverOwnership(w.active.store, { participantId: w.participantId, sessionId: S2, capability: takeover2 }, clockAt(500)),
-      "SESSION_NOT_BOUND",
+      // CE-0002-B3-P2C-B (deliberate error-precedence change): a Session-bound
+      // capability of a DETACHED Session is unusable at classification, so
+      // the opaque CAPABILITY_REJECTED outranks the operation's Session
+      // check. Still zero-write.
+      "CAPABILITY_REJECTED",
     );
     expectRefusal(
       () =>
@@ -548,7 +552,8 @@ describe("detached Sessions never regain authority (B3-P2C-A validation)", () =>
           { participantId: w.participantId, sessionId: S2, fencingToken: 1, capability: resume2 },
           clockAt(20),
         ),
-      "SESSION_NOT_BOUND",
+      // CE-0002-B3-P2C-B (deliberate error-precedence change): see above.
+      "CAPABILITY_REJECTED",
     );
     expect(rowCounts(w.active)).toEqual(afterAcquire);
     expect({ ...before, ownership: "1", fencing: "1" }).toEqual(afterAcquire);
@@ -570,7 +575,8 @@ describe("detached Sessions never regain authority (B3-P2C-A validation)", () =>
           { participantId: w.participantId, sessionId: S1, fencingToken: 1, capability: resume1 },
           clockAt(202),
         ),
-      "SESSION_NOT_BOUND",
+      // CE-0002-B3-P2C-B (deliberate error-precedence change): see above.
+      "CAPABILITY_REJECTED",
     );
     expect(rowCounts(w.active)).toEqual(before);
     expect(readCurrentOwnership(w.active.store, w.participantId)).toMatchObject({ sessionId: S3, fencingToken: 2 });
@@ -678,7 +684,8 @@ describe("malformed Session lifecycle state is refused, never repaired", () => {
           { participantId: w.participantId, sessionId: S1, fencingToken: 1, capability: resume1 },
           clockAt(10),
         ),
-      "SESSION_NOT_BOUND",
+        // CE-0002-B3-P2C-B (deliberate error-precedence change): see above.
+        "CAPABILITY_REJECTED",
     );
     const takeover2 = capabilityFor(w.active, w.participantId, "takeover", { sessionId: S2 });
     const afterIssue = rowCounts(w.active);

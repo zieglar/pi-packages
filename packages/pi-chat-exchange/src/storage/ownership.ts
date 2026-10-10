@@ -65,6 +65,22 @@ import { requireSingleRowChange, type TransactionHandle } from "./transaction.js
  *   reports NO_TRACE. Retrying is safe only because every attempt is freshly
  *   authorized and eligibility-checked; EVIDENCE_CONFLICT is operator review,
  *   never an automatic retry.
+ * - `detachSession` (scope `resume`, CE-0002-B3-P2C-B, D4) performs the
+ *   authorized one-way ATTACHED → DETACHED transition of the Session the
+ *   resume capability is durably bound to — self only, never a Session ID
+ *   as credential. The current Owner Session is refused in every lease
+ *   state (`SESSION_IS_CURRENT_OWNER`; Q5), a clock before `bound_at`
+ *   refuses (`SESSION_CLOCK_REGRESSION`), and the guarded revision-1 → 2
+ *   update must change exactly one row. Detach never touches ownership,
+ *   fencing, or capability rows; the persisted `detached_at` invalidates
+ *   every Session-bound capability at read time (D7) — caller-visibly as the
+ *   one opaque `CAPABILITY_REJECTED`, host-locally as `SESSION_DETACHED`.
+ * - `reconcileDetach` is the matching zero-write, fail-closed
+ *   reconciliation read after an uncertain outcome (BUSY, ROLLED_BACK,
+ *   INDETERMINATE, lost response): COMMITTED / NO_TRACE / EVIDENCE_CONFLICT
+ *   classified from the durable Session state alone. A committed Detach is
+ *   terminal; the durable effect is idempotent but the API response is not
+ *   (a retry refuses), so reconcile first and never blindly retry.
  * - `renewLease`, `releaseOwnership`, and `verifyOwnership` (scope `resume`)
  *   require the current Owner Session, a Session-bound resume capability, the
  *   current fencing token, and an unexpired lease, all evaluated inside the
@@ -725,6 +741,93 @@ export function takeoverOwnership(
   });
 }
 
+// ---------------------------------------------------------------------------
+// Session detach (CE-0002-B3-P2C-B)
+// ---------------------------------------------------------------------------
+
+export interface SessionDetach {
+  readonly participantId: string;
+  readonly sessionId: string;
+  readonly boundAt: string;
+  readonly detachedAt: string;
+}
+
+export interface DetachSessionSeams extends ClockSeam {
+  readonly afterSessionUpdate?: () => void;
+}
+
+/**
+ * The authorized one-way ATTACHED → DETACHED transition (CE-0002-B3-P2C-B,
+ * D4): performed by the Session's own Session-bound `resume` capability —
+ * self only. The capability must authorize exactly its bound Session; a
+ * Session ID alone is never a credential, and no `detach` scope exists.
+ *
+ * Inside one owned IMMEDIATE transaction, in order: the operation clock is
+ * sampled after the writer lock is held; the capability is validated
+ * (trust generation, expiry, revocation, Session binding — a DETACHED
+ * Session's capability is already unusable there, so a repeat Detach of a
+ * terminal Session refuses `CAPABILITY_REJECTED`); the Participant exists;
+ * the Session is a currently bound ATTACHED row; the complete ownership
+ * state is loaded and validated (an ownership row must carry exactly the
+ * current fencing token and reference a bound, attached Session); the
+ * Session is refused as `SESSION_IS_CURRENT_OWNER` while the ownership row
+ * references it — live, expired, legacy, or clock-regressed alike, so the
+ * way out of ownership is the existing release or takeover, never Detach
+ * (Q5); a clock regressed before the persisted `bound_at` refuses
+ * `SESSION_CLOCK_REGRESSION`; then exactly the guarded
+ * `detached_at IS NULL AND private_revision = 1` → `detached_at = now,
+ * private_revision = 2` update runs, requiring exactly one changed row.
+ *
+ * Detach never modifies the ownership row or the fencing high-water, never
+ * deletes the Session row, and never mutates capability rows: the persisted
+ * `detached_at` is the lifecycle source of truth, and every Session-bound
+ * capability becomes unusable at read time from then on (see
+ * `capability.ts`). Every refusal is zero-write. The schema v4 triggers are
+ * the defense in depth behind these application checks.
+ */
+export function detachSession(store: DurableStore, input: unknown, seams: DetachSessionSeams = {}): SessionDetach {
+  const fields = captureFields(
+    input,
+    ["participantId", "sessionId", "capability"],
+    ["participantId", "sessionId", "capability"],
+    "request",
+  );
+  const participantId = requireParticipantId(fields.participantId, "participantId");
+  const sessionId = requireSessionId(fields.sessionId, "sessionId");
+  const capability = fields.capability;
+  const afterSessionUpdate = seams.afterSessionUpdate;
+
+  return runOwned(store, "Session detach", (tx) => {
+    // Transaction-time clock: sampled after BEGIN IMMEDIATE has acquired the
+    // writer lock, so the persisted detach instant and every authorization
+    // decision derive from the serialization instant.
+    const now = clock(seams);
+    authorize(tx, store, { capability, participantId, scope: "resume", now, sessionId });
+    if (readParticipantRow(tx, participantId) === undefined) refuse("PARTICIPANT_NOT_FOUND");
+    const session = sessionRow(tx, participantId, sessionId);
+    if (session === undefined || session.detached) refuse("SESSION_NOT_BOUND");
+    const { ownership } = loadOwnershipState(tx, participantId);
+    // Q5: the current Owner — live, expired, legacy, or clock-regressed — is
+    // not detachable while the ownership row references its Session. The
+    // check deliberately ignores lease state: an expired Owner must first be
+    // superseded through the authorized takeover path (Q4: it cannot release).
+    if (ownership !== undefined && ownership.sessionId === sessionId) {
+      refuse("SESSION_IS_CURRENT_OWNER");
+    }
+    if (Date.parse(now) < Date.parse(session.boundAt)) refuse("SESSION_CLOCK_REGRESSION");
+    requireSingleRowChange(
+      tx
+        .prepare(
+          "UPDATE participant_session SET detached_at = ?, private_revision = 2 WHERE participant_id = ? AND session_id = ? AND detached_at IS NULL AND private_revision = 1",
+        )
+        .run(now, participantId, sessionId),
+      "session detach",
+    );
+    hook(afterSessionUpdate);
+    return Object.freeze({ participantId, sessionId, boundAt: session.boundAt, detachedAt: now });
+  });
+}
+
 /** Zero-write current-Owner authorization, evaluated in an owned transaction
  * so it observes the same serialized state any mutation would. Returns the
  * durable record exactly as persisted, including the term start. */
@@ -900,6 +1003,94 @@ export function reconcileTakeover(store: DurableStore, input: unknown): Takeover
       ownership.expiresAt === expiresAt &&
       (fencingToken === undefined || ownership.fencingToken === fencingToken);
     return Object.freeze({ disposition: matches ? ("COMMITTED" as const) : ("EVIDENCE_CONFLICT" as const), current: ownership });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Detach reconciliation (zero-write, fail-closed; CE-0002-B3-P2C-B)
+// ---------------------------------------------------------------------------
+
+/** The durable evidence a Detach request would have persisted. The caller
+ * knows the Participant and Session from its own request; the optional
+ * `detachedAt` is the detach instant evidence (a deterministic-seam caller
+ * knows it exactly; a real-clock caller reconciles without it). */
+export interface DetachEvidence {
+  readonly participantId: string;
+  readonly sessionId: string;
+  readonly detachedAt?: string;
+}
+
+/** Fail-closed classification of the CURRENT durable relationship between a
+ * Detach request's evidence and the Session row:
+ * - COMMITTED: the Session row is DETACHED — with the evidence instant
+ *   presented, it matches exactly; without it, the terminal durable effect
+ *   this request wanted (the one-way detach of this Session) exists.
+ *   Detach's durable effect is idempotent (terminal, exactly one row
+ *   state), but its API response is NOT: a retry of the same call refuses
+ *   `CAPABILITY_REJECTED` (the capability is lifecycle-dead), which is why
+ *   reconciliation, not blind retry, is the post-uncertainty path. No
+ *   exactly-once execution is claimed or implied.
+ * - NO_TRACE: the pair has no Session row, or the row is ATTACHED. The
+ *   request did not commit, was refused, or rolled back — indistinguishable
+ *   from durable evidence alone because every refusal path is zero-write.
+ *   A fresh attempt is evaluated under current authorization.
+ * - EVIDENCE_CONFLICT: the Session is DETACHED but under a different
+ *   instant than the presented evidence — a different detach committed.
+ *   Never auto-retry: operator review.
+ */
+export type DetachReconciliationCode = "COMMITTED" | "NO_TRACE" | "EVIDENCE_CONFLICT";
+
+export interface DetachReconciliation {
+  readonly disposition: DetachReconciliationCode;
+  /** The durable Session lifecycle exactly as persisted (undefined when no
+   * binding of the pair exists). Host-local diagnostic detail; never an
+   * authorization. */
+  readonly current: { readonly state: SessionLifecycleState; readonly boundAt?: string; readonly detachedAt?: string } | undefined;
+}
+
+/** Zero-write, read-based reconciliation after an uncertain Detach outcome
+ * (failure before or after COMMIT, a lost response, BUSY, ROLLED_BACK, or
+ * INDETERMINATE). The classification reads one consistent snapshot of the
+ * durable Session state — the persisted `detached_at` is the only source of
+ * truth — and validates the Participant's ownership coherence in the same
+ * snapshot, so concurrent takeovers and releases are simply part of the
+ * observed state, never raced against. A committed Detach is terminal: it
+ * stays DETACHED across any later reconciliation. This mirrors
+ * `reconcileTakeover` deliberately and does not redesign it. */
+export function reconcileDetach(store: DurableStore, input: unknown): DetachReconciliation {
+  const fields = captureFields(
+    input,
+    ["participantId", "sessionId", "detachedAt"],
+    ["participantId", "sessionId"],
+    "request",
+  );
+  const pid = requireParticipantId(fields.participantId, "participantId");
+  const sid = requireSessionId(fields.sessionId, "sessionId");
+  const detachedAt = Object.hasOwn(fields, "detachedAt")
+    ? requireInstant(fields.detachedAt, "detachedAt")
+    : undefined;
+  return readSnapshot(store, (handle) => {
+    const session = sessionRow(handle, pid, sid);
+    // Ownership coherence is validated in the same snapshot (a malformed
+    // ownership row refuses STORAGE_OWNERSHIP_CORRUPT), exactly like the
+    // lifecycle read. Reads authorize nothing.
+    loadOwnershipState(handle, pid);
+    if (session === undefined) {
+      return Object.freeze({ disposition: "NO_TRACE" as const, current: undefined });
+    }
+    if (!session.detached) {
+      return Object.freeze({ disposition: "NO_TRACE" as const, current: { state: "ATTACHED" as const, boundAt: session.boundAt } });
+    }
+    const current = Object.freeze({
+      state: "DETACHED" as const,
+      boundAt: session.boundAt,
+      detachedAt: session.detachedAt as string,
+    });
+    const disposition =
+      detachedAt === undefined || session.detachedAt === detachedAt
+        ? ("COMMITTED" as const)
+        : ("EVIDENCE_CONFLICT" as const);
+    return Object.freeze({ disposition, current });
   });
 }
 

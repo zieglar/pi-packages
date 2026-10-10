@@ -686,6 +686,45 @@ describe("Session-bound resume capability (B3-P2A-R1)", () => {
     expect(status()).toBe("SESSION_MISMATCH");
   });
 
+  it("classifies a DETACHED Session's capability as SESSION_DETACHED (B3-P2C-B, D7)", async () => {
+    const { bindSession } = await import("../../src/storage/ownership.js");
+    const active = fixture();
+    const { created, attach } = boundParticipant(active);
+    bindSession(active.store, { participantId: created.participantId, sessionId: S1, capability: attach }, { now: () => NOW });
+    const resume = capabilityFor(active, created.participantId, "resume", { sessionId: S1 });
+    const status = (extra: object = {}) =>
+      readCapabilityStatus(
+        active.store,
+        { capability: resume, participantId: created.participantId, scope: "resume", ...extra },
+        { now: () => NOW },
+      );
+    expect(status({ sessionId: S1 })).toBe("VALID");
+    // The accepted privileged-writer transition (test authority only): the
+    // persisted detached_at becomes the lifecycle source of truth.
+    const db = privileged(active);
+    try {
+      db.prepare("UPDATE participant_session SET detached_at = ?, private_revision = 2 WHERE session_id = ?").run(NOW, S1);
+    } finally {
+      db.close();
+    }
+    expect(status({ sessionId: S1 })).toBe("SESSION_DETACHED");
+    // The binding check still precedes the lifecycle check: a presenter
+    // claiming a different Session is a mismatch, not a lifecycle verdict.
+    expect(status({ sessionId: S2 })).toBe("SESSION_MISMATCH");
+    expect(status()).toBe("SESSION_MISMATCH");
+    // No capability row is rewritten by the lifecycle invalidation.
+    const view = reader(active);
+    try {
+      expect(
+        view
+          .prepare("SELECT revoked_at FROM participant_capability WHERE scope = 'resume' AND session_id = ?")
+          .get(S1),
+      ).toEqual({ revoked_at: null });
+    } finally {
+      view.close();
+    }
+  });
+
   it("requires the bound Session to revoke a resume capability", async () => {
     const { bindSession } = await import("../../src/storage/ownership.js");
     const active = fixture();

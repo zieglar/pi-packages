@@ -74,6 +74,13 @@ type ParticipantDomainCode =
   | "SESSION_ALREADY_BOUND"
   | "SESSION_BOUND_TO_OTHER_PARTICIPANT"
   | "SESSION_NOT_BOUND"
+  // CE-0002-B3-P2C-B: the authorized Detach refusals. `SESSION_DETACHED` is
+  // deliberately NOT a caller-visible domain code: a detached Session makes
+  // its Session-bound capabilities unusable, which callers see as the one
+  // opaque CAPABILITY_REJECTED classification; only the host-local
+  // capability status read identifies SESSION_DETACHED.
+  | "SESSION_IS_CURRENT_OWNER"
+  | "SESSION_CLOCK_REGRESSION"
   | "OWNERSHIP_HELD"
   | "OWNERSHIP_NOT_CURRENT"
   | "OWNERSHIP_TAKEOVER_REQUIRED"
@@ -102,6 +109,8 @@ const DOMAIN_DETAIL: Record<ParticipantDomainCode, string> = {
   SESSION_ALREADY_BOUND: "the Session is already bound to this Participant",
   SESSION_BOUND_TO_OTHER_PARTICIPANT: "the Session is bound to another Participant",
   SESSION_NOT_BOUND: "operation requires a currently bound Session",
+  SESSION_IS_CURRENT_OWNER: "the current Owner Session cannot be detached while the ownership row references it",
+  SESSION_CLOCK_REGRESSION: "the operation clock precedes the Session binding instant",
   OWNERSHIP_HELD: "the Participant already has a current Owner",
   OWNERSHIP_NOT_CURRENT: "the Session is not the current Owner of the Participant",
   OWNERSHIP_TAKEOVER_REQUIRED: "replacing an existing Owner requires takeover authority",
