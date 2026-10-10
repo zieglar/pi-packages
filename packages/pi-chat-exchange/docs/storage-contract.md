@@ -446,3 +446,96 @@ instead of a generic transaction failure). The transaction outcome, its
 non-retryable classification, and the original transaction error remain
 available as the preserved `cause`. BUSY, INDETERMINATE, and unclassified
 outcomes propagate exactly as before; nothing is retried or repaired.
+
+## 9. B3-P2A Session binding, ownership, leases, and fencing
+
+Implemented B3-P2A amendment (CE-0002-B3-P2A). Everything in §§1-8 is
+preserved: no DDL, trigger, index, or schema-v2 manifest change (P2A writes
+only the accepted v2 tables `participant_session`, `participant_ownership`,
+and `participant_fencing_high_water`), no change to B2 creation, P1A
+migration/recovery, P1B identity, Endpoint binding, membership, join
+boundaries, or audit ordering. `delivery_cursor` stays inert. Nothing is
+added to the public package surface; there is no delivery API, no adapter
+wiring, no background heartbeat, and no takeover.
+
+### Scopes
+
+`attach` and `resume` become operational. `attach` authorizes Session
+binding and ownership acquisition; `resume` authorizes renewal, release, and
+zero-write Owner verification. `takeover`, `send`, `ack`, and `read` remain
+`CAPABILITY_SCOPE_UNSUPPORTED`. Authorization always runs in the same owned
+transaction as the mutation and re-validates the host trust root.
+
+### SessionRef and binding
+
+A Session is an opaque, non-secret `ses_<ULID>` SessionRef. It is never a
+Participant identity and never a credential. `bindSession` records one
+`(participant, session)` row under an `attach` capability; binding confers no
+ownership, a duplicate binding is `SESSION_ALREADY_BOUND`, and a Session
+bound to another Participant is `SESSION_BOUND_TO_OTHER_PARTICIPANT` (a
+Session belongs to exactly one Participant; a Participant may hold many
+historical Sessions). Participant creation never creates a Session or
+ownership. P2A never detaches Sessions; a detached row is treated as not
+bound.
+
+### Ownership and fencing
+
+`acquireOwnership` makes one bound Session the single current Owner of a
+Participant with no current Owner — no ownership row, or only an expired
+one. A live lease, including one held by the requesting Session itself, is
+`OWNERSHIP_HELD`: no silent adoption, no takeover. Acquisition allocates the
+fencing token and writes the ownership row in one owned transaction.
+
+**First-token rule:** with no `participant_fencing_high_water` row the first
+acquisition allocates token 1 and inserts the row; every later acquisition
+allocates exactly high-water + 1 (compare-and-set on the previous value).
+The high-water row is never decremented or deleted, so tokens survive
+restart, lease expiry, and release and are never reused; counters are per
+Participant. Allocation past `Number.MAX_SAFE_INTEGER` is
+`FENCING_EXHAUSTED`. Tokens are never derived from timestamps or Session IDs.
+An ownership row whose token differs from the high-water, a missing
+high-water row, an out-of-range stored token, an invalid stored deadline, or
+an ownership row for an unbound Session is `STORAGE_OWNERSHIP_CORRUPT` —
+refused, never adopted or repaired.
+
+### Owner authorization and leases
+
+Renewal, release, and verification verify, in order: a currently valid
+`resume` capability (Participant, scope, trust generation, revocation,
+expiry), the Participant, a bound Session, the Session being the durable
+current Owner (`OWNERSHIP_NOT_CURRENT`), the presented fencing token being
+current (`FENCING_STALE`), and the lease (`LEASE_EXPIRED`,
+`LEASE_CLOCK_REGRESSION`). Ownership is never inferred from a Session ID.
+After supersession every operation by the previous Owner is refused.
+
+Default TTL 120 s, configurable 30–3600 s (request-validated). 30 s is a
+renewal recommendation for hosts, not a scheduler. Time comes only from the
+injected clock. A lease authorizes only within `[expiresAt - ttl, expiresAt)`:
+renewal sets `now + ttl`, so a rolled-back clock before the current term
+start is refused and can never extend a lease. Release removes only the
+ownership row.
+
+**Limitation:** the accepted schema has no lease-start column, so the term
+start is derived from the host TTL policy, which must stay consistent for a
+lease's lifetime. A rollback that lands inside the current term cannot be
+distinguished from a valid instant without a persisted monotonic observation
+(refusals are zero-write).
+
+### Durable reads
+
+Private host-local reads only: `readSessionBinding`, `readSessionBindings`,
+`readCurrentOwnership` (the durable row regardless of expiry),
+`readFencingHighWater` (0 when never allocated), and `readLeaseStatus`
+(`UNOWNED`/`ACTIVE`/`EXPIRED`/`CLOCK_REGRESSION`). Each runs against one
+read snapshot and applies the same consistency validation.
+
+### P1B hardening pins
+
+The four MINOR gaps from the P1B-R1 final gate are regression-pinned:
+missing trust generation during capability verification (`STORAGE_CORRUPT`
+on join, bind, sponsored create, and Session attach); corruption-before-conflict
+on authorized join and sponsored-create replay; each `recoverTrustRoot`
+unwrap guard (the classifier was extracted unchanged as
+`classifyRecoveryFailure` and is unit-pinned, plus end-to-end BUSY,
+unclassified-rollback, and typed-rollback cases); and the sponsored replay
+negative authorization matrix.

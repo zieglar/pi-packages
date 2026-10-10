@@ -37,6 +37,26 @@ export interface RecoverTrustRootOptions extends StorageConnectionOptions {
   readonly beforeCommit?: () => void;
 }
 
+/**
+ * @internal Recovery failure classification (CE-0002-B3-P1B-R1, extracted in
+ * CE-0002-B3-P2A so each guard is directly regression-pinned). Only a proven,
+ * non-retryable ROLLED_BACK transaction whose immediate cause is a typed
+ * lifecycle refusal is unwrapped to that refusal, with the transaction error
+ * preserved as `cause`. Every other value — BUSY, INDETERMINATE, an
+ * unclassified rollback, or a non-transaction error — is returned unchanged.
+ */
+export function classifyRecoveryFailure(error: unknown): unknown {
+  if (
+    error instanceof StorageTransactionError &&
+    error.outcome === "ROLLED_BACK" &&
+    !error.retryable &&
+    error.cause instanceof StoreLifecycleError
+  ) {
+    return new StoreLifecycleError(error.cause.code, error.cause.message, { cause: error });
+  }
+  return error;
+}
+
 export function recoverTrustRoot(options: RecoverTrustRootOptions): DurableStore {
   const databasePath = prepareDatabasePath(options);
   assertSecureDatabaseArtifacts(databasePath);
@@ -107,15 +127,7 @@ export function recoverTrustRoot(options: RecoverTrustRootOptions): DurableStore
     // transaction error all remain available as the preserved `cause`. Any
     // other outcome — BUSY, INDETERMINATE, or an unclassified failure —
     // propagates exactly as before, and nothing is retried or repaired.
-    if (
-      error instanceof StorageTransactionError &&
-      error.outcome === "ROLLED_BACK" &&
-      !error.retryable &&
-      error.cause instanceof StoreLifecycleError
-    ) {
-      throw new StoreLifecycleError(error.cause.code, error.cause.message, { cause: error });
-    }
-    throw error;
+    throw classifyRecoveryFailure(error);
   }
   db.close();
 
