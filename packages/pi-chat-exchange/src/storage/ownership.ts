@@ -18,6 +18,7 @@ import {
   runOwned,
   type ClockSeam,
 } from "./participant.js";
+import { parseSessionRow, SESSION_COLUMNS, type SessionLifecycleState } from "./session-state.js";
 import type { DurableStore } from "./store.js";
 import { requireSingleRowChange, type TransactionHandle } from "./transaction.js";
 
@@ -148,8 +149,11 @@ function requireLeaseTtl(fields: Record<string, unknown>): number {
   return value;
 }
 
-/** Expiry is computed before the owned transaction, so an unrepresentable
- * instant is a request refusal, never a transaction failure. */
+/** Expiry is computed at transaction time, from the operation clock sampled
+ * inside the owned transaction (B3-P2B-R1). An unrepresentable instant raises
+ * a request refusal (`ParticipantRequestError`), which `runOwned` surfaces as
+ * itself after a proven rollback: zero writes, never a generic transaction
+ * failure. */
 function leaseExpiry(now: string, ttlSeconds: number): string {
   const instant = new Date(Date.parse(now) + ttlSeconds * 1000);
   const text = Number.isFinite(instant.getTime()) ? instant.toISOString() : "";
@@ -196,28 +200,24 @@ export interface SessionBinding {
   readonly boundAt: string;
 }
 
-const SESSION_COLUMNS =
-  "SELECT participant_id, session_id, bound_at, detached_at, CAST(private_revision AS TEXT) AS private_revision FROM participant_session";
+interface SessionRowView extends SessionBinding {
+  readonly detached: boolean;
+  readonly detachedAt: string | null;
+}
 
-function sessionFromRow(row: unknown): SessionBinding & { readonly detached: boolean } {
-  const value = row as Record<string, unknown>;
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    typeof value.participant_id !== "string" ||
-    typeof value.session_id !== "string" ||
-    !SESSION_ID_PATTERN.test(value.session_id) ||
-    !isInstant(value.bound_at) ||
-    !(value.detached_at === null || isInstant(value.detached_at)) ||
-    value.private_revision !== "1"
-  ) {
-    corrupt();
-  }
+/** Strict Session-row validation (CE-0002-B3-P2C-A): exactly ATTACHED
+ * (NULL `detached_at`, revision 1) or DETACHED (canonical instant, revision
+ * 2); every other combination is `STORAGE_OWNERSHIP_CORRUPT`, refused and
+ * never repaired. A DETACHED Session is never a current binding. */
+function sessionFromRow(row: unknown): SessionRowView {
+  const parsed = parseSessionRow(row);
+  if (parsed === undefined) corrupt();
   return Object.freeze({
-    participantId: value.participant_id as string,
-    sessionId: value.session_id as string,
-    boundAt: value.bound_at as string,
-    detached: value.detached_at !== null,
+    participantId: parsed.participantId,
+    sessionId: parsed.sessionId,
+    boundAt: parsed.boundAt,
+    detached: parsed.state === "DETACHED",
+    detachedAt: parsed.detachedAt,
   });
 }
 
@@ -225,7 +225,7 @@ function sessionRow(
   handle: QueryHandle,
   participantId: string,
   sessionId: string,
-): (SessionBinding & { readonly detached: boolean }) | undefined {
+): SessionRowView | undefined {
   const row = handle.prepare(`${SESSION_COLUMNS} WHERE participant_id = ? AND session_id = ?`).get(participantId, sessionId);
   if (row === undefined) return undefined;
   const session = sessionFromRow(row);
@@ -740,7 +740,9 @@ export function verifyOwnership(store: DurableStore, input: unknown, seams: Cloc
 // Durable reads (private, host-local, no authorization semantics)
 // ---------------------------------------------------------------------------
 
-/** Runs several reads against one consistent snapshot. */
+/** Runs several reads against one consistent snapshot: a deferred read
+ * transaction whose snapshot is established by the first read inside `body`.
+ * Reads authorize nothing. */
 function readSnapshot<T>(store: DurableStore, body: (handle: QueryHandle) => T): T {
   const db = store.database;
   if (db.isTransaction) throw new Error("ownership reads cannot run inside an active transaction");
@@ -807,7 +809,9 @@ export function readLeaseStatus(store: DurableStore, input: unknown, seams: Cloc
   const fields = captureFields(input, ["participantId"], ["participantId"], "request");
   const pid = requireParticipantId(fields.participantId, "participantId");
   return readSnapshot(store, (handle) => {
-    // Evaluated against the snapshot's own instant, not a pre-read sample.
+    // The clock is sampled once inside the deferred read transaction, before
+    // the first read establishes the snapshot. The status is advisory: it
+    // authorizes nothing and may already be stale when returned.
     const now = clock(seams);
     const { ownership } = loadOwnershipState(handle, pid);
     return ownership === undefined ? "UNOWNED" : evaluateLease(ownership, now);
@@ -896,5 +900,47 @@ export function reconcileTakeover(store: DurableStore, input: unknown): Takeover
       ownership.expiresAt === expiresAt &&
       (fencingToken === undefined || ownership.fencingToken === fencingToken);
     return Object.freeze({ disposition: matches ? ("COMMITTED" as const) : ("EVIDENCE_CONFLICT" as const), current: ownership });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Session lifecycle read (zero-write, host-local; CE-0002-B3-P2C-A)
+// ---------------------------------------------------------------------------
+
+export type SessionLifecycleCode = SessionLifecycleState | "NOT_FOUND";
+
+export interface SessionLifecycle {
+  readonly state: SessionLifecycleCode;
+  /** Present for ATTACHED and DETACHED. */
+  readonly boundAt?: string;
+  /** Present exactly for DETACHED. */
+  readonly detachedAt?: string;
+}
+
+/**
+ * Private host-local lifecycle read of one Participant–Session pair:
+ * `ATTACHED`, `DETACHED` (terminal), or `NOT_FOUND` (no binding of this Session
+ * to this Participant — a Session bound to another Participant is also
+ * `NOT_FOUND` for this pair, so the read never discloses foreign bindings).
+ *
+ * One consistent read snapshot, zero writes, no authorization semantics: the
+ * result authorizes nothing and may be stale when returned. The Participant's
+ * ownership state is validated in the same snapshot, so inconsistent durable
+ * state (a malformed Session row, or an Owner referencing a detached Session)
+ * refuses `STORAGE_OWNERSHIP_CORRUPT` instead of being reported. Never
+ * attached to an error, result, or audit surface beyond this host-local call.
+ */
+export function readSessionLifecycle(store: DurableStore, input: unknown): SessionLifecycle {
+  const fields = captureFields(input, ["participantId", "sessionId"], ["participantId", "sessionId"], "request");
+  const pid = requireParticipantId(fields.participantId, "participantId");
+  const sid = requireSessionId(fields.sessionId, "sessionId");
+  return readSnapshot(store, (handle) => {
+    const session = sessionRow(handle, pid, sid);
+    loadOwnershipState(handle, pid);
+    if (session === undefined) return Object.freeze({ state: "NOT_FOUND" as const });
+    if (session.detached) {
+      return Object.freeze({ state: "DETACHED" as const, boundAt: session.boundAt, detachedAt: session.detachedAt as string });
+    }
+    return Object.freeze({ state: "ATTACHED" as const, boundAt: session.boundAt });
   });
 }

@@ -207,10 +207,12 @@ expiresAt` is expired); clock-regression refusal is unchanged (a pre-term
 instant refuses `LEASE_CLOCK_REGRESSION`); the injected-clock test seam is
 unchanged (it is simply invoked at the transaction-time sampling point); no
 scheduler and no global clock is introduced. Audit of the remaining storage
-mutation entry points: B2 Exchange/Message creation already samples inside
-its owned transaction (its invalid-clock behavior is the accepted precedent),
-and migration/recovery/initialization `appliedAt` ledger timestamps authorize
-nothing, so they are unchanged.
+mutation entry points (corrected by CE-0002-B3-P2C-A): B2 Exchange/Message
+creation samples its clock during candidate generation, *before* `BEGIN
+IMMEDIATE`; its timestamps are recorded creation metadata that authorize
+nothing, so the accepted B2 contract is unchanged (its invalid-clock behavior
+remains the accepted precedent). Migration/recovery/initialization
+`appliedAt` ledger timestamps likewise authorize nothing and are unchanged.
 
 **Lock-wait semantics (now defined).** Authorization and eligibility are
 decided at the serialization instant, not the initiation instant. A renewal
@@ -239,3 +241,44 @@ contention).
    capabilities at detach).
 2. Lease policy location (prerequisite 3 above, unchanged).
 3. `send`/`ack`/`read` scopes remain for the delivery phases.
+
+## B3-P2C-A — Irreversible Session lifecycle and schema v4 (CE-0002-B3-P2C-A)
+
+Status: **implemented** (structural foundation only). Realizes the accepted
+CE-0002-B3-P2C-D0 design decisions D1, D2, D5 (as a schema guard), D9 (read),
+D14, and D15. **No detach operation exists yet**; capability scope semantics
+are unchanged (no `detach` scope; `resume` is not yet widened to
+self-detach). P3 is not started.
+
+- **States.** A Session row is exactly ATTACHED (`detached_at IS NULL`,
+  `private_revision = 1`) or DETACHED (canonical `detached_at` not earlier
+  than `bound_at`, `private_revision = 2`). Every other combination is
+  `STORAGE_OWNERSHIP_CORRUPT`: refused, zero-write, never repaired. DETACHED
+  is terminal; a detached Session is never a current binding and never
+  regains authority.
+- **Schema v4 (triggers only).** Session rows are born ATTACHED, never
+  deleted, and keep immutable Participant ID, Session ID, and `bound_at`; the
+  only permitted UPDATE is the one-way ATTACHED r1 → DETACHED r2 transition;
+  the current Owner Session cannot be detached; an ownership row can never
+  reference a detached Session. Session IDs are therefore never reused. No
+  table rebuild, no new column, no new capability scope.
+- **Ownership interaction (Q5 formalized).** The current Owner — live,
+  expired, legacy, or clock-regressed — cannot be detached while the
+  ownership row references it; the way out is the existing release or
+  takeover. Detach never deletes or replaces ownership and never touches the
+  fencing high-water.
+- **Validation.** `issueCapability` (Session-bound scopes), `bindSession`,
+  `acquireOwnership`, `takeoverOwnership`, `renewLease`, `releaseOwnership`,
+  `verifyOwnership`, and every Session read strictly validate the row: a
+  DETACHED Session refuses `SESSION_NOT_BOUND`; a malformed row refuses
+  `STORAGE_OWNERSHIP_CORRUPT`; re-binding a detached Session ID refuses as
+  before (`SESSION_ALREADY_BOUND` / `SESSION_BOUND_TO_OTHER_PARTICIPANT`).
+- **Lifecycle read.** `readSessionLifecycle` is a private, host-local,
+  zero-write read over one snapshot returning `ATTACHED` / `DETACHED` /
+  `NOT_FOUND` (a foreign pair is `NOT_FOUND`); it validates the
+  Participant's ownership state in the same snapshot and authorizes nothing.
+- **Remaining P2C work (P2C-B).** The authorized `detachSession` operation
+  (D4: Session-bound `resume`, self only), the capability-plane lifecycle
+  status (D7), the `SESSION_IS_CURRENT_OWNER` / `SESSION_CLOCK_REGRESSION` /
+  `SESSION_DETACHED` typed codes, detach reconciliation, and the lease-policy
+  documentation (D10/D11).

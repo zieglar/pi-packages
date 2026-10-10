@@ -18,6 +18,8 @@ import {
   V2_MIGRATION_NAME,
   V3_MIGRATION_CHECKSUM,
   V3_MIGRATION_NAME,
+  V4_MIGRATION_CHECKSUM,
+  V4_MIGRATION_NAME,
 } from "../../src/storage/schema.js";
 import { initializeStore, openStore, preflightStoreShape } from "../../src/storage/store.js";
 import { withImmediateTransaction, StorageTransactionError } from "../../src/storage/transaction.js";
@@ -136,6 +138,7 @@ describe("explicit v1 to v2 migration (B3-P1A)", () => {
         { version: 1, name: INITIAL_MIGRATION_NAME, checksum: INITIAL_MIGRATION_CHECKSUM },
         { version: 2, name: V2_MIGRATION_NAME, checksum: V2_MIGRATION_CHECKSUM },
         { version: 3, name: V3_MIGRATION_NAME, checksum: V3_MIGRATION_CHECKSUM },
+        { version: 4, name: V4_MIGRATION_NAME, checksum: V4_MIGRATION_CHECKSUM },
       ]);
       // Every seeded v1 row survives intact.
       expect(migrated.database.prepare("SELECT exchange_id, state, created_at FROM exchange").all()).toEqual([
@@ -206,7 +209,7 @@ describe("explicit v1 to v2 migration (B3-P1A)", () => {
   it("refuses any migration path other than the explicitly approved ones", () => {
     const loc = location();
     initializeV1Store(loc);
-    for (const [fromVersion, toVersion] of [[2, 2], [1, 4], [3, 3], [3, 2]] as const) {
+    for (const [fromVersion, toVersion] of [[2, 2], [1, 5], [3, 3], [3, 2], [4, 4], [4, 3], [3, 5], [0, 4]] as const) {
       expect(() => migrate(loc, { fromVersion, toVersion })).toThrowError(
         expect.objectContaining({ code: "STORAGE_INCOMPATIBLE" }),
       );
@@ -225,8 +228,14 @@ describe("explicit v1 to v2 migration (B3-P1A)", () => {
     expect(() => openStore(loc)).toThrowError(
       expect.objectContaining({ code: "STORAGE_MIGRATION_REQUIRED" }),
     );
-    // The follow-on approved step completes the chain and the store opens.
+    // The follow-on approved step reaches v3, which is no longer current
+    // (CE-0002-B3-P2C-A): the explicit v3 to v4 step completes the chain.
     migrate(loc, { fromVersion: 2, toVersion: 3 }).close();
+    expect(preflightStoreShape(join(loc.directory, loc.filename)).kind).toBe("v3");
+    expect(() => openStore(loc)).toThrowError(
+      expect.objectContaining({ code: "STORAGE_MIGRATION_REQUIRED" }),
+    );
+    migrate(loc, { fromVersion: 3, toVersion: 4 }).close();
     expect(() => openStore(loc).close()).not.toThrow();
     // A repeated step is not required.
     expect(() => migrate(loc, { fromVersion: 2, toVersion: 3 })).toThrowError(
@@ -449,7 +458,16 @@ describe("explicit v2 to v3 migration (B3-P2A-R1)", () => {
     } finally {
       migrated.close();
     }
-    expect(() => openStore(loc).close()).not.toThrow();
+    // v3 is no longer current (CE-0002-B3-P2C-A): the explicit v3 to v4 step
+    // preserves the legacy history and the store then opens normally.
+    expect(() => openStore(loc)).toThrowError(expect.objectContaining({ code: "STORAGE_MIGRATION_REQUIRED" }));
+    migrateStore({ ...loc, fromVersion: 3, toVersion: 4, now: () => NOW }).close();
+    const current = openStore(loc);
+    try {
+      expect(readCurrentOwnership(current, P1)).toMatchObject({ sessionId: S1, fencingToken: 1, leaseStartedAt: null });
+    } finally {
+      current.close();
+    }
   });
 
   it("supports explicit takeover of a migrated legacy Owner (B3-P2B)", () => {
@@ -507,7 +525,7 @@ describe("explicit v2 to v3 migration (B3-P2A-R1)", () => {
 
     const v2Loc = location();
     initializeV2Store(v2Loc);
-    migrateV3(v2Loc).close();
+    migrateV3(v2Loc, { toVersion: CURRENT_SCHEMA_VERSION }).close();
 
     const fresh = openStore(freshLoc);
     const chained = openStore(chainLoc);
@@ -594,6 +612,8 @@ describe("explicit v2 to v3 migration (B3-P2A-R1)", () => {
     expect(() => openStore(loc)).toThrowError(expect.objectContaining({ code: "STORAGE_MIGRATION_REQUIRED" }));
     // No orphan artifacts block the retry: v2 to v3 never touches the secret.
     migrateV3(loc).close();
+    expect(preflightStoreShape(join(loc.directory, loc.filename)).kind).toBe("v3");
+    migrateStore({ ...loc, fromVersion: 3, toVersion: 4, now: () => NOW }).close();
     expect(() => openStore(loc).close()).not.toThrow();
   });
 

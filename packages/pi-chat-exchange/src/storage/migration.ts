@@ -9,7 +9,11 @@ import {
   V3_ADDITIVE_SQL,
   V3_MIGRATION_CHECKSUM,
   V3_MIGRATION_NAME,
+  V4_ADDITIVE_SQL,
+  V4_MIGRATION_CHECKSUM,
+  V4_MIGRATION_NAME,
 } from "./schema.js";
+import { assertPreV4SessionState } from "./session-state.js";
 import {
   classifyStoreShape,
   openMigratedStore,
@@ -27,14 +31,15 @@ import {
 } from "./trust-root.js";
 
 /**
- * Explicit store migrations (CE-0002-B3-P1A v1→v2; CE-0002-B3-P2A-R1 v2→v3).
- * Migration is a dedicated, host-local operator action — never a side effect
- * of opening a store. A normal `openStore` of a recognized non-current store
- * refuses with STORAGE_MIGRATION_REQUIRED; only this entry point performs
- * migrations, and only along explicitly approved paths: {1→2}, {2→3}, and the
- * chain {1→3}. Each step commits independently: an interrupted or refused
- * later step leaves a valid store at the earlier version, and the remaining
- * step can be approved and retried on its own.
+ * Explicit store migrations (CE-0002-B3-P1A v1→v2; CE-0002-B3-P2A-R1 v2→v3;
+ * CE-0002-B3-P2C-A v3→v4). Migration is a dedicated, host-local operator
+ * action — never a side effect of opening a store. A normal `openStore` of a
+ * recognized non-current store refuses with STORAGE_MIGRATION_REQUIRED; only
+ * this entry point performs migrations, and only along explicitly approved
+ * paths: {1→2}, {2→3}, {3→4}, and the chains {1→3}, {2→4}, {1→4}. Each step
+ * commits independently: an interrupted or refused later step leaves a valid
+ * store at the earlier version, and the remaining step can be approved and
+ * retried on its own.
  *
  * The migrations modify no pre-existing object: each applies only additive
  * DDL, appends the approved ledger row (the ledger is insert-only by trigger),
@@ -55,11 +60,21 @@ import {
  * rather than repairing it. Legacy v2 ownership rows keep their NULL
  * `lease_started_at` and are permanently unauthorizable (treated as expired);
  * no lease start is ever fabricated from an untrusted TTL.
+ *
+ * v3→v4 (B3-P2C-A) appends only the Session lifecycle triggers. It
+ * re-validates the existing trust root (never rotates it) and preserves every
+ * Session row untouched. No pre-v4 operation ever detaches a Session, so any
+ * pre-v4 Session row that is not exactly ATTACHED (NULL `detached_at`,
+ * revision 1) — or an ownership row referencing a detached Session — is
+ * foreign state: the migration refuses it (STORAGE_CORRUPT) with zero writes
+ * and never repairs it. For a v2 or v3 source the check also runs on the
+ * disposable preflight snapshot before any step, so a chain that would fail
+ * at the v4 step refuses before its earlier steps commit.
  */
 
 export interface MigrateStoreOptions extends StorageConnectionOptions {
-  /** Explicit approved path: { fromVersion: 1, toVersion: 2 },
-   * { fromVersion: 2, toVersion: 3 }, or { fromVersion: 1, toVersion: 3 }. */
+  /** Explicit approved path: single steps { 1→2 }, { 2→3 }, { 3→4 }, or the
+   * chains { 1→3 }, { 2→4 }, { 1→4 }. */
   readonly fromVersion: number;
   readonly toVersion: number;
   /** Private deterministic test seam; production callers omit this. */
@@ -188,15 +203,45 @@ function migrateV2toV3(options: MigrateStoreOptions, databasePath: string): void
   }, (writer) => validateTrustRoot(databasePath, writer));
 }
 
+/** v3→v4 (CE-0002-B3-P2C-A): additive Session lifecycle triggers, approved
+ * ledger row, user_version advance. The existing trust root is re-validated,
+ * never rotated. Every pre-v4 Session row must be exactly ATTACHED; foreign
+ * lifecycle state refuses the migration with zero writes rather than being
+ * repaired. Existing Session rows are never rewritten. */
+function migrateV3toV4(options: MigrateStoreOptions, databasePath: string): void {
+  runMigrationStep(options, databasePath, "v3", (tx, appliedAt) => {
+    const userVersion = tx.prepare("PRAGMA user_version").get();
+    if (Object.values(userVersion ?? {})[0] !== 3) {
+      throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", "store schema changed during migration");
+    }
+    // Re-checked on the live writer inside the owned transaction: the
+    // preflight snapshot may predate a concurrent privileged write.
+    assertPreV4SessionState(tx);
+    tx.exec(V4_ADDITIVE_SQL);
+    tx.prepare(
+      "INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+    ).run(4, V4_MIGRATION_NAME, V4_MIGRATION_CHECKSUM, appliedAt);
+    tx.exec("PRAGMA user_version=4;");
+  }, (writer) => validateTrustRoot(databasePath, writer));
+}
+
+const APPROVED_PATHS: readonly (readonly [number, number])[] = [
+  [1, 2],
+  [2, 3],
+  [3, 4],
+  [1, 3],
+  [2, 4],
+  [1, 4],
+];
+
 export function migrateStore(options: MigrateStoreOptions): DurableStore {
-  const approved =
-    (options.fromVersion === 1 && options.toVersion === 2) ||
-    (options.fromVersion === 2 && options.toVersion === 3) ||
-    (options.fromVersion === 1 && options.toVersion === 3);
+  const approved = APPROVED_PATHS.some(
+    ([fromVersion, toVersion]) => options.fromVersion === fromVersion && options.toVersion === toVersion,
+  );
   if (!approved) {
     throw new StoreLifecycleError(
       "STORAGE_INCOMPATIBLE",
-      "only the explicitly approved v1 to v2, v2 to v3, and chained v1 to v3 migration paths are supported",
+      "only the explicitly approved single-step and chained migration paths up to v4 are supported",
     );
   }
   const databasePath = prepareDatabasePath(options);
@@ -208,18 +253,31 @@ export function migrateStore(options: MigrateStoreOptions): DurableStore {
   // Shape preflight precedes any artifact handling: a store that does not
   // require the requested migration is refused (zero writes) before any
   // trust-root absence check can run.
-  const expectFrom = options.fromVersion === 1 ? "v1" : "v2";
-  if (preflightStoreShape(databasePath).kind !== expectFrom) {
+  const expectFrom: StoreShapeKind = options.fromVersion === 1 ? "v1" : options.fromVersion === 2 ? "v2" : "v3";
+  const reachesV4 = options.toVersion === 4;
+  const preflight = preflightStoreShape(databasePath, (reader, shape) => {
+    // Whole-chain precondition (B3-P2C-A): when the path reaches v4 and the
+    // source already carries Session rows (v2 or v3), foreign lifecycle state
+    // refuses before any step commits. A v1 source has no Session table; its
+    // v2 tables are created empty by the v1→v2 step.
+    if (reachesV4 && shape.kind === expectFrom && (shape.kind === "v2" || shape.kind === "v3")) {
+      assertPreV4SessionState(reader as unknown as Parameters<typeof assertPreV4SessionState>[0]);
+    }
+  });
+  if (preflight.kind !== expectFrom) {
     throw new StoreLifecycleError(
       "STORAGE_MIGRATION_NOT_REQUIRED",
       "store does not require the requested migration step",
     );
   }
   if (options.fromVersion === 1) migrateV1toV2(options, databasePath);
-  if (options.toVersion === 3) migrateV2toV3(options, databasePath);
+  if (options.fromVersion <= 2 && options.toVersion >= 3) migrateV2toV3(options, databasePath);
+  if (reachesV4) migrateV3toV4(options, databasePath);
 
   // Proof of success is a full validated reopen: a normal current-version open
   // (including trust-root validation) when the target is current, otherwise a
-  // shape-validated migration proof open for the intermediate v2 target.
-  return options.toVersion === 2 ? openMigratedStore(options, "v2") : openStore(options);
+  // shape-validated migration proof open for the intermediate target.
+  if (options.toVersion === 2) return openMigratedStore(options, "v2");
+  if (options.toVersion === 3) return openMigratedStore(options, "v3");
+  return openStore(options);
 }

@@ -26,6 +26,7 @@ import {
   requireText,
   rejectRequest,
 } from "./participant-identity.js";
+import { parseSessionRow, SESSION_COLUMNS } from "./session-state.js";
 import type { DurableStore } from "./store.js";
 import {
   ConditionalMutationError,
@@ -721,13 +722,19 @@ export function issueCapability(
     if (sessionId !== undefined) {
       // A Session-bound capability may only be bound to a Session that is
       // currently bound to this Participant; the durable binding is checked
-      // inside the same transaction that records the capability.
-      const binding = tx
-        .prepare(
-          "SELECT detached_at FROM participant_session WHERE participant_id = ? AND session_id = ?",
-        )
-        .get(participantId, sessionId) as { detached_at?: unknown } | undefined;
-      if (binding === undefined || binding.detached_at !== null) refuse("SESSION_NOT_BOUND");
+      // inside the same transaction that records the capability. B3-P2C-A:
+      // the row is strictly validated — only ATTACHED qualifies, a DETACHED
+      // Session never receives a new capability, and a malformed lifecycle
+      // row is refused as corruption, never adopted.
+      const row = tx
+        .prepare(`${SESSION_COLUMNS} WHERE participant_id = ? AND session_id = ?`)
+        .get(participantId, sessionId);
+      if (row === undefined) refuse("SESSION_NOT_BOUND");
+      const binding = parseSessionRow(row);
+      if (binding === undefined || binding.participantId !== participantId || binding.sessionId !== sessionId) {
+        refuse("STORAGE_OWNERSHIP_CORRUPT");
+      }
+      if (binding.state !== "ATTACHED") refuse("SESSION_NOT_BOUND");
     }
     const generation = currentGenerationInTransaction(tx);
     if (generation === undefined) {

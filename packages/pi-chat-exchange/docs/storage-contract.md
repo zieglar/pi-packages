@@ -688,10 +688,12 @@ clock-regression refusal, the injected-clock test seam (invoked at the
 transaction-time sampling point), and the documented wall-clock limitation —
 a rollback landing inside the current term remains indistinguishable from a
 valid instant; no cross-transaction monotonic clock is claimed, no scheduler
-and no global clock is introduced. B2 Exchange/Message creation already
-sampled inside its owned transaction (the accepted precedent);
-migration/recovery/initialization `appliedAt` ledger timestamps authorize
-nothing and are unchanged. Regression pins:
+and no global clock is introduced. B2 Exchange/Message creation samples its
+clock during candidate generation, before `BEGIN IMMEDIATE` (wording
+corrected by CE-0002-B3-P2C-A); its timestamps are recorded creation metadata
+that authorize nothing, and the accepted B2 contract is unchanged.
+Migration/recovery/initialization `appliedAt` ledger timestamps likewise
+authorize nothing and are unchanged. Regression pins:
 `test/storage/lease-lock-wait.test.ts` (real OS processes, real writer-lock
 contention, observable initiation, deadline waits).
 
@@ -758,3 +760,67 @@ live lease and is never repaired. It is takeover-eligible: an explicit
 Session-bound takeover replaces it with a fully persisted v3 term
 (`lease_started_at = now`), allocating the fencing token strictly greater
 than the legacy token (the v2 high-water survives migration untouched).
+
+## 12. B3-P2C-A irreversible Session lifecycle and schema v4
+
+Additive amendment (CE-0002-B3-P2C-A), governed by the accepted
+CE-0002-B3-P2C-D0 design and recorded in `docs/ownership-contract.md`.
+Everything in §§1-11 is preserved. No detach operation, no capability scope
+change, no delivery.
+
+### Schema v4 (additive triggers, explicit migration only)
+
+`V4_ADDITIVE_SQL` appends seven triggers and nothing else:
+`participant_session_insert_attached`, `participant_session_nodelete`,
+`participant_session_identity_immutable`, `participant_session_detach_once`,
+`participant_session_detach_not_owner`,
+`participant_ownership_session_attached_insert`, and
+`participant_ownership_session_attached_update`. Fresh initialization applies
+`V4_FOUNDATION_SQL = V3_FOUNDATION_SQL + V4_ADDITIVE_SQL` with one v4
+foundation ledger row; fresh and migrated v4 stores converge to one
+byte-identical manifest. The triggers fire only on defects or privileged
+tampering (code checks refuse first, typed and zero-write); an actor able to
+drop them is outside the protection claim (`CE-STORAGE-IMMUTABILITY-V2`
+unchanged).
+
+### Version recognition and migration
+
+- Normal open requires v4; v1, v2, and v3 stores refuse
+  `STORAGE_MIGRATION_REQUIRED` with zero writes. A v4 store carries
+  `user_version` 4, so every older binary (supported maximum 3) refuses it
+  with `STORAGE_SCHEMA_TOO_NEW`.
+- Approved explicit paths: single steps 1→2, 2→3, 3→4 and chains 1→3, 2→4,
+  1→4. Each step is one owned IMMEDIATE transaction and commits
+  independently; an interrupted step rolls back to a valid store at the
+  previous version, and the remaining step can be retried. Intermediate
+  targets (v2, v3) are proven by a shape-validated proof open.
+- The v3→v4 step re-validates the existing trust root (never creates,
+  rotates, or deletes the secret), preserves every Session, ownership,
+  fencing, and capability row untouched, and refuses (`STORAGE_CORRUPT`, zero
+  writes, never repaired) any pre-v4 Session row that is not exactly ATTACHED
+  r1, or any ownership row referencing a detached Session. For v2 and v3
+  sources this precondition also runs on the disposable preflight snapshot,
+  so a chain refuses before any step commits; it is re-checked on the live
+  writer inside the v4 step.
+
+### Session lifecycle validation and read
+
+ATTACHED (NULL, r1) and DETACHED (canonical instant ≥ `bound_at`, r2) are the
+only valid Session rows; anything else is `STORAGE_OWNERSHIP_CORRUPT`
+wherever a Session row is read, including capability issuance. A DETACHED
+Session is never a current binding (`SESSION_NOT_BOUND`), never receives a
+new Session-bound capability, and can never be the target of acquisition or
+takeover. `readSessionLifecycle` is the private host-local, zero-write,
+single-snapshot read (`ATTACHED` / `DETACHED` / `NOT_FOUND`); it is not
+re-exported and its refusals use the fixed sanitized details.
+
+### Regression coverage
+
+`test/storage/session-lifecycle.test.ts`: fresh v4 shape, every trigger
+(including standalone identity enforcement), Session-ID reuse refusal,
+current-Owner detach guard (live, expired, after supersession), ownership
+referencing a detached Session, detached-Session refusals across every
+operation, malformed-state matrix with privacy and zero-write assertions,
+restart persistence, the lifecycle read, v3→v4 / v2→v4 / v1→v4 migrations,
+interruption and per-step atomicity, trust-root continuity, zero-write
+preflight refusal of foreign lifecycle state, and manifest convergence.

@@ -2,12 +2,14 @@ import { createHash } from "node:crypto";
 
 export const APPLICATION_ID = "@zieglar/pi-chat-exchange";
 export const SQLITE_APPLICATION_ID = 0x50434558; // "PCEX"
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 export const INITIAL_MIGRATION_NAME = "durable-storage-foundation";
 export const V2_MIGRATION_NAME = "b3-communication-lifecycle-migration";
 export const V2_FOUNDATION_NAME = "b3-communication-lifecycle-foundation";
 export const V3_MIGRATION_NAME = "b3-p2a-r1-ownership-lease-migration";
 export const V3_FOUNDATION_NAME = "b3-p2a-r1-ownership-lease-foundation";
+export const V4_MIGRATION_NAME = "b3-p2c-a-session-lifecycle-migration";
+export const V4_FOUNDATION_NAME = "b3-p2c-a-session-lifecycle-foundation";
 
 const REVISION = "private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1)";
 
@@ -385,4 +387,95 @@ export const V3_FOUNDATION_SQL = V2_FOUNDATION_SQL + V3_ADDITIVE_SQL;
 
 export const V3_FOUNDATION_CHECKSUM = createHash("sha256")
   .update(V3_FOUNDATION_SQL, "utf8")
+  .digest("hex");
+
+/**
+ * B3 additive schema-v4 surface (CE-0002-B3-P2C-A): the irreversible Session
+ * lifecycle. Every v1, v2, and v3 object is preserved byte-identically; v4
+ * only appends triggers — no table rebuild, no new column, no new capability
+ * scope. The existing `participant_session.detached_at` and
+ * `private_revision` columns encode exactly two valid states:
+ *
+ * - ATTACHED: `detached_at IS NULL` and `private_revision = 1`;
+ * - DETACHED: `detached_at IS NOT NULL` and `private_revision = 2`.
+ *
+ * The triggers make the lifecycle a schema invariant, not only a code
+ * convention:
+ *
+ * - `participant_session_insert_attached`: a Session row is born ATTACHED;
+ * - `participant_session_nodelete`: historical Session rows are never
+ *   deleted, so a Session ID can never be re-bound and no Session-bound
+ *   capability can be revived through a delete-and-rebind;
+ * - `participant_session_identity_immutable`: Participant ID, Session ID, and
+ *   `bound_at` never change;
+ * - `participant_session_detach_once`: the only permitted UPDATE is the
+ *   one-way ATTACHED → DETACHED transition (revision 1 → 2); a detached row
+ *   can never revert, be re-detached, or be rewritten;
+ * - `participant_session_detach_not_owner`: the current Owner Session cannot
+ *   be detached while the ownership row references it;
+ * - `participant_ownership_session_attached_insert` /
+ *   `participant_ownership_session_attached_update`: an ownership row can
+ *   never reference a detached Session.
+ *
+ * The triggers only fire on defects or privileged tampering: the storage code
+ * performs the equivalent checks first and refuses with typed, zero-write
+ * results. They do not protect against an actor able to drop them (the
+ * documented `CE-STORAGE-IMMUTABILITY-V2` limitation is unchanged). P2C-A
+ * defines no detach operation; it only makes the lifecycle structurally safe.
+ */
+export const V4_ADDITIVE_SQL = `
+CREATE TRIGGER participant_session_insert_attached
+BEFORE INSERT ON participant_session
+WHEN NEW.detached_at IS NOT NULL OR NEW.private_revision IS NOT 1
+BEGIN SELECT RAISE(ABORT, 'a Session binding is created attached'); END;
+
+CREATE TRIGGER participant_session_nodelete
+BEFORE DELETE ON participant_session BEGIN SELECT RAISE(ABORT, 'Session bindings are permanent history'); END;
+
+CREATE TRIGGER participant_session_identity_immutable
+BEFORE UPDATE OF participant_id, session_id, bound_at ON participant_session
+WHEN NEW.participant_id IS NOT OLD.participant_id
+  OR NEW.session_id IS NOT OLD.session_id
+  OR NEW.bound_at IS NOT OLD.bound_at
+BEGIN SELECT RAISE(ABORT, 'Session binding identity is immutable'); END;
+
+CREATE TRIGGER participant_session_detach_once
+BEFORE UPDATE ON participant_session
+WHEN NOT (OLD.detached_at IS NULL AND OLD.private_revision IS 1
+  AND NEW.detached_at IS NOT NULL AND NEW.private_revision IS 2)
+BEGIN SELECT RAISE(ABORT, 'Session detach is one-way and irreversible'); END;
+
+CREATE TRIGGER participant_session_detach_not_owner
+BEFORE UPDATE OF detached_at ON participant_session
+WHEN NEW.detached_at IS NOT NULL AND EXISTS (
+  SELECT 1 FROM participant_ownership WHERE session_id = OLD.session_id
+)
+BEGIN SELECT RAISE(ABORT, 'the current Owner Session cannot be detached'); END;
+
+CREATE TRIGGER participant_ownership_session_attached_insert
+BEFORE INSERT ON participant_ownership
+WHEN EXISTS (
+  SELECT 1 FROM participant_session WHERE session_id = NEW.session_id AND detached_at IS NOT NULL
+)
+BEGIN SELECT RAISE(ABORT, 'ownership cannot reference a detached Session'); END;
+
+CREATE TRIGGER participant_ownership_session_attached_update
+BEFORE UPDATE ON participant_ownership
+WHEN EXISTS (
+  SELECT 1 FROM participant_session WHERE session_id = NEW.session_id AND detached_at IS NOT NULL
+)
+BEGIN SELECT RAISE(ABORT, 'ownership cannot reference a detached Session'); END;
+`;
+
+export const V4_MIGRATION_CHECKSUM = createHash("sha256")
+  .update(V4_ADDITIVE_SQL, "utf8")
+  .digest("hex");
+
+/** A fresh v4 initialization applies exactly the v3 foundation plus the
+ * additive v4 surface, so migrated and freshly initialized stores converge to
+ * one byte-identical schema manifest. */
+export const V4_FOUNDATION_SQL = V3_FOUNDATION_SQL + V4_ADDITIVE_SQL;
+
+export const V4_FOUNDATION_CHECKSUM = createHash("sha256")
+  .update(V4_FOUNDATION_SQL, "utf8")
   .digest("hex");
