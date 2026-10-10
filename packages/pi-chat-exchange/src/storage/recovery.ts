@@ -3,7 +3,7 @@ import { openStorageConnection, type StorageConnectionOptions } from "./connecti
 import { StoreLifecycleError } from "./errors.js";
 import { assertSecureDatabaseArtifacts, pathStat, prepareDatabasePath } from "./filesystem.js";
 import { classifyStoreShape, openStore, preflightStoreShape, type DurableStore } from "./store.js";
-import { withImmediateTransaction } from "./transaction.js";
+import { StorageTransactionError, withImmediateTransaction } from "./transaction.js";
 import { assertTrustRootAbsent, createHostSecretFile } from "./trust-root.js";
 
 /**
@@ -99,6 +99,21 @@ export function recoverTrustRoot(options: RecoverTrustRootOptions): DurableStore
       db.close();
     } catch {
       // The transaction helper may already have invalidated the connection.
+    }
+    // CE-0002-B3-P1B-R1 (MINOR-5): a proven rollback caused by a typed
+    // lifecycle refusal keeps that refusal as the top-level classification, so
+    // durable corruption is not reported as a generic transaction failure. The
+    // transaction outcome, its non-retryable classification, and the original
+    // transaction error all remain available as the preserved `cause`. Any
+    // other outcome — BUSY, INDETERMINATE, or an unclassified failure —
+    // propagates exactly as before, and nothing is retried or repaired.
+    if (
+      error instanceof StorageTransactionError &&
+      error.outcome === "ROLLED_BACK" &&
+      !error.retryable &&
+      error.cause instanceof StoreLifecycleError
+    ) {
+      throw new StoreLifecycleError(error.cause.code, error.cause.message, { cause: error });
     }
     throw error;
   }

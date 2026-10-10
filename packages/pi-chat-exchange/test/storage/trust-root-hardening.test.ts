@@ -228,19 +228,19 @@ describe("P1A hardening B: missing trust-generation row", () => {
     // Recovery requires a current generation to succeed: an absent row is
     // corruption for operator review, not an implicit bootstrap.
     //
-    // Characterization of accepted P1A behavior (not changed here): the typed
-    // STORAGE_CORRUPT refusal is raised inside the owned transaction, so the
-    // accepted transaction primitive wraps it and `recoverTrustRoot`
-    // propagates that classification unchanged. The outcome is still a proven
-    // rollback, non-retryable, with zero writes and no repair. The B3-P1B
-    // operations, which translate their own domain refusals, surface
-    // STORAGE_CORRUPT directly (see the issuance case below).
+    // CE-0002-B3-P1B-R1 (MINOR-5): the typed STORAGE_CORRUPT refusal is raised
+    // inside the owned transaction, and a proven non-retryable rollback now
+    // keeps that refusal as the top-level classification. The transaction
+    // outcome and its non-retryable classification remain available as the
+    // preserved cause, with zero writes and no repair.
     rmSync(hostSecretPath(loc.databasePath));
     const recoveryError = captureError(() =>
       recoverTrustRoot({ ...loc, now: () => LATER, secretBytes: () => REPLACEMENT }),
     );
-    expect(recoveryError).toBeInstanceOf(StorageTransactionError);
-    expect(recoveryError).toMatchObject({
+    expect(recoveryError).toMatchObject({ code: "STORAGE_CORRUPT" });
+    const cause = (recoveryError as { cause?: unknown }).cause;
+    expect(cause).toBeInstanceOf(StorageTransactionError);
+    expect(cause).toMatchObject({
       code: "STORAGE_TRANSACTION_FAILED",
       outcome: "ROLLED_BACK",
       retryable: false,

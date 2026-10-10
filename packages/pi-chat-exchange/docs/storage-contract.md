@@ -401,3 +401,48 @@ and its contract gate are unchanged.
   `EVENT_KINDS` vocabulary and `prt_` identity prefix are deliberately not
   added to the publicly re-exported protocol surface; `audit_event.kind` is
   free text in the accepted v1 DDL.
+
+### 8.1 R1 remediation (CE-0002-B3-P1B-R1)
+
+Remediation of the independent B3-P1B review. No schema change, no new
+dependency, no public export, no P2 scope.
+
+**Authorization precedes every protected result.** `joinExchange` and sponsored
+`createParticipant` previously evaluated the idempotent replay path before
+capability verification, so a caller holding a known idempotency key could
+obtain a `REPLAYED` Membership or Participant result while presenting a forged,
+expired, revoked, wrong-scope, wrong-Participant, or wrong-generation
+capability. Current authorization now runs first, inside the same owned
+transaction, for both newly created and replayed results. An idempotency key is
+never an authorization credential.
+
+**Deliberate error-precedence change.** On these two paths
+`CAPABILITY_REJECTED` now outranks replay, `IDEMPOTENCY_KEY_CONFLICT`, and
+`STORAGE_IDEMPOTENCY_CORRUPT` classification. Within the authorized replay path
+the accepted corruption-before-conflict ordering is unchanged. Unsponsored
+`createParticipant` is a trusted host-local operation and keeps its accepted
+semantics with no capability requirement.
+
+**Idempotency is unchanged otherwise.** An authorized replay remains
+zero-write, deterministic, byte-identical, and boundary-preserving, and emits
+no audit event, no capability record, and no ownership change. The B2 request
+digest and B2 Exchange/Message behavior are untouched.
+
+**`bindEndpointRef` is validation-only.** The accepted name is kept; the
+operation never creates or changes a binding. The binding is established once,
+atomically with identity creation.
+
+**Trust-root classification is aligned.** During capability verification, a
+missing trust-generation row is `STORAGE_CORRUPT` and a host-secret fingerprint
+disagreement is `STORAGE_TRUST_ROOT_MISMATCH` — typed trust-root refusals, as
+the capability plane already documented and as `issueCapability` already
+behaved. Capability refusals themselves stay a single opaque
+`CAPABILITY_REJECTED`, and both paths fail closed with zero writes.
+
+**`recoverTrustRoot` corruption classification.** When the owned transaction
+proves a non-retryable rollback caused by a typed lifecycle refusal, that
+refusal is now the top-level classification (for example `STORAGE_CORRUPT`
+instead of a generic transaction failure). The transaction outcome, its
+non-retryable classification, and the original transaction error remain
+available as the preserved `cause`. BUSY, INDETERMINATE, and unclassified
+outcomes propagate exactly as before; nothing is retried or repaired.

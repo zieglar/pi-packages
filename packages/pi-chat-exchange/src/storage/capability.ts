@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
+import { StoreLifecycleError } from "./errors.js";
 import { CAPABILITY_PATTERN, HOST_CAPABILITY_BYTES } from "./participant-identity.js";
 import { deriveCapabilityDigest, digestsMatch, readHostSecretDigest } from "./trust-root.js";
 
@@ -146,7 +147,9 @@ export interface CapabilityPresentation {
  * The host trust root is re-validated per authorization: the live secret file
  * must still pass the artifact policy and still match the persisted
  * fingerprint of the current generation. A trust-root failure propagates as a
- * typed trust-root refusal (fail closed), never as a capability rejection.
+ * typed trust-root refusal (fail closed), never as a capability rejection: a
+ * missing generation row is STORAGE_CORRUPT and a fingerprint disagreement is
+ * STORAGE_TRUST_ROOT_MISMATCH.
  */
 export function classifyCapability(
   tx: ReadableHandle,
@@ -159,10 +162,19 @@ export function classifyCapability(
   if (now === undefined) return "MALFORMED";
 
   const generation = currentGenerationInTransaction(tx);
-  if (generation === undefined) return "UNKNOWN";
+  if (generation === undefined) {
+    throw new StoreLifecycleError("STORAGE_CORRUPT", "a v2 store has no host trust root generation");
+  }
   // Host-secret trust validation: artifact policy plus fingerprint agreement.
+  // CE-0002-B3-P1B-R1 (MINOR-2): a trust-root failure is a typed trust-root
+  // refusal, never an opaque capability rejection, matching this module's
+  // documented classification and `issueCapability`. Fail-closed either way:
+  // the mutation is refused and nothing is written.
   if (!digestsMatch(readHostSecretDigest(databasePath), generation.secret_digest)) {
-    return "UNKNOWN";
+    throw new StoreLifecycleError(
+      "STORAGE_TRUST_ROOT_MISMATCH",
+      "the host secret does not match the persisted trust-root fingerprint",
+    );
   }
 
   const digest = deriveCapabilityDigest(databasePath, {
