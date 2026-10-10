@@ -172,6 +172,67 @@ exclusively `takeoverOwnership` under the `takeover` scope.
 - Q4 and Q5 are unchanged: an expired Owner cannot release, and there is no
   detach operation (P2B did not take detach; it remains prerequisite 2).
 
+
+## B3-P2B-R1 — transaction-time clock sampling (remediation)
+
+Status: **implemented**. Remediates the independently confirmed MAJOR-1 of
+CE-0002-B3-P2B-INDEPENDENT-REVIEW-1 (stale pre-lock clock).
+
+**The defect.** P2B sampled each operation's clock *before* `BEGIN
+IMMEDIATE`. An operation that waited for the SQLite writer lock evaluated
+authorization and lease state against the pre-lock instant: a renewal
+initiated before expiry but serialized after it committed from the stale
+sample, reviving an expired lease and locking out a legitimately eligible
+takeover (reproduced by the reviewer with real processes and real lock
+contention). A capability that expired during the lock wait was likewise
+accepted.
+
+**The decision (new, contractual):** every owned mutating transaction has
+exactly one authoritative operation-time sampling point — *inside* the owned
+transaction, after `BEGIN IMMEDIATE` has acquired the writer lock:
+`BEGIN IMMEDIATE → sample now → validate authority → evaluate current state
+→ mutate → COMMIT`. All checks within one mutation use this one consistent
+instant. This applies to `bindSession`, `acquireOwnership`, `renewLease`,
+`releaseOwnership`, `verifyOwnership`, `takeoverOwnership` (ownership plane)
+and to `createParticipant` (sponsor authorization), `bindEndpointRef`,
+`issueCapability`, `revokeCapability`, and `joinExchange` (capability/membership
+plane). Lease start and expiry derive from the transaction-time clock;
+capability expiry is evaluated at the transaction-time clock, so a capability
+that expired during a lock wait can never be accepted. Request validation
+(field shape, TTL range, identities) still precedes the transaction and
+performs no state-dependent check.
+
+**Preserved semantics.** Exact-expiry behavior is unchanged (`now >=
+expiresAt` is expired); clock-regression refusal is unchanged (a pre-term
+instant refuses `LEASE_CLOCK_REGRESSION`); the injected-clock test seam is
+unchanged (it is simply invoked at the transaction-time sampling point); no
+scheduler and no global clock is introduced. Audit of the remaining storage
+mutation entry points: B2 Exchange/Message creation already samples inside
+its owned transaction (its invalid-clock behavior is the accepted precedent),
+and migration/recovery/initialization `appliedAt` ledger timestamps authorize
+nothing, so they are unchanged.
+
+**Lock-wait semantics (now defined).** Authorization and eligibility are
+decided at the serialization instant, not the initiation instant. A renewal
+initiated before expiry but serialized after it refuses `LEASE_EXPIRED`; a
+takeover initiated before expiry but serialized after it is eligible and may
+win; a takeover serialized while the lease is still live refuses
+`OWNERSHIP_HELD`; a capability that expired during the wait refuses
+`CAPABILITY_REJECTED`. Every such refusal is zero-write and never allocates
+a fencing token.
+
+**Remaining wall-clock limitations (unchanged, no new monotonicity claim).**
+A wall-clock rollback that lands *inside* the current term remains
+indistinguishable from a valid instant without a persisted monotonic
+observation (Q3); transaction-time sampling decides each operation at its
+own serialization instant and does not create a cross-transaction monotonic
+clock. Refusals remain zero-write.
+
+**Regression pins.** `test/storage/lease-lock-wait.test.ts` exercises the
+renewal/takeover/capability lock-wait boundaries with real OS processes, a
+real writer lock, observable initiation markers, and deadline waits against
+durable expiries (no sleep-only assertions, no fake-clock simulation of
+contention).
 ## P2C prerequisites recorded by P2B
 
 1. Detach semantics (Q5 ordering rule and the fate of Session-bound

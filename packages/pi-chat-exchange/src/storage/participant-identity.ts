@@ -43,6 +43,10 @@ export function isParticipantId(value: unknown): value is string {
 export class ParticipantRequestError extends Error {
   readonly code = "STORAGE_PARTICIPANT_REQUEST_INVALID";
   readonly retryable = false;
+  /** R1: when a request rejection is raised inside an owned transaction (for
+   * example transaction-time clock validation), the transaction has been
+   * provably rolled back before this error surfaces. */
+  readonly outcome = "ROLLED_BACK";
 
   constructor(detail: string) {
     super(`participant request rejected: ${detail}`);

@@ -620,7 +620,10 @@ INDETERMINATE classification with privacy and zero-write refusals.
 
 Additive amendment (CE-0002-B3-P2B). No schema change: takeover reuses the
 accepted v3 columns. Everything in §§1-10 is preserved except where §11
-explicitly updates §10.
+explicitly updates §10. CE-0002-B3-P2B-R1 amends this section further (see
+"Transaction-time clock sampling" below), remediating the independently
+confirmed stale pre-lock clock defect without changing any takeover
+authority, eligibility, fencing, supersession, or reconciliation contract.
 
 ### Takeover authority
 
@@ -648,6 +651,49 @@ repaired); and any invalid, revoked, expired, wrong-Participant,
 wrong-Session, wrong-scope, or wrong-generation capability
 (`CAPABILITY_REJECTED`). There is no force takeover of a live Owner in this
 phase.
+### Transaction-time clock sampling (B3-P2B-R1)
+
+**Updates §10 lease-time wording and resolves the R1 review's MINOR-1.** P2B
+sampled each operation's clock before `BEGIN IMMEDIATE`; an operation that
+waited for the SQLite writer lock then evaluated authorization and lease
+state against the stale pre-lock instant (the independently confirmed
+MAJOR-1: a renewal initiated before expiry but serialized after it committed
+and revived an expired lease; a capability that expired during the wait was
+accepted).
+
+R1 defines one authoritative operation-time sampling point for every owned
+mutating transaction: inside the transaction, after `BEGIN IMMEDIATE` has
+acquired the writer lock — `BEGIN IMMEDIATE → sample now → validate
+authority → evaluate current state → mutate → COMMIT`. All checks within one
+mutation use this one consistent instant. This governs `bindSession`,
+`acquireOwnership`, `renewLease`, `releaseOwnership`, `verifyOwnership`,
+`takeoverOwnership`, and the capability/membership mutations
+(`createParticipant` sponsor authorization, `bindEndpointRef`,
+`issueCapability`, `revokeCapability`, `joinExchange`). Lease start and
+expiry derive from the transaction-time clock; capability expiry is
+evaluated at the transaction-time clock, so a capability that expired during
+a lock wait is never accepted. Request validation (shape, TTL range,
+identities) still precedes the transaction and performs no state-dependent
+check.
+
+Lock-wait semantics, now defined: a renewal initiated before expiry but
+serialized after it refuses `LEASE_EXPIRED`; a takeover initiated before
+expiry but serialized after it is eligible and may win; a takeover
+serialized while the lease is live refuses `OWNERSHIP_HELD`; a capability
+that expired during the wait refuses `CAPABILITY_REJECTED`. Every such
+refusal is zero-write and allocates no fencing token.
+
+Preserved: exact-expiry behavior (`now >= expiresAt` is expired),
+clock-regression refusal, the injected-clock test seam (invoked at the
+transaction-time sampling point), and the documented wall-clock limitation —
+a rollback landing inside the current term remains indistinguishable from a
+valid instant; no cross-transaction monotonic clock is claimed, no scheduler
+and no global clock is introduced. B2 Exchange/Message creation already
+sampled inside its owned transaction (the accepted precedent);
+migration/recovery/initialization `appliedAt` ledger timestamps authorize
+nothing and are unchanged. Regression pins:
+`test/storage/lease-lock-wait.test.ts` (real OS processes, real writer-lock
+contention, observable initiation, deadline waits).
 
 ### Atomic replacement and fencing transition
 
@@ -660,9 +706,14 @@ interleaved change fails the single-row check and rolls back. Exactly one
 concurrent takeover wins; losers serialize into `OWNERSHIP_HELD` or time out
 as `STORAGE_TRANSACTION_BUSY` (retryable). No partial fencing allocation, no
 partial replacement, no token reuse, zero-write refusals. A takeover racing a
-renewal of a live lease can never win: the lease is live at every instant of
-the race, so the takeover refuses `OWNERSHIP_HELD` regardless of
-serialization order.
+renewal of a live lease refuses whenever the lease is live at the takeover's
+serialization instant (see "Transaction-time clock sampling" below): a live
+lease at serialization is `OWNERSHIP_HELD`, regardless of what the clock read
+at initiation. A renewal serialized while its lease is still live extends it;
+a renewal serialized after expiry refuses `LEASE_EXPIRED` and can never revive
+it. A renewal/takeover race is therefore decided by the durable lease state at
+each operation's own serialization instant — exactly one winner, no
+stale-time distortion in either direction.
 
 ### Supersession
 

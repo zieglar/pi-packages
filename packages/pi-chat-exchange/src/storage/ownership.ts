@@ -83,7 +83,13 @@ import { requireSingleRowChange, type TransactionHandle } from "./transaction.js
  * Leases (R1: persisted term boundaries)
  * - Default TTL 120 s, configurable 30-3600 s; 30 s is a renewal
  *   recommendation for hosts, not a scheduler. Time comes only from the
- *   injected clock seam.
+ *   injected clock seam, sampled once per operation at transaction time —
+ *   inside the owned transaction, after BEGIN IMMEDIATE has acquired the
+ *   writer lock (CE-0002-B3-P2B-R1): authorization, lease evaluation, and
+ *   the persisted term boundaries never use a stale pre-lock instant, so a
+ *   renewal serialized after expiry refuses LEASE_EXPIRED instead of
+ *   reviving the lease, and a capability that expired during a lock wait is
+ *   never accepted.
  * - The lease term is durably persisted: `lease_started_at` is written at
  *   acquisition and updated at every renewal. A lease authorizes only within
  *   `[leaseStartedAt, expiresAt)`. An instant at or after expiry is
@@ -402,10 +408,13 @@ export function bindSession(store: DurableStore, input: unknown, seams: BindSess
   const participantId = requireParticipantId(fields.participantId, "participantId");
   const sessionId = requireSessionId(fields.sessionId, "sessionId");
   const capability = fields.capability;
-  const boundAt = clock(seams);
   const afterSessionInsert = seams.afterSessionInsert;
 
   return runOwned(store, "Session binding", (tx) => {
+    // R1: the operation clock is sampled at transaction time, after BEGIN
+    // IMMEDIATE has acquired the writer lock, so the capability expiry check
+    // never evaluates against a stale pre-lock instant.
+    const boundAt = clock(seams);
     authorize(tx, store, { capability, participantId, scope: "attach", now: boundAt });
     if (readParticipantRow(tx, participantId) === undefined) refuse("PARTICIPANT_NOT_FOUND");
     if (sessionRow(tx, participantId, sessionId) !== undefined) refuse("SESSION_ALREADY_BOUND");
@@ -467,12 +476,15 @@ export function acquireOwnership(
   const sessionId = requireSessionId(fields.sessionId, "sessionId");
   const leaseTtlSeconds = requireLeaseTtl(fields);
   const capability = fields.capability;
-  const now = clock(seams);
-  const expiresAt = leaseExpiry(now, leaseTtlSeconds);
   const afterFencingWrite = seams.afterFencingWrite;
   const afterOwnershipWrite = seams.afterOwnershipWrite;
 
   return runOwned(store, "Ownership acquisition", (tx) => {
+    // R1: transaction-time clock — sampled after the writer lock is held, so
+    // authorization, eligibility, and the persisted term boundaries all derive
+    // from the serialization instant, never from a stale pre-lock sample.
+    const now = clock(seams);
+    const expiresAt = leaseExpiry(now, leaseTtlSeconds);
     authorize(tx, store, { capability, participantId, scope: "attach", now });
     if (readParticipantRow(tx, participantId) === undefined) refuse("PARTICIPANT_NOT_FOUND");
     const session = sessionRow(tx, participantId, sessionId);
@@ -532,14 +544,18 @@ export interface RenewLeaseSeams extends ClockSeam {
  * reinterprets a stored term. The fencing token is unchanged.
  */
 export function renewLease(store: DurableStore, input: unknown, seams: RenewLeaseSeams = {}): OwnershipLease {
-  const now = clock(seams);
   const fields = ownerFields(input, ["leaseTtlSeconds"]);
-  const presentation = normalizeOwnerRequest(fields, now);
   const leaseTtlSeconds = requireLeaseTtl(fields);
-  const expiresAt = leaseExpiry(now, leaseTtlSeconds);
   const afterOwnershipWrite = seams.afterOwnershipWrite;
 
   return runOwned(store, "Lease renewal", (tx) => {
+    // R1: transaction-time clock — sampled after the writer lock is held. A
+    // renewal initiated before expiry but serialized after it evaluates the
+    // persisted term at the serialization instant and refuses LEASE_EXPIRED;
+    // it can never revive an expired lease from a stale pre-lock sample.
+    const now = clock(seams);
+    const expiresAt = leaseExpiry(now, leaseTtlSeconds);
+    const presentation = normalizeOwnerRequest(fields, now);
     const current = authorizeCurrentOwner(tx, store, presentation);
     // Renewal never shortens the term: the new expiry must not precede the
     // current one. (The request TTL only computes the new expiry; it never
@@ -586,12 +602,13 @@ export function releaseOwnership(
   input: unknown,
   seams: ReleaseOwnershipSeams = {},
 ): OwnershipRelease {
-  const now = clock(seams);
-  const presentation = normalizeOwnerRequest(ownerFields(input), now);
+  const fields = ownerFields(input);
   const afterOwnershipDelete = seams.afterOwnershipDelete;
 
   return runOwned(store, "Ownership release", (tx) => {
-    const current = authorizeCurrentOwner(tx, store, presentation);
+    // R1: transaction-time clock, sampled after the writer lock is held.
+    const now = clock(seams);
+    const current = authorizeCurrentOwner(tx, store, normalizeOwnerRequest(fields, now));
     requireSingleRowChange(
       tx
         .prepare(
@@ -660,12 +677,16 @@ export function takeoverOwnership(
   const sessionId = requireSessionId(fields.sessionId, "sessionId");
   const leaseTtlSeconds = requireLeaseTtl(fields);
   const capability = fields.capability;
-  const now = clock(seams);
-  const expiresAt = leaseExpiry(now, leaseTtlSeconds);
   const afterFencingWrite = seams.afterFencingWrite;
   const afterOwnershipWrite = seams.afterOwnershipWrite;
 
   return runOwned(store, "Ownership takeover", (tx) => {
+    // R1: transaction-time clock — sampled after the writer lock is held, so
+    // takeover eligibility and the persisted new term derive from the
+    // serialization instant. A takeover can never win on a stale pre-lock
+    // sample, and a live Owner at serialization always refuses.
+    const now = clock(seams);
+    const expiresAt = leaseExpiry(now, leaseTtlSeconds);
     authorize(tx, store, { capability, participantId, scope: "takeover", now, sessionId });
     if (readParticipantRow(tx, participantId) === undefined) refuse("PARTICIPANT_NOT_FOUND");
     const session = sessionRow(tx, participantId, sessionId);
@@ -708,9 +729,11 @@ export function takeoverOwnership(
  * so it observes the same serialized state any mutation would. Returns the
  * durable record exactly as persisted, including the term start. */
 export function verifyOwnership(store: DurableStore, input: unknown, seams: ClockSeam = {}): OwnershipRecord {
-  const now = clock(seams);
-  const presentation = normalizeOwnerRequest(ownerFields(input), now);
-  return runOwned(store, "Ownership verification", (tx) => authorizeCurrentOwner(tx, store, presentation));
+  const fields = ownerFields(input);
+  // R1: transaction-time clock, sampled after the writer lock is held.
+  return runOwned(store, "Ownership verification", (tx) =>
+    authorizeCurrentOwner(tx, store, normalizeOwnerRequest(fields, clock(seams))),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -783,8 +806,9 @@ export type LeaseStatus = "UNOWNED" | LeaseEvaluation;
 export function readLeaseStatus(store: DurableStore, input: unknown, seams: ClockSeam = {}): LeaseStatus {
   const fields = captureFields(input, ["participantId"], ["participantId"], "request");
   const pid = requireParticipantId(fields.participantId, "participantId");
-  const now = clock(seams);
   return readSnapshot(store, (handle) => {
+    // Evaluated against the snapshot's own instant, not a pre-read sample.
+    const now = clock(seams);
     const { ownership } = loadOwnershipState(handle, pid);
     return ownership === undefined ? "UNOWNED" : evaluateLease(ownership, now);
   });

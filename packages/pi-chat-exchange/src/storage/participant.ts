@@ -18,6 +18,7 @@ import {
   generateParticipantId,
   PARTICIPANT_ID_PATTERN,
   PARTICIPANT_JOINED_EVENT_KIND,
+  ParticipantRequestError,
   requireIdempotencyKey,
   requireInstant,
   requireParticipantId,
@@ -165,7 +166,11 @@ export function clock(seams: ClockSeam): string {
 /** @internal Shared with the private B3-P2A ownership plane. */
 export function runOwned<T>(store: DurableStore, label: string, body: (tx: TransactionHandle) => T): T {
   let captured: { value: T } | undefined;
-  let domainFailure: ParticipantDomainError | ConditionalMutationError | StoreLifecycleError | undefined;
+  // ParticipantRequestError joins the typed passthrough in R1: transaction-time
+  // clock validation can reject a request inside the owned transaction; the
+  // refusal must surface as itself after a proven rollback, never sanitized
+  // into a generic transaction failure.
+  let domainFailure: ParticipantDomainError | ParticipantRequestError | ConditionalMutationError | StoreLifecycleError | undefined;
   try {
     withImmediateTransaction(store.database, (tx) => {
       try {
@@ -173,6 +178,7 @@ export function runOwned<T>(store: DurableStore, label: string, body: (tx: Trans
       } catch (error) {
         if (
           error instanceof ParticipantDomainError ||
+          error instanceof ParticipantRequestError ||
           error instanceof ConditionalMutationError ||
           error instanceof StoreLifecycleError
         ) {
@@ -526,10 +532,11 @@ export function createParticipant(
   const request = normalizeCreateParticipant(input);
   const afterParticipantInsert = seams.afterParticipantInsert;
   const afterIdempotencyInsert = seams.afterIdempotencyInsert;
-  const createdAt = clock(seams);
-  const participantId = generateParticipantId(Date.parse(createdAt));
-
   return runOwned(store, "Participant creation", (tx) => {
+    // R1: transaction-time clock, sampled after the writer lock is held, so a
+    // sponsor capability is never authorized on a stale pre-lock instant.
+    const createdAt = clock(seams);
+    const participantId = generateParticipantId(Date.parse(createdAt));
     // CE-0002-B3-P1B-R1 (MAJOR-1): current authorization precedes every
     // protected result, including an idempotent replay. A sponsored request
     // must present a currently valid `create` capability before any stored
@@ -623,9 +630,9 @@ export function bindEndpointRef(store: DurableStore, input: unknown, seams: Cloc
   const participantId = requireParticipantId(fields.participantId, "participantId");
   const { adapter, endpointId } = normalizeEndpointProjection(fields.endpoint, "endpoint");
   const capability = fields.capability;
-  const now = clock(seams);
-
   return runOwned(store, "Endpoint binding", (tx) => {
+    // R1: transaction-time clock, sampled after the writer lock is held.
+    const now = clock(seams);
     authorize(tx, store, { capability, participantId, scope: "bind", now });
     const participant = readParticipantRow(tx, participantId);
     if (participant === undefined) refuse("PARTICIPANT_NOT_FOUND");
@@ -703,12 +710,13 @@ export function issueCapability(
   if (sessionBound && !hasSession) rejectRequest("sessionId: missing required field");
   if (!sessionBound && hasSession) rejectRequest("sessionId: unknown field");
   const sessionId = hasSession ? requireSessionId(fields.sessionId, "sessionId") : undefined;
-  const createdAt = clock(seams);
   const afterCapabilityInsert = seams.afterCapabilityInsert;
   if (!isOperationalCapabilityScope(scope)) refuse("CAPABILITY_SCOPE_UNSUPPORTED");
   const capability = generateCapability(seams.tokenBytes);
 
   return runOwned(store, "Capability issuance", (tx) => {
+    // R1: transaction-time clock, sampled after the writer lock is held.
+    const createdAt = clock(seams);
     if (readParticipantRow(tx, participantId) === undefined) refuse("PARTICIPANT_NOT_FOUND");
     if (sessionId !== undefined) {
       // A Session-bound capability may only be bound to a Session that is
@@ -778,12 +786,15 @@ export function revokeCapability(store: DurableStore, input: unknown, seams: Clo
   const participantId = requireParticipantId(fields.participantId, "participantId");
   const scope = requireText(fields.scope, "scope", 32);
   const capability = fields.capability;
-  const revokedAt = clock(seams);
   if (!isOperationalCapabilityScope(scope)) refuse("CAPABILITY_SCOPE_UNSUPPORTED");
   const sessionId = Object.hasOwn(fields, "sessionId") ? requireSessionId(fields.sessionId, "sessionId") : undefined;
   if (isSessionBoundCapabilityScope(scope) && sessionId === undefined) rejectRequest("sessionId: missing required field");
 
   return runOwned(store, "Capability revocation", (tx) => {
+    // R1: transaction-time clock, sampled after the writer lock is held, so a
+    // capability that expired while this operation waited for the lock can
+    // never be treated as valid.
+    const revokedAt = clock(seams);
     if (classifyCapability(tx, store.databasePath, { capability, participantId, scope, now: revokedAt, ...(sessionId === undefined ? {} : { sessionId }) }) !== "VALID") {
       refuse("CAPABILITY_REJECTED");
     }
@@ -926,13 +937,15 @@ export function joinExchange(store: DurableStore, input: unknown, seams: JoinExc
     exchangeId,
     participantId,
   });
-  const createdAt = clock(seams);
-  const eventId = generateEntityId("evt_", Date.parse(createdAt));
   const afterMembershipInsert = seams.afterMembershipInsert;
   const afterIdempotencyInsert = seams.afterIdempotencyInsert;
   const afterAuditInsert = seams.afterAuditInsert;
 
   return runOwned(store, "Exchange membership join", (tx) => {
+    // R1: transaction-time clock, sampled after the writer lock is held, so a
+    // join capability is never authorized on a stale pre-lock instant.
+    const createdAt = clock(seams);
+    const eventId = generateEntityId("evt_", Date.parse(createdAt));
     // CE-0002-B3-P1B-R1 (MAJOR-1): current `join` authorization precedes every
     // protected result, including an idempotent replay, so no forged, expired,
     // revoked, wrong-scope, wrong-Participant, or wrong-generation capability
