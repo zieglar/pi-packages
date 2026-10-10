@@ -32,6 +32,9 @@ export interface RecoverTrustRootOptions extends StorageConnectionOptions {
   readonly now?: () => string;
   /** Private deterministic test seam; production callers omit this. */
   readonly secretBytes?: () => Uint8Array;
+  /** Private deterministic test seam invoked inside the owned transaction
+   * immediately before commit; production callers omit this. */
+  readonly beforeCommit?: () => void;
 }
 
 export function recoverTrustRoot(options: RecoverTrustRootOptions): DurableStore {
@@ -88,6 +91,7 @@ export function recoverTrustRoot(options: RecoverTrustRootOptions): DurableStore
         "INSERT INTO host_trust_root(generation, secret_digest, created_at, private_revision) VALUES (?, ?, ?, 1)",
       ).run(current.generation + 1, secretDigest, appliedAt);
       tx.prepare("UPDATE participant_capability SET revoked_at = ? WHERE revoked_at IS NULL").run(appliedAt);
+      options.beforeCommit?.();
     });
   } catch (error) {
     // Transaction outcomes propagate unchanged: no automatic retry, no repair.

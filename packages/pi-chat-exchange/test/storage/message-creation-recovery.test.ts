@@ -505,13 +505,34 @@ it("control: a missing release barrier is a bounded nonzero infrastructure failu
   assertDurableConsistency(active);
 }, TEST_TIMEOUT_MS);
 
-it("keeps recovery validation test-only with no production recovery API", () => {
+/** Accepted B2 protection, with the description corrected for B3 (P1B item D):
+ * the guarantee this test enforces is that no *Exchange/Message recovery*
+ * API, retry loop, scheduler, or kill path exists in production storage. It
+ * was originally described as "no production recovery API" at a time when no
+ * recovery entry point of any kind existed. The accepted B3-P1A host
+ * trust-root recovery (`recoverTrustRoot`) is an explicit operator command in
+ * its own module and is deliberately out of this test's scope; the original
+ * protection is unchanged and is now additionally enforced over the B3
+ * modules, which must not smuggle in message-recovery, retry, or kill paths. */
+it("keeps Exchange/Message recovery validation test-only with no production recovery, retry, or kill path", () => {
   const contender = readFileSync(new URL("./support/recovery-contender.mjs", import.meta.url), "utf8");
   expect(contender).toContain("BEGIN IMMEDIATE");
-  for (const module of ["creation", "transaction", "store", "connection"]) {
+  for (const module of [
+    "creation",
+    "transaction",
+    "store",
+    "connection",
+    "migration",
+    "recovery",
+    "participant",
+    "capability",
+  ]) {
     const source = readFileSync(new URL(`../../src/storage/${module}.ts`, import.meta.url), "utf8");
-    // No recovery API, retry loop, scheduler or kill path exists in production.
-    expect(source).not.toMatch(/SIGKILL|process\.kill|reopenExchange|recoverExchange|recoverStore|scheduleRecovery|setTimeout|setInterval/);
+    // Unchanged original protection: no Exchange/Message recovery API, retry
+    // loop, scheduler, or kill path exists in production storage.
+    expect(source, module).not.toMatch(
+      /SIGKILL|process\.kill|reopenExchange|recoverExchange|recoverStore|scheduleRecovery|setTimeout|setInterval/,
+    );
   }
 });
 
