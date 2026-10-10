@@ -626,3 +626,87 @@ describe("Host Capability privacy (B3-P1B)", () => {
     expect(() => assertNoCapabilityDisclosure(stacked, [token], "/tmp/none", "control")).toThrow();
   });
 });
+
+describe("Session-bound resume capability (B3-P2A-R1)", () => {
+  const S1 = "ses_01ARZ3NDEKTSV4RRFFQ69G5FA0";
+  const S2 = "ses_01ARZ3NDEKTSV4RRFFQ69G5FA1";
+
+  function boundParticipant(active: ReturnType<typeof fixture>) {
+    const created = participant(active, "endpoint-1").participant;
+    const attach = capabilityFor(active, created.participantId, "attach");
+    // Imported lazily to keep this file focused on the capability plane.
+    return { created, attach };
+  }
+
+  it("requires a Session for resume issuance and refuses sessionId on other scopes", async () => {
+    const { bindSession } = await import("../../src/storage/ownership.js");
+    const active = fixture();
+    const { created, attach } = boundParticipant(active);
+    bindSession(active.store, { participantId: created.participantId, sessionId: S1, capability: attach }, { now: () => NOW });
+
+    expectRefusal(
+      () => issueCapability(active.store, { participantId: created.participantId, scope: "resume" }, { now: () => NOW }),
+      "STORAGE_PARTICIPANT_REQUEST_INVALID",
+    );
+    expectRefusal(
+      () => issueCapability(active.store, { participantId: created.participantId, scope: "create", sessionId: S1 }, { now: () => NOW }),
+      "STORAGE_PARTICIPANT_REQUEST_INVALID",
+    );
+    // Issuance requires the Session to be currently bound to the Participant.
+    expectRefusal(
+      () => issueCapability(active.store, { participantId: created.participantId, scope: "resume", sessionId: S2 }, { now: () => NOW }),
+      "SESSION_NOT_BOUND",
+    );
+    const issued = issueCapability(
+      active.store,
+      { participantId: created.participantId, scope: "resume", sessionId: S1 },
+      { now: () => NOW },
+    );
+    expect(issued).toMatchObject({ scope: "resume", sessionId: S1 });
+    expect(Object.isFrozen(issued)).toBe(true);
+  });
+
+  it("classifies the Session binding: valid only for the bound Session", async () => {
+    const { bindSession } = await import("../../src/storage/ownership.js");
+    const active = fixture();
+    const { created, attach } = boundParticipant(active);
+    for (const sessionId of [S1, S2]) {
+      bindSession(active.store, { participantId: created.participantId, sessionId, capability: attach }, { now: () => NOW });
+    }
+    const resume = capabilityFor(active, created.participantId, "resume", { sessionId: S1 });
+    const status = (extra: object = {}) =>
+      readCapabilityStatus(
+        active.store,
+        { capability: resume, participantId: created.participantId, scope: "resume", ...extra },
+        { now: () => NOW },
+      );
+    expect(status({ sessionId: S1 })).toBe("VALID");
+    expect(status({ sessionId: S2 })).toBe("SESSION_MISMATCH");
+    // Without the Session the binding cannot be verified: fail closed.
+    expect(status()).toBe("SESSION_MISMATCH");
+  });
+
+  it("requires the bound Session to revoke a resume capability", async () => {
+    const { bindSession } = await import("../../src/storage/ownership.js");
+    const active = fixture();
+    const { created, attach } = boundParticipant(active);
+    bindSession(active.store, { participantId: created.participantId, sessionId: S1, capability: attach }, { now: () => NOW });
+    const resume = capabilityFor(active, created.participantId, "resume", { sessionId: S1 });
+
+    expectRefusal(
+      () => revokeCapability(active.store, { participantId: created.participantId, scope: "resume", capability: resume }, { now: () => NOW }),
+      "STORAGE_PARTICIPANT_REQUEST_INVALID",
+    );
+    // A mismatched Session never authorizes the revocation.
+    expectRefusal(
+      () => revokeCapability(active.store, { participantId: created.participantId, scope: "resume", capability: resume, sessionId: S2 }, { now: () => NOW }),
+      "CAPABILITY_REJECTED",
+    );
+    expect(
+      revokeCapability(active.store, { participantId: created.participantId, scope: "resume", capability: resume, sessionId: S1 }, { now: () => NOW }),
+    ).toMatchObject({ participantId: created.participantId, scope: "resume" });
+    expect(
+      readCapabilityStatus(active.store, { capability: resume, participantId: created.participantId, scope: "resume", sessionId: S1 }, { now: () => NOW }),
+    ).toBe("REVOKED");
+  });
+});

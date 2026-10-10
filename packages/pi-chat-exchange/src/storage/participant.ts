@@ -20,6 +20,7 @@ import {
   requireIdempotencyKey,
   requireInstant,
   requireParticipantId,
+  requireSessionId,
   requireText,
   rejectRequest,
 } from "./participant-identity.js";
@@ -72,10 +73,12 @@ type ParticipantDomainCode =
   | "SESSION_NOT_BOUND"
   | "OWNERSHIP_HELD"
   | "OWNERSHIP_NOT_CURRENT"
+  | "OWNERSHIP_TAKEOVER_REQUIRED"
   | "FENCING_STALE"
   | "FENCING_EXHAUSTED"
   | "LEASE_EXPIRED"
   | "LEASE_CLOCK_REGRESSION"
+  | "LEASE_TERM_SHORTENED"
   | "STORAGE_OWNERSHIP_CORRUPT";
 
 /** Fixed sanitized details: never a capability, digest, secret, SQL message,
@@ -97,10 +100,12 @@ const DOMAIN_DETAIL: Record<ParticipantDomainCode, string> = {
   SESSION_NOT_BOUND: "operation requires a currently bound Session",
   OWNERSHIP_HELD: "the Participant already has a current Owner",
   OWNERSHIP_NOT_CURRENT: "the Session is not the current Owner of the Participant",
+  OWNERSHIP_TAKEOVER_REQUIRED: "replacing an existing Owner requires takeover authority, which is not active",
   FENCING_STALE: "the presented fencing token is not current",
   FENCING_EXHAUSTED: "the Participant fencing token space is exhausted; operator review required",
   LEASE_EXPIRED: "the ownership lease has expired",
   LEASE_CLOCK_REGRESSION: "the operation clock precedes the current lease term",
+  LEASE_TERM_SHORTENED: "renewal must not shorten the current lease term",
   STORAGE_OWNERSHIP_CORRUPT: "stored ownership state is inconsistent; operator review required",
 };
 
@@ -319,15 +324,22 @@ export function readCapabilityStatus(
   input: unknown,
   seams: ClockSeam = {},
 ): CapabilityStatus {
-  const fields = captureFields(input, ["capability", "participantId", "scope"], ["capability", "participantId", "scope"], "request");
+  const fields = captureFields(
+    input,
+    ["capability", "participantId", "scope", "sessionId"],
+    ["capability", "participantId", "scope"],
+    "request",
+  );
   const participantId = requireParticipantId(fields.participantId, "participantId");
   const scope = requireText(fields.scope, "scope", 32);
   if (!isOperationalCapabilityScope(scope)) return "SCOPE_MISMATCH";
+  const sessionId = Object.hasOwn(fields, "sessionId") ? requireSessionId(fields.sessionId, "sessionId") : undefined;
   return classifyCapability(store.database, store.databasePath, {
     capability: fields.capability,
     participantId,
     scope,
     now: clock(seams),
+    ...(sessionId === undefined ? {} : { sessionId }),
   });
 }
 
@@ -342,7 +354,13 @@ function requireExchangeId(value: unknown, path: string): string {
 export function authorize(
   tx: TransactionHandle,
   store: DurableStore,
-  presentation: { capability: unknown; participantId: string; scope: OperationalCapabilityScope; now: string },
+  presentation: {
+    capability: unknown;
+    participantId: string;
+    scope: OperationalCapabilityScope;
+    now: string;
+    sessionId?: string;
+  },
 ): void {
   if (classifyCapability(tx, store.databasePath, presentation) !== "VALID") {
     refuse("CAPABILITY_REJECTED");
@@ -637,6 +655,8 @@ export interface IssuedCapability {
   readonly trustGeneration: number;
   readonly createdAt: string;
   readonly expiresAt?: string;
+  /** The Session a `resume` capability is durably bound to (R1). */
+  readonly sessionId?: string;
 }
 
 export interface IssueCapabilitySeams extends ClockSeam {
@@ -646,12 +666,19 @@ export interface IssueCapabilitySeams extends ClockSeam {
 
 /**
  * Issues one Host Capability for an existing Participant, bound to the current
- * trust generation and exactly one operational P1 scope.
+ * trust generation and exactly one operational scope.
  *
  * Host authority is the issuing authority: the live host secret must still pass
  * the artifact policy and match the persisted fingerprint of the current
  * generation, inside the same owned transaction that inserts the digest row.
  * No plaintext token or secret is persisted, logged, or audited.
+ *
+ * Session-bound resume (CE-0002-B3-P2A-R1): a `resume` capability requires
+ * `sessionId` and is durably bound to exactly that Session, which must be a
+ * currently bound Session of the Participant at issuance. Session binding is a
+ * narrowing of authority, never a credential: the bearer token is still
+ * required, and a Session ID alone authorizes nothing. `sessionId` is refused
+ * for every other scope.
  */
 export function issueCapability(
   store: DurableStore,
@@ -660,13 +687,17 @@ export function issueCapability(
 ): IssuedCapability {
   const fields = captureFields(
     input,
-    ["participantId", "scope", "expiresAt"],
+    ["participantId", "scope", "expiresAt", "sessionId"],
     ["participantId", "scope"],
     "request",
   );
   const participantId = requireParticipantId(fields.participantId, "participantId");
   const scope = requireText(fields.scope, "scope", 32);
   const expiresAt = Object.hasOwn(fields, "expiresAt") ? requireInstant(fields.expiresAt, "expiresAt") : undefined;
+  const hasSession = Object.hasOwn(fields, "sessionId");
+  if (scope === "resume" && !hasSession) rejectRequest("sessionId: missing required field");
+  if (scope !== "resume" && hasSession) rejectRequest("sessionId: unknown field");
+  const sessionId = hasSession ? requireSessionId(fields.sessionId, "sessionId") : undefined;
   const createdAt = clock(seams);
   const afterCapabilityInsert = seams.afterCapabilityInsert;
   if (!isOperationalCapabilityScope(scope)) refuse("CAPABILITY_SCOPE_UNSUPPORTED");
@@ -674,6 +705,17 @@ export function issueCapability(
 
   return runOwned(store, "Capability issuance", (tx) => {
     if (readParticipantRow(tx, participantId) === undefined) refuse("PARTICIPANT_NOT_FOUND");
+    if (sessionId !== undefined) {
+      // A resume capability may only be bound to a Session that is currently
+      // bound to this Participant; the durable binding is checked inside the
+      // same transaction that records the capability.
+      const binding = tx
+        .prepare(
+          "SELECT detached_at FROM participant_session WHERE participant_id = ? AND session_id = ?",
+        )
+        .get(participantId, sessionId) as { detached_at?: unknown } | undefined;
+      if (binding === undefined || binding.detached_at !== null) refuse("SESSION_NOT_BOUND");
+    }
     const generation = currentGenerationInTransaction(tx);
     if (generation === undefined) {
       throw new StoreLifecycleError("STORAGE_CORRUPT", "a v2 store has no host trust root generation");
@@ -693,9 +735,9 @@ export function issueCapability(
     requireSingleRowChange(
       tx
         .prepare(
-          "INSERT INTO participant_capability(capability_digest, participant_id, scope, trust_generation, created_at, expires_at, revoked_at, private_revision) VALUES (?, ?, ?, ?, ?, ?, NULL, 1)",
+          "INSERT INTO participant_capability(capability_digest, participant_id, scope, trust_generation, created_at, expires_at, revoked_at, session_id, private_revision) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 1)",
         )
-        .run(digest, participantId, scope, generation.generation, createdAt, expiresAt ?? null),
+        .run(digest, participantId, scope, generation.generation, createdAt, expiresAt ?? null, sessionId ?? null),
       "capability insert",
     );
     hook(afterCapabilityInsert);
@@ -706,6 +748,7 @@ export function issueCapability(
       trustGeneration: generation.generation,
       createdAt,
       ...(expiresAt === undefined ? {} : { expiresAt }),
+      ...(sessionId === undefined ? {} : { sessionId }),
     });
   });
 }
@@ -717,11 +760,13 @@ export interface RevokedCapability {
 }
 
 /** Explicit host revocation. Revocation is durable and one-way: there is no
- * automatic capability recovery, reissue, or un-revoke path. */
+ * automatic capability recovery, reissue, or un-revoke path. Revoking a
+ * Session-bound `resume` capability requires presenting its bound Session
+ * (R1), matching the session check of the capability plane. */
 export function revokeCapability(store: DurableStore, input: unknown, seams: ClockSeam = {}): RevokedCapability {
   const fields = captureFields(
     input,
-    ["participantId", "scope", "capability"],
+    ["participantId", "scope", "capability", "sessionId"],
     ["participantId", "scope", "capability"],
     "request",
   );
@@ -730,9 +775,11 @@ export function revokeCapability(store: DurableStore, input: unknown, seams: Clo
   const capability = fields.capability;
   const revokedAt = clock(seams);
   if (!isOperationalCapabilityScope(scope)) refuse("CAPABILITY_SCOPE_UNSUPPORTED");
+  const sessionId = Object.hasOwn(fields, "sessionId") ? requireSessionId(fields.sessionId, "sessionId") : undefined;
+  if (scope === "resume" && sessionId === undefined) rejectRequest("sessionId: missing required field");
 
   return runOwned(store, "Capability revocation", (tx) => {
-    if (classifyCapability(tx, store.databasePath, { capability, participantId, scope, now: revokedAt }) !== "VALID") {
+    if (classifyCapability(tx, store.databasePath, { capability, participantId, scope, now: revokedAt, ...(sessionId === undefined ? {} : { sessionId }) }) !== "VALID") {
       refuse("CAPABILITY_REJECTED");
     }
     const generation = currentGenerationInTransaction(tx);

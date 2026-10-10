@@ -11,12 +11,19 @@ import {
   INITIAL_MIGRATION_NAME,
   INITIAL_SCHEMA_SQL,
   SQLITE_APPLICATION_ID,
+  V2_FOUNDATION_CHECKSUM,
+  V2_FOUNDATION_NAME,
+  V2_FOUNDATION_SQL,
   V2_MIGRATION_CHECKSUM,
   V2_MIGRATION_NAME,
+  V3_MIGRATION_CHECKSUM,
+  V3_MIGRATION_NAME,
 } from "../../src/storage/schema.js";
-import { initializeStore, openStore } from "../../src/storage/store.js";
+import { initializeStore, openStore, preflightStoreShape } from "../../src/storage/store.js";
 import { withImmediateTransaction, StorageTransactionError } from "../../src/storage/transaction.js";
-import { hostSecretDigest, hostSecretPath } from "../../src/storage/trust-root.js";
+import { acquireOwnership, readCurrentOwnership, readFencingHighWater, readLeaseStatus, renewLease } from "../../src/storage/ownership.js";
+import { issueCapability } from "../../src/storage/participant.js";
+import { createHostSecretFile, hostSecretDigest, hostSecretPath } from "../../src/storage/trust-root.js";
 
 const roots: string[] = [];
 interface StoreLocation {
@@ -90,7 +97,14 @@ function schemaManifestRows(database: { prepare: (sql: string) => { all: () => u
 }
 
 function migrate(loc: StoreLocation, extra?: Partial<Parameters<typeof migrateStore>[0]>) {
-  return migrateStore({ ...loc, fromVersion: 1, toVersion: 2, now: () => NOW, secretBytes: () => SECRET, ...extra });
+  return migrateStore({
+    ...loc,
+    fromVersion: 1,
+    toVersion: CURRENT_SCHEMA_VERSION,
+    now: () => NOW,
+    secretBytes: () => SECRET,
+    ...extra,
+  });
 }
 
 describe("explicit v1 to v2 migration (B3-P1A)", () => {
@@ -113,7 +127,7 @@ describe("explicit v1 to v2 migration (B3-P1A)", () => {
     try {
       expect(migrated.storeUuid).toBe(STORE_UUID);
       expect(migrated.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
-      expect(migrated.database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 2 });
+      expect(migrated.database.prepare("PRAGMA user_version").get()).toEqual({ user_version: CURRENT_SCHEMA_VERSION });
       // store_metadata is never UPDATEd: the initialization-time version stays 1.
       expect(migrated.database.prepare("SELECT schema_version FROM store_metadata").get()).toEqual({
         schema_version: 1,
@@ -121,6 +135,7 @@ describe("explicit v1 to v2 migration (B3-P1A)", () => {
       expect(migrated.database.prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version").all()).toEqual([
         { version: 1, name: INITIAL_MIGRATION_NAME, checksum: INITIAL_MIGRATION_CHECKSUM },
         { version: 2, name: V2_MIGRATION_NAME, checksum: V2_MIGRATION_CHECKSUM },
+        { version: 3, name: V3_MIGRATION_NAME, checksum: V3_MIGRATION_CHECKSUM },
       ]);
       // Every seeded v1 row survives intact.
       expect(migrated.database.prepare("SELECT exchange_id, state, created_at FROM exchange").all()).toEqual([
@@ -156,7 +171,7 @@ describe("explicit v1 to v2 migration (B3-P1A)", () => {
     } finally {
       migrated.close();
     }
-    // The migration proof is a successful normal v2 reopen.
+    // The migration proof is a successful normal reopen at the current version.
     expect(() => openStore(loc).close()).not.toThrow();
   });
 
@@ -188,14 +203,34 @@ describe("explicit v1 to v2 migration (B3-P1A)", () => {
     expect(directorySnapshot(loc.directory)).toEqual(before);
   });
 
-  it("refuses any migration path other than the explicitly approved v1 to v2", () => {
+  it("refuses any migration path other than the explicitly approved ones", () => {
     const loc = location();
     initializeV1Store(loc);
-    expect(() => migrate(loc, { fromVersion: 2, toVersion: 2 })).toThrowError(
-      expect.objectContaining({ code: "STORAGE_INCOMPATIBLE" }),
+    for (const [fromVersion, toVersion] of [[2, 2], [1, 4], [3, 3], [3, 2]] as const) {
+      expect(() => migrate(loc, { fromVersion, toVersion })).toThrowError(
+        expect.objectContaining({ code: "STORAGE_INCOMPATIBLE" }),
+      );
+    }
+  });
+
+  it("keeps the accepted v1 to v2 path: a v2 store then requires the explicit v2 to v3 migration", () => {
+    const loc = location();
+    initializeV1Store(loc);
+    // The accepted path still migrates v1 to v2 and returns the validated store.
+    const v2 = migrate(loc, { fromVersion: 1, toVersion: 2 });
+    v2.close();
+    // A v2 store is recognized but no longer current: normal open refuses with
+    // the typed migration-required result; the store is never silently migrated.
+    expect(preflightStoreShape(join(loc.directory, loc.filename)).kind).toBe("v2");
+    expect(() => openStore(loc)).toThrowError(
+      expect.objectContaining({ code: "STORAGE_MIGRATION_REQUIRED" }),
     );
-    expect(() => migrate(loc, { fromVersion: 1, toVersion: 3 })).toThrowError(
-      expect.objectContaining({ code: "STORAGE_INCOMPATIBLE" }),
+    // The follow-on approved step completes the chain and the store opens.
+    migrate(loc, { fromVersion: 2, toVersion: 3 }).close();
+    expect(() => openStore(loc).close()).not.toThrow();
+    // A repeated step is not required.
+    expect(() => migrate(loc, { fromVersion: 2, toVersion: 3 })).toThrowError(
+      expect.objectContaining({ code: "STORAGE_MIGRATION_NOT_REQUIRED" }),
     );
   });
 
@@ -296,16 +331,233 @@ describe("explicit v1 to v2 migration (B3-P1A)", () => {
   it("keeps migrated stores structurally newer than any v1 binary accepts", () => {
     // Cross-version control: the accepted v1 reopen policy refuses any
     // user_version greater than 1 (B2 store.test.ts proves the refusal path).
-    // A migrated store carries user_version 2, so a v1 binary can never open
-    // it silently; downgrade is impossible.
+    // A migrated store carries the current user_version, so an older binary can
+    // never open it silently; downgrade is impossible.
     const loc = location();
     initializeV1Store(loc);
     migrate(loc).close();
     const probe = openStorageConnection(loc);
     try {
-      expect(probe.prepare("PRAGMA user_version").get()).toEqual({ user_version: 2 });
+      expect(probe.prepare("PRAGMA user_version").get()).toEqual({ user_version: CURRENT_SCHEMA_VERSION });
     } finally {
       probe.close();
     }
+  });
+});
+
+describe("explicit v2 to v3 migration (B3-P2A-R1)", () => {
+  const P1 = "prt_01ARZ3NDEKTSV4RRFFQ69G5FA0";
+  const P2 = "prt_01ARZ3NDEKTSV4RRFFQ69G5FA1";
+  const S1 = "ses_01ARZ3NDEKTSV4RRFFQ69G5FA0";
+  const S2 = "ses_01ARZ3NDEKTSV4RRFFQ69G5FA1";
+  const S3 = "ses_01ARZ3NDEKTSV4RRFFQ69G5FA2";
+  const FAR_FUTURE = "2027-01-01T00:00:00.000Z";
+
+  /** Builds exactly the store a v2 initialization would have produced. */
+  function initializeV2Store(loc: StoreLocation): void {
+    const digest = hostSecretDigest(SECRET_HEX);
+    const db = openStorageConnection(loc, undefined, true);
+    try {
+      withImmediateTransaction(db, (tx) => {
+        tx.exec(V2_FOUNDATION_SQL);
+        tx.prepare(
+          "INSERT INTO store_metadata(singleton, store_uuid, application_id, schema_version, created_at) VALUES (1, ?, ?, 2, ?)",
+        ).run(STORE_UUID, APPLICATION_ID, NOW);
+        tx.prepare("INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (2, ?, ?, ?)").run(
+          V2_FOUNDATION_NAME,
+          V2_FOUNDATION_CHECKSUM,
+          NOW,
+        );
+        tx.prepare("INSERT INTO restore_hold(singleton, held) VALUES (1, 0)").run();
+        tx.prepare(
+          "INSERT INTO host_trust_root(generation, secret_digest, created_at, private_revision) VALUES (1, ?, ?, 1)",
+        ).run(digest, NOW);
+        tx.exec(`PRAGMA application_id=${SQLITE_APPLICATION_ID}; PRAGMA user_version=2;`);
+      });
+    } finally {
+      db.close();
+    }
+    // The host secret artifact accompanies the store (v2 initialization order).
+    createHostSecretFile(join(loc.directory, loc.filename), () => SECRET);
+  }
+
+  /** Seeds v2 ownership history: P1 owns via S1 (token 1), S2 also bound to P1,
+   * S3 bound to P2. Written before the v3 columns exist, so the ownership row
+   * carries no lease start. */
+  function seedV2Ownership(loc: StoreLocation): void {
+    const db = openStorageConnection(loc);
+    try {
+      withImmediateTransaction(db, (tx) => {
+        for (const [participantId, endpointId] of [[P1, "endpoint-1"], [P2, "endpoint-2"]] as const) {
+          tx.prepare(
+            "INSERT INTO participant(participant_id, endpoint_adapter, endpoint_id, created_at, private_revision) VALUES (?, 'adapter-a', ?, ?, 1)",
+          ).run(participantId, endpointId, NOW);
+        }
+        for (const [participantId, sessionId] of [[P1, S1], [P1, S2], [P2, S3]] as const) {
+          tx.prepare(
+            "INSERT INTO participant_session(participant_id, session_id, bound_at, detached_at, private_revision) VALUES (?, ?, ?, NULL, 1)",
+          ).run(participantId, sessionId, NOW);
+        }
+        // A lease whose deadline lies in the future, with no persisted start.
+        tx.prepare(
+          "INSERT INTO participant_ownership(participant_id, session_id, fencing_token, expires_at, private_revision) VALUES (?, ?, 1, ?, 1)",
+        ).run(P1, S1, FAR_FUTURE);
+        tx.prepare(
+          "INSERT INTO participant_fencing_high_water(participant_id, fencing_token, private_revision) VALUES (?, 1, 1)",
+        ).run(P1);
+      });
+    } finally {
+      db.close();
+    }
+  }
+
+  function migrateV3(loc: StoreLocation, extra?: Partial<Parameters<typeof migrateStore>[0]>) {
+    return migrateStore({ ...loc, fromVersion: 2, toVersion: 3, now: () => NOW, ...extra });
+  }
+
+  it("migrates v2 history: legacy ownership rows keep no lease start and never authorize", () => {
+    const loc = location();
+    initializeV2Store(loc);
+    seedV2Ownership(loc);
+    const migrated = migrateV3(loc);
+    try {
+      expect(migrated.database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 3 });
+      expect(migrated.database.prepare("SELECT version, name FROM schema_migrations ORDER BY version").all()).toEqual([
+        { version: 2, name: V2_FOUNDATION_NAME },
+        { version: 3, name: V3_MIGRATION_NAME },
+      ]);
+      // The initialization-time metadata version stays 2 (never UPDATEd).
+      expect(migrated.database.prepare("SELECT schema_version FROM store_metadata").get()).toEqual({ schema_version: 2 });
+      // No lease start was fabricated: the legacy row keeps NULL.
+      expect(
+        migrated.database.prepare("SELECT session_id, expires_at, lease_started_at FROM participant_ownership").all(),
+      ).toEqual([{ session_id: S1, expires_at: FAR_FUTURE, lease_started_at: null }]);
+      // Freshly issued v3 capabilities drive the policy checks. Even though the
+      // stored deadline lies in the future, the legacy row never authorizes.
+      const attach = issueCapability(migrated, { participantId: P1, scope: "attach" }, { now: () => NOW }).capability;
+      const resume = issueCapability(migrated, { participantId: P1, scope: "resume", sessionId: S1 }, { now: () => NOW }).capability;
+      expect(readLeaseStatus(migrated, { participantId: P1 }, { now: () => NOW })).toBe("EXPIRED");
+      expect(() => renewLease(migrated, { participantId: P1, sessionId: S1, fencingToken: 1, capability: resume }, { now: () => NOW })).toThrowError(
+        expect.objectContaining({ code: "LEASE_EXPIRED" }),
+      );
+      expect(() =>
+        acquireOwnership(migrated, { participantId: P1, sessionId: S2, capability: attach }, { now: () => NOW }),
+      ).toThrowError(expect.objectContaining({ code: "OWNERSHIP_TAKEOVER_REQUIRED" }));
+      // Fencing high-water and the durable row survive untouched.
+      expect(readFencingHighWater(migrated, P1)).toBe(1);
+      expect(readCurrentOwnership(migrated, P1)).toMatchObject({ sessionId: S1, fencingToken: 1, leaseStartedAt: null });
+    } finally {
+      migrated.close();
+    }
+    expect(() => openStore(loc).close()).not.toThrow();
+  });
+
+  it("converges to a byte-identical manifest across fresh, chain-migrated, and v2-migrated stores", () => {
+    const freshLoc = location();
+    initializeStore({ ...freshLoc, secretBytes: () => SECRET }).close();
+
+    const chainLoc = location();
+    initializeV1Store(chainLoc);
+    migrate(chainLoc).close();
+
+    const v2Loc = location();
+    initializeV2Store(v2Loc);
+    migrateV3(v2Loc).close();
+
+    const fresh = openStore(freshLoc);
+    const chained = openStore(chainLoc);
+    const fromV2 = openStore(v2Loc);
+    try {
+      expect(schemaManifestRows(chained.database)).toEqual(schemaManifestRows(fresh.database));
+      expect(schemaManifestRows(fromV2.database)).toEqual(schemaManifestRows(fresh.database));
+      // The v3 objects exist exactly once.
+      const names = schemaManifestRows(fresh.database).map((row) => (row as { name: string }).name);
+      expect(names).toContain("participant_session_unique_session_id");
+      expect(names.filter((name) => name === "participant_ownership")).toHaveLength(1);
+    } finally {
+      fresh.close();
+      chained.close();
+      fromV2.close();
+    }
+  });
+
+  it("rejects conflicting historical Session bindings rather than repairing them", () => {
+    const loc = location();
+    initializeV2Store(loc);
+    seedV2Ownership(loc);
+    // Conflicting history: S3 is additionally bound to P1 (the v2 schema has no
+    // durable cross-Participant uniqueness; this is exactly what v3 adds).
+    const db = openStorageConnection(loc);
+    try {
+      withImmediateTransaction(db, (tx) => {
+        tx.prepare(
+          "INSERT INTO participant_session(participant_id, session_id, bound_at, detached_at, private_revision) VALUES (?, ?, ?, NULL, 1)",
+        ).run(P1, S3, NOW);
+      });
+    } finally {
+      db.close();
+    }
+
+    expect(() => migrateV3(loc)).toThrowError(expect.objectContaining({ code: "STORAGE_CORRUPT" }));
+    // Fail closed with zero durable change: the store is still a recognized v2
+    // store, its ledger and rows are untouched, and no v3 object exists.
+    expect(preflightStoreShape(join(loc.directory, loc.filename)).kind).toBe("v2");
+    expect(() => openStore(loc)).toThrowError(expect.objectContaining({ code: "STORAGE_MIGRATION_REQUIRED" }));
+    const probe = openStorageConnection(loc);
+    try {
+      expect(probe.prepare("PRAGMA user_version").get()).toEqual({ user_version: 2 });
+      expect(probe.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 2 }]);
+      expect(
+        probe.prepare("SELECT COUNT(*) AS count FROM pragma_table_info('participant_ownership') WHERE name = 'lease_started_at'").get(),
+      ).toEqual({ count: 0 });
+      expect(probe.prepare("SELECT COUNT(*) AS count FROM participant_session").get()).toEqual({ count: 4 });
+    } finally {
+      probe.close();
+    }
+    // The durable constraint is real once migrated data is clean: a duplicate
+    // Session cannot be written even by a privileged writer.
+    const clean = location();
+    initializeV2Store(clean);
+    seedV2Ownership(clean);
+    migrateV3(clean).close();
+    const writer = openStorageConnection(clean);
+    try {
+      expect(() =>
+        writer
+          .prepare(
+            "INSERT INTO participant_session(participant_id, session_id, bound_at, detached_at, private_revision) VALUES (?, ?, ?, NULL, 1)",
+          )
+          .run(P2, S1, NOW),
+      ).toThrow();
+    } finally {
+      writer.close();
+    }
+  });
+
+  it("rolls an interrupted v2 to v3 migration back to a valid v2 store and retries cleanly", () => {
+    const loc = location();
+    initializeV2Store(loc);
+    seedV2Ownership(loc);
+    expect(() =>
+      migrateV3(loc, {
+        beforeCommit: () => {
+          throw new Error("simulated interruption");
+        },
+      }),
+    ).toThrowError(StorageTransactionError);
+    expect(preflightStoreShape(join(loc.directory, loc.filename)).kind).toBe("v2");
+    expect(() => openStore(loc)).toThrowError(expect.objectContaining({ code: "STORAGE_MIGRATION_REQUIRED" }));
+    // No orphan artifacts block the retry: v2 to v3 never touches the secret.
+    migrateV3(loc).close();
+    expect(() => openStore(loc).close()).not.toThrow();
+  });
+
+  it("requires the existing trust root: v2 to v3 never rotates or recreates the host secret", () => {
+    const loc = location();
+    initializeV2Store(loc);
+    seedV2Ownership(loc);
+    rmSync(hostSecretPath(join(loc.directory, loc.filename)));
+    expect(() => migrateV3(loc)).toThrowError(expect.objectContaining({ code: "STORAGE_TRUST_ROOT_MISSING" }));
+    expect(preflightStoreShape(join(loc.directory, loc.filename)).kind).toBe("v2");
   });
 });

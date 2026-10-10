@@ -92,11 +92,16 @@ export function capabilityFor(
   active: Fixture,
   participantId: string,
   scope: "create" | "bind" | "join" | "attach" | "resume",
-  options: { readonly expiresAt?: string; readonly now?: string } = {},
+  options: { readonly expiresAt?: string; readonly now?: string; readonly sessionId?: string } = {},
 ): string {
   return issueCapability(
     active.store,
-    { participantId, scope, ...(options.expiresAt === undefined ? {} : { expiresAt: options.expiresAt }) },
+    {
+      participantId,
+      scope,
+      ...(options.expiresAt === undefined ? {} : { expiresAt: options.expiresAt }),
+      ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
+    },
     { now: () => options.now ?? NOW },
   ).capability;
 }

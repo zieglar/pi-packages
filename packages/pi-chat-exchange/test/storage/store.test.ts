@@ -6,8 +6,8 @@ import { openStorageConnection } from "../../src/storage/connection.js";
 import {
   APPLICATION_ID,
   CURRENT_SCHEMA_VERSION,
-  V2_FOUNDATION_CHECKSUM,
-  V2_FOUNDATION_NAME,
+  V3_FOUNDATION_CHECKSUM,
+  V3_FOUNDATION_NAME,
   SQLITE_APPLICATION_ID,
 } from "../../src/storage/schema.js";
 import {
@@ -60,7 +60,7 @@ describe("private durable store schema and lifecycle", () => {
         schema_version: CURRENT_SCHEMA_VERSION,
       });
       expect(store.database.prepare("SELECT version, name, checksum FROM schema_migrations").all()).toEqual([
-        { version: CURRENT_SCHEMA_VERSION, name: V2_FOUNDATION_NAME, checksum: V2_FOUNDATION_CHECKSUM },
+        { version: CURRENT_SCHEMA_VERSION, name: V3_FOUNDATION_NAME, checksum: V3_FOUNDATION_CHECKSUM },
       ]);
     } finally {
       store.close();

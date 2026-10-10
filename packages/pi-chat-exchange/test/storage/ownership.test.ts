@@ -61,18 +61,24 @@ interface World {
   readonly active: Fixture;
   readonly participantId: string;
   readonly attach: string;
-  readonly resume: string;
+  /** `resume` capability bound to S1 (R1: resume authority is Session-bound);
+   *  undefined when S1 is not bound in this world. */
+  readonly resume: string | undefined;
+  /** Issues a `resume` capability bound to the given bound Session. */
+  readonly resumeFor: (sessionId: string) => string;
 }
 
 function world(options: { readonly bind?: readonly string[] } = {}): World {
   const active = fixture("ce-b3-p2a-");
   const participantId = participant(active, "endpoint-owner").participant.participantId;
   const attach = capabilityFor(active, participantId, "attach");
-  const resume = capabilityFor(active, participantId, "resume");
-  for (const sessionId of options.bind ?? [S1]) {
+  const bound = options.bind ?? [S1];
+  for (const sessionId of bound) {
     bindSession(active.store, { participantId, sessionId, capability: attach }, clockAt(0));
   }
-  return { active, participantId, attach, resume };
+  const resumeFor = (sessionId: string) => capabilityFor(active, participantId, "resume", { sessionId });
+  const resume = bound.includes(S1) ? resumeFor(S1) : undefined;
+  return { active, participantId, attach, resume, resumeFor };
 }
 
 function acquire(w: World, sessionId = S1, seconds = 0, extra: Record<string, unknown> = {}): OwnershipLease {
@@ -184,14 +190,14 @@ describe("B3-P2A Session binding", () => {
   });
 
   it("refuses wrong-Participant, wrong-scope, forged, expired, revoked, and non-capability credentials", () => {
-    const w = world({ bind: [] });
+    const w = world({ bind: [S2] });
     const other = participant(w.active, "endpoint-other").participant.participantId;
     const expiring = capabilityFor(w.active, w.participantId, "attach", { expiresAt: at(60) });
     const revoked = capabilityFor(w.active, w.participantId, "attach");
     revokeCapability(w.active.store, { participantId: w.participantId, scope: "attach", capability: revoked }, clockAt(1));
     const credentials: [string, unknown, number][] = [
       ["other Participant attach", capabilityFor(w.active, other, "attach"), 0],
-      ["resume scope", w.resume, 0],
+      ["resume scope", w.resumeFor(S2), 0],
       ["join scope", capabilityFor(w.active, w.participantId, "join"), 0],
       ["forged", FORGED, 0],
       ["expired", expiring, 60],
@@ -208,7 +214,7 @@ describe("B3-P2A Session binding", () => {
       );
       expect(error, label).toMatchObject({ message: "host capability authorization rejected" });
     }
-    expect(rowCounts(w.active).session).toBe("0");
+    expect(rowCounts(w.active).session).toBe("1");
   });
 });
 
@@ -222,6 +228,7 @@ describe("B3-P2A ownership acquisition", () => {
       fencingToken: FIRST_FENCING_TOKEN,
       expiresAt: at(LEASE_DEFAULT_TTL_SECONDS),
       leaseTtlSeconds: 120,
+      leaseStartedAt: at(0),
     });
     expect(Object.isFrozen(lease)).toBe(true);
     expect(readFencingHighWater(w.active.store, w.participantId)).toBe(1);
@@ -230,6 +237,7 @@ describe("B3-P2A ownership acquisition", () => {
       sessionId: S1,
       fencingToken: 1,
       expiresAt: at(120),
+      leaseStartedAt: at(0),
     });
     expect(readLeaseStatus(w.active.store, { participantId: w.participantId }, clockAt(60))).toBe("ACTIVE");
     expect(rowCounts(w.active)).toMatchObject({ ownership: "1", fencing: "1" });
@@ -316,6 +324,7 @@ describe("B3-P2A ownership acquisition", () => {
       zeroWrite(w.active, () => acquire(w, S1, 0, { leaseTtlSeconds }), "STORAGE_PARTICIPANT_REQUEST_INVALID");
     }
     expect(acquire(w, S1, 0, { leaseTtlSeconds: 30 }).expiresAt).toBe(at(30));
+    releaseOwnership(w.active.store, owner(w, S1, 1), clockAt(10));
     expect(acquire(w, S2, 30, { leaseTtlSeconds: 3600 }).expiresAt).toBe(at(3630));
     // No scheduler, heartbeat, or timer exists in the ownership plane.
     const source = readFileSync(new URL("../../src/storage/ownership.ts", import.meta.url), "utf8");
@@ -328,8 +337,9 @@ describe("B3-P2A lease renewal and expiry", () => {
     const w = world();
     acquire(w);
     const renewed = renewLease(w.active.store, owner(w, S1, 1), clockAt(60));
-    expect(renewed).toMatchObject({ sessionId: S1, fencingToken: 1, expiresAt: at(180) });
-    expect(readCurrentOwnership(w.active.store, w.participantId)?.expiresAt).toBe(at(180));
+    expect(renewed).toMatchObject({ sessionId: S1, fencingToken: 1, expiresAt: at(180), leaseStartedAt: at(60) });
+    // The persisted term start advances with the renewal.
+    expect(readCurrentOwnership(w.active.store, w.participantId)).toMatchObject({ expiresAt: at(180), leaseStartedAt: at(60) });
     expect(readFencingHighWater(w.active.store, w.participantId)).toBe(1);
     // Verification is zero-write.
     const before = durable(w.active);
@@ -340,9 +350,15 @@ describe("B3-P2A lease renewal and expiry", () => {
   it("refuses renewal by a non-owner Session, a stale token, and an unbound Session", () => {
     const w = world({ bind: [S1, S2] });
     acquire(w);
-    zeroWrite(w.active, () => renewLease(w.active.store, owner(w, S2, 1), clockAt(10)), "OWNERSHIP_NOT_CURRENT");
+    // A resume capability bound to S2 authorizes S2 only: S2 is bound but not Owner.
+    const resume2 = w.resumeFor(S2);
+    zeroWrite(w.active, () => renewLease(w.active.store, owner(w, S2, 1, resume2), clockAt(10)), "OWNERSHIP_NOT_CURRENT");
+    // A resume capability bound to S1 never authorizes an operation as S2.
+    zeroWrite(w.active, () => renewLease(w.active.store, owner(w, S2, 1), clockAt(10)), "CAPABILITY_REJECTED");
     zeroWrite(w.active, () => renewLease(w.active.store, owner(w, S1, 2), clockAt(10)), "FENCING_STALE");
-    zeroWrite(w.active, () => renewLease(w.active.store, owner(w, S3, 1), clockAt(10)), "SESSION_NOT_BOUND");
+    // An unbound Session can hold no resume capability at all (R1): the refusal
+    // is authorization, before any Session-binding lookup.
+    zeroWrite(w.active, () => renewLease(w.active.store, owner(w, S3, 1), clockAt(10)), "CAPABILITY_REJECTED");
     for (const fencingToken of [0, -1, 1.5, "1", FENCING_TOKEN_MAX + 1]) {
       zeroWrite(
         w.active,
@@ -356,13 +372,18 @@ describe("B3-P2A lease renewal and expiry", () => {
     const w = world();
     acquire(w);
     const other = participant(w.active, "endpoint-other").participant.participantId;
-    const expiring = capabilityFor(w.active, w.participantId, "resume", { expiresAt: at(20) });
-    const revoked = capabilityFor(w.active, w.participantId, "resume");
-    revokeCapability(w.active.store, { participantId: w.participantId, scope: "resume", capability: revoked }, clockAt(1));
+    bindSession(w.active.store, { participantId: other, sessionId: S3, capability: capabilityFor(w.active, other, "attach") }, clockAt(0));
+    const expiring = capabilityFor(w.active, w.participantId, "resume", { expiresAt: at(20), sessionId: S1 });
+    const revoked = capabilityFor(w.active, w.participantId, "resume", { sessionId: S1 });
+    revokeCapability(
+      w.active.store,
+      { participantId: w.participantId, scope: "resume", capability: revoked, sessionId: S1 },
+      clockAt(1),
+    );
     for (const [capability, seconds] of [
       [w.attach, 10],
       [FORGED, 10],
-      [capabilityFor(w.active, other, "resume"), 10],
+      [capabilityFor(w.active, other, "resume", { sessionId: S3 }), 10],
       [expiring, 20],
       [revoked, 10],
       [S1, 10],
@@ -391,23 +412,149 @@ describe("B3-P2A lease renewal and expiry", () => {
     }
     expect(readCurrentOwnership(w.active.store, w.participantId)?.expiresAt).toBe(at(180));
     expect(readLeaseStatus(w.active.store, { participantId: w.participantId }, clockAt(30))).toBe("CLOCK_REGRESSION");
+    // A rolled-back clock cannot widen the window by presenting a larger TTL:
+    // the persisted term start decides, never the request TTL.
+    zeroWrite(
+      w.active,
+      () => renewLease(w.active.store, { ...owner(w, S1, 1), leaseTtlSeconds: 3600 }, clockAt(-3600)),
+      "LEASE_CLOCK_REGRESSION",
+    );
     // A rolled-back clock cannot make room for another acquirer either.
     zeroWrite(w.active, () => acquire(w, S2, 30), "OWNERSHIP_HELD");
     // Renewal at a later valid instant only ever moves the deadline forward.
     expect(renewLease(w.active.store, owner(w, S1, 1), clockAt(61)).expiresAt).toBe(at(181));
   });
 
-  it("refuses every Owner operation after supersession", () => {
+  it("refuses Owner replacement through attach once a lease expires (R1: takeover is required)", () => {
     const w = world({ bind: [S1, S2] });
-    acquire(w); // S1, token 1, expires 120
-    const second = acquire(w, S2, 200); // expired lease superseded
-    expect(second).toMatchObject({ sessionId: S2, fencingToken: 2, expiresAt: at(320) });
+    acquire(w); // S1, token 1, term [0, 120)
+    // The expired Owner can neither renew nor release (Q4).
     for (const operation of [renewLease, verifyOwnership, releaseOwnership]) {
-      zeroWrite(w.active, () => operation(w.active.store, owner(w, S1, 1), clockAt(210)), "OWNERSHIP_NOT_CURRENT");
-      zeroWrite(w.active, () => operation(w.active.store, owner(w, S1, 2), clockAt(210)), "OWNERSHIP_NOT_CURRENT");
-      zeroWrite(w.active, () => operation(w.active.store, owner(w, S2, 1), clockAt(210)), "FENCING_STALE");
+      zeroWrite(w.active, () => operation(w.active.store, owner(w, S1, 1), clockAt(120)), "LEASE_EXPIRED");
+      zeroWrite(w.active, () => operation(w.active.store, owner(w, S1, 1), clockAt(5000)), "LEASE_EXPIRED");
     }
-    expect(verifyOwnership(w.active.store, owner(w, S2, 2), clockAt(210)).fencingToken).toBe(2);
+    expect(readLeaseStatus(w.active.store, { participantId: w.participantId }, clockAt(200))).toBe("EXPIRED");
+    // No acquisition is admitted while any ownership row exists — not by
+    // another Session and not by the expired Owner itself. Replacing any
+    // existing Owner is takeover (Q1), which is not active.
+    zeroWrite(w.active, () => acquire(w, S2, 200), "OWNERSHIP_TAKEOVER_REQUIRED");
+    zeroWrite(w.active, () => acquire(w, S1, 200), "OWNERSHIP_TAKEOVER_REQUIRED");
+    zeroWrite(w.active, () => acquire(w, S2, 200, { leaseTtlSeconds: 30 }), "OWNERSHIP_TAKEOVER_REQUIRED");
+    // The durable state is untouched: same Owner, same token, same expiry.
+    expect(readCurrentOwnership(w.active.store, w.participantId)).toMatchObject({
+      sessionId: S1,
+      fencingToken: 1,
+      expiresAt: at(120),
+      leaseStartedAt: at(0),
+    });
+    expect(readFencingHighWater(w.active.store, w.participantId)).toBe(1);
+    // Issuing a takeover capability stays refused.
+    expectRefusal(
+      () => capabilityFor(w.active, w.participantId, "takeover" as "attach"),
+      "CAPABILITY_SCOPE_UNSUPPORTED",
+    );
+  });
+
+  it("admits acquisition again after an explicit release, with the next fencing token", () => {
+    const w = world({ bind: [S1, S2] });
+    acquire(w); // S1, token 1
+    releaseOwnership(w.active.store, owner(w, S1, 1), clockAt(10));
+    expect(readCurrentOwnership(w.active.store, w.participantId)).toBeUndefined();
+    const second = acquire(w, S2, 20);
+    expect(second).toMatchObject({ sessionId: S2, fencingToken: 2, expiresAt: at(140), leaseStartedAt: at(20) });
+    // The released Owner is no longer current: every Owner operation refuses.
+    for (const operation of [renewLease, verifyOwnership, releaseOwnership]) {
+      zeroWrite(w.active, () => operation(w.active.store, owner(w, S1, 1), clockAt(30)), "OWNERSHIP_NOT_CURRENT");
+    }
+    const resume2 = w.resumeFor(S2);
+    zeroWrite(w.active, () => renewLease(w.active.store, owner(w, S2, 1, resume2), clockAt(30)), "FENCING_STALE");
+    expect(verifyOwnership(w.active.store, owner(w, S2, 2, resume2), clockAt(30)).fencingToken).toBe(2);
+  });
+});
+
+describe("B3-P2A-R1 persisted lease term (MAJOR-1 remediation)", () => {
+  it("never evaluates a stored term against a request TTL (no false rollback refusal)", () => {
+    // Regression A: acquire with ttl=3600; later operations that carry no TTL
+    // (or a different TTL) must not reinterpret the stored term.
+    const w = world();
+    const lease = acquire(w, S1, 0, { leaseTtlSeconds: 3600 });
+    expect(lease).toMatchObject({ leaseStartedAt: at(0), expiresAt: at(3600) });
+    expect(verifyOwnership(w.active.store, owner(w, S1, 1), clockAt(60))).toMatchObject({ leaseStartedAt: at(0) });
+    expect(readLeaseStatus(w.active.store, { participantId: w.participantId }, clockAt(60))).toBe("ACTIVE");
+    // Renewal with the same TTL extends from the persisted start.
+    const renewed = renewLease(w.active.store, { ...owner(w, S1, 1), leaseTtlSeconds: 3600 }, clockAt(60));
+    expect(renewed).toMatchObject({ leaseStartedAt: at(60), expiresAt: at(3660) });
+  });
+
+  it("refuses renewal from a rolled-back clock even when the request widens the TTL", () => {
+    // Regression B: the persisted term start decides; a larger request TTL can
+    // never widen the rollback window.
+    const w = world();
+    acquire(w, S1, 0, { leaseTtlSeconds: 30 }); // term [0, 30)
+    for (const leaseTtlSeconds of [30, 120, 3600]) {
+      zeroWrite(
+        w.active,
+        () => renewLease(w.active.store, { ...owner(w, S1, 1), leaseTtlSeconds }, clockAt(-1000)),
+        "LEASE_CLOCK_REGRESSION",
+      );
+    }
+    expect(readCurrentOwnership(w.active.store, w.participantId)).toMatchObject({
+      leaseStartedAt: at(0),
+      expiresAt: at(30),
+    });
+  });
+
+  it("refuses a renewal that would shorten the current term, with zero writes", () => {
+    const w = world();
+    acquire(w, S1, 0, { leaseTtlSeconds: 3600 }); // term [0, 3600)
+    zeroWrite(
+      w.active,
+      () => renewLease(w.active.store, { ...owner(w, S1, 1), leaseTtlSeconds: 30 }, clockAt(60)),
+      "LEASE_TERM_SHORTENED",
+    );
+    expect(readCurrentOwnership(w.active.store, w.participantId)).toMatchObject({
+      leaseStartedAt: at(0),
+      expiresAt: at(3600),
+    });
+    // Equal expiry is not a shortening.
+    expect(
+      renewLease(w.active.store, { ...owner(w, S1, 1), leaseTtlSeconds: 3540 }, clockAt(60)).expiresAt,
+    ).toBe(at(3600));
+  });
+
+  it("refuses renewal and release at exactly the expiry instant", () => {
+    const w = world();
+    acquire(w); // term [0, 120)
+    expect(renewLease(w.active.store, owner(w, S1, 1), clockAt(119))).toMatchObject({ expiresAt: at(239) });
+    for (const operation of [renewLease, verifyOwnership, releaseOwnership]) {
+      zeroWrite(w.active, () => operation(w.active.store, owner(w, S1, 1), clockAt(239)), "LEASE_EXPIRED");
+    }
+  });
+
+  it("binds resume authority to exactly one Session durably", () => {
+    const w = world({ bind: [S1, S2] });
+    acquire(w);
+    const resume2 = w.resumeFor(S2);
+    // The S2-bound capability cannot act as the S1 Owner, and vice versa.
+    zeroWrite(w.active, () => renewLease(w.active.store, owner(w, S1, 1, resume2), clockAt(10)), "CAPABILITY_REJECTED");
+    // Revoking a resume capability requires its bound Session.
+    expectRefusal(
+      () => revokeCapability(w.active.store, { participantId: w.participantId, scope: "resume", capability: resume2 }, clockAt(11)),
+      "STORAGE_PARTICIPANT_REQUEST_INVALID",
+    );
+    revokeCapability(w.active.store, { participantId: w.participantId, scope: "resume", capability: resume2, sessionId: S2 }, clockAt(11));
+    // The persisted binding is visible to host-local reads, never a credential.
+    const view = reader(w.active);
+    try {
+      const rows = view.prepare("SELECT scope, session_id FROM participant_capability ORDER BY scope, session_id").all();
+      expect(rows).toContainEqual({ scope: "resume", session_id: S1 });
+      expect(rows).toContainEqual({ scope: "resume", session_id: S2 });
+      for (const row of view.prepare("SELECT session_id FROM participant_capability WHERE scope <> 'resume'").all()) {
+        expect(row.session_id).toBeNull();
+      }
+    } finally {
+      view.close();
+    }
   });
 });
 
@@ -416,25 +563,27 @@ describe("B3-P2A fencing", () => {
     const w = world({ bind: [S1, S2] });
     const tokens: number[] = [];
     tokens.push(acquire(w, S1, 0).fencingToken); // 1
-    tokens.push(acquire(w, S2, 500).fencingToken); // 2, after expiry
-    releaseOwnership(w.active.store, owner(w, S2, 2), clockAt(510));
-    expect(readCurrentOwnership(w.active.store, w.participantId)).toBeUndefined();
-    expect(readFencingHighWater(w.active.store, w.participantId)).toBe(2);
-    tokens.push(acquire(w, S2, 520).fencingToken); // 3, after release
-    releaseOwnership(w.active.store, owner(w, S2, 3), clockAt(530));
-
+    // Expiry alone never frees the token for reuse (R1: takeover is inactive),
+    // and an expired Owner cannot release (Q4): the high-water outlives the lease.
+    zeroWrite(w.active, () => acquire(w, S2, 500), "OWNERSHIP_TAKEOVER_REQUIRED");
+    zeroWrite(w.active, () => releaseOwnership(w.active.store, owner(w, S1, 1), clockAt(500)), "LEASE_EXPIRED");
+    expect(readFencingHighWater(w.active.store, w.participantId)).toBe(1);
+    // A release while live frees acquisition; the next token is never reused.
+    // (Restart first, to prove durability, then release and reacquire.)
+    const resume2 = w.resumeFor(S2);
     w.active.store.close();
     const reopened = openStore({ directory: w.active.directory, filename: w.active.filename });
     try {
-      expect(readFencingHighWater(reopened, w.participantId)).toBe(3);
-      tokens.push(
-        acquireOwnership(reopened, { participantId: w.participantId, sessionId: S1, capability: w.attach }, clockAt(540))
-          .fencingToken,
-      ); // 4, after restart
+      expect(readFencingHighWater(reopened, w.participantId)).toBe(1);
+      releaseOwnership(reopened, owner(w, S1, 1), clockAt(10));
+      expect(readCurrentOwnership(reopened, w.participantId)).toBeUndefined();
+      tokens.push(acquireOwnership(reopened, { participantId: w.participantId, sessionId: S2, capability: w.attach }, clockAt(20)).fencingToken); // 2, after release + restart
+      releaseOwnership(reopened, owner(w, S2, 2, resume2), clockAt(30));
+      tokens.push(acquireOwnership(reopened, { participantId: w.participantId, sessionId: S1, capability: w.attach }, clockAt(40)).fencingToken); // 3
     } finally {
       reopened.close();
     }
-    expect(tokens).toEqual([1, 2, 3, 4]);
+    expect(tokens).toEqual([1, 2, 3]);
   });
 
   it("refuses allocation beyond the safe-integer token space with zero writes", () => {
@@ -611,7 +760,7 @@ describe("B3-P2A privacy", () => {
     const view = reader(w.active);
     const digests = view.prepare("SELECT capability_digest FROM participant_capability").all().map((row) => String(row.capability_digest));
     view.close();
-    const secrets = [w.attach, w.resume, w.attach.slice(4), w.resume.slice(4), FORGED, SECRET_HEX, w.active.root, w.participantId, S1, S2, ...digests];
+    const secrets = [w.attach, w.resume!, w.attach.slice(4), w.resume!.slice(4), FORGED, SECRET_HEX, w.active.root, w.participantId, S1, S2, ...digests];
 
     const refusals: unknown[] = [];
     const capture = (run: () => unknown) => {
@@ -654,7 +803,14 @@ describe("B3-P2A privacy", () => {
     const renewed = renewLease(w.active.store, owner(w, S1, 1), clockAt(10));
     for (const result of [lease, renewed]) {
       expect(JSON.stringify(result)).not.toContain("cap_");
-      expect(Object.keys(result).sort()).toEqual(["expiresAt", "fencingToken", "leaseTtlSeconds", "participantId", "sessionId"]);
+      expect(Object.keys(result).sort()).toEqual([
+        "expiresAt",
+        "fencingToken",
+        "leaseStartedAt",
+        "leaseTtlSeconds",
+        "participantId",
+        "sessionId",
+      ]);
     }
     w.active.store.close();
     for (const suffix of ["", "-wal"]) {
@@ -664,7 +820,7 @@ describe("B3-P2A privacy", () => {
       } catch {
         continue;
       }
-      for (const token of [w.attach, w.resume]) {
+      for (const token of [w.attach, w.resume!]) {
         expect(bytes).not.toContain(token);
         expect(bytes).not.toContain(token.slice(4));
       }

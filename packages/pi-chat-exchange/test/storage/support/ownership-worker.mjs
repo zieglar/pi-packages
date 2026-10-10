@@ -7,7 +7,7 @@ import { existsSync, writeFileSync } from "node:fs";
 
 const config = JSON.parse(process.argv[2]);
 const { openStore } = await import(config.storeUrl);
-const { acquireOwnership } = await import(config.ownershipUrl);
+const { acquireOwnership, renewLease } = await import(config.ownershipUrl);
 
 function emit(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -43,10 +43,12 @@ if (!waitForBarrier(config.releasePath, config.waitMs)) {
 }
 
 try {
-  const lease = acquireOwnership(store, config.request, { now: () => config.now });
+  const op = config.op === "renew" ? renewLease : acquireOwnership;
+  const lease = op(store, config.request, { now: () => config.now });
   emit({
     event: "result", stage: "acquire", tag: config.tag,
-    disposition: "ACQUIRED", sessionId: lease.sessionId, fencingToken: lease.fencingToken, expiresAt: lease.expiresAt,
+    disposition: config.op === "renew" ? "RENEWED" : "ACQUIRED",
+    sessionId: lease.sessionId, fencingToken: lease.fencingToken, expiresAt: lease.expiresAt,
   });
 } catch (error) {
   emit({

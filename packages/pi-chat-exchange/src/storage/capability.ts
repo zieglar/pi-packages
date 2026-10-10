@@ -66,6 +66,7 @@ export type CapabilityStatus =
   | "UNKNOWN"
   | "SCOPE_MISMATCH"
   | "PARTICIPANT_MISMATCH"
+  | "SESSION_MISMATCH"
   | "WRONG_GENERATION"
   | "REVOKED"
   | "EXPIRED"
@@ -79,6 +80,9 @@ export interface CapabilityRow {
   readonly created_at: string;
   readonly expires_at: string | null;
   readonly revoked_at: string | null;
+  /** CE-0002-B3-P2A-R1: the durable Session binding of a `resume` capability;
+   * NULL for every other scope and for legacy v2 rows. */
+  readonly session_id: string | null;
 }
 
 /** Cryptographically random bearer token: `cap_` + 256 bits of hex. */
@@ -124,7 +128,7 @@ export function currentGenerationInTransaction(tx: ReadableHandle): TrustGenerat
 export function capabilityRow(tx: ReadableHandle, digest: string): CapabilityRow | undefined {
   const row = tx
     .prepare(
-      "SELECT capability_digest, participant_id, scope, trust_generation, created_at, expires_at, revoked_at FROM participant_capability WHERE capability_digest = ?",
+      "SELECT capability_digest, participant_id, scope, trust_generation, created_at, expires_at, revoked_at, session_id FROM participant_capability WHERE capability_digest = ?",
     )
     .get(digest) as Record<string, unknown> | undefined;
   if (row === undefined) return undefined;
@@ -135,7 +139,8 @@ export function capabilityRow(tx: ReadableHandle, digest: string): CapabilityRow
     typeof row.trust_generation !== "number" ||
     typeof row.created_at !== "string" ||
     !(row.expires_at === null || typeof row.expires_at === "string") ||
-    !(row.revoked_at === null || typeof row.revoked_at === "string")
+    !(row.revoked_at === null || typeof row.revoked_at === "string") ||
+    !(row.session_id === null || typeof row.session_id === "string")
   ) {
     return undefined;
   }
@@ -153,6 +158,10 @@ export interface CapabilityPresentation {
   readonly scope: OperationalCapabilityScope;
   /** Evaluation instant for expiry, supplied by the operation's clock. */
   readonly now: string;
+  /** CE-0002-B3-P2A-R1: the Session the presenter acts as. Required for the
+   * `resume` scope: a resume capability is valid only for the Session it was
+   * issued to. Never an authorization input for any other scope. */
+  readonly sessionId?: string;
 }
 
 /**
@@ -205,6 +214,12 @@ export function classifyCapability(
   }
   if (row.participant_id !== presentation.participantId) return "PARTICIPANT_MISMATCH";
   if (row.scope !== presentation.scope) return "SCOPE_MISMATCH";
+  // Session-bound resume (CE-0002-B3-P2A-R1): a resume capability authorizes
+  // only the Session it was durably issued to. A legacy unbound (NULL) or
+  // differently bound resume row can never authorize: fail closed. The check
+  // runs against the durable row inside the caller's transaction, so the
+  // binding cannot be swapped between check and effect.
+  if (presentation.scope === "resume" && row.session_id !== presentation.sessionId) return "SESSION_MISMATCH";
   if (row.trust_generation !== generation.generation) return "WRONG_GENERATION";
   if (row.revoked_at !== null) return "REVOKED";
   if (row.expires_at !== null) {

@@ -24,6 +24,11 @@ import {
   V2_FOUNDATION_SQL,
   V2_MIGRATION_CHECKSUM,
   V2_MIGRATION_NAME,
+  V3_FOUNDATION_CHECKSUM,
+  V3_FOUNDATION_NAME,
+  V3_FOUNDATION_SQL,
+  V3_MIGRATION_CHECKSUM,
+  V3_MIGRATION_NAME,
 } from "./schema.js";
 import { withImmediateTransaction } from "./transaction.js";
 import { StoreLifecycleError } from "./errors.js";
@@ -99,22 +104,22 @@ function schemaManifest(db: DatabaseSync): string {
   ).all());
 }
 
-const approvedManifests: { v1?: string; v2?: string } = {};
-function approvedManifest(version: 1 | 2): string {
-  const cached = approvedManifests[version === 1 ? "v1" : "v2"];
+const approvedManifests: Partial<Record<StoreShapeKind, string>> = {};
+function approvedManifest(version: StoreShapeKind): string {
+  const cached = approvedManifests[version];
   if (cached !== undefined) return cached;
   const reference = new DatabaseSync(":memory:");
   try {
-    reference.exec(version === 1 ? INITIAL_SCHEMA_SQL : V2_FOUNDATION_SQL);
+    reference.exec(version === "v1" ? INITIAL_SCHEMA_SQL : version === "v2" ? V2_FOUNDATION_SQL : V3_FOUNDATION_SQL);
     const manifest = schemaManifest(reference);
-    approvedManifests[version === 1 ? "v1" : "v2"] = manifest;
+    approvedManifests[version] = manifest;
     return manifest;
   } finally {
     reference.close();
   }
 }
 
-function assertApprovedSchema(db: DatabaseSync, version: 1 | 2): void {
+function assertApprovedSchema(db: DatabaseSync, version: StoreShapeKind): void {
   if (schemaManifest(db) !== approvedManifest(version)) {
     throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", "live schema differs from the approved manifest");
   }
@@ -170,7 +175,7 @@ interface MigrationLedgerRow {
   readonly checksum: string;
 }
 
-export type StoreShapeKind = "v1" | "v2";
+export type StoreShapeKind = "v1" | "v2" | "v3";
 export interface StoreShape {
   readonly kind: StoreShapeKind;
   readonly metadata: StoreMetadataRow;
@@ -264,14 +269,21 @@ export function classifyStoreShape(db: DatabaseSync): StoreShape {
     .prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version")
     .all() as unknown as MigrationLedgerRow[];
 
-  const shapeVersion = ledgerMatches(migrations, [[1, INITIAL_MIGRATION_NAME, INITIAL_MIGRATION_CHECKSUM]])
+  const V1_LEDGER: readonly (readonly [number, string, string])[] = [[1, INITIAL_MIGRATION_NAME, INITIAL_MIGRATION_CHECKSUM]];
+  const V2_MIGRATED_LEDGER: readonly (readonly [number, string, string])[] = [
+    ...V1_LEDGER,
+    [2, V2_MIGRATION_NAME, V2_MIGRATION_CHECKSUM],
+  ];
+  const V2_FRESH_LEDGER: readonly (readonly [number, string, string])[] = [[2, V2_FOUNDATION_NAME, V2_FOUNDATION_CHECKSUM]];
+  const shapeVersion = ledgerMatches(migrations, V1_LEDGER)
     ? 1
-    : ledgerMatches(migrations, [
-        [1, INITIAL_MIGRATION_NAME, INITIAL_MIGRATION_CHECKSUM],
-        [2, V2_MIGRATION_NAME, V2_MIGRATION_CHECKSUM],
-      ]) || ledgerMatches(migrations, [[2, V2_FOUNDATION_NAME, V2_FOUNDATION_CHECKSUM]])
+    : ledgerMatches(migrations, V2_MIGRATED_LEDGER) || ledgerMatches(migrations, V2_FRESH_LEDGER)
       ? 2
-      : undefined;
+      : ledgerMatches(migrations, [...V2_MIGRATED_LEDGER, [3, V3_MIGRATION_NAME, V3_MIGRATION_CHECKSUM]]) ||
+            ledgerMatches(migrations, [...V2_FRESH_LEDGER, [3, V3_MIGRATION_NAME, V3_MIGRATION_CHECKSUM]]) ||
+            ledgerMatches(migrations, [[3, V3_FOUNDATION_NAME, V3_FOUNDATION_CHECKSUM]])
+        ? 3
+        : undefined;
   if (shapeVersion === undefined) {
     throw new StoreLifecycleError(
       "STORAGE_MIGRATION_CHECKSUM_MISMATCH",
@@ -279,12 +291,12 @@ export function classifyStoreShape(db: DatabaseSync): StoreShape {
     );
   }
 
-  // Version coherence: the initialization-time metadata version is 1 exactly
-  // when the store began at v1 (whether or not it was migrated since), and 2
-  // exactly when it was initialized at v2.
-  const expectedMetadataVersion = ledgerMatches(migrations, [[2, V2_FOUNDATION_NAME, V2_FOUNDATION_CHECKSUM]])
-    ? 2
-    : 1;
+  // Version coherence: `store_metadata.schema_version` is the schema version at
+  // initialization — exactly the version of the ledger's first (foundation)
+  // row — and is never updated (the v1 immutability trigger keeps it so). The
+  // live version is `PRAGMA user_version`, which must equal the shape version
+  // the ledger proves.
+  const expectedMetadataVersion = migrations[0]?.version;
   if (
     metadata.schema_version !== expectedMetadataVersion ||
     sqliteSchemaVersion !== shapeVersion
@@ -301,20 +313,24 @@ export function classifyStoreShape(db: DatabaseSync): StoreShape {
       throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", `required private table ${table} is missing`);
     }
   }
-  assertApprovedSchema(db, shapeVersion);
+  assertApprovedSchema(db, shapeKind(shapeVersion));
   assertRestoreHoldReleased(db);
-  return { kind: shapeVersion === 1 ? "v1" : "v2", metadata };
+  return { kind: shapeKind(shapeVersion), metadata };
 }
 
-/** Normal-open validation: a recognized v1 store is refused with a typed
- * migration-required result (migration is never implicit); a v2 store must
- * additionally pass host trust-root validation on every open. */
+function shapeKind(version: number): StoreShapeKind {
+  return version === 1 ? "v1" : version === 2 ? "v2" : "v3";
+}
+
+/** Normal-open validation: a recognized v1 or v2 store is refused with a typed
+ * migration-required result (migration is never implicit); only the current
+ * v3 shape opens, and it must pass host trust-root validation on every open. */
 function readAndValidateStore(db: DatabaseSync, databasePath: string): StoreMetadataRow {
   const shape = classifyStoreShape(db);
-  if (shape.kind === "v1") {
+  if (shape.kind !== "v3") {
     throw new StoreLifecycleError(
       "STORAGE_MIGRATION_REQUIRED",
-      "store schema v1 requires the explicit approved migration to v2",
+      "store schema requires the explicit approved migration to the current schema version",
     );
   }
   validateTrustRoot(databasePath, db);
@@ -349,7 +365,7 @@ export function initializeStore(options: InitializeStoreOptions): DurableStore {
 
   try {
     withImmediateTransaction(db, (tx) => {
-      tx.exec(V2_FOUNDATION_SQL);
+      tx.exec(V3_FOUNDATION_SQL);
       tx.prepare(
         "INSERT INTO store_metadata(singleton, store_uuid, application_id, schema_version, created_at) VALUES (1, ?, ?, ?, ?)",
       ).run(storeUuid, APPLICATION_ID, CURRENT_SCHEMA_VERSION, appliedAt);
@@ -357,8 +373,8 @@ export function initializeStore(options: InitializeStoreOptions): DurableStore {
         "INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
       ).run(
         CURRENT_SCHEMA_VERSION,
-        V2_FOUNDATION_NAME,
-        V2_FOUNDATION_CHECKSUM,
+        V3_FOUNDATION_NAME,
+        V3_FOUNDATION_CHECKSUM,
         appliedAt,
       );
       tx.prepare("INSERT INTO restore_hold(singleton, held) VALUES (1, 0)").run();
@@ -452,6 +468,49 @@ export function openStore(options: StorageConnectionOptions): DurableStore {
       error instanceof StoreLifecycleError
         ? error
         : new StoreLifecycleError("STORAGE_CORRUPT", "store validation failed", { cause: error }),
+    );
+  }
+}
+
+/** @internal Proof open used only by the explicit migration for a non-current
+ * target shape: the migrated store is structurally validated (integrity,
+ * identity, ledger, manifest, restore hold) and its trust root re-validated,
+ * but the normal-open current-version gate is not applied, since a migration
+ * to an intermediate version deliberately stops below current. Never use this
+ * to serve ordinary operations. */
+export function openMigratedStore(options: StorageConnectionOptions, kind: StoreShapeKind): DurableStore {
+  const databasePath = prepareDatabasePath(options);
+  assertSecureDatabaseArtifacts(databasePath);
+  if (pathStat(databasePath) === undefined) {
+    throw new StoreLifecycleError("STORAGE_FOREIGN_STORE", "no initialized store exists at the explicit path");
+  }
+  const preflight = preflightStoreShape(databasePath);
+  if (preflight.kind !== kind) {
+    throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", "migrated store does not have the approved target shape");
+  }
+  const validateWriter = (writer: DatabaseSync): StoreMetadataRow => {
+    const shape = classifyStoreShape(writer);
+    if (shape.kind !== kind || shape.metadata.store_uuid !== preflight.metadata.store_uuid) {
+      throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", "migrated store does not have the approved target shape");
+    }
+    validateTrustRoot(databasePath, writer);
+    return shape.metadata;
+  };
+  let db: DatabaseSync;
+  try {
+    db = openStorageConnection(options, validateWriter);
+  } catch (error) {
+    if (error instanceof Error && error.cause instanceof StoreLifecycleError) throw error.cause;
+    throw new StoreLifecycleError("STORAGE_CORRUPT", "failed to open the migrated SQLite store", { cause: error });
+  }
+  try {
+    return handle(db, validateWriter(db), databasePath);
+  } catch (error) {
+    return closeAfterFailure(
+      db,
+      error instanceof StoreLifecycleError
+        ? error
+        : new StoreLifecycleError("STORAGE_CORRUPT", "migrated store validation failed", { cause: error }),
     );
   }
 }

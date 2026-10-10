@@ -9,11 +9,11 @@ import { openStore } from "../../src/storage/store.js";
 import { capabilityFor, cleanupFixtures, fixture, NOW, participant, rowCounts, type Fixture } from "./support/participant-fixture.js";
 
 /**
- * CE-0002-B3-P2A independent-process acquisition races. Workers are real OS
+ * CE-0002-B3-P2A/R1 independent-process ownership races. Workers are real OS
  * processes sharing only the canonical database path; each performs exactly
- * one acquisition after an explicit barrier. BEGIN IMMEDIATE is attempted
- * once and never retried, so a loser is either OWNERSHIP_HELD (it serialized
- * after the winner) or STORAGE_TRANSACTION_BUSY (it timed out waiting).
+ * one operation after an explicit barrier. BEGIN IMMEDIATE is attempted once
+ * and never retried, so a loser is either a typed refusal (it serialized after
+ * the winner) or STORAGE_TRANSACTION_BUSY (it timed out waiting).
  */
 
 type Child = ChildProcessByStdio<null, Readable, Readable>;
@@ -49,11 +49,11 @@ interface Report {
   readonly result: Record<string, unknown>;
 }
 
-function launch(active: Fixture, tag: string, request: Record<string, unknown>, now: string) {
+function launch(active: Fixture, tag: string, request: Record<string, unknown>, now: string, op: "acquire" | "renew" = "acquire") {
   const readyPath = join(active.root, `${tag}.ready`);
   const releasePath = join(active.root, `${tag}.release`);
   const config = {
-    tag, storeUrl, ownershipUrl, now, request,
+    tag, storeUrl, ownershipUrl, now, request, op,
     directory: active.directory, filename: active.filename,
     busyTimeoutMs: BUSY_TIMEOUT_MS, waitMs: WORKER_WAIT_MS, readyPath, releasePath,
   };
@@ -88,21 +88,24 @@ function launch(active: Fixture, tag: string, request: Record<string, unknown>, 
   return { ready, done, release: () => writeFileSync(releasePath, "") };
 }
 
-function prepared(): { active: Fixture; participantId: string; attach: string } {
+function prepared(): { active: Fixture; participantId: string; attach: string; resume1: string } {
   const active = fixture("ce-b3-p2a-race-");
   const participantId = participant(active, "endpoint-race").participant.participantId;
   const attach = capabilityFor(active, participantId, "attach");
   for (const sessionId of SESSIONS) {
     bindSession(active.store, { participantId, sessionId, capability: attach }, { now: () => NOW });
   }
-  return { active, participantId, attach };
+  // R1: resume authority is Session-bound; the renewal worker presents a
+  // capability durably bound to the current Owner's Session.
+  const resume1 = capabilityFor(active, participantId, "resume", { sessionId: SESSIONS[0]! });
+  return { active, participantId, attach, resume1 };
 }
 
 async function race(active: Fixture, participantId: string, attach: string, now: string) {
   // The parent writer is closed before any worker opens the store.
   active.store.close();
   const workers = SESSIONS.slice(0, WORKERS).map((sessionId, index) =>
-    launch(active, `w${index}`, { participantId, sessionId, capability: attach }, now),
+    launch(active, `w${index}`, { participantId, sessionId, capability: attach }, now, "acquire"),
   );
   await Promise.all(workers.map((worker) => worker.ready));
   for (const worker of workers) worker.release();
@@ -137,19 +140,44 @@ describe("B3-P2A concurrent acquisition (independent processes)", () => {
     expect(rowCounts(active)).toMatchObject({ ownership: "1", fencing: "1" });
   }, TEST_TIMEOUT_MS);
 
-  it("admits exactly one superseding Owner after expiry with exactly the next token", async () => {
-    const { active, participantId, attach } = prepared();
-    acquireOwnership(active.store, { participantId, sessionId: SESSIONS[0], capability: attach }, { now: () => at(0) });
-    const results = await race(active, participantId, attach, at(500));
-    const winners = results.filter((result) => result.disposition === "ACQUIRED");
-    expect(winners).toHaveLength(1);
-    expect(winners[0]).toMatchObject({ fencingToken: 2 });
+  it("serializes a renewal against an acquisition near expiry: the live Owner stands, takeover stays inactive", async () => {
+    const { active, participantId, attach, resume1 } = prepared();
+    const lease = acquireOwnership(active.store, { participantId, sessionId: SESSIONS[0], capability: attach }, { now: () => at(0) });
+    expect(lease).toMatchObject({ fencingToken: 1, expiresAt: at(120), leaseStartedAt: at(0) });
+    // Race: the Owner renews at t=60 (within its term) while a challenger tries
+    // to acquire at t=500 (past expiry). R1: an existing ownership row — even an
+    // expired one — is never replaced through attach; whichever serializes
+    // first, the acquisition is refused and exactly one mutation lands.
+    active.store.close();
+    const go1 = launch(active, "renew", { participantId, sessionId: SESSIONS[0], fencingToken: 1, capability: resume1 }, at(60), "renew");
+    const go2 = launch(active, "acquire", { participantId, sessionId: SESSIONS[1], capability: attach }, at(500), "acquire");
+    const workers = [go1, go2];
+    await Promise.all(workers.map((worker) => worker.ready));
+    for (const worker of workers) worker.release();
+    const reports = await Promise.all(workers.map((worker) => worker.done));
+    for (const report of reports) {
+      expect({ status: report.status, stderr: report.stderr, stage: report.result.stage })
+        .toEqual({ status: 0, stderr: "", stage: "acquire" });
+      expect(JSON.stringify(report.result)).not.toContain(resume1);
+    }
+    const [renewed, acquisition] = reports.map((report) => report.result);
+    expect(renewed).toMatchObject({ disposition: "RENEWED", fencingToken: 1, expiresAt: at(180) });
+    // The challenger loses either way: BUSY while the winner holds the lock, or
+    // a typed refusal once serialized. An expired row requires takeover.
+    expect(["OWNERSHIP_TAKEOVER_REQUIRED", "OWNERSHIP_HELD", "STORAGE_TRANSACTION_BUSY"]).toContain(acquisition?.code);
     const reopened = openStore({ directory: active.directory, filename: active.filename });
     try {
-      expect(readFencingHighWater(reopened, participantId)).toBe(2);
-      expect(readCurrentOwnership(reopened, participantId)).toMatchObject({ sessionId: winners[0]!.sessionId, fencingToken: 2 });
+      // Fencing never advanced: the refused acquisition allocated nothing.
+      expect(readFencingHighWater(reopened, participantId)).toBe(1);
+      expect(readCurrentOwnership(reopened, participantId)).toMatchObject({
+        sessionId: SESSIONS[0],
+        fencingToken: 1,
+        expiresAt: at(180),
+        leaseStartedAt: at(60),
+      });
     } finally {
       reopened.close();
     }
+    expect(rowCounts(active)).toMatchObject({ ownership: "1", fencing: "1" });
   }, TEST_TIMEOUT_MS);
 });

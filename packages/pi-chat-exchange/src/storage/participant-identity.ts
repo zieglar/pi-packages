@@ -119,3 +119,22 @@ export function requireInstant(value: unknown, path: string): string {
   }
   return value;
 }
+
+/**
+ * Session identity (CE-0002-B3-P2A): an opaque, non-secret `ses_<ULID>`
+ * SessionRef. A Session is never a Participant identity and never a
+ * credential. Shared by the ownership plane and by Session-bound capability
+ * issuance (CE-0002-B3-P2A-R1).
+ */
+export const SESSION_ID_PREFIX = "ses_" as const;
+export const SESSION_ID_PATTERN = /^ses_[0-9A-HJKMNP-TV-Z]{26}$/;
+
+export function isSessionId(value: unknown): value is string {
+  return typeof value === "string" && SESSION_ID_PATTERN.test(value);
+}
+
+export function requireSessionId(value: unknown, path: string): string {
+  const text = requireText(value, path, 30);
+  if (!SESSION_ID_PATTERN.test(text)) rejectRequest(`${path}: invalid identity`);
+  return text;
+}

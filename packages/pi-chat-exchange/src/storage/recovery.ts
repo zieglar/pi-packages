@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { openStorageConnection, type StorageConnectionOptions } from "./connection.js";
 import { StoreLifecycleError } from "./errors.js";
 import { assertSecureDatabaseArtifacts, pathStat, prepareDatabasePath } from "./filesystem.js";
-import { classifyStoreShape, openStore, preflightStoreShape, type DurableStore } from "./store.js";
+import { classifyStoreShape, openMigratedStore, openStore, preflightStoreShape, type DurableStore } from "./store.js";
 import { StorageTransactionError, withImmediateTransaction } from "./transaction.js";
 import { assertTrustRootAbsent, createHostSecretFile } from "./trust-root.js";
 
@@ -68,11 +68,14 @@ export function recoverTrustRoot(options: RecoverTrustRootOptions): DurableStore
   // explicit operator removal before recovery may proceed.
   assertTrustRootAbsent(databasePath);
 
+  // Recovery serves any recognized B3 store (v2 awaiting migration, or the
+  // current v3 shape): the trust root exists on both, and the appended
+  // generation is version-independent.
   const preflight = preflightStoreShape(databasePath);
-  if (preflight.kind !== "v2") {
+  if (preflight.kind === "v1") {
     throw new StoreLifecycleError(
       "STORAGE_MIGRATION_REQUIRED",
-      "trust-root recovery requires a migrated v2 store",
+      "trust-root recovery requires a migrated store",
     );
   }
 
@@ -83,7 +86,7 @@ export function recoverTrustRoot(options: RecoverTrustRootOptions): DurableStore
   try {
     db = openStorageConnection(options, (writer) => {
       const shape = classifyStoreShape(writer);
-      if (shape.kind !== "v2") {
+      if (shape.kind === "v1" || shape.kind !== preflight.kind) {
         throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", "store schema changed during recovery");
       }
       if (shape.metadata.store_uuid !== preflight.metadata.store_uuid) {
@@ -131,6 +134,8 @@ export function recoverTrustRoot(options: RecoverTrustRootOptions): DurableStore
   }
   db.close();
 
-  // Proof of recovery is a full normal reopen under the new generation.
-  return openStore(options);
+  // Proof of recovery is a validated reopen under the new generation: a normal
+  // current-version open for v3, or a shape-validated migration proof open for
+  // a v2 store that still awaits its explicit migration.
+  return preflight.kind === "v2" ? openMigratedStore(options, "v2") : openStore(options);
 }

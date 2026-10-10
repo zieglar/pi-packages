@@ -481,10 +481,13 @@ bound.
 ### Ownership and fencing
 
 `acquireOwnership` makes one bound Session the single current Owner of a
-Participant with no current Owner — no ownership row, or only an expired
-one. A live lease, including one held by the requesting Session itself, is
-`OWNERSHIP_HELD`: no silent adoption, no takeover. Acquisition allocates the
-fencing token and writes the ownership row in one owned transaction.
+Participant with no current Owner. A live lease, including one held by the
+requesting Session itself, is `OWNERSHIP_HELD`: no silent adoption, no
+takeover. Acquisition allocates the fencing token and writes the ownership
+row in one owned transaction. **Superseded by §10:** the P2A text here
+allowed acquisition over an *expired* row ("supersession"); R1 (design
+clarification Q1) moves every replacement of an existing Owner to the
+inactive P2B `takeover` scope.
 
 **First-token rule:** with no `participant_fencing_high_water` row the first
 acquisition allocates token 1 and inserts the row; every later acquisition
@@ -510,16 +513,16 @@ After supersession every operation by the previous Owner is refused.
 
 Default TTL 120 s, configurable 30–3600 s (request-validated). 30 s is a
 renewal recommendation for hosts, not a scheduler. Time comes only from the
-injected clock. A lease authorizes only within `[expiresAt - ttl, expiresAt)`:
-renewal sets `now + ttl`, so a rolled-back clock before the current term
-start is refused and can never extend a lease. Release removes only the
-ownership row.
+injected clock. Release removes only the ownership row.
 
-**Limitation:** the accepted schema has no lease-start column, so the term
-start is derived from the host TTL policy, which must stay consistent for a
-lease's lifetime. A rollback that lands inside the current term cannot be
-distinguished from a valid instant without a persisted monotonic observation
-(refusals are zero-write).
+**Superseded by §10:** the P2A text here derived the term start as
+`expiresAt - ttl` from the *request* TTL and claimed a rolled-back clock
+could never extend a lease. The independent review (MAJOR-1) showed both the
+derivation and the claim were unsafe: a request TTL change falsely refused
+live Owners as `LEASE_CLOCK_REGRESSION`, and a rollback presented with a
+larger TTL could renew and extend. R1 persists the term start. A rollback
+that lands inside the current term remains indistinguishable from a valid
+instant (refusals are zero-write).
 
 ### Durable reads
 
@@ -539,3 +542,76 @@ unwrap guard (the classifier was extracted unchanged as
 `classifyRecoveryFailure` and is unit-pinned, plus end-to-end BUSY,
 unclassified-rollback, and typed-rollback cases); and the sponsored replay
 negative authorization matrix.
+
+## 10. B3-P2A-R1 lease term persistence, acquisition boundary, and schema v3
+
+Remediating amendment (CE-0002-B3-P2A-R1), governed by the versioned P2
+ownership contract (`docs/ownership-contract.md`, decisions Q1–Q5). Everything
+in §§1-9 is preserved except where §10 explicitly supersedes §9.
+
+### Schema v3 (additive, explicit migration only)
+
+- `participant_ownership.lease_started_at TEXT` (nullable): the persisted
+  start of the current lease term, written at acquisition and updated at every
+  renewal. NULL marks a legacy v2 row, which is treated as expired at every
+  instant: no lease start is fabricated from an untrusted TTL and no v3
+  operation authorizes against a legacy row.
+- `participant_capability.session_id TEXT` (nullable): the durable Session
+  binding of a `resume` capability. NULL for every other scope and for legacy
+  v2 rows; a legacy unbound resume capability can never authorize (fail
+  closed).
+- `participant_session_unique_session_id`: durable uniqueness of a Session
+  across Participants. The v2→v3 migration refuses (`STORAGE_CORRUPT`, zero
+  writes) when historical rows bind one Session to more than one Participant;
+  conflicting history is rejected, never repaired.
+- Migration paths are explicit and approved: v1→v2 (accepted P1A, unchanged),
+  v2→v3, and the chain v1→v3. Each step commits independently; interruption
+  rolls back the interrupted step only. The v2→v3 step re-validates the
+  existing trust root and never creates, rotates, or deletes the host secret.
+  Normal open requires the current v3 shape; v1 and v2 stores refuse with
+  `STORAGE_MIGRATION_REQUIRED`. Fresh v3 and migrated v3 stores converge to a
+  byte-identical schema manifest.
+
+### Lease term model (supersedes §9's derived term start)
+
+Lease evaluation compares the operation clock against the persisted
+boundaries `[leaseStartedAt, expiresAt)` only. A request TTL (default 120 s,
+allowed 30–3600 s) is used solely to compute a *new* expiry at acquisition or
+renewal and never reinterprets a stored term. `verifyOwnership`,
+`releaseOwnership`, and `readLeaseStatus` no longer accept a TTL. Renewal sets
+`lease_started_at = now` and refuses to shorten the term
+(`LEASE_TERM_SHORTENED`). Exact-expiry refusal is preserved. A wall-clock
+rollback before the persisted term start is `LEASE_CLOCK_REGRESSION` and can
+never renew or extend a lease; a rollback inside the current term remains
+undetectable (documented limitation, zero-write refusals).
+
+### Acquisition boundary (design clarification Q1)
+
+`acquireOwnership` is admitted only when no ownership row exists for the
+Participant. Any existing row refuses acquisition: `OWNERSHIP_HELD` while the
+lease is live at the operation's clock, `OWNERSHIP_TAKEOVER_REQUIRED` once
+expired (including legacy v2 rows). A refused acquisition allocates no fencing
+token. `takeover` remains `CAPABILITY_SCOPE_UNSUPPORTED`; P2B is not
+implemented or activated.
+
+### Session-bound resume (design clarification Q2)
+
+A `resume` capability is issued for exactly one currently bound Session
+(`sessionId` required at issuance, refused for other scopes) and authorizes
+only that Session; classification adds the host-local detail
+`SESSION_MISMATCH`. Revoking a resume capability requires presenting its bound
+Session. The Session binding narrows authority; it is never a credential, and
+no operation is authorized by a Session ID alone.
+
+### Regression coverage (R1)
+
+New real-SQLite pins cover: TTL-independent term evaluation (no false
+`LEASE_CLOCK_REGRESSION`), rollback-plus-TTL-widening refusal, persisted term
+start on renewal, exact-expiry refusal, expired-Owner renew/release refusal,
+expired-Owner acquisition refusal (`OWNERSHIP_TAKEOVER_REQUIRED`), initial
+acquisition, fencing monotonicity across release and restart, restart
+persistence, v2→v3 migration with legacy-row policy, fresh/migrated manifest
+convergence, conflicting-history migration refusal, durable Session
+uniqueness, a multi-process renewal-vs-acquisition race, missing trust
+generation across all ownership operations, and BUSY/ROLLED_BACK/
+INDETERMINATE classification with privacy and zero-write refusals.

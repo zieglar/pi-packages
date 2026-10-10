@@ -2,7 +2,7 @@ import { rmSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { StoreLifecycleError } from "../../src/storage/errors.js";
-import { bindSession } from "../../src/storage/ownership.js";
+import { acquireOwnership, bindSession, renewLease, verifyOwnership } from "../../src/storage/ownership.js";
 import {
   bindEndpointRef,
   createParticipant,
@@ -97,6 +97,11 @@ describe("P1B pin A: missing trust generation during capability verification", (
     const bind = capabilityFor(active, created.participantId, "bind");
     const create = capabilityFor(active, created.participantId, "create");
     const attach = capabilityFor(active, created.participantId, "attach");
+    // R1 (pin P): ownership operations authorize through the same plane, so a
+    // missing trust generation must refuse them all, fail-closed.
+    bindSession(active.store, { participantId: created.participantId, sessionId: SESSION, capability: attach }, { now: () => LATER });
+    const resume = capabilityFor(active, created.participantId, "resume", { sessionId: SESSION });
+    const ownerRequest = { participantId: created.participantId, sessionId: SESSION, fencingToken: 1, capability: resume };
     tamper(active, "host_trust_root", "DELETE FROM host_trust_root");
     const before = snapshot(active);
 
@@ -104,7 +109,10 @@ describe("P1B pin A: missing trust generation during capability verification", (
       ["join", () => joinExchange(active.store, { exchangeId, participantId: created.participantId, capability: join, idempotencyKey: "j" }, { now: () => LATER }), join],
       ["bind", () => bindEndpointRef(active.store, { participantId: created.participantId, endpoint: { adapter: created.adapter, endpointId: created.endpointId }, capability: bind }, { now: () => LATER }), bind],
       ["sponsored create", () => createParticipant(active.store, { endpoint: { adapter: "adapter-a", endpointId: "endpoint-2" }, idempotencyKey: "s", sponsor: { participantId: created.participantId, capability: create } }, { now: () => LATER }), create],
-      ["session attach", () => bindSession(active.store, { participantId: created.participantId, sessionId: SESSION, capability: attach }, { now: () => LATER }), attach],
+      ["session attach", () => bindSession(active.store, { participantId: created.participantId, sessionId: "ses_01ARZ3NDEKTSV4RRFFQ69G5FB0", capability: attach }, { now: () => LATER }), attach],
+      ["ownership acquire", () => acquireOwnership(active.store, { participantId: created.participantId, sessionId: SESSION, capability: attach }, { now: () => LATER }), attach],
+      ["lease renew", () => renewLease(active.store, ownerRequest, { now: () => LATER }), resume],
+      ["ownership verify", () => verifyOwnership(active.store, ownerRequest, { now: () => LATER }), resume],
     ];
     for (const [label, run, token] of attempts) {
       const error = expectRefusal(run, "STORAGE_CORRUPT");

@@ -2,10 +2,12 @@ import { createHash } from "node:crypto";
 
 export const APPLICATION_ID = "@zieglar/pi-chat-exchange";
 export const SQLITE_APPLICATION_ID = 0x50434558; // "PCEX"
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 3;
 export const INITIAL_MIGRATION_NAME = "durable-storage-foundation";
 export const V2_MIGRATION_NAME = "b3-communication-lifecycle-migration";
 export const V2_FOUNDATION_NAME = "b3-communication-lifecycle-foundation";
+export const V3_MIGRATION_NAME = "b3-p2a-r1-ownership-lease-migration";
+export const V3_FOUNDATION_NAME = "b3-p2a-r1-ownership-lease-foundation";
 
 const REVISION = "private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1)";
 
@@ -337,4 +339,50 @@ export const V2_FOUNDATION_SQL = INITIAL_SCHEMA_SQL + V2_ADDITIVE_SQL;
 
 export const V2_FOUNDATION_CHECKSUM = createHash("sha256")
   .update(V2_FOUNDATION_SQL, "utf8")
+  .digest("hex");
+
+/**
+ * B3 additive schema-v3 surface (CE-0002-B3-P2A-R1). Every v1 and v2 object
+ * is preserved byte-identically; v3 only appends:
+ *
+ * - `participant_ownership.lease_started_at`: the persisted start of the
+ *   current lease term. Lease evaluation compares the operation clock against
+ *   this durable boundary, never against a caller-supplied TTL. The column is
+ *   nullable because ALTER TABLE cannot impose NOT NULL without fabricating a
+ *   value for pre-existing rows; a NULL marks a legacy v2 row that no v3
+ *   operation may ever authorize (it is treated as expired at every instant),
+ *   and every v3 write sets it explicitly.
+ * - `participant_capability.session_id`: the Session binding of a `resume`
+ *   capability. NULL for every other scope and for legacy v2 rows; a legacy
+ *   NULL resume capability can never authorize a resume operation (fail
+ *   closed). The column is a binding, never a credential.
+ * - `participant_session_unique_session_id`: the durable form of the rule
+ *   that a Session belongs to exactly one Participant. The migration refuses
+ *   (fail closed, zero writes) rather than repairing any conflicting
+ *   historical rows.
+ *
+ * ALTER TABLE ... ADD COLUMN is the accepted SQLite mechanism for STRICT
+ * tables (SQLite >= 3.37; the pinned runtime bundles 3.53.x) and rewrites the
+ * stored table definition deterministically, so migrated and freshly
+ * initialized v3 stores converge to a byte-identical schema manifest.
+ */
+export const V3_ADDITIVE_SQL = `
+ALTER TABLE participant_ownership ADD COLUMN lease_started_at TEXT;
+
+ALTER TABLE participant_capability ADD COLUMN session_id TEXT;
+
+CREATE UNIQUE INDEX participant_session_unique_session_id ON participant_session(session_id);
+`;
+
+export const V3_MIGRATION_CHECKSUM = createHash("sha256")
+  .update(V3_ADDITIVE_SQL, "utf8")
+  .digest("hex");
+
+/** A fresh v3 initialization applies exactly the v2 foundation plus the
+ * additive v3 surface, so migrated and freshly initialized stores converge to
+ * one byte-identical schema manifest. */
+export const V3_FOUNDATION_SQL = V2_FOUNDATION_SQL + V3_ADDITIVE_SQL;
+
+export const V3_FOUNDATION_CHECKSUM = createHash("sha256")
+  .update(V3_FOUNDATION_SQL, "utf8")
   .digest("hex");
