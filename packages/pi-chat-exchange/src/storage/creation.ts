@@ -50,7 +50,7 @@ const DOMAIN_DETAIL: Record<CreationDomainCode, string> = {
   EXCHANGE_DISPOSITION_REJECTED: "administrative disposition rejected: the Exchange is not open",
 };
 
-class CreationDomainError extends Error {
+export class CreationDomainError extends Error {
   readonly outcome = "ROLLED_BACK";
   readonly retryable = false;
   readonly code: CreationDomainCode;
@@ -224,10 +224,24 @@ interface PrivateMessageCreationSeams {
   readonly afterAuditInsert?: () => void;
 }
 
-/** Only generated identity and time; every other field comes from the request. */
-interface TrustedMessageCreationMetadata {
+/** Generated identity and transaction-time metadata for one candidate. */
+export interface TrustedMessageCreationMetadata {
   readonly messageId: string;
+  readonly eventId: string;
   readonly createdAt: string;
+}
+
+export interface MessageTransactionHooks {
+  readonly afterMessageInsert?: (() => void) | undefined;
+  readonly afterIdempotencyInsert?: (() => void) | undefined;
+  readonly afterAuditInsert?: (() => void) | undefined;
+}
+
+export interface TransactionMessageCreation {
+  readonly creation: MessageCreation;
+  /** Defined for a newly inserted Message; replay callers that need ordering
+   * must validate the durable correlation with `messageCreatedAuditSequence`. */
+  readonly auditSequence?: number;
 }
 
 /** Stored endpoint JSON is data, never trusted structure: parse then schema-check. */
@@ -271,31 +285,14 @@ function replayMessage(tx: TransactionHandle, request: NormalizedMessageRequest)
       typeof row.entity_id !== "string" || !MESSAGE_ID_PATTERN.test(row.entity_id) ||
       typeof row.created_at !== "string") corrupt();
 
-  const stored = tx.prepare(
-    "SELECT message_id, exchange_id, from_endpoint_json, to_endpoint_json, state, payload_digest, CAST(payload_length AS TEXT) AS payload_length, payload_body, created_at, idempotency_key, CAST(private_revision AS TEXT) AS private_revision FROM message WHERE message_id=?",
-  ).get(row.entity_id);
-  if (stored === undefined) corrupt();
-  const payloadLength = safeStoredInteger(stored.payload_length);
-  if (Object.keys(stored).length !== 11 || stored.private_revision !== "1" ||
-      stored.message_id !== row.entity_id || stored.exchange_id !== request.exchangeId ||
-      stored.idempotency_key !== row.idempotency_key || stored.created_at !== row.created_at ||
-      typeof stored.payload_digest !== "string" || !SHA256_HEX_PATTERN.test(stored.payload_digest) ||
-      !types.isUint8Array(stored.payload_body) ||
-      stored.payload_body.byteLength !== payloadLength ||
-      createHash("sha256").update(stored.payload_body).digest("hex") !== stored.payload_digest) corrupt();
-
-  const candidate = {
-    messageId: stored.message_id,
-    exchangeId: stored.exchange_id,
-    from: storedEndpoint(stored.from_endpoint_json),
-    to: storedEndpoint(stored.to_endpoint_json),
-    state: stored.state,
-    payloadDigest: stored.payload_digest,
-    payloadLength,
-    createdAt: stored.created_at,
-    ...(stored.idempotency_key === null ? {} : { idempotencyKey: stored.idempotency_key }),
-  } as unknown as Message;
-  if (!Value.Check(MessageSchema, candidate)) corrupt();
+  const candidate = readMessageInTransaction(tx, request.exchangeId, row.entity_id);
+  if (
+    candidate === undefined ||
+    candidate.idempotencyKey !== row.idempotency_key ||
+    candidate.createdAt !== row.created_at
+  ) {
+    corrupt();
+  }
   // Recompute the stored request identity from the durable row: a stored digest
   // that no valid stored request can produce is corruption, never a conflict.
   const storedDigest = canonicalDigest({
@@ -312,6 +309,88 @@ function replayMessage(tx: TransactionHandle, request: NormalizedMessageRequest)
     message: Object.freeze(candidate),
     record: Object.freeze({ entityId: row.entity_id, requestDigest: row.request_digest, createdAt: row.created_at }),
   });
+}
+
+/** Strict private Message read inside a caller-owned transaction. Payload bytes
+ * are validated for durable integrity but never returned. */
+export function readMessageInTransaction(
+  tx: TransactionHandle,
+  exchangeId: string,
+  messageId: string,
+): Message | undefined {
+  const stored = tx
+    .prepare(
+      "SELECT message_id, exchange_id, from_endpoint_json, to_endpoint_json, state, payload_digest, CAST(payload_length AS TEXT) AS payload_length, payload_body, created_at, idempotency_key, CAST(private_revision AS TEXT) AS private_revision FROM message WHERE message_id=? AND exchange_id=?",
+    )
+    .get(messageId, exchangeId);
+  if (stored === undefined) return undefined;
+  const payloadLength = safeStoredInteger(stored.payload_length);
+  if (
+    Object.keys(stored).length !== 11 ||
+    stored.private_revision !== "1" ||
+    stored.message_id !== messageId ||
+    stored.exchange_id !== exchangeId ||
+    typeof stored.payload_digest !== "string" ||
+    !SHA256_HEX_PATTERN.test(stored.payload_digest) ||
+    !types.isUint8Array(stored.payload_body) ||
+    stored.payload_body.byteLength !== payloadLength ||
+    createHash("sha256").update(stored.payload_body).digest("hex") !== stored.payload_digest
+  ) {
+    corrupt();
+  }
+  // SAFETY: every projected scalar is checked above and the complete candidate
+  // is validated against the frozen MessageSchema before it can escape.
+  const candidate = {
+    messageId: stored.message_id,
+    exchangeId: stored.exchange_id,
+    from: storedEndpoint(stored.from_endpoint_json),
+    to: storedEndpoint(stored.to_endpoint_json),
+    state: stored.state,
+    payloadDigest: stored.payload_digest,
+    payloadLength,
+    createdAt: stored.created_at,
+    ...(stored.idempotency_key === null ? {} : { idempotencyKey: stored.idempotency_key }),
+  } as unknown as Message;
+  if (!Value.Check(MessageSchema, candidate)) corrupt();
+  return Object.freeze(candidate);
+}
+
+/** Exact `message_created` correlation used as P3A ordering evidence. */
+export function messageCreatedAuditSequence(tx: TransactionHandle, message: Message): number {
+  const rows = tx
+    .prepare(
+      "SELECT event_id, exchange_id, CAST(sequence AS TEXT) AS sequence, kind, subject_id, created_at, digest, CAST(length AS TEXT) AS length, outcome, CAST(private_revision AS TEXT) AS private_revision FROM audit_event WHERE exchange_id=? AND kind='message_created' AND subject_id=?",
+    )
+    .all(message.exchangeId, message.messageId);
+  if (rows.length !== 1) corrupt();
+  const row = rows[0]!;
+  const sequence = safeStoredInteger(row.sequence);
+  const length = safeStoredInteger(row.length);
+  const event = {
+    eventId: row.event_id,
+    exchangeId: row.exchange_id,
+    sequence,
+    kind: row.kind,
+    subjectId: row.subject_id,
+    createdAt: row.created_at,
+    digest: row.digest,
+    length,
+  };
+  if (
+    Object.keys(row).length !== 10 ||
+    row.private_revision !== "1" ||
+    row.outcome !== null ||
+    sequence < 1 ||
+    row.exchange_id !== message.exchangeId ||
+    row.subject_id !== message.messageId ||
+    row.created_at !== message.createdAt ||
+    row.digest !== message.payloadDigest ||
+    length !== message.payloadLength ||
+    !Value.Check(EventSchema, event)
+  ) {
+    corrupt();
+  }
+  return sequence;
 }
 
 /** Admission for NEW creation only. No disposition object is fabricated: the
@@ -376,18 +455,102 @@ function persistCapturedMessageSnapshot(
   }
 }
 
+/** Package-private transaction-scoped B2 persistence. The caller owns the
+ * IMMEDIATE transaction and all authorization ordering. */
+export function createMessageInTransaction(
+  tx: TransactionHandle,
+  request: NormalizedMessageRequest,
+  trusted: TrustedMessageCreationMetadata,
+  hooks: MessageTransactionHooks = {},
+): TransactionMessageCreation {
+  const existing = replayMessage(tx, request);
+  if (existing !== undefined) return Object.freeze({ creation: existing });
+
+  admitExchange(tx, request.exchangeId);
+  if (
+    tx
+      .prepare("SELECT message_id FROM message WHERE exchange_id=? AND idempotency_key=?")
+      .get(request.exchangeId, request.idempotencyKey) !== undefined
+  ) {
+    corrupt();
+  }
+
+  const message = Object.freeze({
+    messageId: trusted.messageId,
+    exchangeId: request.exchangeId,
+    from: request.from,
+    to: request.to,
+    state: "CREATED",
+    payloadDigest: request.payloadDigest,
+    payloadLength: request.payloadLength,
+    createdAt: trusted.createdAt,
+    idempotencyKey: request.idempotencyKey,
+  } satisfies Message);
+  if (!Value.Check(MessageSchema, message)) throw new Error("creation candidate failed frozen schema validation");
+
+  persistCapturedMessageSnapshot(tx, request, trusted);
+  hook(hooks.afterMessageInsert);
+  requireSingleRowChange(
+    tx
+      .prepare(
+        "INSERT INTO idempotency_record(namespace, idempotency_key, request_digest, entity_id, created_at, private_revision) VALUES (?, ?, ?, ?, ?, 1)",
+      )
+      .run(request.namespace, request.idempotencyKey, request.requestDigest, message.messageId, message.createdAt),
+    "idempotency insert",
+  );
+  hook(hooks.afterIdempotencyInsert);
+
+  const sequence = nextAuditSequence(tx, message.exchangeId);
+  const event = {
+    eventId: trusted.eventId,
+    exchangeId: message.exchangeId,
+    sequence,
+    kind: "message_created",
+    subjectId: message.messageId,
+    createdAt: message.createdAt,
+    digest: message.payloadDigest,
+    length: message.payloadLength,
+  };
+  if (!Value.Check(EventSchema, event)) throw new Error("audit candidate failed frozen schema validation");
+  requireSingleRowChange(
+    tx
+      .prepare(
+        "INSERT INTO audit_event(event_id, exchange_id, sequence, kind, subject_id, created_at, digest, length, private_revision) VALUES (?, ?, ?, 'message_created', ?, ?, ?, ?, 1)",
+      )
+      .run(
+        event.eventId,
+        event.exchangeId,
+        event.sequence,
+        event.subjectId,
+        event.createdAt,
+        event.digest,
+        event.length,
+      ),
+    "audit insert",
+  );
+  hook(hooks.afterAuditInsert);
+
+  return Object.freeze({
+    creation: Object.freeze({
+      disposition: "CREATED" as const,
+      message,
+      record: Object.freeze({
+        entityId: message.messageId,
+        requestDigest: request.requestDigest,
+        createdAt: message.createdAt,
+      }),
+    }),
+    auditSequence: sequence,
+  });
+}
+
 /** Private, trusted-host Message creation. No authentication, admission bypass,
  * queueing, dispatch, delivery, resolution API, or public control binding.
  * Results escape only after the accepted helper confirms COMMITTED. */
 export function createMessage(store: DurableStore, input: unknown, privateSeams: PrivateMessageCreationSeams = {}): MessageCreation {
   const request = normalizeCreateMessageRequest(input);
-  let message: Message;
-  let eventId: string;
-  let hooks: {
-    afterMessageInsert: (() => void) | undefined;
-    afterIdempotencyInsert: (() => void) | undefined;
-    afterAuditInsert: (() => void) | undefined;
-  };
+  let trusted: TrustedMessageCreationMetadata;
+  let hooks: MessageTransactionHooks;
   try {
     hooks = {
       afterMessageInsert: privateSeams.afterMessageInsert,
@@ -398,23 +561,20 @@ export function createMessage(store: DurableStore, input: unknown, privateSeams:
       throw new Error("invalid private hook");
     }
     const createdAt = (privateSeams.now ?? (() => new Date().toISOString()))();
-    if (typeof createdAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(createdAt) ||
-        !Number.isFinite(Date.parse(createdAt)) || new Date(createdAt).toISOString() !== createdAt) {
+    if (
+      typeof createdAt !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(createdAt) ||
+      !Number.isFinite(Date.parse(createdAt)) ||
+      new Date(createdAt).toISOString() !== createdAt
+    ) {
       throw new Error("invalid private clock");
     }
     const time = Date.parse(createdAt);
-    message = Object.freeze({
+    trusted = Object.freeze({
       messageId: generateEntityId("msg_", time),
-      exchangeId: request.exchangeId,
-      from: request.from,
-      to: request.to,
-      state: "CREATED",
-      payloadDigest: request.payloadDigest,
-      payloadLength: request.payloadLength,
+      eventId: generateEntityId("evt_", time),
       createdAt,
-      idempotencyKey: request.idempotencyKey,
     });
-    eventId = generateEntityId("evt_", time);
   } catch {
     throw new StorageTransactionError("creation candidate generation failed", "begin", { outcome: "ROLLED_BACK" });
   }
@@ -424,43 +584,7 @@ export function createMessage(store: DurableStore, input: unknown, privateSeams:
   try {
     withImmediateTransaction(store.database, (tx) => {
       try {
-        const existing = replayMessage(tx, request);
-        if (existing !== undefined) {
-          captured = existing;
-          return; // Exactly undefined, including replay.
-        }
-        admitExchange(tx, request.exchangeId);
-        // An existing Message holding this Exchange-scoped key without its own
-        // record is orphan durable state: refuse it, never adopt or repair it.
-        if (tx.prepare("SELECT message_id FROM message WHERE exchange_id=? AND idempotency_key=?")
-          .get(request.exchangeId, request.idempotencyKey) !== undefined) corrupt();
-        if (!Value.Check(MessageSchema, message)) {
-          throw new Error("creation candidate failed frozen schema validation");
-        }
-        persistCapturedMessageSnapshot(tx, request, { messageId: message.messageId, createdAt: message.createdAt });
-        hook(hooks.afterMessageInsert);
-        requireSingleRowChange(tx.prepare(
-          "INSERT INTO idempotency_record(namespace, idempotency_key, request_digest, entity_id, created_at, private_revision) VALUES (?, ?, ?, ?, ?, 1)",
-        ).run(request.namespace, request.idempotencyKey, request.requestDigest, message.messageId, message.createdAt), "idempotency insert");
-        hook(hooks.afterIdempotencyInsert);
-        const sequence = nextAuditSequence(tx, message.exchangeId);
-        const event = {
-          eventId, exchangeId: message.exchangeId, sequence, kind: "message_created",
-          subjectId: message.messageId, createdAt: message.createdAt,
-          digest: message.payloadDigest, length: message.payloadLength,
-        };
-        if (!Value.Check(EventSchema, event)) {
-          throw new Error("audit candidate failed frozen schema validation");
-        }
-        requireSingleRowChange(tx.prepare(
-          "INSERT INTO audit_event(event_id, exchange_id, sequence, kind, subject_id, created_at, digest, length, private_revision) VALUES (?, ?, ?, 'message_created', ?, ?, ?, ?, 1)",
-        ).run(eventId, message.exchangeId, sequence, message.messageId, message.createdAt,
-          message.payloadDigest, message.payloadLength), "audit insert");
-        hook(hooks.afterAuditInsert);
-        captured = Object.freeze({
-          disposition: "CREATED", message,
-          record: Object.freeze({ entityId: message.messageId, requestDigest: request.requestDigest, createdAt: message.createdAt }),
-        });
+        captured = createMessageInTransaction(tx, request, trusted, hooks).creation;
         // No return value: B1 runtime enforces exactly undefined.
       } catch (error) {
         if (error instanceof CreationDomainError || error instanceof ConditionalMutationError) {

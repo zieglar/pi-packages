@@ -29,12 +29,10 @@ export interface ReadableHandle {
  * - an operator trust-root recovery invalidates every outstanding token twice
  *   over: by revocation (P1A) and by generation binding.
  *
- * Only the operational scopes are accepted: the P1 scopes (create, bind,
- * join), the CE-0002-B3-P2A Session-ownership scopes attach and resume, and,
- * since CE-0002-B3-P2B, the takeover scope. The remaining scopes (send, ack,
- * read) exist in the accepted schema vocabulary for later phases and are
- * refused here. `resume` and `takeover` are Session-bound (P2A-R1 model):
- * they authorize only the Session they were durably issued to.
+ * Operational scopes are phase-bounded: P1 create/bind/join, P2 attach/resume/
+ * takeover, and P3A send/read. ACK remains schema vocabulary only and is
+ * refused. `resume`, `takeover`, `send`, and `read` are Session-bound: each
+ * authorizes only the Session it was durably issued to.
  *
  * Verification always happens inside the caller's owned transaction, against
  * the same consistent snapshot as the mutation it authorizes. Refusals are a
@@ -60,15 +58,24 @@ export type P2ACapabilityScope = (typeof P2A_CAPABILITY_SCOPES)[number];
 export const P2B_CAPABILITY_SCOPES = ["takeover"] as const;
 export type P2BCapabilityScope = (typeof P2B_CAPABILITY_SCOPES)[number];
 
+/** CE-0002-B3-P3A: durable storage send and protected metadata read. */
+export const P3A_CAPABILITY_SCOPES = ["send", "read"] as const;
+export type P3ACapabilityScope = (typeof P3A_CAPABILITY_SCOPES)[number];
+
 /** Scopes whose authority is durably bound to exactly one Session. */
-export const SESSION_BOUND_CAPABILITY_SCOPES = ["resume", "takeover"] as const;
+export const SESSION_BOUND_CAPABILITY_SCOPES = ["resume", "takeover", ...P3A_CAPABILITY_SCOPES] as const;
 export type SessionBoundCapabilityScope = (typeof SESSION_BOUND_CAPABILITY_SCOPES)[number];
 
 export function isSessionBoundCapabilityScope(value: unknown): value is SessionBoundCapabilityScope {
   return typeof value === "string" && (SESSION_BOUND_CAPABILITY_SCOPES as readonly string[]).includes(value);
 }
 
-export const OPERATIONAL_CAPABILITY_SCOPES = [...P1_CAPABILITY_SCOPES, ...P2A_CAPABILITY_SCOPES, ...P2B_CAPABILITY_SCOPES] as const;
+export const OPERATIONAL_CAPABILITY_SCOPES = [
+  ...P1_CAPABILITY_SCOPES,
+  ...P2A_CAPABILITY_SCOPES,
+  ...P2B_CAPABILITY_SCOPES,
+  ...P3A_CAPABILITY_SCOPES,
+] as const;
 export type OperationalCapabilityScope = (typeof OPERATIONAL_CAPABILITY_SCOPES)[number];
 
 export function isOperationalCapabilityScope(value: unknown): value is OperationalCapabilityScope {
@@ -246,10 +253,8 @@ export function classifyCapability(
   // The persisted `detached_at` of its bound Session is the source of
   // truth, so a DETACHED Session makes the capability permanently unusable
   // for every presenter — read-time invalidation only; no capability row is
-  // ever rewritten as a side effect of Detach. The future Session-bound
-  // scopes (`send`, `ack`, `read`) will join
-  // `SESSION_BOUND_CAPABILITY_SCOPES` when they become operational and
-  // inherit this check unchanged. The binding row is read strictly inside the
+  // ever rewritten as a side effect of Detach. P3A `send` and `read` inherit
+  // this check; ACK remains non-operational. The binding row is read strictly
   // caller's transaction: a Session-bound capability whose binding is missing
   // or malformed is inconsistent durable state — refused as corruption,
   // never adopted (schema v4 makes row deletion trigger-impossible, so this

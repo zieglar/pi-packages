@@ -391,3 +391,35 @@ lifecycle fact of the private storage plane, never a transport event.
   operation serialized after expiry refuses `LEASE_EXPIRED` and cannot
   revive the term; the persisted `lease_started_at` / `expires_at` boundaries
   always decide.
+
+## B3-P3A — Scoped current-Owner authority
+
+Status: **implemented for private storage send/read only**. The historical P2
+sections above remain the record of their phase boundaries; where they say
+`send`/`read` were inactive, this P3A amendment supersedes that status.
+
+`send` and `read` are now operational and are Session-bound exactly like
+`resume`/`takeover`: issuance requires a durable ATTACHED Session binding,
+classification binds Participant + exact scope + trust generation + Session,
+revocation presents that Session, and terminal detach makes the token unusable
+without rewriting capability rows. `ack` remains inactive.
+
+The shared current-Owner primitive defaults to `resume` for all accepted P2
+renew/release/verification callers, preserving their API and refusal precedence.
+P3A callers explicitly request only `send` or `read`; neither a resume token nor
+a takeover token authorizes those operations. Inside the caller-owned IMMEDIATE
+transaction, capability classification precedes Participant/Session checks, then
+the durable ownership row establishes the current Owner, the presented fencing
+token must equal the persisted monotonic token/high-water state, and the
+persisted lease term must be active without clock regression.
+
+P3A samples authority time only after the writer lock is acquired. A send racing
+release serializes either before release and may commit, or after release and
+refuses `OWNERSHIP_NOT_CURRENT`. A near-expiry send racing takeover similarly
+commits only before replacement or refuses as the former Owner afterward; it
+cannot commit under stale fencing. Independent-process tests pin both outcomes.
+
+This amendment does not broaden takeover recovery, define Pi Session lifecycle
+outside the existing durable binding, or grant authority from a Session ID,
+Participant ID, Worker/Advisor label, endpoint label, or fencing token alone.
+ACK and external delivery remain outstanding P3 work.

@@ -2,6 +2,7 @@ import { readFileSync, rmSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   acquireOwnership,
+  authorizeCurrentOwner,
   bindSession,
   FENCING_TOKEN_MAX,
   FIRST_FENCING_TOKEN,
@@ -21,7 +22,7 @@ import {
   verifyOwnership,
   type OwnershipLease,
 } from "../../src/storage/ownership.js";
-import { revokeCapability } from "../../src/storage/participant.js";
+import { revokeCapability, runOwned } from "../../src/storage/participant.js";
 import { recoverTrustRoot } from "../../src/storage/recovery.js";
 import { openStore } from "../../src/storage/store.js";
 import { hostSecretPath } from "../../src/storage/trust-root.js";
@@ -344,6 +345,24 @@ describe("B3-P2A lease renewal and expiry", () => {
     // Verification is zero-write.
     const before = durable(w.active);
     expect(verifyOwnership(w.active.store, owner(w, S1, 1), clockAt(100))).toMatchObject({ fencingToken: 1 });
+    expect(durable(w.active)).toBe(before);
+  });
+
+  it("authorizes a current Owner under an exact Session-bound operation scope", () => {
+    const w = world();
+    acquire(w);
+    const send = capabilityFor(w.active, w.participantId, "send", { sessionId: S1 });
+    const before = durable(w.active);
+
+    const ownership = runOwned(w.active.store, "Scoped owner test", (tx) =>
+      authorizeCurrentOwner(tx, w.active.store, {
+        ...owner(w, S1, 1, send),
+        scope: "send",
+        now: at(10),
+      }),
+    );
+
+    expect(ownership).toMatchObject({ participantId: w.participantId, sessionId: S1, fencingToken: 1 });
     expect(durable(w.active)).toBe(before);
   });
 

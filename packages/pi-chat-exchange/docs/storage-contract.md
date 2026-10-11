@@ -949,3 +949,74 @@ writer lock: a detach serialized after lease expiry still refuses
 `SESSION_IS_CURRENT_OWNER` zero-write, and a non-Owner detach serialized
 after the lock wait commits at the serialization instant without touching
 ownership or fencing).
+
+## B3-P3A — Session-authorized durable send/read (CE-0002-B3-P3A)
+
+Status: **implemented as a private storage slice**. Schema v4 and the frozen
+public `Message` entity are unchanged. This amendment does not define endpoint
+delivery, ACK, workers, retries, reconciliation, Pi runtime integration, or a
+public payload-listing API. The broader P3 delivery scope remains outstanding.
+
+### Preserved B2 creation
+
+`createMessage` remains the accepted trusted-host operation: existing callers
+do not acquire a Session requirement and retain the same request digest,
+Exchange-scoped idempotency, replay-before-new-write admission, atomic
+Message/idempotency/audit triple, audit ordering, payload handling, and
+BUSY/ROLLED_BACK/INDETERMINATE classifications. P3A reuses its extracted
+transaction-scoped persistence helper; it does not rebuild the Message store.
+
+### Authorized send
+
+`sendMessage` is private storage authority. It captures and validates the
+request before `BEGIN IMMEDIATE`, then samples one authoritative instant after
+the writer lock is held. In that same transaction it validates, in order: the
+exact Session-bound `send` capability and ATTACHED lifecycle; current durable
+Owner; presented monotonic fencing token; active persisted lease; Exchange
+membership; and the sender Participant's immutable `(adapter, endpointId)`
+binding. A Session ID or caller label is never authority.
+
+All checks above precede protected idempotency replay. An authorized historical
+replay remains zero-write even after Exchange close; a new Message then applies
+the accepted OPEN/no-disposition admission. New persistence atomically commits
+the Message, its idempotency record, and one `message_created` audit event.
+No result escapes before COMMIT. There is no blind retry after an INDETERMINATE
+outcome and no exactly-once or remote-duplicate-prevention claim.
+
+### Protected recipient metadata read
+
+`readMessageMetadata` is a repeatable private operation serialized under the
+same writer lock. It requires the exact Session-bound `read` capability, an
+ATTACHED current Owner with active lease and current fencing, durable membership,
+the requested Exchange identity, and a stable endpoint binding matching the
+stored recipient. Missing and wrong-recipient identities share the same opaque
+eligibility refusal. It returns only the frozen `Message` metadata plus a private
+`auditSequence`; payload bytes never leave this API.
+
+Eligibility is `message_created.sequence > exchange_membership.join_boundary_seq`.
+The correlated audit row must be unique and exactly match the Message identity,
+Exchange, creation instant, payload digest, and length; missing, duplicate, or
+inconsistent correlation fails closed as durable corruption. Audit sequence is
+a private projection and is not a new `Message.seq` property.
+
+### Cursor and remaining delivery scope
+
+P3A never inserts or updates `delivery_cursor`. Sending, replaying, reading,
+refusing, rolling back, contending, crashing, and recovering therefore fabricate
+no ACK progress. `ack` remains `CAPABILITY_SCOPE_UNSUPPORTED`. ACK/cursor
+advancement, endpoint delivery, workers, automatic retry, remote duplicate
+prevention, delivery reconciliation, and takeover-recovery API redesign remain
+outside this amendment.
+
+### P3A evidence
+
+`test/storage/message-send-read.test.ts` pins authority-before-replay, B2
+preservation, exact capability/Session/Participant/Owner/lease/fencing checks,
+membership and endpoint binding, close/replay admission, recipient-only and
+join-boundary visibility, exact audit correlation, rollback, BUSY,
+INDETERMINATE fresh-store inspection, metadata privacy, and cursor non-mutation.
+`test/storage/message-send-concurrency.test.ts` uses independent OS processes
+for same-key sends and send-versus-release/takeover serialization.
+`test/storage/message-send-crash.test.ts` uses real SIGKILL at after-BEGIN,
+after-Message, after-idempotency, after-audit, and after-COMMIT boundaries and
+proves only a complete transaction survives.

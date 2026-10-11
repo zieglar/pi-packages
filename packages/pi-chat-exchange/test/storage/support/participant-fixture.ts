@@ -91,7 +91,7 @@ export function participant(
 export function capabilityFor(
   active: Fixture,
   participantId: string,
-  scope: "create" | "bind" | "join" | "attach" | "resume" | "takeover",
+  scope: "create" | "bind" | "join" | "attach" | "resume" | "takeover" | "send" | "read",
   options: { readonly expiresAt?: string; readonly now?: string; readonly sessionId?: string } = {},
 ): string {
   return issueCapability(

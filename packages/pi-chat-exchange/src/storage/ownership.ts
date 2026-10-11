@@ -353,16 +353,19 @@ export interface OwnerPresentation {
   readonly sessionId: string;
   readonly fencingToken: number;
   readonly now: string;
+  /** Defaults to `resume` for the accepted P2 owner operations. P3A callers
+   * must present their exact Session-bound operation scope. */
+  readonly scope?: "resume" | "send" | "read";
 }
 
 /**
  * Current-Owner authorization inside the caller's owned transaction. In order:
- * a currently valid `resume` capability for the Participant that is durably
- * bound to the presented Session (trust generation re-validated), the
- * Participant, a bound Session, the Session being the current Owner, the
- * presented fencing token being current, and the lease being unexpired and
- * not clock-regressed against its persisted start. Ownership is never
- * inferred from the Session ID: the durable ownership row decides.
+ * a currently valid capability for the exact requested Session-bound scope
+ * (defaulting to accepted P2 `resume`), the Participant, an attached bound
+ * Session, the Session being the current Owner, the presented fencing token
+ * being current, and the lease being unexpired and not clock-regressed against
+ * its persisted start. Ownership is never inferred from the Session ID: the
+ * durable ownership row decides.
  */
 export function authorizeCurrentOwner(
   tx: TransactionHandle,
@@ -370,7 +373,13 @@ export function authorizeCurrentOwner(
   presentation: OwnerPresentation,
 ): OwnershipRecord {
   const { participantId, sessionId, fencingToken, now } = presentation;
-  authorize(tx, store, { capability: presentation.capability, participantId, scope: "resume", now, sessionId });
+  authorize(tx, store, {
+    capability: presentation.capability,
+    participantId,
+    scope: presentation.scope ?? "resume",
+    now,
+    sessionId,
+  });
   if (readParticipantRow(tx, participantId) === undefined) refuse("PARTICIPANT_NOT_FOUND");
   const session = sessionRow(tx, participantId, sessionId);
   if (session === undefined || session.detached) refuse("SESSION_NOT_BOUND");

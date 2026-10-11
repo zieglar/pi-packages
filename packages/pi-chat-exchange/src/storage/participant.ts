@@ -71,6 +71,9 @@ type ParticipantDomainCode =
   | "STORAGE_EXCHANGE_NOT_FOUND"
   | "EXCHANGE_JOIN_REJECTED"
   // CE-0002-B3-P2A Session binding, ownership, lease, and fencing refusals.
+  // CE-0002-B3-P3A durable messaging refusals.
+  | "PARTICIPANT_NOT_MEMBER"
+  | "MESSAGE_READ_REJECTED"
   | "SESSION_ALREADY_BOUND"
   | "SESSION_BOUND_TO_OTHER_PARTICIPANT"
   | "SESSION_NOT_BOUND"
@@ -106,6 +109,8 @@ const DOMAIN_DETAIL: Record<ParticipantDomainCode, string> = {
   PARTICIPANT_BINDING_MISMATCH: "Participant endpoint binding is immutable and does not match",
   STORAGE_EXCHANGE_NOT_FOUND: "operation requires an existing durable Exchange",
   EXCHANGE_JOIN_REJECTED: "the Exchange is not open for new membership",
+  PARTICIPANT_NOT_MEMBER: "operation requires durable Exchange membership",
+  MESSAGE_READ_REJECTED: "protected Message metadata is not eligible for this Participant",
   SESSION_ALREADY_BOUND: "the Session is already bound to this Participant",
   SESSION_BOUND_TO_OTHER_PARTICIPANT: "the Session is bound to another Participant",
   SESSION_NOT_BOUND: "operation requires a currently bound Session",
@@ -295,7 +300,8 @@ function membershipFromRow(row: Record<string, unknown> | undefined): Membership
   });
 }
 
-function readMembershipRow(
+/** @internal Shared with the private B3-P3A messaging plane. */
+export function readMembershipRow(
   handle: ReadableHandle,
   exchangeId: string,
   participantId: string,

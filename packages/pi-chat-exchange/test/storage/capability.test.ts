@@ -105,15 +105,11 @@ describe("Host Capability issuance (B3-P1B)", () => {
       () => issueCapability(active.store, { participantId: "prt_01ARZ3NDEKTSV4RRFFQ69G5FAV", scope: "join" }, { now: () => NOW }),
       "PARTICIPANT_NOT_FOUND",
     );
-    // The complete scope vocabulary stays defined in the accepted schema, but
-    // only create/bind/join (P1B), attach/resume (CE-0002-B3-P2A), and
-    // takeover (CE-0002-B3-P2B) are operational; send/ack/read stay inactive.
-    for (const scope of ["send", "ack", "read"]) {
-      expectRefusal(
-        () => issueCapability(active.store, { participantId: created.participantId, scope }, { now: () => NOW }),
-        "CAPABILITY_SCOPE_UNSUPPORTED",
-      );
-    }
+    // ACK remains non-operational in P3A; send/read become Session-bound below.
+    expectRefusal(
+      () => issueCapability(active.store, { participantId: created.participantId, scope: "ack" }, { now: () => NOW }),
+      "CAPABILITY_SCOPE_UNSUPPORTED",
+    );
     expect(rowCounts(active).capability).toBe("0");
   });
 
@@ -666,6 +662,40 @@ describe("Session-bound resume capability (B3-P2A-R1)", () => {
     expect(Object.isFrozen(issued)).toBe(true);
   });
 
+
+  it("issues send and read only as capabilities bound to an attached Session", async () => {
+    const { bindSession } = await import("../../src/storage/ownership.js");
+    const active = fixture();
+    const { created, attach } = boundParticipant(active);
+    bindSession(active.store, { participantId: created.participantId, sessionId: S1, capability: attach }, { now: () => NOW });
+
+    for (const scope of ["send", "read"] as const) {
+      expectRefusal(
+        () => issueCapability(active.store, { participantId: created.participantId, scope }, { now: () => NOW }),
+        "STORAGE_PARTICIPANT_REQUEST_INVALID",
+      );
+      const issued = issueCapability(
+        active.store,
+        { participantId: created.participantId, scope, sessionId: S1 },
+        { now: () => NOW },
+      );
+      expect(issued).toMatchObject({ participantId: created.participantId, scope, sessionId: S1 });
+      expect(
+        readCapabilityStatus(
+          active.store,
+          { capability: issued.capability, participantId: created.participantId, scope, sessionId: S1 },
+          { now: () => NOW },
+        ),
+      ).toBe("VALID");
+      expect(
+        readCapabilityStatus(
+          active.store,
+          { capability: issued.capability, participantId: created.participantId, scope, sessionId: S2 },
+          { now: () => NOW },
+        ),
+      ).toBe("SESSION_MISMATCH");
+    }
+  });
   it("classifies the Session binding: valid only for the bound Session", async () => {
     const { bindSession } = await import("../../src/storage/ownership.js");
     const active = fixture();
