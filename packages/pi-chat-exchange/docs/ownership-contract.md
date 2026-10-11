@@ -156,16 +156,49 @@ exclusively `takeoverOwnership` under the `takeover` scope.
   Endpoint binding, Exchange membership, join boundaries, and audit history
   are untouched; capability rows are never mutated by a takeover.
 - **Recovery.** `reconcileTakeover` is a zero-write, fail-closed
-  reconciliation read over the caller's full request evidence (Participant,
-  target Session, term boundaries, optional fencing token): `COMMITTED` (exact
-  durable match — do not retry), `NO_TRACE` (no trace of the request — a fresh
-  attempt is freshly authorized and eligibility-checked), or
-  `EVIDENCE_CONFLICT` (the target Session is current under different evidence
-  — operator review, never auto-retry). Documented limitations, deliberately
-  not papered over with exactly-once semantics: a refused and a rolled-back
-  takeover leave identical durable state; a committed-then-superseded takeover
-  reports `NO_TRACE`; a committed retry with identical parameters is the same
-  logical request. No background recovery workers.
+  reconciliation read over the evidence the caller presents (Participant,
+  target Session, the exact persisted term boundaries, optional fencing
+  token): `COMMITTED` (exact durable match — do not retry), `NO_TRACE` (the
+  durable state carries no trace of the presented evidence — a fresh attempt
+  is freshly authorized and eligibility-checked), or `EVIDENCE_CONFLICT` (the
+  target Session is current under different evidence — operator review, never
+  auto-retry). All three are effect-level classifications of durable state,
+  never operation-level attribution of one invocation: `COMMITTED` is not an
+  exactly-once claim, and `NO_TRACE` is not proof that the original invocation
+  never committed (a committed takeover later superseded also reports
+  `NO_TRACE`). Documented limitations, deliberately not papered over with
+  exactly-once semantics: a refused and a rolled-back takeover leave identical
+  durable state; a committed-then-superseded takeover reports `NO_TRACE`; a
+  committed retry with identical parameters is the same logical request. No
+  background recovery workers.
+- **Evidence availability (clarified, no behavior change).** The operation
+  clock is sampled inside the owned transaction (see B3-P2B-R1 below), so the
+  sampled instant is not an ordinary caller-supplied request field:
+  `leaseStartedAt` is that sample and `expiresAt` is `sample + ttl`. The exact
+  term normally reaches the caller only through a successful return, or when
+  the caller itself supplies and records the operation clock seam; a
+  default-clock caller whose call ended INDETERMINATE does not know it, and
+  pre-call wall-clock sampling does not reconstruct it. `reconcileTakeover`
+  currently requires `participantId`, `sessionId`, `leaseStartedAt`, and
+  `expiresAt`, with `fencingToken` optional, and callers must not fabricate,
+  estimate, or round term boundaries to satisfy that shape. INDETERMINATE is
+  not ROLLED_BACK: the invalidated connection must not be reused, inspection
+  requires a freshly opened store, and a lost acknowledgement never authorizes
+  a blind retry. When exact term evidence is unavailable the outcome simply
+  stays unknown to the caller — there is no UNKNOWN input and no UNKNOWN
+  disposition in the API. A pre-call `readFencingHighWater` snapshot that is
+  unchanged on a later valid read of the same Participant shows that no
+  fencing allocation committed for that Participant between the two reads; an
+  increased high-water identifies no invocation, proves nothing about this
+  caller's takeover, and never establishes a durable lease. No production
+  caller of `reconcileTakeover` exists at this phase
+  (CE-TAKEOVER-RECONCILIATION-EVIDENCE-001); whether a future real-clock
+  caller gets a conservative optional-term reconciliation contract or another
+  existing-evidence recovery protocol is open and tracked as
+  CE-TAKEOVER-RECOVERY-CALLER-001, to be resolved before the first production
+  takeover-recovery caller and before P4. Full statement:
+  `docs/storage-contract.md` §11 "Evidence availability after an uncertain
+  outcome".
 - **Legacy ownership.** A migrated v2 row never authorizes and is never
   repaired; it is takeover-eligible, and takeover replaces it with a fully
   persisted v3 term at a fencing token strictly greater than the legacy token.

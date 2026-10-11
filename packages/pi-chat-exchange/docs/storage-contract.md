@@ -743,27 +743,80 @@ boundaries, or audit history, and never mutates capability rows.
 
 An uncertain takeover outcome (for example an INDETERMINATE transaction
 result) is reconciled explicitly through `reconcileTakeover`, a zero-write
-read that compares the caller's full request evidence (Participant, target
-Session, term boundaries, optional fencing token) against the durable row in
-one consistent snapshot — never a Session ID alone:
+read that compares the evidence the caller presents (Participant, target
+Session, the exact persisted term boundaries, optional fencing token) against
+the durable row in one consistent snapshot — never a Session ID alone:
 
-- `COMMITTED`: the current row matches the evidence exactly. A retry of the
-  same logical request persists identical evidence, so an exact match is
-  idempotent recognition. Do not retry.
-- `NO_TRACE`: the current state carries no trace of the request (no row, a
-  legacy row, a different Owner Session, or a same-Session row whose term
-  predates the presented evidence). The request did not commit, was refused,
-  or was later superseded — indistinguishable post-hoc. A fresh attempt is
-  safe only because it is freshly authorized and eligibility-checked.
+- `COMMITTED`: the current row matches the presented evidence exactly. This is
+  effect-level recognition of the durable state, not operation-level
+  attribution of one invocation and not an exactly-once claim: a retry of the
+  same logical request persists identical evidence, so the match cannot say
+  which invocation wrote the row. Do not retry. A later authorized takeover or
+  renewal may still supersede this term afterwards.
+- `NO_TRACE`: the current state carries no trace of the presented evidence (no
+  row, a legacy row, a different Owner Session, or a same-Session row whose
+  term predates the presented evidence). This is **not** proof that the
+  original invocation never committed: a request that did not commit, a
+  refused request, and a committed request whose effects were later superseded
+  are indistinguishable post-hoc. A fresh attempt is safe only because it is
+  freshly authorized and eligibility-checked, never because `NO_TRACE` proved a
+  non-commit.
 - `EVIDENCE_CONFLICT`: the target Session is the current Owner under
-  different term or token evidence — installed by a different request. Never
-  auto-retry; operator review.
+  different term or token evidence — the current state was installed by a
+  different request. Never auto-retry; operator review.
 
 Documented limitations (fail-closed, no invented exactly-once semantics): a
 refused and a rolled-back takeover leave identical durable state; a committed
 takeover later superseded reports `NO_TRACE`; a committed retry with identical
 parameters is the same logical request and indistinguishable from the
 original commit. There are no background recovery workers.
+
+#### Evidence availability after an uncertain outcome
+
+`takeoverOwnership` samples its operation clock **inside** the owned
+`BEGIN IMMEDIATE` transaction (see "Transaction-time clock sampling" above).
+That instant is not an ordinary caller-supplied request field: `leaseStartedAt`
+is exactly that sample and `expiresAt` is `sample + ttl`. The exact term is
+therefore normally available to the caller only from the successful return
+value of `takeoverOwnership`, or when the caller itself supplies and records
+the operation clock seam. A caller using the default wall clock whose call
+ended INDETERMINATE does **not** know the exact term, and pre-call wall-clock
+sampling does not reconstruct it (the sample is taken after the writer lock is
+acquired, a lock wait of unrecorded, caller-unknown duration later).
+
+`reconcileTakeover` currently requires `participantId`, `sessionId`,
+`leaseStartedAt`, and `expiresAt`; `fencingToken` is optional. A caller must
+not fabricate, estimate, or round term boundaries to satisfy that input shape:
+a term guessed later than the durable one misreads a committed takeover as
+`NO_TRACE`, and a term guessed earlier misattributes a same-Session row as
+`EVIDENCE_CONFLICT`. When exact term evidence is unavailable the outcome simply
+remains unknown to the caller. `reconcileTakeover` accepts no UNKNOWN input and
+returns no UNKNOWN disposition — preserving that uncertainty is a caller-level
+judgment, not an existing API disposition, and the three dispositions above
+keep their exact meanings.
+
+INDETERMINATE is not ROLLED_BACK. A connection invalidated by an indeterminate
+transaction outcome must not be reused; recovery inspection requires a freshly
+opened store. A lost acknowledgement never authorizes a blind retry.
+
+A caller may also snapshot `readFencingHighWater` for the Participant before
+the call. If a later valid read of the same Participant still returns the same
+value, then no fencing allocation — and therefore no successful takeover or
+acquisition for that Participant — committed between the two reads, assuming
+both reads are valid, correctly ordered, and about the same Participant. An
+increased high-water proves only that some allocation committed; it never
+identifies which invocation committed, never proves that this caller's takeover
+committed, and never establishes a durable ownership lease (only the ownership
+row does). High-water evidence is effect-level only.
+
+At this phase there is no production caller of `reconcileTakeover`
+(CE-TAKEOVER-RECONCILIATION-EVIDENCE-001): no recovery behavior beyond the
+read classified above is designed, implemented, or promised. Whether a future
+real-clock caller should use a conservative optional-term reconciliation
+contract or another existing-evidence recovery protocol is unresolved and
+tracked as CE-TAKEOVER-RECOVERY-CALLER-001; it must be resolved before the
+first production takeover-recovery caller and before P4. No such API is
+selected or implemented here.
 
 ### Legacy ownership recovery
 
