@@ -25,6 +25,15 @@
  * PH-0002 source pins and existing-delivery seam limitations remain in
  * docs/source-reuse-audit.md; discovery-only composition is a later option.
  * No production extension, delivery, observation or result publication exists.
+ *
+ * CE-0002 B3-P3B amendment: the Pi-type-free host seam `session-host.ts` now
+ * exists beside this contract. It is host-local composition over the private
+ * B3-P3A authorized send/read slice: an operator-controlled endpoint allowlist,
+ * memory-only capability tokens, validated mapping recovery, and sanitized
+ * refusals. It still grants no endpoint delivery, no ACK, no inbox discovery,
+ * and no transport: a stored Message becomes conversation-visible only when the
+ * receiving host explicitly reads its metadata and chooses to inject it via the
+ * owning-session seam above. Pi session ids remain untrusted labels throughout.
  */
 import type { EndpointDeclaration } from "../../protocol/endpoint-capabilities.js";
 

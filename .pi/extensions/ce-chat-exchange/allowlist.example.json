@@ -1,0 +1,9 @@
+{
+  "exchangeNamespace": "pi-local",
+  "exchangeIdempotencyKey": "pi-local-exchange",
+  "leaseTtlSeconds": 600,
+  "sessions": {
+    "ceA": { "endpointId": "local/sessionA" },
+    "ceB": { "endpointId": "local/sessionB" }
+  }
+}
