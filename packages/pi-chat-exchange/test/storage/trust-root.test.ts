@@ -14,9 +14,18 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { openStorageConnection } from "../../src/storage/connection.js";
 import { recoverTrustRoot } from "../../src/storage/recovery.js";
-import { initializeStore, openStore } from "../../src/storage/store.js";
-import { hostSecretDigest, hostSecretPath } from "../../src/storage/trust-root.js";
+import {
+  APPLICATION_ID,
+  SQLITE_APPLICATION_ID,
+  V4_FOUNDATION_CHECKSUM,
+  V4_FOUNDATION_NAME,
+  V4_FOUNDATION_SQL,
+} from "../../src/storage/schema.js";
+import { initializeStore, openStore, preflightStoreShape } from "../../src/storage/store.js";
+import { withImmediateTransaction } from "../../src/storage/transaction.js";
+import { createHostSecretFile, hostSecretDigest, hostSecretPath } from "../../src/storage/trust-root.js";
 
 const roots: string[] = [];
 interface StoreLocation {
@@ -42,6 +51,30 @@ const NOW_B = "2026-10-09T01:00:00.000Z";
 
 function initialize(loc: StoreLocation): ReturnType<typeof initializeStore> {
   return initializeStore({ ...loc, now: () => NOW_A, secretBytes: () => SECRET_A });
+}
+
+function initializeV4Store(loc: StoreLocation): void {
+  const databasePath = join(loc.directory, loc.filename);
+  const db = openStorageConnection(loc, undefined, true);
+  try {
+    withImmediateTransaction(db, (tx) => {
+      tx.exec(V4_FOUNDATION_SQL);
+      tx.prepare(
+        "INSERT INTO store_metadata(singleton, store_uuid, application_id, schema_version, created_at) VALUES (1, ?, ?, 4, ?)",
+      ).run("018f5f43-52f8-7c5a-8f64-9d5e06d24a9a", APPLICATION_ID, NOW_A);
+      tx.prepare(
+        "INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (4, ?, ?, ?)",
+      ).run(V4_FOUNDATION_NAME, V4_FOUNDATION_CHECKSUM, NOW_A);
+      tx.prepare("INSERT INTO restore_hold(singleton, held) VALUES (1, 0)").run();
+      tx.prepare(
+        "INSERT INTO host_trust_root(generation, secret_digest, created_at, private_revision) VALUES (1, ?, ?, 1)",
+      ).run(hostSecretDigest(SECRET_A_HEX), NOW_A);
+      tx.exec(`PRAGMA application_id=${SQLITE_APPLICATION_ID}; PRAGMA user_version=4;`);
+    });
+  } finally {
+    db.close();
+  }
+  createHostSecretFile(databasePath, () => SECRET_A);
 }
 
 function secretFilePath(loc: StoreLocation): string {
@@ -227,6 +260,37 @@ describe("host trust root (B3-P1A)", () => {
     }
     // The recovered store passes full normal-open validation under generation 2.
     expect(() => openStore(loc).close()).not.toThrow();
+  });
+
+  it("returns a validated v4 handle after recovery without misreporting the committed authority change", () => {
+    const loc = location();
+    initializeV4Store(loc);
+    const writer = openStorageConnection(loc);
+    try {
+      writer.prepare(
+        "INSERT INTO participant(participant_id, endpoint_adapter, endpoint_id, created_at) VALUES (?, ?, ?, ?)",
+      ).run("prt_01ARZ3NDEKTSV4RRFFQ69G5FAV", "pi", "endpoint-v4", NOW_A);
+      writer.prepare(
+        "INSERT INTO participant_capability(capability_digest, participant_id, scope, trust_generation, created_at) VALUES (?, ?, ?, ?, ?)",
+      ).run("b".repeat(64), "prt_01ARZ3NDEKTSV4RRFFQ69G5FAV", "join", 1, NOW_A);
+    } finally {
+      writer.close();
+    }
+
+    rmSync(secretFilePath(loc));
+    const recovered = recoverTrustRoot({ ...loc, now: () => NOW_B, secretBytes: () => SECRET_B });
+    try {
+      expect(recovered.schemaVersion).toBe(4);
+      expect(recovered.database.prepare("SELECT generation FROM host_trust_root ORDER BY generation").all())
+        .toEqual([{ generation: 1 }, { generation: 2 }]);
+      expect(recovered.database.prepare("SELECT revoked_at FROM participant_capability").all())
+        .toEqual([{ revoked_at: NOW_B }]);
+    } finally {
+      recovered.close();
+    }
+
+    expect(preflightStoreShape(join(loc.directory, loc.filename)).kind).toBe("v4");
+    expect(() => openStore(loc)).toThrowError(expect.objectContaining({ code: "STORAGE_MIGRATION_REQUIRED" }));
   });
 
   it("refuses recovery while any secret file exists (no silent overwrite, zero writes)", () => {

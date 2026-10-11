@@ -14,7 +14,7 @@ import { assertTrustRootAbsent, createHostSecretFile } from "./trust-root.js";
  *
  * 1. The operator explicitly removes any old secret file first — this command
  *    refuses to overwrite an existing one (no silent overwrite).
- * 2. The store must be a fully valid v2 store apart from the trust root
+ * 2. The store must be a fully valid recognized B3 store apart from the trust root
  *    (integrity, identity, ledger, manifest, restore hold all validated).
  * 3. A fresh 256-bit secret file is created exclusively.
  * 4. One owned BEGIN IMMEDIATE transaction appends generation N+1 with the new
@@ -23,7 +23,7 @@ import { assertTrustRootAbsent, createHostSecretFile } from "./trust-root.js";
  * The replacement secret inherits nothing: previous-generation capabilities
  * fail verification both by revocation and by generation binding, so every
  * Participant requires fresh explicit capability issuance after recovery.
- * Ambiguous states (existing secret, non-v2 store, missing generation row)
+ * Ambiguous states (existing secret, pre-trust-root store, missing generation row)
  * fail closed with no writes.
  */
 
@@ -68,9 +68,9 @@ export function recoverTrustRoot(options: RecoverTrustRootOptions): DurableStore
   // explicit operator removal before recovery may proceed.
   assertTrustRootAbsent(databasePath);
 
-  // Recovery serves any recognized B3 store (v2 awaiting migration, or the
-  // current v3 shape): the trust root exists on both, and the appended
-  // generation is version-independent.
+  // Recovery serves any recognized B3 store from v2 onward: the trust root
+  // exists on every such shape, and the appended generation is
+  // version-independent.
   const preflight = preflightStoreShape(databasePath);
   if (preflight.kind === "v1") {
     throw new StoreLifecycleError(
@@ -135,7 +135,7 @@ export function recoverTrustRoot(options: RecoverTrustRootOptions): DurableStore
   db.close();
 
   // Proof of recovery is a validated reopen under the new generation: a normal
-  // current-version open for v3, or a shape-validated migration proof open for
-  // a v2 store that still awaits its explicit migration.
-  return preflight.kind === "v2" ? openMigratedStore(options, "v2") : openStore(options);
+  // open for the current shape, or a shape-validated proof open for any
+  // recognized older store that still awaits its explicit migration.
+  return preflight.kind === "v5" ? openStore(options) : openMigratedStore(options, preflight.kind);
 }
