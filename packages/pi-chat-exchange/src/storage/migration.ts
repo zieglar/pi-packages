@@ -40,9 +40,11 @@ import {
  * store. A normal `openStore` of a recognized non-current store refuses with
  * STORAGE_MIGRATION_REQUIRED; only this entry point performs migrations, and
  * only along explicitly approved paths: {1→2}, {2→3}, {3→4}, {4→5}, and the
- * historical chains {1→3}, {2→4}, {1→4}. Each step commits independently: an
- * interrupted or refused later step leaves a valid store at the earlier version,
- * and the remaining step can be approved and retried on its own.
+ * historical chains {1→3}, {2→4}, {1→4}. Each step commits independently. A
+ * refused step whose transaction is proven rolled back leaves a valid store at
+ * the earlier version and may be approved and retried on its own. An
+ * INDETERMINATE outcome proves neither rollback nor commit: the operator must
+ * inspect the durable store shape before any retry and must never retry blindly.
  *
  * The migrations modify no pre-existing object: each applies only additive
  * DDL, appends the approved ledger row (the ledger is insert-only by trigger),
@@ -51,11 +53,12 @@ import {
  * trigger would abort the attempt) and the store UUID is preserved and
  * re-verified. The v1→v2 step bootstraps host trust-root generation 1; the
  * v2→v3 step re-validates the existing trust root and never creates, rotates,
- * or deletes a secret. Interruption rolls the interrupted step back; an orphan
- * host-secret file from an interrupted v1→v2 attempt is never overwritten or
- * deleted automatically and blocks retry until the operator removes it. No
- * downgrade path exists; tamper and drift refuse; nothing is repaired
- * silently.
+ * or deletes a secret. A proven transaction rollback removes the interrupted
+ * step's database writes; an orphan host-secret file from an interrupted v1→v2
+ * attempt is never overwritten or deleted automatically and blocks retry until
+ * the operator removes it. An INDETERMINATE transaction requires durable-shape
+ * inspection before any retry. No downgrade path exists; tamper and drift
+ * refuse; nothing is repaired silently.
  *
  * v2→v3 (B3-P2A-R1) additionally refuses — fail closed, zero writes — when
  * historical `participant_session` rows bind one Session to more than one
