@@ -6,8 +6,15 @@ import { openStorageConnection } from "../../src/storage/connection.js";
 import {
   APPLICATION_ID,
   CURRENT_SCHEMA_VERSION,
+  INITIAL_MIGRATION_CHECKSUM,
+  V2_FOUNDATION_CHECKSUM,
+  V2_MIGRATION_CHECKSUM,
+  V3_FOUNDATION_CHECKSUM,
+  V3_MIGRATION_CHECKSUM,
   V4_FOUNDATION_CHECKSUM,
-  V4_FOUNDATION_NAME,
+  V4_MIGRATION_CHECKSUM,
+  V5_FOUNDATION_CHECKSUM,
+  V5_FOUNDATION_NAME,
   SQLITE_APPLICATION_ID,
 } from "../../src/storage/schema.js";
 import {
@@ -49,6 +56,7 @@ describe("private durable store schema and lifecycle", () => {
       now: () => "2026-10-08T00:00:00.000Z",
     });
     try {
+      expect(CURRENT_SCHEMA_VERSION).toBe(5);
       expect(store.storeUuid).toBe(STORE_UUID);
       expect(store.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
       expect(store.database.prepare("PRAGMA application_id").get()).toEqual({ application_id: SQLITE_APPLICATION_ID });
@@ -60,11 +68,31 @@ describe("private durable store schema and lifecycle", () => {
         schema_version: CURRENT_SCHEMA_VERSION,
       });
       expect(store.database.prepare("SELECT version, name, checksum FROM schema_migrations").all()).toEqual([
-        { version: CURRENT_SCHEMA_VERSION, name: V4_FOUNDATION_NAME, checksum: V4_FOUNDATION_CHECKSUM },
+        { version: CURRENT_SCHEMA_VERSION, name: V5_FOUNDATION_NAME, checksum: V5_FOUNDATION_CHECKSUM },
       ]);
     } finally {
       store.close();
     }
+  });
+
+  it("preserves every frozen v1-v4 schema checksum", () => {
+    expect({
+      initial: INITIAL_MIGRATION_CHECKSUM,
+      v2Migration: V2_MIGRATION_CHECKSUM,
+      v2Foundation: V2_FOUNDATION_CHECKSUM,
+      v3Migration: V3_MIGRATION_CHECKSUM,
+      v3Foundation: V3_FOUNDATION_CHECKSUM,
+      v4Migration: V4_MIGRATION_CHECKSUM,
+      v4Foundation: V4_FOUNDATION_CHECKSUM,
+    }).toEqual({
+      initial: "8d4e7ac1af702ac1aaf1dffc9d7c71cd45fedc540457b0ef30f0105ac454cbda",
+      v2Migration: "688d44b662ba501b2ca04a873178ee6002896ffbe5d4a8de98be0f4621ab48d9",
+      v2Foundation: "eb90391ec3e239d647d2254dec72c312669c5de634b74452561d40ee2665808d",
+      v3Migration: "b2f82ab1d30f9067ad69a543b0a7bae40da2c3fa406f0d4ae30c8b07c767e3db",
+      v3Foundation: "8c572d538c373b599142d0e87da9b0218c138293b6b0fa4644bdcbf306dfa7d9",
+      v4Migration: "c50851404d529299d69bc8ab57eea601e0fd73a626a59da9b4d96c2a5fe7e658",
+      v4Foundation: "e558f1ae27d715e3b5372b4c62f078e68168b3c50c7975e171edef690e96e62c",
+    });
   });
 
   it("creates the complete minimal private schema and correlation indexes", () => {
@@ -102,6 +130,7 @@ describe("private durable store schema and lifecycle", () => {
       expect(indexes).toEqual(
         expect.arrayContaining([
           "idx_attempt_message",
+          "idx_audit_event_correlation",
           "idx_audit_event_exchange",
           "idx_evidence_envelope_correlation",
           "idx_message_exchange",
@@ -109,6 +138,16 @@ describe("private durable store schema and lifecycle", () => {
           "idx_result_correlation",
         ]),
       );
+      const correlationIndex = store.database
+        .prepare("PRAGMA index_list('audit_event')")
+        .all()
+        .find((row) => row.name === "idx_audit_event_correlation");
+      expect(correlationIndex).toMatchObject({ unique: 0, origin: "c", partial: 0 });
+      expect(store.database.prepare("PRAGMA index_info('idx_audit_event_correlation')").all()).toEqual([
+        { seqno: 0, cid: 1, name: "exchange_id" },
+        { seqno: 1, cid: 3, name: "kind" },
+        { seqno: 2, cid: 4, name: "subject_id" },
+      ]);
       for (const table of [
         "exchange",
         "message",

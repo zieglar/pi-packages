@@ -12,6 +12,9 @@ import {
   V4_ADDITIVE_SQL,
   V4_MIGRATION_CHECKSUM,
   V4_MIGRATION_NAME,
+  V5_ADDITIVE_SQL,
+  V5_MIGRATION_CHECKSUM,
+  V5_MIGRATION_NAME,
 } from "./schema.js";
 import { assertPreV4SessionState } from "./session-state.js";
 import {
@@ -32,14 +35,14 @@ import {
 
 /**
  * Explicit store migrations (CE-0002-B3-P1A v1→v2; CE-0002-B3-P2A-R1 v2→v3;
- * CE-0002-B3-P2C-A v3→v4). Migration is a dedicated, host-local operator
- * action — never a side effect of opening a store. A normal `openStore` of a
- * recognized non-current store refuses with STORAGE_MIGRATION_REQUIRED; only
- * this entry point performs migrations, and only along explicitly approved
- * paths: {1→2}, {2→3}, {3→4}, and the chains {1→3}, {2→4}, {1→4}. Each step
- * commits independently: an interrupted or refused later step leaves a valid
- * store at the earlier version, and the remaining step can be approved and
- * retried on its own.
+ * CE-0002-B3-P2C-A v3→v4; CE-ARCH-P3C-INDEX-001 v4→v5). Migration is a
+ * dedicated, host-local operator action — never a side effect of opening a
+ * store. A normal `openStore` of a recognized non-current store refuses with
+ * STORAGE_MIGRATION_REQUIRED; only this entry point performs migrations, and
+ * only along explicitly approved paths: {1→2}, {2→3}, {3→4}, {4→5}, and the
+ * historical chains {1→3}, {2→4}, {1→4}. Each step commits independently: an
+ * interrupted or refused later step leaves a valid store at the earlier version,
+ * and the remaining step can be approved and retried on its own.
  *
  * The migrations modify no pre-existing object: each applies only additive
  * DDL, appends the approved ledger row (the ledger is insert-only by trigger),
@@ -73,8 +76,8 @@ import {
  */
 
 export interface MigrateStoreOptions extends StorageConnectionOptions {
-  /** Explicit approved path: single steps { 1→2 }, { 2→3 }, { 3→4 }, or the
-   * chains { 1→3 }, { 2→4 }, { 1→4 }. */
+  /** Explicit approved path: single steps { 1→2 }, { 2→3 }, { 3→4 }, { 4→5 },
+   * or the historical chains { 1→3 }, { 2→4 }, { 1→4 }. */
   readonly fromVersion: number;
   readonly toVersion: number;
   /** Private deterministic test seam; production callers omit this. */
@@ -225,10 +228,28 @@ function migrateV3toV4(options: MigrateStoreOptions, databasePath: string): void
   }, (writer) => validateTrustRoot(databasePath, writer));
 }
 
+/** v4→v5 (CE-ARCH-P3C-INDEX-001): one non-unique Audit correlation
+ * index, approved ledger row, and user_version advance. Existing rows are
+ * untouched and the host trust root is re-validated, never rotated. */
+function migrateV4toV5(options: MigrateStoreOptions, databasePath: string): void {
+  runMigrationStep(options, databasePath, "v4", (tx, appliedAt) => {
+    const userVersion = tx.prepare("PRAGMA user_version").get();
+    if (Object.values(userVersion ?? {})[0] !== 4) {
+      throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", "store schema changed during migration");
+    }
+    tx.exec(V5_ADDITIVE_SQL);
+    tx.prepare(
+      "INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+    ).run(5, V5_MIGRATION_NAME, V5_MIGRATION_CHECKSUM, appliedAt);
+    tx.exec("PRAGMA user_version=5;");
+  }, (writer) => validateTrustRoot(databasePath, writer));
+}
+
 const APPROVED_PATHS: readonly (readonly [number, number])[] = [
   [1, 2],
   [2, 3],
   [3, 4],
+  [4, 5],
   [1, 3],
   [2, 4],
   [1, 4],
@@ -241,7 +262,7 @@ export function migrateStore(options: MigrateStoreOptions): DurableStore {
   if (!approved) {
     throw new StoreLifecycleError(
       "STORAGE_INCOMPATIBLE",
-      "only the explicitly approved single-step and chained migration paths up to v4 are supported",
+      "only the explicitly approved migration paths through v5 are supported",
     );
   }
   const databasePath = prepareDatabasePath(options);
@@ -253,8 +274,10 @@ export function migrateStore(options: MigrateStoreOptions): DurableStore {
   // Shape preflight precedes any artifact handling: a store that does not
   // require the requested migration is refused (zero writes) before any
   // trust-root absence check can run.
-  const expectFrom: StoreShapeKind = options.fromVersion === 1 ? "v1" : options.fromVersion === 2 ? "v2" : "v3";
+  const expectFrom: StoreShapeKind =
+    options.fromVersion === 1 ? "v1" : options.fromVersion === 2 ? "v2" : options.fromVersion === 3 ? "v3" : "v4";
   const reachesV4 = options.toVersion === 4;
+  const reachesV5 = options.toVersion === 5;
   const preflight = preflightStoreShape(databasePath, (reader, shape) => {
     // Whole-chain precondition (B3-P2C-A): when the path reaches v4 and the
     // source already carries Session rows (v2 or v3), foreign lifecycle state
@@ -273,11 +296,13 @@ export function migrateStore(options: MigrateStoreOptions): DurableStore {
   if (options.fromVersion === 1) migrateV1toV2(options, databasePath);
   if (options.fromVersion <= 2 && options.toVersion >= 3) migrateV2toV3(options, databasePath);
   if (reachesV4) migrateV3toV4(options, databasePath);
+  if (reachesV5) migrateV4toV5(options, databasePath);
 
   // Proof of success is a full validated reopen: a normal current-version open
   // (including trust-root validation) when the target is current, otherwise a
   // shape-validated migration proof open for the intermediate target.
   if (options.toVersion === 2) return openMigratedStore(options, "v2");
   if (options.toVersion === 3) return openMigratedStore(options, "v3");
+  if (options.toVersion === 4) return openMigratedStore(options, "v4");
   return openStore(options);
 }

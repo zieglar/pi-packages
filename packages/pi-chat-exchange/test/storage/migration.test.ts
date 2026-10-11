@@ -18,8 +18,13 @@ import {
   V2_MIGRATION_NAME,
   V3_MIGRATION_CHECKSUM,
   V3_MIGRATION_NAME,
+  V4_FOUNDATION_CHECKSUM,
+  V4_FOUNDATION_NAME,
+  V4_FOUNDATION_SQL,
   V4_MIGRATION_CHECKSUM,
   V4_MIGRATION_NAME,
+  V5_MIGRATION_CHECKSUM,
+  V5_MIGRATION_NAME,
 } from "../../src/storage/schema.js";
 import { initializeStore, openStore, preflightStoreShape } from "../../src/storage/store.js";
 import { withImmediateTransaction, StorageTransactionError } from "../../src/storage/transaction.js";
@@ -88,6 +93,31 @@ function initializeV1Store(loc: StoreLocation): void {
   }
 }
 
+/** Builds exactly the frozen fresh-v4 foundation for the explicit v4→v5 gate. */
+function initializeV4Store(loc: StoreLocation): void {
+  const digest = hostSecretDigest(SECRET_HEX);
+  const db = openStorageConnection(loc, undefined, true);
+  try {
+    withImmediateTransaction(db, (tx) => {
+      tx.exec(V4_FOUNDATION_SQL);
+      tx.prepare(
+        "INSERT INTO store_metadata(singleton, store_uuid, application_id, schema_version, created_at) VALUES (1, ?, ?, 4, ?)",
+      ).run(STORE_UUID, APPLICATION_ID, NOW);
+      tx.prepare(
+        "INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (4, ?, ?, ?)",
+      ).run(V4_FOUNDATION_NAME, V4_FOUNDATION_CHECKSUM, NOW);
+      tx.prepare("INSERT INTO restore_hold(singleton, held) VALUES (1, 0)").run();
+      tx.prepare(
+        "INSERT INTO host_trust_root(generation, secret_digest, created_at, private_revision) VALUES (1, ?, ?, 1)",
+      ).run(digest, NOW);
+      tx.exec(`PRAGMA application_id=${SQLITE_APPLICATION_ID}; PRAGMA user_version=4;`);
+    });
+  } finally {
+    db.close();
+  }
+  createHostSecretFile(join(loc.directory, loc.filename), () => SECRET);
+}
+
 function directorySnapshot(directory: string): [string, string][] {
   return readdirSync(directory)
     .sort()
@@ -99,14 +129,13 @@ function schemaManifestRows(database: { prepare: (sql: string) => { all: () => u
 }
 
 function migrate(loc: StoreLocation, extra?: Partial<Parameters<typeof migrateStore>[0]>) {
-  return migrateStore({
-    ...loc,
-    fromVersion: 1,
-    toVersion: CURRENT_SCHEMA_VERSION,
-    now: () => NOW,
-    secretBytes: () => SECRET,
-    ...extra,
-  });
+  const base = { ...loc, now: () => NOW, secretBytes: () => SECRET, ...extra };
+  if (extra?.fromVersion !== undefined || extra?.toVersion !== undefined) {
+    return migrateStore({ ...base, fromVersion: extra.fromVersion ?? 1, toVersion: extra.toVersion ?? 4 });
+  }
+  const v4 = migrateStore({ ...base, fromVersion: 1, toVersion: 4 });
+  v4.close();
+  return migrateStore({ ...base, fromVersion: 4, toVersion: CURRENT_SCHEMA_VERSION });
 }
 
 describe("explicit v1 to v2 migration (B3-P1A)", () => {
@@ -139,6 +168,7 @@ describe("explicit v1 to v2 migration (B3-P1A)", () => {
         { version: 2, name: V2_MIGRATION_NAME, checksum: V2_MIGRATION_CHECKSUM },
         { version: 3, name: V3_MIGRATION_NAME, checksum: V3_MIGRATION_CHECKSUM },
         { version: 4, name: V4_MIGRATION_NAME, checksum: V4_MIGRATION_CHECKSUM },
+        { version: 5, name: V5_MIGRATION_NAME, checksum: V5_MIGRATION_CHECKSUM },
       ]);
       // Every seeded v1 row survives intact.
       expect(migrated.database.prepare("SELECT exchange_id, state, created_at FROM exchange").all()).toEqual([
@@ -236,6 +266,9 @@ describe("explicit v1 to v2 migration (B3-P1A)", () => {
       expect.objectContaining({ code: "STORAGE_MIGRATION_REQUIRED" }),
     );
     migrate(loc, { fromVersion: 3, toVersion: 4 }).close();
+    expect(preflightStoreShape(join(loc.directory, loc.filename)).kind).toBe("v4");
+    expect(() => openStore(loc)).toThrowError(expect.objectContaining({ code: "STORAGE_MIGRATION_REQUIRED" }));
+    migrate(loc, { fromVersion: 4, toVersion: 5 }).close();
     expect(() => openStore(loc).close()).not.toThrow();
     // A repeated step is not required.
     expect(() => migrate(loc, { fromVersion: 2, toVersion: 3 })).toThrowError(
@@ -354,6 +387,95 @@ describe("explicit v1 to v2 migration (B3-P1A)", () => {
   });
 });
 
+describe("explicit v4 to v5 correlation-index migration (CE-ARCH-P3C-INDEX-001)", () => {
+  it("requires explicit migration, preserves duplicate correlations, and converges on the fresh v5 manifest", () => {
+    const loc = location();
+    initializeV4Store(loc);
+    const writer = openStorageConnection(loc);
+    try {
+      writer.prepare(
+        "INSERT INTO exchange(exchange_id, state, created_at, private_revision) VALUES (?, 'OPEN', ?, 1)",
+      ).run(EXCHANGE_ID, NOW);
+      const insert = writer.prepare(
+        "INSERT INTO audit_event(event_id, exchange_id, sequence, kind, subject_id, created_at, digest, length, private_revision) VALUES (?, ?, ?, 'message_created', ?, ?, ?, 0, 1)",
+      );
+      insert.run("evt_01ARZ3NDEKTSV4RRFFQ69G5FAV", EXCHANGE_ID, 1, MESSAGE_ID, NOW, "a".repeat(64));
+      insert.run("evt_01ARZ3NDEKTSV4RRFFQ69G5FAW", EXCHANGE_ID, 2, MESSAGE_ID, NOW, "a".repeat(64));
+    } finally {
+      writer.close();
+    }
+    expect(() => openStore(loc)).toThrowError(expect.objectContaining({ code: "STORAGE_MIGRATION_REQUIRED" }));
+
+    const migrated = migrateStore({ ...loc, fromVersion: 4, toVersion: 5, now: () => NOW });
+    try {
+      expect(migrated.schemaVersion).toBe(5);
+      expect(migrated.database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 5 });
+      expect(migrated.database.prepare("SELECT schema_version FROM store_metadata").get()).toEqual({ schema_version: 4 });
+      expect(migrated.database.prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version").all()).toEqual([
+        { version: 4, name: V4_FOUNDATION_NAME, checksum: V4_FOUNDATION_CHECKSUM },
+        { version: 5, name: V5_MIGRATION_NAME, checksum: V5_MIGRATION_CHECKSUM },
+      ]);
+      expect(migrated.database.prepare(
+        "SELECT COUNT(*) AS n FROM audit_event WHERE exchange_id=? AND kind='message_created' AND subject_id=?",
+      ).get(EXCHANGE_ID, MESSAGE_ID)).toEqual({ n: 2 });
+      expect(migrated.database.prepare(
+        "EXPLAIN QUERY PLAN SELECT event_id FROM audit_event WHERE exchange_id=? AND kind='message_created' AND subject_id=? LIMIT 2",
+      ).all(EXCHANGE_ID, MESSAGE_ID).map((row) => String(row.detail)).join("\n")).toContain("idx_audit_event_correlation");
+    } finally {
+      migrated.close();
+    }
+
+    const beforeRepeat = directorySnapshot(loc.directory);
+    expect(() => migrateStore({ ...loc, fromVersion: 4, toVersion: 5, now: () => NOW })).toThrowError(
+      expect.objectContaining({ code: "STORAGE_MIGRATION_NOT_REQUIRED" }),
+    );
+    expect(directorySnapshot(loc.directory)).toEqual(beforeRepeat);
+  });
+
+  it("rolls interrupted index creation back to an exact v4 store and retries cleanly", () => {
+    const loc = location();
+    initializeV4Store(loc);
+    expect(() =>
+      migrateStore({
+        ...loc,
+        fromVersion: 4,
+        toVersion: 5,
+        now: () => NOW,
+        beforeCommit: () => { throw new Error("simulated interruption"); },
+      }),
+    ).toThrowError(StorageTransactionError);
+
+    const probe = openStorageConnection(loc);
+    try {
+      expect(probe.prepare("PRAGMA user_version").get()).toEqual({ user_version: 4 });
+      expect(probe.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 4 }]);
+      expect(probe.prepare(
+        "SELECT COUNT(*) AS n FROM sqlite_schema WHERE type='index' AND name='idx_audit_event_correlation'",
+      ).get()).toEqual({ n: 0 });
+    } finally {
+      probe.close();
+    }
+    expect(preflightStoreShape(join(loc.directory, loc.filename)).kind).toBe("v4");
+    expect(() => migrateStore({ ...loc, fromVersion: 4, toVersion: 5, now: () => NOW }).close()).not.toThrow();
+  });
+
+  it("refuses a preexisting duplicate-name index as v4 schema drift instead of accepting it", () => {
+    const loc = location();
+    initializeV4Store(loc);
+    const writer = openStorageConnection(loc);
+    try {
+      writer.exec("CREATE INDEX idx_audit_event_correlation ON audit_event(exchange_id, kind, subject_id)");
+    } finally {
+      writer.close();
+    }
+    const before = directorySnapshot(loc.directory);
+    expect(() => migrateStore({ ...loc, fromVersion: 4, toVersion: 5, now: () => NOW })).toThrowError(
+      expect.objectContaining({ code: "STORAGE_INCOMPATIBLE" }),
+    );
+    expect(directorySnapshot(loc.directory)).toEqual(before);
+  });
+});
+
 describe("explicit v2 to v3 migration (B3-P2A-R1)", () => {
   const P1 = "prt_01ARZ3NDEKTSV4RRFFQ69G5FA0";
   const P2 = "prt_01ARZ3NDEKTSV4RRFFQ69G5FA1";
@@ -458,10 +580,12 @@ describe("explicit v2 to v3 migration (B3-P2A-R1)", () => {
     } finally {
       migrated.close();
     }
-    // v3 is no longer current (CE-0002-B3-P2C-A): the explicit v3 to v4 step
-    // preserves the legacy history and the store then opens normally.
+    // The explicit v3→v4 and v4→v5 steps preserve the legacy history before
+    // the store opens normally at the current schema.
     expect(() => openStore(loc)).toThrowError(expect.objectContaining({ code: "STORAGE_MIGRATION_REQUIRED" }));
     migrateStore({ ...loc, fromVersion: 3, toVersion: 4, now: () => NOW }).close();
+    expect(() => openStore(loc)).toThrowError(expect.objectContaining({ code: "STORAGE_MIGRATION_REQUIRED" }));
+    migrateStore({ ...loc, fromVersion: 4, toVersion: 5, now: () => NOW }).close();
     const current = openStore(loc);
     try {
       expect(readCurrentOwnership(current, P1)).toMatchObject({ sessionId: S1, fencingToken: 1, leaseStartedAt: null });
@@ -525,7 +649,8 @@ describe("explicit v2 to v3 migration (B3-P2A-R1)", () => {
 
     const v2Loc = location();
     initializeV2Store(v2Loc);
-    migrateV3(v2Loc, { toVersion: CURRENT_SCHEMA_VERSION }).close();
+    migrateV3(v2Loc, { toVersion: 4 }).close();
+    migrateStore({ ...v2Loc, fromVersion: 4, toVersion: 5, now: () => NOW }).close();
 
     const fresh = openStore(freshLoc);
     const chained = openStore(chainLoc);
@@ -614,6 +739,8 @@ describe("explicit v2 to v3 migration (B3-P2A-R1)", () => {
     migrateV3(loc).close();
     expect(preflightStoreShape(join(loc.directory, loc.filename)).kind).toBe("v3");
     migrateStore({ ...loc, fromVersion: 3, toVersion: 4, now: () => NOW }).close();
+    expect(preflightStoreShape(join(loc.directory, loc.filename)).kind).toBe("v4");
+    migrateStore({ ...loc, fromVersion: 4, toVersion: 5, now: () => NOW }).close();
     expect(() => openStore(loc).close()).not.toThrow();
   });
 

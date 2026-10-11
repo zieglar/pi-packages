@@ -1020,3 +1020,28 @@ for same-key sends and send-versus-release/takeover serialization.
 `test/storage/message-send-crash.test.ts` uses real SIGKILL at after-BEGIN,
 after-Message, after-idempotency, after-audit, and after-COMMIT boundaries and
 proves only a complete transaction survives.
+
+## B3-P3C — Minimal Audit correlation index (CE-ARCH-P3C-INDEX-001)
+
+Schema v5 appends exactly one non-unique index:
+`idx_audit_event_correlation ON audit_event(exchange_id, kind, subject_id)`.
+Every Schema v1-v4 SQL string, object name, and checksum remains frozen. The
+index accelerates the existing exact P3A correlation predicate without asserting
+uniqueness or changing Message, Audit Sequence, membership, endpoint, capability,
+Session, lease, fencing, or ACK semantics.
+
+Fresh initialization writes the v5 foundation ledger and exact v5 manifest.
+Existing v4 stores require the explicit approved `4→5` migration; normal open
+never migrates. Historical approved paths through v4 remain available but stop at
+the exact v4 shape. The v5 step re-validates the host trust root, creates the
+index, appends the v5 ledger row, and advances `user_version` in one owned
+`BEGIN IMMEDIATE` transaction. Interruption rolls the whole step back to exact v4.
+A preexisting same-name index is schema drift and refuses; the migration does not
+use `IF NOT EXISTS`, repair, or downgrade.
+
+P3A exact-correlation validation retains every existing check and now reads at
+most two matching rows. Zero rows, two rows, or more than two rows all remain
+durable corruption; the sole row must still match Exchange, Message subject,
+creation instant, digest, length, event schema, outcome, and private revision.
+The index cannot prove existence, uniqueness, field agreement, or absence of
+orphan rows. This amendment does not implement Inbox Discovery or any public API.

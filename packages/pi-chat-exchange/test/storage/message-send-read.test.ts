@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { createMessage } from "../../src/storage/creation.js";
+import { createMessage, messageCreatedAuditSequence } from "../../src/storage/creation.js";
 import { readMessageMetadata, sendMessage } from "../../src/storage/messaging.js";
 import { acquireOwnership, bindSession, detachSession, releaseOwnership } from "../../src/storage/ownership.js";
 import { joinExchange, revokeCapability } from "../../src/storage/participant.js";
@@ -146,6 +146,46 @@ function insertRawMessageWithoutTrustedApi(
 }
 
 describe("CE-0002 B3-P3A authorized durable messaging", () => {
+  it("bounds exact correlation lookup at two rows without weakening validation", () => {
+    let preparedSql = "";
+    const message = Object.freeze({
+      messageId: "msg_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      exchangeId: "ho_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      from: senderEndpoint,
+      to: recipientEndpoint,
+      state: "CREATED" as const,
+      payloadDigest: "a".repeat(64),
+      payloadLength: 5,
+      createdAt: AT_SEND,
+      idempotencyKey: "limit-two",
+    });
+    const tx = {
+      exec: () => undefined,
+      prepare: (sql: string) => {
+        preparedSql = sql;
+        return {
+          run: () => ({ changes: 0 }),
+          get: () => undefined,
+          all: () => [{
+            event_id: "evt_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            exchange_id: message.exchangeId,
+            sequence: "2",
+            kind: "message_created",
+            subject_id: message.messageId,
+            created_at: message.createdAt,
+            digest: message.payloadDigest,
+            length: "5",
+            outcome: null,
+            private_revision: "1",
+          }],
+        };
+      },
+    } as unknown as Parameters<typeof messageCreatedAuditSequence>[0];
+
+    expect(messageCreatedAuditSequence(tx, message)).toBe(2);
+    expect(preparedSql).toMatch(/subject_id=\? LIMIT 2$/);
+  });
+
   it("preserves unauthenticated trusted-host B2 createMessage behavior", () => {
     const active = fixture("ce-b3-p3a-b2-");
     const exchangeId = exchange(active);

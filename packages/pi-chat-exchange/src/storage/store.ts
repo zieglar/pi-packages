@@ -34,6 +34,11 @@ import {
   V4_FOUNDATION_SQL,
   V4_MIGRATION_CHECKSUM,
   V4_MIGRATION_NAME,
+  V5_FOUNDATION_CHECKSUM,
+  V5_FOUNDATION_NAME,
+  V5_FOUNDATION_SQL,
+  V5_MIGRATION_CHECKSUM,
+  V5_MIGRATION_NAME,
 } from "./schema.js";
 import { withImmediateTransaction } from "./transaction.js";
 import { StoreLifecycleError } from "./errors.js";
@@ -122,7 +127,9 @@ function approvedManifest(version: StoreShapeKind): string {
           ? V2_FOUNDATION_SQL
           : version === "v3"
             ? V3_FOUNDATION_SQL
-            : V4_FOUNDATION_SQL,
+            : version === "v4"
+              ? V4_FOUNDATION_SQL
+              : V5_FOUNDATION_SQL,
     );
     const manifest = schemaManifest(reference);
     approvedManifests[version] = manifest;
@@ -159,14 +166,19 @@ function closeAfterFailure(db: DatabaseSync, error: unknown): never {
   throw error;
 }
 
-function handle(db: DatabaseSync, metadata: StoreMetadataRow, databasePath: string): DurableStore {
+function handle(
+  db: DatabaseSync,
+  metadata: StoreMetadataRow,
+  databasePath: string,
+  schemaVersion = CURRENT_SCHEMA_VERSION,
+): DurableStore {
   return {
     database: db,
     storeUuid: metadata.store_uuid,
     // The validated live schema version (PRAGMA user_version == ledger maximum),
     // not the initialization-time store_metadata.schema_version, which stays 1
     // for migrated stores and is never updated.
-    schemaVersion: CURRENT_SCHEMA_VERSION,
+    schemaVersion,
     databasePath,
     close: () => db.close(),
   };
@@ -188,7 +200,7 @@ interface MigrationLedgerRow {
   readonly checksum: string;
 }
 
-export type StoreShapeKind = "v1" | "v2" | "v3" | "v4";
+export type StoreShapeKind = "v1" | "v2" | "v3" | "v4" | "v5";
 export interface StoreShape {
   readonly kind: StoreShapeKind;
   readonly metadata: StoreMetadataRow;
@@ -301,6 +313,13 @@ export function classifyStoreShape(db: DatabaseSync): StoreShape {
     ...V3_LEDGERS.map((ledger) => [...ledger, V4_STEP]),
     [[4, V4_FOUNDATION_NAME, V4_FOUNDATION_CHECKSUM]],
   ];
+  // CE-ARCH-P3C-INDEX-001: every approved v4 lineage plus the explicit v5
+  // index step, or a fresh v5 foundation.
+  const V5_STEP: readonly [number, string, string] = [5, V5_MIGRATION_NAME, V5_MIGRATION_CHECKSUM];
+  const V5_LEDGERS: readonly (readonly (readonly [number, string, string])[])[] = [
+    ...V4_LEDGERS.map((ledger) => [...ledger, V5_STEP]),
+    [[5, V5_FOUNDATION_NAME, V5_FOUNDATION_CHECKSUM]],
+  ];
   const shapeVersion = ledgerMatches(migrations, V1_LEDGER)
     ? 1
     : ledgerMatches(migrations, V2_MIGRATED_LEDGER) || ledgerMatches(migrations, V2_FRESH_LEDGER)
@@ -309,7 +328,9 @@ export function classifyStoreShape(db: DatabaseSync): StoreShape {
         ? 3
         : V4_LEDGERS.some((ledger) => ledgerMatches(migrations, ledger))
           ? 4
-          : undefined;
+          : V5_LEDGERS.some((ledger) => ledgerMatches(migrations, ledger))
+            ? 5
+            : undefined;
   if (shapeVersion === undefined) {
     throw new StoreLifecycleError(
       "STORAGE_MIGRATION_CHECKSUM_MISMATCH",
@@ -345,16 +366,15 @@ export function classifyStoreShape(db: DatabaseSync): StoreShape {
 }
 
 function shapeKind(version: number): StoreShapeKind {
-  return version === 1 ? "v1" : version === 2 ? "v2" : version === 3 ? "v3" : "v4";
+  return version === 1 ? "v1" : version === 2 ? "v2" : version === 3 ? "v3" : version === 4 ? "v4" : "v5";
 }
 
-/** Normal-open validation: a recognized v1, v2, or v3 store is refused with a
- * typed migration-required result (migration is never implicit); only the
- * current v4 shape opens, and it must pass host trust-root validation on every
- * open. */
+/** Normal-open validation: a recognized v1-v4 store is refused with a typed
+ * migration-required result (migration is never implicit); only the current v5
+ * shape opens, and it must pass host trust-root validation on every open. */
 function readAndValidateStore(db: DatabaseSync, databasePath: string): StoreMetadataRow {
   const shape = classifyStoreShape(db);
-  if (shape.kind !== "v4") {
+  if (shape.kind !== "v5") {
     throw new StoreLifecycleError(
       "STORAGE_MIGRATION_REQUIRED",
       "store schema requires the explicit approved migration to the current schema version",
@@ -392,7 +412,7 @@ export function initializeStore(options: InitializeStoreOptions): DurableStore {
 
   try {
     withImmediateTransaction(db, (tx) => {
-      tx.exec(V4_FOUNDATION_SQL);
+      tx.exec(V5_FOUNDATION_SQL);
       tx.prepare(
         "INSERT INTO store_metadata(singleton, store_uuid, application_id, schema_version, created_at) VALUES (1, ?, ?, ?, ?)",
       ).run(storeUuid, APPLICATION_ID, CURRENT_SCHEMA_VERSION, appliedAt);
@@ -400,8 +420,8 @@ export function initializeStore(options: InitializeStoreOptions): DurableStore {
         "INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
       ).run(
         CURRENT_SCHEMA_VERSION,
-        V4_FOUNDATION_NAME,
-        V4_FOUNDATION_CHECKSUM,
+        V5_FOUNDATION_NAME,
+        V5_FOUNDATION_CHECKSUM,
         appliedAt,
       );
       tx.prepare("INSERT INTO restore_hold(singleton, held) VALUES (1, 0)").run();
@@ -538,7 +558,7 @@ export function openMigratedStore(options: StorageConnectionOptions, kind: Store
     throw new StoreLifecycleError("STORAGE_CORRUPT", "failed to open the migrated SQLite store", { cause: error });
   }
   try {
-    return handle(db, validateWriter(db), databasePath);
+    return handle(db, validateWriter(db), databasePath, Number(kind.slice(1)));
   } catch (error) {
     return closeAfterFailure(
       db,

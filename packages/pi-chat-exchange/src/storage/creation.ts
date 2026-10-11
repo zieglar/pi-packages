@@ -359,7 +359,7 @@ export function readMessageInTransaction(
 export function messageCreatedAuditSequence(tx: TransactionHandle, message: Message): number {
   const rows = tx
     .prepare(
-      "SELECT event_id, exchange_id, CAST(sequence AS TEXT) AS sequence, kind, subject_id, created_at, digest, CAST(length AS TEXT) AS length, outcome, CAST(private_revision AS TEXT) AS private_revision FROM audit_event WHERE exchange_id=? AND kind='message_created' AND subject_id=?",
+      "SELECT event_id, exchange_id, CAST(sequence AS TEXT) AS sequence, kind, subject_id, created_at, digest, CAST(length AS TEXT) AS length, outcome, CAST(private_revision AS TEXT) AS private_revision FROM audit_event WHERE exchange_id=? AND kind='message_created' AND subject_id=? LIMIT 2",
     )
     .all(message.exchangeId, message.messageId);
   if (rows.length !== 1) corrupt();

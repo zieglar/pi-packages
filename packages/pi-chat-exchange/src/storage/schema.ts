@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 export const APPLICATION_ID = "@zieglar/pi-chat-exchange";
 export const SQLITE_APPLICATION_ID = 0x50434558; // "PCEX"
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 export const INITIAL_MIGRATION_NAME = "durable-storage-foundation";
 export const V2_MIGRATION_NAME = "b3-communication-lifecycle-migration";
 export const V2_FOUNDATION_NAME = "b3-communication-lifecycle-foundation";
@@ -10,6 +10,8 @@ export const V3_MIGRATION_NAME = "b3-p2a-r1-ownership-lease-migration";
 export const V3_FOUNDATION_NAME = "b3-p2a-r1-ownership-lease-foundation";
 export const V4_MIGRATION_NAME = "b3-p2c-a-session-lifecycle-migration";
 export const V4_FOUNDATION_NAME = "b3-p2c-a-session-lifecycle-foundation";
+export const V5_MIGRATION_NAME = "b3-p3c-audit-correlation-index-migration";
+export const V5_FOUNDATION_NAME = "b3-p3c-audit-correlation-index-foundation";
 
 const REVISION = "private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1)";
 
@@ -511,4 +513,21 @@ export const V4_FOUNDATION_SQL = V3_FOUNDATION_SQL + V4_ADDITIVE_SQL;
 
 export const V4_FOUNDATION_CHECKSUM = createHash("sha256")
   .update(V4_FOUNDATION_SQL, "utf8")
+  .digest("hex");
+
+/** B3-P3C Schema v5 adds only the non-unique exact-correlation lookup
+ * index. Schema v1-v4 SQL and checksums remain frozen byte-for-byte. */
+export const V5_ADDITIVE_SQL = `
+CREATE INDEX idx_audit_event_correlation ON audit_event(exchange_id, kind, subject_id);
+`;
+
+export const V5_MIGRATION_CHECKSUM = createHash("sha256")
+  .update(V5_ADDITIVE_SQL, "utf8")
+  .digest("hex");
+
+/** Fresh and explicitly migrated v5 stores converge to one exact manifest. */
+export const V5_FOUNDATION_SQL = V4_FOUNDATION_SQL + V5_ADDITIVE_SQL;
+
+export const V5_FOUNDATION_CHECKSUM = createHash("sha256")
+  .update(V5_FOUNDATION_SQL, "utf8")
   .digest("hex");
