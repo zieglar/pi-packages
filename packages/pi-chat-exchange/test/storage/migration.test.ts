@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -418,9 +418,11 @@ describe("explicit v4 to v5 correlation-index migration (CE-ARCH-P3C-INDEX-001)"
       expect(migrated.database.prepare(
         "SELECT COUNT(*) AS n FROM audit_event WHERE exchange_id=? AND kind='message_created' AND subject_id=?",
       ).get(EXCHANGE_ID, MESSAGE_ID)).toEqual({ n: 2 });
-      expect(migrated.database.prepare(
+      const queryPlan = migrated.database.prepare(
         "EXPLAIN QUERY PLAN SELECT event_id FROM audit_event WHERE exchange_id=? AND kind='message_created' AND subject_id=? LIMIT 2",
-      ).all(EXCHANGE_ID, MESSAGE_ID).map((row) => String(row.detail)).join("\n")).toContain("idx_audit_event_correlation");
+      ).all(EXCHANGE_ID, MESSAGE_ID).map((row) => String(row.detail)).join("\n");
+      expect(queryPlan).toContain("idx_audit_event_correlation");
+      expect(queryPlan).toContain("exchange_id=? AND kind=? AND subject_id=?");
     } finally {
       migrated.close();
     }
@@ -473,6 +475,26 @@ describe("explicit v4 to v5 correlation-index migration (CE-ARCH-P3C-INDEX-001)"
       expect.objectContaining({ code: "STORAGE_INCOMPATIBLE" }),
     );
     expect(directorySnapshot(loc.directory)).toEqual(before);
+  });
+
+  it.each([
+    ["missing", (databasePath: string) => rmSync(hostSecretPath(databasePath))],
+    ["mismatched", (databasePath: string) => writeFileSync(hostSecretPath(databasePath), "44".repeat(32), { mode: 0o600 })],
+  ] as const)("refuses a %s host secret with zero database writes", (_case, damageSecret) => {
+    const loc = location();
+    initializeV4Store(loc);
+    const databasePath = join(loc.directory, loc.filename);
+    damageSecret(databasePath);
+    const before = directorySnapshot(loc.directory);
+
+    expect(() => migrateStore({ ...loc, fromVersion: 4, toVersion: 5, now: () => NOW })).toThrowError(
+      expect.objectContaining({
+        code: _case === "missing" ? "STORAGE_TRUST_ROOT_MISSING" : "STORAGE_TRUST_ROOT_MISMATCH",
+      }),
+    );
+
+    expect(directorySnapshot(loc.directory)).toEqual(before);
+    expect(preflightStoreShape(databasePath).kind).toBe("v4");
   });
 });
 

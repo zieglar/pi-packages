@@ -1035,9 +1035,12 @@ Existing v4 stores require the explicit approved `4→5` migration; normal open
 never migrates. Historical approved paths through v4 remain available but stop at
 the exact v4 shape. The v5 step re-validates the host trust root, creates the
 index, appends the v5 ledger row, and advances `user_version` in one owned
-`BEGIN IMMEDIATE` transaction. Interruption rolls the whole step back to exact v4.
-A preexisting same-name index is schema drift and refuses; the migration does not
-use `IF NOT EXISTS`, repair, or downgrade.
+`BEGIN IMMEDIATE` transaction. A failure proven to have rolled back before commit
+returns the store to exact v4. An indeterminate commit outcome does not establish
+whether the store is v4 or v5: the operator must inspect the durable store shape
+before any retry, and must never retry blindly. A preexisting same-name index is
+schema drift and refuses; the migration does not use `IF NOT EXISTS`, repair, or
+downgrade.
 
 P3A exact-correlation validation retains every existing check and now reads at
 most two matching rows. Zero rows, two rows, or more than two rows all remain

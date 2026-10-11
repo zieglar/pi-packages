@@ -186,6 +186,51 @@ describe("CE-0002 B3-P3A authorized durable messaging", () => {
     expect(preparedSql).toMatch(/subject_id=\? LIMIT 2$/);
   });
 
+  it.each([
+    ["created_at", { created_at: "2026-10-10T00:00:11.000Z" }],
+    ["length", { length: "4" }],
+    ["outcome", { outcome: "unexpected" }],
+    ["private_revision", { private_revision: "2" }],
+    ["sequence", { sequence: "0" }],
+  ] as const)("fails closed when exact correlation has invalid %s", (_field, override) => {
+    const message = Object.freeze({
+      messageId: "msg_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      exchangeId: "ho_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      from: senderEndpoint,
+      to: recipientEndpoint,
+      state: "CREATED" as const,
+      payloadDigest: "a".repeat(64),
+      payloadLength: 5,
+      createdAt: AT_SEND,
+      idempotencyKey: "invalid-correlation",
+    });
+    const row = {
+      event_id: "evt_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      exchange_id: message.exchangeId,
+      sequence: "2",
+      kind: "message_created",
+      subject_id: message.messageId,
+      created_at: message.createdAt,
+      digest: message.payloadDigest,
+      length: "5",
+      outcome: null,
+      private_revision: "1",
+      ...override,
+    };
+    const tx = {
+      exec: () => undefined,
+      prepare: () => ({
+        run: () => ({ changes: 0 }),
+        get: () => undefined,
+        all: () => [row],
+      }),
+    } as unknown as Parameters<typeof messageCreatedAuditSequence>[0];
+
+    expect(() => messageCreatedAuditSequence(tx, message)).toThrowError(
+      expect.objectContaining({ code: "STORAGE_IDEMPOTENCY_CORRUPT" }),
+    );
+  });
+
   it("preserves unauthenticated trusted-host B2 createMessage behavior", () => {
     const active = fixture("ce-b3-p3a-b2-");
     const exchangeId = exchange(active);
