@@ -1,24 +1,24 @@
-# ce-chat-exchange — CE-0002 B3-P3B minimal Pi extension
+# ce-chat-exchange — CE-0002 B3-P3D explicit Inbox tool
 
-Local, Session-authorized, durable Pi-to-Pi messaging over the
-`pi-chat-exchange` B3-P3A storage slice. Verified against
-`@earendil-works/pi-coding-agent 0.86.1`.
+Local, Session-authorized messaging with explicit bounded Inbox discovery.
+The B3-P3B runtime slice was verified against Pi 0.86.1; the new Inbox tool
+has isolated harness coverage. Real two-process Inbox dogfood is a separate
+acceptance phase and is not claimed by these instructions.
 
 ## What it does
 
 - On `session_start`, resolves this Pi session's endpoint from the operator
   allowlist, then either recovers the persisted mapping (reasons
   `startup` / `reload` / `resume`) or provisions a fresh CE Session.
-- Registers two LLM-callable tools, `ce_send` and `ce_read`, and the
-  `/ce-status` command.
+- Registers `ce_send`, `ce_read`, `ce_inbox_list`, and `/ce-status`.
 - Persists the mapping (identifiers only) as a `ce-mapping` custom session
   entry via `pi.appendEntry`.
 - On `session_shutdown`, drops the in-memory capability row.
 
 ## What it deliberately does NOT do
 
-- No ACK, no delivery cursor mutation, no inbox discovery, no background
-  polling, no cross-process signalling.
+- No ACK, delivery cursor mutation, automatic consumption, background polling,
+  automatic page draining, or cross-process signalling.
 - No external delivery: writing to SQLite never makes a message visible in
   another Pi conversation. `ce_read` returns metadata only, and the payload
   never leaves the private storage plane.
@@ -83,6 +83,52 @@ CE_ALLOWLIST=$PWD/allowlist.json pi --session-id ceA
 CE_ALLOWLIST=$PWD/allowlist.json pi --session-id ceB
 ```
 
-In A, ask the model to call `ce_send` with `to: "local/sessionB"`. The tool
-result carries the `messageId`. In B, ask the model to call `ce_read` with
-that exact `messageId`. B sees metadata only; the payload stays private.
+Start and join both Sessions before sending: historical Messages before B's
+membership boundary are intentionally ineligible. In A, explicitly call
+`ce_send` with `to: "local/sessionB"`. In B, call `ce_inbox_list {}` without
+copying A's Message ID into B's prompt, then pass a discovered ID to `ce_read`.
+Both tools return metadata only; payloads remain private.
+
+## Explicit Inbox contract
+
+Optional inputs: `afterAuditSequence` (safe integer >= 0, default 0), `pageSize`
+(1..50, default 50), and `rawScanLimit` (1..2000, default 2000). After defaults,
+`pageSize <= rawScanLimit` is required; e.g. use both limits equal to 1 for a
+one-row scan. Unknown fields and authority-bearing parameters are rejected.
+
+Results contain only `{ messages: [{ messageId, auditSequence }],
+continuationAuditSequence, scanBudgetExhausted }`. Supply a non-null continuation
+as the next invocation's `afterAuditSequence`; it is the last raw Audit actually
+examined, including filtered events, not an ACK. Null means no raw row examined.
+Budget exhaustion does not promise more eligible Messages; reaching a page limit
+does not prove the scan ended. Empty pages do not prove global database integrity,
+and Messages without creation Audits cannot be discovered by Audit-first scanning.
+
+Every invocation reads the guarded current Pi context, resolves the allowlisted
+endpoint, checks its successful startup binding, and delegates CE authorization
+to Storage. No raw Store, capability, digest, payload or internal stack is returned.
+BUSY is retryable only by explicit caller action; INDETERMINATE is non-retryable
+until the operator reopens and inspects. The tool never renews, reissues or takes over.
+
+## Separate isolated dogfood acceptance (NOT_RUN for this implementation)
+
+Use a disposable work/agent/session directory and dedicated Store, not production
+Pi or credential files. Load the candidate Extension and freshly built package.
+Use Node 24.21.0 and Pi 0.86.1. Operator-arranged provider access, if needed, is
+a separate prerequisite; missing access leaves the smoke NOT_RUN.
+
+1. Run A and B as separate processes with distinct allowlisted Pi Sessions.
+2. Verify B joined before A sends. Capture A's send result only as observer evidence.
+3. B explicitly lists without knowing A's ID; observer compares the discovered ID.
+4. B explicitly reads that discovered ID through `ce_read`; assert metadata only.
+5. Compare Message state, ACK and delivery cursor before/after; repeat listing to
+   prove it does not consume. A must not list a Message addressed only to B.
+6. Use small explicit budgets and returned continuations to check pagination.
+7. Test an unallowlisted Session in an isolated replacement process; no metadata.
+8. Restart B using its persisted Pi Session within the active lease; validate the
+   same CE mapping. Check `/reload` registers the tool once and stale contexts refuse.
+9. After lease expiry or terminal detach, assert refusal without takeover or revival.
+
+Record actual tool invocations/results and sanitized durable-state observations.
+Model assertions alone are not runtime evidence. Do not interpret metadata listing
+or reads as delivery settlement, exactly-once evidence, or Completion Authority.

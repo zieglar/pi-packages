@@ -1,9 +1,10 @@
-# Pi Runtime Integration Readiness — CE-0002 B3-P3B
+# Pi Runtime Integration Readiness — CE-0002 B3-P3D
 
-Status: **implemented as a minimal local slice** (host adapter + Pi extension).
-Verified against `@earendil-works/pi-coding-agent 0.86.1` (installed) and the
-B3-P3A authorized send/read storage slice. No external delivery, no ACK, no
-inbox discovery.
+Status: **explicit bounded Inbox integration implemented**, extending the B3-P3B
+host adapter and Extension. Prior Pi 0.86.1 runtime evidence belongs to B3-P3B;
+the new `ce_inbox_list` has real-Store Host tests and an isolated fake Pi API harness.
+Real two-process Inbox dogfood remains a separate NOT_RUN acceptance phase.
+No external delivery, ACK, automatic consumption, injection, or polling is added.
 
 ## Architecture
 
@@ -19,7 +20,7 @@ Pi process A                          Pi process B
          │                                   │
          └──────────┬────────────────────────┘
                     ▼
-        shared durable SQLite store (schema v4)
+        shared durable SQLite store (schema v5)
         host trust-root secret (uid-owned, mode 600)
 ```
 
@@ -55,8 +56,8 @@ detached, or unowned mapping refuses with `CE_HOST_MAPPING_INVALID` or
 ## Four visibility states (do not conflate)
 
 1. **Stored** — `sendMessage` committed Message + idempotency + audit.
-2. **Extension-visible** — `readMessageMetadata` returned metadata to the
-   recipient's host. Requires an explicitly supplied `messageId`.
+2. **Extension-visible** — explicit `ce_inbox_list` discovers eligible IDs, and
+   `ce_read` returns metadata for a supplied ID. Neither returns payload bytes.
 3. **Conversation-visible** — only if the receiving extension injects text
    into its own session (e.g. `pi.sendMessage`). SQLite writes never appear
    in a Pi conversation by themselves.
@@ -65,6 +66,37 @@ detached, or unowned mapping refuses with `CE_HOST_MAPPING_INVALID` or
 The B3-P3B slice implements states 1 and 2. State 3 is available through the
 documented owning-session seam but is intentionally not wired automatically;
 state 4 follows from normal Pi context handling.
+
+
+B3-P3D adds explicit metadata discovery, not delivery of the stored payload.
+Tool-result metadata is visible in the invoking conversation through normal Pi
+tool handling; it does not establish payload consumption or delivery settlement.
+
+## Explicit Inbox integration
+
+`CeSessionHost.listInbox` composes the existing memory authority, current fencing
+preflight and private `discoverInboxMessages` operation. Storage revalidates exact
+Session-bound read capability, ATTACHED state, ownership, fencing, active lease,
+membership and immutable endpoint binding inside the existing transaction.
+The Extension gets no raw Store and implements no duplicate CE authorization.
+
+At each invocation, `ce_inbox_list` accesses guarded `ctx.sessionManager`, looks up
+the Pi Session's allowlisted endpoint and compares it with the successful startup
+binding. No await separates that check from the synchronous Host invocation.
+Shutdown and every new startup invalidate the Inbox binding; stale contexts refuse.
+
+Inputs are only `afterAuditSequence`, `pageSize`, `rawScanLimit`; defaults are
+0/50/2000 with safe integers, bounds 1..50 and 1..2000, and effective P <= K.
+Unknown/authority-bearing fields refuse. Output projects only Message IDs and Audit
+Sequences, plus unchanged `continuationAuditSequence` and `scanBudgetExhausted`.
+A non-null continuation is the last examined raw Audit (including filtered events),
+not ACK state. The caller explicitly requests another page; no cursor is persisted.
+An empty page is not global integrity proof, and missing creation Audits are outside
+Audit-first discovery. Budget exhaustion does not assert another eligible Message.
+
+Refusals reuse existing sanitized Host codes/reasons/retryable flags. No unreliable
+`CeHostRefusal.outcome`, raw causes or stacks are exposed. BUSY may be retried only
+explicitly; INDETERMINATE requires operator reopening/inspection before any retry.
 
 ## Failure model
 
@@ -95,6 +127,11 @@ state 4 follows from normal Pi context handling.
 ## Validation map
 
 - Adapter unit tests: `test/endpoints/pi/session-host.test.ts`.
+- Extension registration/context harness: `test/endpoints/pi/extension-inbox.test.ts`.
+- Bounded Storage discovery: `test/storage/inbox-discovery.test.ts`,
+  `test/storage/inbox-discovery-concurrency.test.ts`.
 - P3A authority chain: `test/storage/message-send-read.test.ts`,
   `message-send-concurrency.test.ts`, `message-send-crash.test.ts`.
 - Real two-process runtime smoke: `docs/plans/2026-10-11-pi-integration-slice.md`.
+- New Inbox dogfood procedure (not executed in B3-P3D implementation):
+  `.pi/extensions/ce-chat-exchange/README.md`, isolated two-process acceptance.

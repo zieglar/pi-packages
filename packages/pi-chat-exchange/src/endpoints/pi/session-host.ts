@@ -36,7 +36,9 @@ import {
   readMessageMetadata,
   sendMessage,
 } from "../../storage/messaging.js";
+import { discoverInboxMessages } from "../../storage/inbox-discovery.js";
 import {
+  captureFields,
   isParticipantId,
   isSessionId,
   ParticipantRequestError,
@@ -156,6 +158,12 @@ export interface CeReadResult {
   readonly payloadLength: number;
   readonly createdAt: string;
   readonly auditSequence: number;
+}
+
+export interface CeInboxResult {
+  readonly messages: readonly { readonly messageId: string; readonly auditSequence: number }[];
+  readonly continuationAuditSequence: number | null;
+  readonly scanBudgetExhausted: boolean;
 }
 
 export interface CeStatus {
@@ -529,6 +537,34 @@ export class CeSessionHost {
       createdAt: message.createdAt,
       auditSequence: metadata.auditSequence,
     });
+  }
+
+  /** Explicit, bounded metadata discovery. Pagination grants no authority and
+   * never advances ACK or delivery state. All CE authorization remains in Storage. */
+  listInbox(endpointId: string, input: unknown): CeInboxResult {
+    const authority = this.#authority(endpointId);
+    try {
+      const pagination = captureFields(input, ["afterAuditSequence", "pageSize", "rawScanLimit"], [], "request");
+      const fencingToken = this.#currentFencing(authority);
+      const result = discoverInboxMessages(this.#store, {
+        ...pagination,
+        participantId: authority.participantId,
+        sessionId: authority.sessionId,
+        exchangeId: authority.exchangeId,
+        capability: authority.readCapability,
+        fencingToken,
+      }, this.#seams);
+      return Object.freeze({
+        messages: Object.freeze(result.messages.map(({ message, auditSequence }) => Object.freeze({
+          messageId: message.messageId,
+          auditSequence,
+        }))),
+        continuationAuditSequence: result.continuationAuditSequence,
+        scanBudgetExhausted: result.scanBudgetExhausted,
+      });
+    } catch (error) {
+      throw toRefusal(error);
+    }
   }
 
   /** Advisory status for the operator command. Authorizes nothing. */

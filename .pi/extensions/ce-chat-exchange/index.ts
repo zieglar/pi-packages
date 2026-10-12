@@ -17,7 +17,7 @@
  * - Capability plaintext never appears here: the host adapter keeps tokens in
  *   process memory; this file only ever receives identifiers and results.
  * - The persisted mapping (pi.appendEntry) carries identifiers only.
- * - No background polling, no ACK, no inbox discovery, no cross-process
+ * - No background polling, no ACK, no automatic consumption, no cross-process
  *   signalling. SQLite inserts never become conversation-visible by
  *   themselves; ce_read metadata is operator/model-consumed explicitly.
  *
@@ -139,6 +139,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   const allowlist = loadAllowlist();
   let host: CeSessionHost | undefined;
   let currentEndpoint: string | undefined;
+  let inboxBinding: { readonly piSessionId: string; readonly endpointId: string } | undefined;
   /** Truthful startup failure (e.g. authority absent after lease expiry).
    * Tools report this instead of a misleading not-registered refusal. */
   let startupFailure: CeHostRefusal | undefined;
@@ -187,6 +188,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   };
 
   pi.on("session_start", async (event, ctx) => {
+    inboxBinding = undefined;
     const piSessionId = ctx.sessionManager.getSessionId();
     const endpointId = endpointForPiSession(allowlist, piSessionId);
     if (endpointId === undefined) {
@@ -206,6 +208,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       // Persist identifiers only; never credentials.
       pi.appendEntry("ce-mapping", mapping);
       startupFailure = undefined;
+      inboxBinding = Object.freeze({ piSessionId, endpointId });
       notify(
         ctx,
         `ce-chat-exchange: endpoint ${mapping.endpointId} bound (participant ${mapping.participantId}, session ${mapping.sessionId})`,
@@ -222,6 +225,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       host.drop(currentEndpoint);
     }
     currentEndpoint = undefined;
+    inboxBinding = undefined;
     startupFailure = undefined;
   });
 
@@ -292,8 +296,8 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     label: "Chat Exchange Read",
     description:
       "Read protected metadata of one chat-exchange message addressed to this endpoint. " +
-      "Returns metadata only (no payload bytes). The messageId must be provided explicitly; " +
-      "there is no inbox discovery.",
+      "Returns metadata only (no payload bytes). Supply an explicit messageId, " +
+      "for example one discovered through ce_inbox_list.",
     promptSnippet: "Read metadata of a durable chat-exchange message by explicit message id",
     parameters: {
       type: "object",
@@ -323,6 +327,52 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
             },
           ],
           details: { ...result },
+        };
+      } catch (error) {
+        return refusalResult(error);
+      }
+    },
+  });
+
+  pi.registerTool({
+    name: "ce_inbox_list",
+    label: "Chat Exchange Inbox List",
+    description: "Explicitly list bounded eligible Message IDs for this authorized endpoint. " +
+      "Metadata only: no payload, ACK, consumption, delivery-state change, or automatic pagination. " +
+      "An empty page is not a global integrity check; continuation is the last raw Audit examined.",
+    promptSnippet: "Discover eligible chat-exchange Message IDs without prior knowledge of their IDs",
+    parameters: {
+      type: "object",
+      properties: {
+        afterAuditSequence: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+        pageSize: { type: "integer", minimum: 1, maximum: 50 },
+        rawScanLimit: { type: "integer", minimum: 1, maximum: 2000 },
+      },
+      additionalProperties: false,
+    },
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<ToolResultView> {
+      try {
+        // Access the guarded Pi context now. A stale runtime must fail closed;
+        // a cached endpoint alone never identifies the invoking Pi Session.
+        const piSessionId = ctx.sessionManager.getSessionId();
+        const endpointId = endpointForPiSession(allowlist, piSessionId);
+        if (endpointId === undefined) throw new CeHostRefusal("CE_HOST_ENDPOINT_NOT_ALLOWED");
+        if (startupFailure !== undefined) return refusalResult(startupFailure);
+        if (inboxBinding === undefined) throw new CeHostRefusal("CE_HOST_NOT_REGISTERED");
+        if (inboxBinding.piSessionId !== piSessionId || inboxBinding.endpointId !== endpointId || currentEndpoint !== endpointId) {
+          throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+        }
+        // No await between context validation and the synchronous Host call.
+        const result = getHost().listInbox(endpointId, params);
+        const messages = result.messages.map(({ messageId, auditSequence }) => ({ messageId, auditSequence }));
+        return {
+          content: [{ type: "text", text:
+            `chat-exchange inbox: ${messages.length} eligible Message ID(s). ` +
+            messages.map(({ messageId, auditSequence }) => `${messageId} (audit #${auditSequence})`).join("; ") +
+            ` Continuation: ${result.continuationAuditSequence ?? "none"}; scanBudgetExhausted=${result.scanBudgetExhausted}. ` +
+            "No ACK or consumption occurred. Empty pages do not prove global integrity; exhaustion does not promise more messages.",
+          }],
+          details: { messages, continuationAuditSequence: result.continuationAuditSequence, scanBudgetExhausted: result.scanBudgetExhausted },
         };
       } catch (error) {
         return refusalResult(error);

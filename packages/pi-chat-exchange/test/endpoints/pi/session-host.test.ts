@@ -6,13 +6,15 @@
  * mocked: every assertion exercises the real P3A authority chain through the
  * adapter's public surface.
  */
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CeHostRefusal,
   CeSessionHost,
   type CeHostPolicy,
 } from "../../../src/endpoints/pi/session-host.js";
 import { PI_ADAPTER_KIND } from "../../../src/endpoints/pi/contract.js";
+import * as ownership from "../../../src/storage/ownership.js";
+import { issueCapability } from "../../../src/storage/participant.js";
 import type { DurableStore } from "../../../src/storage/store.js";
 import {
   cleanupFixtures,
@@ -23,6 +25,7 @@ import {
 } from "../../storage/support/participant-fixture.js";
 
 afterEach(cleanupFixtures);
+afterEach(() => vi.restoreAllMocks());
 
 const START = "2026-10-10T00:00:00.000Z";
 const AFTER_LEASE = "2026-10-10T01:00:00.000Z";
@@ -437,5 +440,190 @@ describe("host adapter secrecy and privacy", () => {
     host.drop("local/sessionA");
     host.drop("local/sessionB");
     expect(rowCounts(fx).cursor).toBe("0");
+  });
+});
+
+describe("explicit Inbox Session Host adapter", () => {
+  it("discovers unknown IDs with minimum metadata and no consumption or cursor writes", () => {
+    const { fx, host } = rig("ce-p3d-list-");
+    host.beginSession("local/sessionA");
+    host.beginSession("local/sessionB");
+    const sent = host.send("local/sessionA", { to: "local/sessionB", text: "PRIVATE_BODY", idempotencyKey: "list-1" });
+    const before = rowCounts(fx);
+    const result = host.listInbox("local/sessionB", {});
+    expect(result).toEqual({ messages: [{ messageId: sent.messageId, auditSequence: sent.auditSequence }], continuationAuditSequence: sent.auditSequence, scanBudgetExhausted: false });
+    expect(host.listInbox("local/sessionB", {})).toEqual(result);
+    expect(rowCounts(fx)).toEqual(before);
+    expect(JSON.stringify(result)).not.toMatch(/PRIVATE_BODY|cap_|payload|digest|idempotency|sessionId|participantId/);
+    expect(host.readMetadata("local/sessionB", { messageId: result.messages[0]!.messageId }).messageId).toBe(sent.messageId);
+  });
+
+  it("returns a successful empty list and filters other recipients", () => {
+    const { host } = rig("ce-p3d-empty-");
+    host.beginSession("local/sessionA");
+    host.beginSession("local/sessionB");
+    host.send("local/sessionA", { to: "local/sessionB", text: "for B", idempotencyKey: "recipient-only" });
+    expect(host.listInbox("local/sessionA", {}).messages).toEqual([]);
+  });
+
+  it("respects the membership boundary when B joins after a send", () => {
+    const { host } = rig("ce-p3d-boundary-");
+    host.beginSession("local/sessionA");
+    host.send("local/sessionA", { to: "local/sessionB", text: "before join", idempotencyKey: "historical" });
+    host.beginSession("local/sessionB");
+    const sent = host.send("local/sessionA", { to: "local/sessionB", text: "after join", idempotencyKey: "current" });
+    expect(host.listInbox("local/sessionB", {}).messages).toEqual([{ messageId: sent.messageId, auditSequence: sent.auditSequence }]);
+  });
+
+  it("preserves page and raw-scan continuation semantics without draining", () => {
+    const { host } = rig("ce-p3d-pages-");
+    host.beginSession("local/sessionA");
+    host.beginSession("local/sessionB");
+    const first = host.send("local/sessionA", { to: "local/sessionB", text: "one", idempotencyKey: "page-1" });
+    const second = host.send("local/sessionA", { to: "local/sessionB", text: "two", idempotencyKey: "page-2" });
+    const page = host.listInbox("local/sessionB", { pageSize: 1, rawScanLimit: 1 });
+    expect(page).toEqual({ messages: [{ messageId: first.messageId, auditSequence: first.auditSequence }], continuationAuditSequence: first.auditSequence, scanBudgetExhausted: true });
+    expect(host.listInbox("local/sessionB", { afterAuditSequence: page.continuationAuditSequence, pageSize: 1, rawScanLimit: 2 }).messages).toEqual([{ messageId: second.messageId, auditSequence: second.auditSequence }]);
+    expect(host.listInbox("local/sessionB", { afterAuditSequence: second.auditSequence })).toEqual({ messages: [], continuationAuditSequence: null, scanBudgetExhausted: false });
+    const filtered = host.listInbox("local/sessionA", { afterAuditSequence: first.auditSequence, pageSize: 1, rawScanLimit: 1 });
+    expect(filtered).toEqual({ messages: [], continuationAuditSequence: second.auditSequence, scanBudgetExhausted: true });
+  });
+
+  it.each([
+    { afterAuditSequence: -1 }, { afterAuditSequence: 0.5 }, { afterAuditSequence: Number.MAX_SAFE_INTEGER + 1 },
+    { pageSize: 0 }, { pageSize: 51 }, { pageSize: 1.5 },
+    { rawScanLimit: 0 }, { rawScanLimit: 2001 }, { rawScanLimit: 1.5 },
+    { rawScanLimit: 1 }, { pageSize: 2, rawScanLimit: 1 },
+    { endpoint: "local/sessionA" }, { participantId: "foreign" }, { exchangeId: "foreign" },
+    { sessionId: "foreign" }, { fencingToken: 1 }, { capability: "cap_forged" },
+  ])("rejects invalid or authority-bearing input %j", (input) => {
+    const { host } = rig("ce-p3d-invalid-");
+    host.beginSession("local/sessionB");
+    expectHostRefusal(() => host.listInbox("local/sessionB", input), "CE_HOST_INVALID_REQUEST");
+  });
+
+  it("refuses missing startup and expired authority without recovering it", () => {
+    let now = START;
+    const { host } = rig("ce-p3d-expired-", () => now, 30);
+    expectHostRefusal(() => host.listInbox("local/sessionB", {}), "CE_HOST_NOT_REGISTERED");
+    host.beginSession("local/sessionB");
+    now = AFTER_LEASE;
+    expectHostRefusal(() => host.listInbox("local/sessionB", {}), "CE_HOST_AUTHORITY_ABSENT");
+  });
+
+  it("refuses revoked read capability without reissuing it", () => {
+    const { fx, host } = rig("ce-p3d-revoke-");
+    const b = host.beginSession("local/sessionB");
+    const admin = privileged(fx);
+    try {
+      admin.prepare("UPDATE participant_capability SET revoked_at=? WHERE participant_id=? AND scope='read'").run(START, b.participantId);
+    } finally { admin.close(); }
+    const refusal = expectHostRefusal(() => host.listInbox("local/sessionB", {}), "CE_HOST_UNAVAILABLE");
+    expect(refusal.reason).toBe("CAPABILITY_REJECTED");
+  });
+
+  it("fails closed without a partial list for an orphan Audit after a valid message", () => {
+    const { fx, host } = rig("ce-p3d-corrupt-");
+    host.beginSession("local/sessionA");
+    const b = host.beginSession("local/sessionB");
+    const sent = host.send("local/sessionA", { to: "local/sessionB", text: "valid", idempotencyKey: "valid-before-orphan" });
+    const admin = privileged(fx);
+    try {
+      admin.prepare("INSERT INTO audit_event(event_id,exchange_id,sequence,kind,subject_id,created_at,digest,length,outcome,private_revision) VALUES (?,?,?,'message_created',?,?,?,1,NULL,1)").run(
+        "evt_01ARZ3NDEKTSV4RRFFQ69G5FZZ", b.exchangeId, sent.auditSequence + 1,
+        "msg_01ARZ3NDEKTSV4RRFFQ69G5FZZ", START, "a".repeat(64),
+      );
+    } finally { admin.close(); }
+    const refusal = expectHostRefusal(() => host.listInbox("local/sessionB", {}), "CE_HOST_UNAVAILABLE");
+    expect(refusal.reason).toBe("STORAGE_IDEMPOTENCY_CORRUPT");
+    expect(refusal).not.toHaveProperty("messages");
+  });
+
+  it("resumes listing after restart from identifiers only", () => {
+    const { fx, host } = rig("ce-p3d-resume-");
+    host.beginSession("local/sessionA");
+    const mapping = host.beginSession("local/sessionB");
+    const sent = host.send("local/sessionA", { to: "local/sessionB", text: "restart", idempotencyKey: "restart-list" });
+    host.drop("local/sessionB");
+    const resumed = new CeSessionHost(fx.store, { adapter: PI_ADAPTER_KIND, exchangeNamespace: "pi-host", exchangeIdempotencyKey: "pi-host-exchange", allowlist: [{ piSessionId: "ceB", endpointId: "local/sessionB" }], leaseTtlSeconds: 600, now: () => START });
+    resumed.resume("local/sessionB", mapping);
+    expect(resumed.listInbox("local/sessionB", {}).messages).toEqual([{ messageId: sent.messageId, auditSequence: sent.auditSequence }]);
+  });
+
+  it.each(["busy", "indeterminate"] as const)("maps %s once without automatically retrying", (fault) => {
+    const { fx, host } = rig("ce-p3d-transaction-");
+    host.beginSession("local/sessionB");
+    const original = fx.store.database.exec.bind(fx.store.database);
+    let attempts = 0;
+    fx.store.database.exec = (sql) => {
+      if (sql === "BEGIN IMMEDIATE") {
+        attempts += 1;
+        if (fault === "busy") throw Object.assign(new Error("PRIVATE_SQL"), { errcode: 5 });
+      }
+      const result = original(sql);
+      if (fault === "indeterminate" && sql === "COMMIT") throw new Error("PRIVATE_COMMIT");
+      return result;
+    };
+    const refusal = expectHostRefusal(() => host.listInbox("local/sessionB", {}), fault === "busy" ? "CE_HOST_BUSY" : "CE_HOST_UNCERTAIN");
+    expect(refusal.retryable).toBe(fault === "busy");
+    expect(attempts).toBe(1); // exactly one Inbox transaction; never retry an uncertain result
+    expect(JSON.stringify(refusal)).not.toContain("PRIVATE_");
+  });
+
+  it("isolates a real foreign Exchange message even when addressed to B", () => {
+    const { fx, host } = rig("ce-p3d-cross-exchange-");
+    host.beginSession("local/sessionB");
+    const otherHost = new CeSessionHost(fx.store, { adapter: PI_ADAPTER_KIND, exchangeNamespace: "other", exchangeIdempotencyKey: "other", allowlist: [{ piSessionId: "ceC", endpointId: "local/sessionC" }, { piSessionId: "ceB", endpointId: "local/sessionB" }], now: () => START });
+    otherHost.beginSession("local/sessionC");
+    const foreign = otherHost.send("local/sessionC", { to: "local/sessionB", text: "foreign", idempotencyKey: "foreign" });
+    expect(host.listInbox("local/sessionB", {}).messages).toEqual([]);
+    expect(JSON.stringify(host.listInbox("local/sessionB", {}))).not.toContain(foreign.messageId);
+  });
+
+  it("refuses missing membership rather than provisioning it during discovery", () => {
+    const { fx, host } = rig("ce-p3d-missing-membership-");
+    const mapping = host.beginSession("local/sessionB");
+    const admin = privileged(fx);
+    try {
+      admin.exec("DROP TRIGGER exchange_membership_nodelete");
+      admin.prepare("DELETE FROM exchange_membership WHERE participant_id=?").run(mapping.participantId);
+    } finally { admin.close(); }
+    const before = rowCounts(fx);
+    expect(expectHostRefusal(() => host.listInbox("local/sessionB", {}), "CE_HOST_UNAVAILABLE").reason).toBe("PARTICIPANT_NOT_MEMBER");
+    expect(rowCounts(fx)).toEqual(before);
+  });
+
+  it("refuses a terminally detached CE Session without rebinding", () => {
+    const { fx, host } = rig("ce-p3d-detached-");
+    const mapping = host.beginSession("local/sessionB");
+    const capability = issueCapability(fx.store, { participantId: mapping.participantId, scope: "resume", sessionId: mapping.sessionId }, { now: () => START }).capability;
+    ownership.releaseOwnership(fx.store, { participantId: mapping.participantId, sessionId: mapping.sessionId, fencingToken: 1, capability }, { now: () => START });
+    ownership.detachSession(fx.store, { participantId: mapping.participantId, sessionId: mapping.sessionId, capability }, { now: () => START });
+    const before = rowCounts(fx);
+    expectHostRefusal(() => host.listInbox("local/sessionB", {}), "CE_HOST_AUTHORITY_ABSENT");
+    expectHostRefusal(() => host.resume("local/sessionB", mapping), "CE_HOST_MAPPING_INVALID");
+    expect(rowCounts(fx)).toEqual(before);
+  });
+
+  it("Storage rejects a stale fencing presentation despite Host preflight", () => {
+    const { host } = rig("ce-p3d-stale-fence-");
+    host.beginSession("local/sessionB");
+    const actual = ownership.readCurrentOwnership;
+    vi.spyOn(ownership, "readCurrentOwnership").mockImplementation((store, participantId) => {
+      const row = actual(store, participantId);
+      return row === undefined ? undefined : { ...row, fencingToken: row.fencingToken + 1 };
+    });
+    const refusal = expectHostRefusal(() => host.listInbox("local/sessionB", {}), "CE_HOST_AUTHORITY_ABSENT");
+    expect(refusal.reason).toBe("FENCING_STALE");
+  });
+
+  it("revalidates lease expiry at the Storage transaction boundary", () => {
+    let checking = false;
+    let samples = 0;
+    const { host } = rig("ce-p3d-expire-between-", () => checking && ++samples > 1 ? AFTER_LEASE : START, 30);
+    host.beginSession("local/sessionB");
+    checking = true;
+    const refusal = expectHostRefusal(() => host.listInbox("local/sessionB", {}), "CE_HOST_AUTHORITY_ABSENT");
+    expect(refusal.reason).toBe("LEASE_EXPIRED");
   });
 });
