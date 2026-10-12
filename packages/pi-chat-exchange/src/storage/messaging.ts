@@ -48,7 +48,7 @@ export interface ProtectedMessageMetadata {
 
 export interface MessagingSeams extends ClockSeam, MessageTransactionHooks {}
 
-interface AuthorityRequest {
+export interface AuthorityRequest {
   readonly capability: unknown;
   readonly participantId: string;
   readonly sessionId: string;
@@ -62,7 +62,7 @@ function requireFencingToken(value: unknown): number {
   return value;
 }
 
-function authorityRequest(fields: Record<string, unknown>): AuthorityRequest {
+export function authorityRequest(fields: Record<string, unknown>): AuthorityRequest {
   return Object.freeze({
     capability: fields.capability,
     participantId: requireParticipantId(fields.participantId, "participantId"),
@@ -71,7 +71,7 @@ function authorityRequest(fields: Record<string, unknown>): AuthorityRequest {
   });
 }
 
-function runMessagingTransaction<T>(
+export function runMessagingTransaction<T>(
   store: DurableStore,
   label: string,
   body: (tx: TransactionHandle) => T,
@@ -118,7 +118,7 @@ function runMessagingTransaction<T>(
   return captured!.value;
 }
 
-function requireMembership(tx: TransactionHandle, exchangeId: string, participantId: string) {
+export function requireMembership(tx: TransactionHandle, exchangeId: string, participantId: string) {
   const membership = readMembershipRow(tx, exchangeId, participantId);
   if (membership === undefined) refuse("PARTICIPANT_NOT_MEMBER");
   return membership;

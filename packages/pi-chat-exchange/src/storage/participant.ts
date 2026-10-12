@@ -237,13 +237,22 @@ export interface MembershipRecord {
   readonly createdAt: string;
 }
 
+function isValidStoredEndpointText(value: unknown, maximum: number): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= maximum &&
+    !/[\uD800-\uDFFF]/u.test(value)
+  );
+}
+
 function participantFromRow(row: Record<string, unknown> | undefined): ParticipantRecord | undefined {
   if (row === undefined) return undefined;
   if (
     typeof row.participant_id !== "string" ||
     !PARTICIPANT_ID_PATTERN.test(row.participant_id) ||
-    typeof row.endpoint_adapter !== "string" ||
-    typeof row.endpoint_id !== "string" ||
+    !isValidStoredEndpointText(row.endpoint_adapter, 64) ||
+    !isValidStoredEndpointText(row.endpoint_id, 256) ||
     typeof row.created_at !== "string"
   ) {
     corrupt();

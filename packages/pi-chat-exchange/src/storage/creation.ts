@@ -311,6 +311,48 @@ function replayMessage(tx: TransactionHandle, request: NormalizedMessageRequest)
   });
 }
 
+/** Strict metadata-only Message read for bounded Inbox enumeration. It does not
+ * select or materialize `payload_body`; individual Message reads continue to use
+ * `readMessageInTransaction` and retain full payload-integrity validation. */
+export function readMessageMetadataInTransaction(
+  tx: TransactionHandle,
+  exchangeId: string,
+  messageId: string,
+): Message | undefined {
+  const stored = tx
+    .prepare(
+      "SELECT message_id, exchange_id, from_endpoint_json, to_endpoint_json, state, payload_digest, CAST(payload_length AS TEXT) AS payload_length, created_at, idempotency_key, CAST(private_revision AS TEXT) AS private_revision FROM message WHERE message_id=? AND exchange_id=?",
+    )
+    .get(messageId, exchangeId);
+  if (stored === undefined) return undefined;
+  const payloadLength = safeStoredInteger(stored.payload_length);
+  if (
+    Object.keys(stored).length !== 10 ||
+    stored.private_revision !== "1" ||
+    stored.message_id !== messageId ||
+    stored.exchange_id !== exchangeId ||
+    typeof stored.payload_digest !== "string" ||
+    !SHA256_HEX_PATTERN.test(stored.payload_digest)
+  ) {
+    corrupt();
+  }
+  // SAFETY: every projected scalar is checked above and the complete candidate
+  // is validated against the frozen MessageSchema before it can escape.
+  const candidate = {
+    messageId: stored.message_id,
+    exchangeId: stored.exchange_id,
+    from: storedEndpoint(stored.from_endpoint_json),
+    to: storedEndpoint(stored.to_endpoint_json),
+    state: stored.state,
+    payloadDigest: stored.payload_digest,
+    payloadLength,
+    createdAt: stored.created_at,
+    ...(stored.idempotency_key === null ? {} : { idempotencyKey: stored.idempotency_key }),
+  } as unknown as Message;
+  if (!Value.Check(MessageSchema, candidate)) corrupt();
+  return Object.freeze(candidate);
+}
+
 /** Strict private Message read inside a caller-owned transaction. Payload bytes
  * are validated for durable integrity but never returned. */
 export function readMessageInTransaction(

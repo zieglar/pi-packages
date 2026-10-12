@@ -1047,4 +1047,67 @@ most two matching rows. Zero rows, two rows, or more than two rows all remain
 durable corruption; the sole row must still match Exchange, Message subject,
 creation instant, digest, length, event schema, outcome, and private revision.
 The index cannot prove existence, uniqueness, field agreement, or absence of
-orphan rows. This amendment does not implement Inbox Discovery or any public API.
+orphan rows. The Schema v5 amendment itself added no Inbox API; the separate
+bounded private operation below uses that frozen schema without changing it.
+
+## B3-P3C — Bounded storage Inbox Discovery (HANDOFF-731845)
+
+Status: **implemented as a private storage slice**. The implementation
+adds no schema object, migration, table, index, persistent cursor, public package
+export, provider integration, background poller, retry loop, ACK behavior, delivery
+cursor behavior, or Completion Authority.
+
+### Private operation and authority
+
+`discoverInboxMessages` in `src/storage/inbox-discovery.ts` reuses the exact
+Session-bound `read` capability and the existing serialized `BEGIN IMMEDIATE`
+transaction boundary. Before reading protected metadata it validates request shape,
+capability and Exchange/Participant/Session binding, ATTACHED lifecycle, current
+ownership, current fencing token, active lease, Exchange membership, and the
+Participant's immutable endpoint binding. Refusals retain the existing sanitized
+error taxonomy, and transaction BUSY/ROLLED_BACK/INDETERMINATE classifications are
+unchanged.
+
+### Bounded Audit-first enumeration
+
+The operation computes `max(afterAuditSequence, joinBoundarySeq)` and reads at most
+`rawScanLimit` Audit rows for the Exchange using `sequence > ? ORDER BY sequence
+ASC LIMIT ?`. It never uses Message sequence, timestamps, `OFFSET`, or `K+1`. The
+private implementation limits are 50 eligible Messages and 2,000 raw Audit rows;
+callers may request smaller positive safe-integer limits only, and `pageSize` may
+not exceed `rawScanLimit`. These are implementation parameters, not frozen protocol
+constants.
+
+Each `message_created` candidate loads only Message metadata—never `payload_body`—
+then invokes the unchanged Schema v5 exact-correlation lookup with `LIMIT 2`. That
+validator still requires exactly one matching Audit and validates Exchange, subject,
+event kind/schema, Audit Sequence, creation instant, digest, length, revision, and
+outcome. Every examined raw row must use the recognized protocol or private membership
+Audit vocabulary and valid identity/sequence fields. An observed missing Message,
+duplicate correlation, malformed metadata or stable Participant endpoint binding, or
+field mismatch fails the whole operation without returning partial metadata. Valid
+Messages are filtered against the authorized Participant's stable recipient endpoint.
+
+The result is frozen `{ messages, continuationAuditSequence,
+scanBudgetExhausted }`. A non-null continuation is exactly the last raw Audit
+Sequence actually examined, including filtered events. It is null when no raw row
+was examined. Reaching the eligible-message limit stops immediately without
+advancing past unexamined rows. `scanBudgetExhausted` is true only when the complete
+raw budget was examined and does not assert that another eligible Message exists.
+The continuation is stateless caller input on a later request; it is never persisted
+or interpreted as ACK progress.
+
+### Integrity limitation and evidence
+
+Audit-first discovery cannot find a Message that has no `message_created` Audit row,
+so an empty bounded result is not proof of global database integrity and the operation
+does not claim to detect every orphaned Message. This is deliberate: observable
+corruption in an inspected `message_created` candidate fails closed, while unreferenced
+Message rows remain outside the bounded Audit window.
+
+`test/storage/inbox-discovery.test.ts` covers authority, pagination, recipient and
+Exchange filtering, join boundaries, scan limits, corruption, privacy, zero writes,
+BUSY and INDETERMINATE classification, restart behavior, and query plans.
+`test/storage/inbox-discovery-concurrency.test.ts` uses independent OS processes to
+prove send/list, revocation/list, and release/list valid before-or-after outcomes, plus
+a deterministically held Inbox transaction that excludes an overlapping sender.
