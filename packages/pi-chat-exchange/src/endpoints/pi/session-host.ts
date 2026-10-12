@@ -33,7 +33,9 @@ import { StoreLifecycleError } from "../../storage/errors.js";
 import {
   type AuthorizedMessageCreation,
   type ProtectedMessageMetadata,
+  type ProtectedMessagePayload,
   readMessageMetadata,
+  readMessagePayload,
   sendMessage,
 } from "../../storage/messaging.js";
 import { discoverInboxMessages } from "../../storage/inbox-discovery.js";
@@ -85,6 +87,11 @@ export interface CeHostPolicy {
   readonly allowlist: readonly CeAllowlistEntry[];
   /** Ownership lease seconds; clamped to the accepted lease bounds. */
   readonly leaseTtlSeconds?: number;
+  /** CE-0002-B3-P4D operator payload-read opt-in. Only the exact boolean
+   * `true` enables payload exposure; a missing, false, or malformed setting
+   * stays disabled (fail closed). The decision is fixed for the Host
+   * instance's lifetime and never re-read from the policy object. */
+  readonly payloadRead?: { readonly enabled?: boolean };
   /** Test seam for the advisory clock used by lease status reads. */
   readonly now?: () => string;
 }
@@ -108,7 +115,10 @@ export type CeHostRefusalCode =
   | "CE_HOST_INVALID_REQUEST"
   | "CE_HOST_BUSY"
   | "CE_HOST_UNCERTAIN"
-  | "CE_HOST_UNAVAILABLE";
+  | "CE_HOST_UNAVAILABLE"
+  | "CE_HOST_PAYLOAD_DISABLED"
+  | "CE_HOST_PAYLOAD_TOO_LARGE"
+  | "CE_HOST_PAYLOAD_INVALID_UTF8";
 
 const REFUSAL_DETAIL: Record<CeHostRefusalCode, string> = {
   CE_HOST_ENDPOINT_NOT_ALLOWED: "endpoint is not in the host allowlist",
@@ -120,6 +130,9 @@ const REFUSAL_DETAIL: Record<CeHostRefusalCode, string> = {
   CE_HOST_BUSY: "durable store is contended; the request rolled back and may be retried as a whole",
   CE_HOST_UNCERTAIN:
     "transaction outcome is unknown; reopen and inspect durable state before any retry",
+  CE_HOST_PAYLOAD_DISABLED: "payload reading is disabled by operator policy",
+  CE_HOST_PAYLOAD_TOO_LARGE: "payload exceeds the fixed operator exposure limit",
+  CE_HOST_PAYLOAD_INVALID_UTF8: "payload is not valid UTF-8 text",
   CE_HOST_UNAVAILABLE: "host operation failed closed",
 };
 
@@ -160,6 +173,22 @@ export interface CeReadResult {
   readonly auditSequence: number;
 }
 
+/** CE-0002-B3-P4D authorized payload read result. `payloadText` is the exact
+ * fatal-UTF-8 decoding of the authorized bytes; it must appear only in the
+ * caller's explicit successful output and never in logs, mappings, or
+ * failure details. */
+export interface CeReadPayloadResult {
+  readonly messageId: string;
+  readonly exchangeId: string;
+  readonly from: string;
+  readonly to: string;
+  readonly payloadDigest: string;
+  readonly payloadLength: number;
+  readonly createdAt: string;
+  readonly auditSequence: number;
+  readonly payloadText: string;
+}
+
 export interface CeInboxResult {
   readonly messages: readonly { readonly messageId: string; readonly auditSequence: number }[];
   readonly continuationAuditSequence: number | null;
@@ -186,6 +215,29 @@ interface EndpointAuthority {
   readonly exchangeId: string;
   readonly sendCapability: string;
   readonly readCapability: string;
+  /** CE-0002-B3-P4D: undefined unless the operator payload-read opt-in was
+   * enabled when this authority was provisioned — a disabled policy issues
+   * no payload capability at all. */
+  readonly payloadReadCapability: string | undefined;
+}
+
+/** CE-0002-B3-P4D fixed maximum encoded payload bytes the host will ever
+ * decode and expose. Checked on the authorized byte length before decoding;
+ * an oversized payload is refused whole, never partially returned. */
+const PAYLOAD_EXPOSURE_LIMIT_BYTES = 65_536;
+
+/** Only the exact boolean `true` enables payload exposure. A missing, false,
+ * or malformed setting (wrong type, truthy string, number, null, or a
+ * non-object section) fails closed to disabled. */
+function payloadReadEnabled(policy: CeHostPolicy): boolean {
+  try {
+    const setting: unknown = policy.payloadRead;
+    if (!isPlainObject(setting) || Array.isArray(setting)) return false;
+    const enabled = Object.getOwnPropertyDescriptor(setting, "enabled");
+    return enabled?.enumerable === true && "value" in enabled && enabled.value === true;
+  } catch {
+    return false;
+  }
 }
 
 function clampLeaseTtl(policy: CeHostPolicy): number {
@@ -249,6 +301,10 @@ export class CeSessionHost {
   readonly #store: DurableStore;
   readonly #policy: CeHostPolicy;
   readonly #leaseTtlSeconds: number;
+  /** CE-0002-B3-P4D operator payload-read decision, fixed for the Host
+   * lifetime: computed once from the policy so later mutation of the policy
+   * object can never enable or disable payload exposure mid-flight. */
+  readonly #payloadReadEnabled: boolean;
   readonly #seams: ClockSeam;
   readonly #authorities = new Map<string, EndpointAuthority>();
 
@@ -269,6 +325,7 @@ export class CeSessionHost {
     this.#store = store;
     this.#policy = policy;
     this.#leaseTtlSeconds = clampLeaseTtl(policy);
+    this.#payloadReadEnabled = payloadReadEnabled(policy);
     this.#seams = policy.now === undefined ? {} : { now: policy.now };
   }
 
@@ -368,6 +425,12 @@ export class CeSessionHost {
         { participantId, scope: "read", sessionId },
         this.#seams,
       ).capability;
+      // CE-0002-B3-P4D: issued only after ownership acquisition succeeded and
+      // only when the operator opt-in is enabled; exact Session binding and
+      // the current trust generation come from the storage issuance itself.
+      const payloadReadCapability = this.#payloadReadEnabled
+        ? issueCapability(this.#store, { participantId, scope: "payload_read", sessionId }, this.#seams).capability
+        : undefined;
       this.#authorities.set(endpointId, {
         endpointId,
         participantId,
@@ -375,6 +438,7 @@ export class CeSessionHost {
         exchangeId,
         sendCapability,
         readCapability,
+        payloadReadCapability,
       });
     } catch (error) {
       throw toRefusal(error);
@@ -427,6 +491,11 @@ export class CeSessionHost {
         { participantId, scope: "read", sessionId },
         this.#seams,
       ).capability;
+      // CE-0002-B3-P4D: a validated restart within the active lease re-issues
+      // fresh memory-only payload authority under the same immutable policy.
+      const payloadReadCapability = this.#payloadReadEnabled
+        ? issueCapability(this.#store, { participantId, scope: "payload_read", sessionId }, this.#seams).capability
+        : undefined;
       this.#authorities.set(endpointId, {
         endpointId,
         participantId,
@@ -434,6 +503,7 @@ export class CeSessionHost {
         exchangeId,
         sendCapability,
         readCapability,
+        payloadReadCapability,
       });
     } catch (error) {
       throw toRefusal(error);
@@ -536,6 +606,72 @@ export class CeSessionHost {
       payloadLength: message.payloadLength,
       createdAt: message.createdAt,
       auditSequence: metadata.auditSequence,
+    });
+  }
+
+  /** CE-0002-B3-P4D authorized payload read. The fixed sanitized policy gate
+   * comes first, so a disabled deployment answers identically regardless of
+   * registration state; then the plaintext capability never leaves this
+   * boundary and Storage alone makes the final authorization decision. The
+   * exposure limit is checked on the authorized byte length before any
+   * decoding, and decoding is strict UTF-8 — no truncation, replacement
+   * characters, base64 fallback, or partial payload ever escapes. */
+  readPayload(endpointId: string, input: unknown): CeReadPayloadResult {
+    if (!this.#payloadReadEnabled) throw new CeHostRefusal("CE_HOST_PAYLOAD_DISABLED");
+    const authority = this.#authority(endpointId);
+    let messageId: unknown;
+    try {
+      ({ messageId } = captureFields(input, ["messageId"], ["messageId"], "request"));
+    } catch {
+      throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
+    }
+    if (typeof messageId !== "string" || !MESSAGE_ID_PATTERN.test(messageId)) {
+      throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
+    }
+    if (authority.payloadReadCapability === undefined) {
+      throw new CeHostRefusal("CE_HOST_PAYLOAD_DISABLED");
+    }
+
+    let authorized: ProtectedMessagePayload;
+    try {
+      const fencingToken = this.#currentFencing(authority);
+      authorized = readMessagePayload(
+        this.#store,
+        {
+          participantId: authority.participantId,
+          sessionId: authority.sessionId,
+          fencingToken,
+          capability: authority.payloadReadCapability,
+          exchangeId: authority.exchangeId,
+          messageId,
+        },
+        this.#seams,
+      );
+    } catch (error) {
+      throw toRefusal(error);
+    }
+    // Fixed exposure limit, checked before decoding; refuse whole.
+    if (authorized.payload.byteLength > PAYLOAD_EXPOSURE_LIMIT_BYTES) {
+      throw new CeHostRefusal("CE_HOST_PAYLOAD_TOO_LARGE");
+    }
+    let payloadText: string;
+    try {
+      // Preserve a leading U+FEFF as data rather than silently stripping it.
+      payloadText = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(authorized.payload);
+    } catch {
+      throw new CeHostRefusal("CE_HOST_PAYLOAD_INVALID_UTF8");
+    }
+    const message = authorized.message;
+    return Object.freeze({
+      messageId: message.messageId,
+      exchangeId: message.exchangeId,
+      from: message.from.endpointId,
+      to: message.to.endpointId,
+      payloadDigest: message.payloadDigest,
+      payloadLength: message.payloadLength,
+      createdAt: message.createdAt,
+      auditSequence: authorized.auditSequence,
+      payloadText,
     });
   }
 

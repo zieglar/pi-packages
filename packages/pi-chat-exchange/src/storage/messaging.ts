@@ -5,6 +5,8 @@ import {
   createMessageInTransaction,
   messageCreatedAuditSequence,
   readMessageInTransaction,
+  readMessageMetadataInTransaction,
+  readMessagePayloadBodyInTransaction,
   type MessageCreation,
   type MessageTransactionHooks,
 } from "./creation.js";
@@ -192,6 +194,61 @@ export function readMessageMetadata(
   input: unknown,
   seams: ClockSeam = {},
 ): ProtectedMessageMetadata {
+  return runMessageRead(
+    store,
+    messageReadRequest(input),
+    seams,
+    "read",
+    "Protected Message read",
+    (tx, exchangeId, messageId) => readMessageInTransaction(tx, exchangeId, messageId),
+    (_tx, eligible) => Object.freeze({ ...eligible }),
+  );
+}
+
+/** Private B3-P4D result: authorized recipient metadata plus the exact payload
+ * byte copy. The bytes are materialized only after the full eligibility chain
+ * has passed inside the same serialized transaction. */
+export interface ProtectedMessagePayload {
+  readonly message: Message;
+  readonly auditSequence: number;
+  readonly payload: Uint8Array;
+}
+
+/** CE-0002-B3-P4D authorized payload read. Takes the same serialization lock
+ * as mutations so the whole authorization and eligibility chain is evaluated
+ * against one current durable snapshot: exact `payload_read` capability,
+ * ATTACHED Session, current Owner, current fencing, active lease, Exchange
+ * membership, recipient-only visibility, exact `message_created` audit
+ * correlation, and the recipient's immutable join boundary — all metadata-only.
+ * Only then is `payload_body` materialized, validated for BLOB type, exact
+ * byte length, and SHA-256 digest, and returned as a fresh complete copy after
+ * the committed transaction. The operation is a pure read: no Message state
+ * change, Audit row, receipt, ACK, cursor advance, lease renewal, ownership
+ * change, capability issuance, or automatic retry ever occurs. */
+export function readMessagePayload(
+  store: DurableStore,
+  input: unknown,
+  seams: ClockSeam = {},
+): ProtectedMessagePayload {
+  return runMessageRead(
+    store,
+    messageReadRequest(input),
+    seams,
+    "payload_read",
+    "Authorized Message payload read",
+    (tx, exchangeId, messageId) => readMessageMetadataInTransaction(tx, exchangeId, messageId),
+    (tx, eligible) => Object.freeze({ ...eligible, payload: readMessagePayloadBodyInTransaction(tx, eligible.message) }),
+  );
+}
+
+/** Shared request shape of both recipient-side Message reads. */
+interface MessageReadRequest {
+  readonly authority: AuthorityRequest;
+  readonly exchangeId: string;
+  readonly messageId: string;
+}
+
+function messageReadRequest(input: unknown): MessageReadRequest {
   const fields = captureFields(
     input,
     ["participantId", "sessionId", "fencingToken", "capability", "exchangeId", "messageId"],
@@ -207,16 +264,36 @@ export function readMessageMetadata(
   if (!MESSAGE_ID_PATTERN.test(messageId)) {
     throw new ParticipantRequestError("messageId: invalid identity");
   }
+  return { authority, exchangeId, messageId };
+}
 
-  return runMessagingTransaction(store, "Protected Message read", (tx) => {
+/** The one shared recipient-eligibility chain, written once for the metadata
+ * and payload reads. `read` selects the caller's Message reader (the metadata
+ * read revalidates payload integrity; the payload read stays metadata-only
+ * here by construction), and `extend` runs only after the exact-scope
+ * authorization, membership, opaque refusal, recipient binding, audit
+ * correlation, and join boundary have all passed inside the caller's owned
+ * transaction — so no extension (payload materialization included) can ever
+ * precede eligibility. */
+function runMessageRead<T>(
+  store: DurableStore,
+  request: MessageReadRequest,
+  seams: ClockSeam,
+  scope: "read" | "payload_read",
+  label: string,
+  read: (tx: TransactionHandle, exchangeId: string, messageId: string) => Message | undefined,
+  extend: (tx: TransactionHandle, eligible: { message: Message; auditSequence: number }) => T,
+): T {
+  const { authority, exchangeId, messageId } = request;
+  return runMessagingTransaction(store, label, (tx) => {
     const now = clock(seams);
-    authorizeCurrentOwner(tx, store, { ...authority, scope: "read", now });
+    authorizeCurrentOwner(tx, store, { ...authority, scope, now });
     const membership = requireMembership(tx, exchangeId, authority.participantId);
-    const message = readMessageInTransaction(tx, exchangeId, messageId);
+    const message = read(tx, exchangeId, messageId);
     if (message === undefined) refuse("MESSAGE_READ_REJECTED");
     if (!stableEndpointMatches(tx, authority.participantId, message.to)) refuse("MESSAGE_READ_REJECTED");
     const auditSequence = messageCreatedAuditSequence(tx, message);
     if (auditSequence <= membership.joinBoundarySeq) refuse("MESSAGE_READ_REJECTED");
-    return Object.freeze({ message, auditSequence });
+    return extend(tx, { message, auditSequence });
   });
 }

@@ -1,16 +1,18 @@
-# ce-chat-exchange — CE-0002 B3-P3D explicit Inbox tool
+# ce-chat-exchange — CE-0002 B3-P3D/P4D explicit tools
 
-Local, Session-authorized messaging with explicit bounded Inbox discovery.
-The B3-P3B runtime slice was verified against Pi 0.86.1; the new Inbox tool
-has isolated harness coverage. Real two-process Inbox dogfood is a separate
-acceptance phase and is not claimed by these instructions.
-
+Local, Session-authorized messaging with explicit bounded Inbox discovery and
+opt-in authorized payload reading. The B3-P3B runtime slice was verified against
+Pi 0.86.1; the Inbox and payload tools have isolated harness coverage. Real
+two-process dogfood is a separate acceptance phase and is not claimed by these
+instructions.
 ## What it does
 
 - On `session_start`, resolves this Pi session's endpoint from the operator
   allowlist, then either recovers the persisted mapping (reasons
   `startup` / `reload` / `resume`) or provisions a fresh CE Session.
-- Registers `ce_send`, `ce_read`, `ce_inbox_list`, and `/ce-status`.
+- Registers `ce_send`, `ce_read`, `ce_inbox_list`, `/ce-status`, and — only when
+  the operator sets `payloadRead.enabled` to the exact boolean `true` — the
+  `ce_read_payload` tool.
 - Persists the mapping (identifiers only) as a `ce-mapping` custom session
   entry via `pi.appendEntry`.
 - On `session_shutdown`, drops the in-memory capability row.
@@ -20,8 +22,9 @@ acceptance phase and is not claimed by these instructions.
 - No ACK, delivery cursor mutation, automatic consumption, background polling,
   automatic page draining, or cross-process signalling.
 - No external delivery: writing to SQLite never makes a message visible in
-  another Pi conversation. `ce_read` returns metadata only, and the payload
-  never leaves the private storage plane.
+  another Pi conversation. `ce_read` returns metadata only. Payload text
+  leaves the storage plane solely through an operator-opted-in
+  `ce_read_payload` invocation that Storage fully authorizes first.
 - No automatic takeover recovery (`CE-TAKEOVER-RECOVERY-CALLER-001` stays
   unresolved). An expired lease fails closed with `CE_HOST_AUTHORITY_ABSENT`.
 - A forked or newly created Pi session never inherits the previous mapping:
@@ -33,7 +36,8 @@ acceptance phase and is not claimed by these instructions.
   untrusted lookup labels; they select an endpoint label and authorize
   nothing. Model/tool arguments can never register Participants, issue
   capabilities, or change ownership — they only pick a recipient label,
-  message text, and an idempotency key.
+  message text, an idempotency key, and the explicit message ids (and Inbox
+  scan budgets) whose Storage-authorized reads they request.
 - Capability plaintext exists only in the host adapter's process memory.
   It is never logged, never persisted in Pi session entries, and never
   present in tool results or model-visible context beyond the fixed refusal
@@ -51,6 +55,7 @@ at a file):
 | `sessions` | map of `pi --session-id` value → operator endpoint label |
 | `exchangeNamespace` / `exchangeIdempotencyKey` | deterministic exchange bootstrap |
 | `leaseTtlSeconds` | ownership lease (30–3600; default 120) |
+| `payloadRead.enabled` | exact boolean `true` registers `ce_read_payload`; missing/false/malformed stays disabled |
 
 Environment: `CE_STORE_DIR` (default `./store` next to this file),
 `CE_STORE_FILE` (default `ce-store.sqlite`), `CE_ALLOWLIST`, and
@@ -109,6 +114,35 @@ endpoint, checks its successful startup binding, and delegates CE authorization
 to Storage. No raw Store, capability, digest, payload or internal stack is returned.
 BUSY is retryable only by explicit caller action; INDETERMINATE is non-retryable
 until the operator reopens and inspects. The tool never renews, reissues or takes over.
+
+## Authorized payload contract (B3-P4D, operator opt-in)
+
+`ce_read_payload` accepts exactly one input, `messageId`; unknown fields and
+any authority-bearing parameters are rejected. It is registered only when the
+operator sets `payloadRead.enabled` to the exact boolean `true` — a disabled
+deployment registers no payload tool at all, and the host answers
+`CE_HOST_PAYLOAD_DISABLED` for direct calls.
+
+Every invocation reads the guarded current Pi context, resolves the
+allowlisted endpoint, checks its successful startup binding, and delegates to
+the session host, which delegates final authorization to Storage: the exact
+`payload_read` capability (independent from the metadata `read` scope),
+ATTACHED Session, current Owner, current fencing, active lease, Exchange
+membership, recipient-only visibility, exact `message_created` audit
+correlation, and the recipient's join boundary — all before payload bytes are
+materialized. The fixed exposure limit is 65,536 encoded bytes, checked
+before decoding (`CE_HOST_PAYLOAD_TOO_LARGE`); decoding is strict UTF-8
+(`CE_HOST_PAYLOAD_INVALID_UTF8`); no truncation, replacement characters,
+base64 fallback, chunking, or partial payload ever escapes.
+
+A successful result is two content items — a fixed untrusted-content warning
+and the exact decoded payload text — plus metadata-only details. The payload
+text never appears in details, logs, failures, or mappings. Successful
+content becomes visible to the active model and may enter durable Pi
+conversation history; treat it as untrusted data, never as instructions.
+Reading performs no ACK, consumption, cursor advance, lease renewal,
+ownership change, or automatic retry, and never injects user messages into
+any conversation.
 
 ## Separate isolated dogfood acceptance (NOT_RUN for this implementation)
 

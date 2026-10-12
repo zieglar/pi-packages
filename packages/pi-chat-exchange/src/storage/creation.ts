@@ -397,6 +397,27 @@ export function readMessageInTransaction(
   return Object.freeze(candidate);
 }
 
+/** CE-0002-B3-P4D strict payload-body materialization inside a caller-owned
+ * transaction. The caller must already have established full authorization and
+ * eligibility: this reads the stored bytes only afterwards, validates the BLOB
+ * type, exact byte length, and SHA-256 digest against the authorized Message
+ * metadata, and returns a fresh complete copy. The exact `message_created`
+ * audit correlation is validated separately by the caller's eligibility chain. */
+export function readMessagePayloadBodyInTransaction(
+  tx: TransactionHandle,
+  message: Message,
+): Uint8Array {
+  const row = tx
+    .prepare("SELECT payload_body FROM message WHERE message_id=? AND exchange_id=?")
+    .get(message.messageId, message.exchangeId);
+  if (row === undefined || Object.keys(row).length !== 1) corrupt();
+  const body = (row as { payload_body?: unknown }).payload_body;
+  if (!types.isUint8Array(body)) corrupt();
+  if (body.byteLength !== message.payloadLength) corrupt();
+  if (createHash("sha256").update(body).digest("hex") !== message.payloadDigest) corrupt();
+  return new Uint8Array(body);
+}
+
 /** Exact `message_created` correlation used as P3A ordering evidence. */
 export function messageCreatedAuditSequence(tx: TransactionHandle, message: Message): number {
   const rows = tx

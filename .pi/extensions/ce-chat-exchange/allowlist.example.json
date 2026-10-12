@@ -2,6 +2,7 @@
   "exchangeNamespace": "pi-local",
   "exchangeIdempotencyKey": "pi-local-exchange",
   "leaseTtlSeconds": 600,
+  "payloadRead": { "enabled": false },
   "sessions": {
     "ceA": { "endpointId": "local/sessionA" },
     "ceB": { "endpointId": "local/sessionB" }

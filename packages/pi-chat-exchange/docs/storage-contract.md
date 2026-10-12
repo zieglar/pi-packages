@@ -1155,3 +1155,51 @@ bearer token is persisted, logged, or exposed through a public DTO.
 Evidence is pinned by `test/storage/schema-v6.test.ts` and
 `test/storage/payload-read-capability.test.ts`, plus the unchanged migration, Store,
 capability, messaging, Inbox, ownership, and recovery regression suites.
+
+## B3-P4D — Authorized Message payload read (HANDOFF-583207)
+
+Status: **implemented across Storage, the Pi session host, and the operator-opted-in
+Pi extension tool**. Schema v6, the `payload_read` capability, and every frozen
+contract from B3-P4C are unchanged; this amendment adds no schema object,
+capability scope, ACK, cursor, receipt, delivery lifecycle, or Completion
+Authority semantics.
+
+### Private Storage operation
+
+`readMessagePayload` in `src/storage/messaging.ts` takes the same request shape
+as the metadata read and the same owned `BEGIN IMMEDIATE` serialization. Inside one
+transaction it authorizes the exact `payload_read` scope (never the metadata
+`read` scope, and vice versa), the ATTACHED Session, current Owner, current fencing
+token, and active lease; then Exchange membership, Message metadata, the opaque
+missing/wrong-recipient refusal, the recipient endpoint binding, the exact
+`message_created` audit correlation, and the recipient's join boundary — all
+metadata-only. Only after that chain passes does `readMessagePayloadBodyInTransaction`
+in `src/storage/creation.ts` materialize `payload_body`, validate the BLOB type,
+exact byte length, and SHA-256 digest against the authorized metadata, and return
+a fresh complete byte copy after commit. The operation is a pure read: repeated
+authorized reads return identical bytes and no Message, Audit, receipt, cursor,
+lease, ownership, or capability state ever changes. `DELIVERY_UNKNOWN` stays
+`DELIVERY_UNKNOWN`.
+
+### Session host and Pi extension
+
+`CeSessionHost.readPayload` keeps the raw Store and the plaintext capability
+inside the host/storage boundary. The `payloadRead.enabled` operator policy —
+exact boolean `true` only; missing, false, or malformed fails closed — is fixed
+for the lifetime of a host instance, gates capability issuance in `beginSession`
+and validated `resume` alike, and answers a fixed sanitized
+`CE_HOST_PAYLOAD_DISABLED` when disabled. The fixed exposure limit is 65,536
+encoded bytes, checked before decoding (`CE_HOST_PAYLOAD_TOO_LARGE`), and decoding
+is strict UTF-8 (`CE_HOST_PAYLOAD_INVALID_UTF8`); nothing partial ever escapes.
+
+The extension registers `ce_read_payload` (input: `messageId` only) only when the
+opt-in is enabled — a disabled deployment registers no payload tool at all. Every
+invocation reads the guarded current Pi context, resolves the allowlist, checks the
+startup binding, and delegates synchronously. A successful result is a fixed
+untrusted-content warning plus the exact decoded text; the payload never appears
+in details, logs, failures, or mappings, and no automatic ACK, consumption, polling,
+injection, or takeover exists.
+
+Evidence: `test/storage/message-payload-read.test.ts`,
+`test/endpoints/pi/session-host-payload.test.ts`, and
+`test/endpoints/pi/extension-payload.test.ts`.

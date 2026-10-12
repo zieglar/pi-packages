@@ -57,20 +57,21 @@ detached, or unowned mapping refuses with `CE_HOST_MAPPING_INVALID` or
 
 1. **Stored** — `sendMessage` committed Message + idempotency + audit.
 2. **Extension-visible** — explicit `ce_inbox_list` discovers eligible IDs, and
-   `ce_read` returns metadata for a supplied ID. Neither returns payload bytes.
-3. **Conversation-visible** — only if the receiving extension injects text
-   into its own session (e.g. `pi.sendMessage`). SQLite writes never appear
-   in a Pi conversation by themselves.
-4. **Model-consumed** — only when the injected entry participates in a turn.
+   `ce_read` returns metadata only. With operator opt-in, `ce_read_payload`
+   separately returns Storage-authorized UTF-8 text for an explicit ID.
+3. **Conversation-visible** — successful explicit tool results enter the
+   invoking Pi conversation through normal tool handling. SQLite writes never
+   appear there by themselves; this extension does not inject user messages.
+4. **Model-visible** — the successful payload tool content is available to the
+   active model through normal Pi context handling. Visibility alone does not
+   prove semantic consumption, delivery settlement, or Completion Authority.
 
-The B3-P3B slice implements states 1 and 2. State 3 is available through the
-documented owning-session seam but is intentionally not wired automatically;
-state 4 follows from normal Pi context handling.
-
-
-B3-P3D adds explicit metadata discovery, not delivery of the stored payload.
-Tool-result metadata is visible in the invoking conversation through normal Pi
-tool handling; it does not establish payload consumption or delivery settlement.
+B3-P3B and B3-P3D provide metadata operations. B3-P4D adds opt-in explicit
+payload exposure: at most 65,536 encoded bytes, complete fatal UTF-8 decoding
+with a leading BOM preserved. Payload text appears only in successful tool
+content, not details or mappings, and may enter durable Pi conversation history.
+No automatic reading, polling, ACK, cursor advance, consumption, injection,
+lease renewal, or ownership takeover is wired.
 
 ## Explicit Inbox integration
 
@@ -133,5 +134,9 @@ explicitly; INDETERMINATE requires operator reopening/inspection before any retr
 - P3A authority chain: `test/storage/message-send-read.test.ts`,
   `message-send-concurrency.test.ts`, `message-send-crash.test.ts`.
 - Real two-process runtime smoke: `docs/plans/2026-10-11-pi-integration-slice.md`.
+- P4D authorized payload read: `test/storage/message-payload-read.test.ts`,
+  `test/endpoints/pi/session-host-payload.test.ts`,
+  `test/endpoints/pi/extension-payload.test.ts` (extension harness; no real
+  Pi dogfood claimed).
 - New Inbox dogfood procedure (not executed in B3-P3D implementation):
   `.pi/extensions/ce-chat-exchange/README.md`, isolated two-process acceptance.
