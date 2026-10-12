@@ -366,6 +366,32 @@ describe("B3-P2A lease renewal and expiry", () => {
     expect(durable(w.active)).toBe(before);
   });
 
+  it("routes payload_read through exact current-Owner, fencing, and lease authorization", () => {
+    const w = world();
+    acquire(w);
+    const payloadRead = capabilityFor(w.active, w.participantId, "payload_read", { sessionId: S1 });
+    const metadataRead = capabilityFor(w.active, w.participantId, "read", { sessionId: S1 });
+    const authorizePayload = (capability: string, fencingToken: number, seconds: number) =>
+      runOwned(w.active.store, "Payload-read owner test", (tx) =>
+        authorizeCurrentOwner(tx, w.active.store, {
+          ...owner(w, S1, fencingToken, capability),
+          scope: "payload_read",
+          now: at(seconds),
+        }),
+      );
+
+    const before = durable(w.active);
+    expect(authorizePayload(payloadRead, 1, 10)).toMatchObject({
+      participantId: w.participantId,
+      sessionId: S1,
+      fencingToken: 1,
+    });
+    expect(durable(w.active)).toBe(before);
+    zeroWrite(w.active, () => authorizePayload(metadataRead, 1, 10), "CAPABILITY_REJECTED");
+    zeroWrite(w.active, () => authorizePayload(payloadRead, 2, 10), "FENCING_STALE");
+    zeroWrite(w.active, () => authorizePayload(payloadRead, 1, 120), "LEASE_EXPIRED");
+  });
+
   it("refuses renewal by a non-owner Session, a stale token, and an unbound Session", () => {
     const w = world({ bind: [S1, S2] });
     acquire(w);

@@ -15,6 +15,10 @@ import {
   V5_ADDITIVE_SQL,
   V5_MIGRATION_CHECKSUM,
   V5_MIGRATION_NAME,
+  V6_CREATE_COPY_SQL,
+  V6_MIGRATION_CHECKSUM,
+  V6_MIGRATION_NAME,
+  V6_SWAP_SQL,
 } from "./schema.js";
 import { assertPreV4SessionState } from "./session-state.js";
 import {
@@ -35,20 +39,22 @@ import {
 
 /**
  * Explicit store migrations (CE-0002-B3-P1A v1→v2; CE-0002-B3-P2A-R1 v2→v3;
- * CE-0002-B3-P2C-A v3→v4; CE-ARCH-P3C-INDEX-001 v4→v5). Migration is a
- * dedicated, host-local operator action — never a side effect of opening a
- * store. A normal `openStore` of a recognized non-current store refuses with
+ * CE-0002-B3-P2C-A v3→v4; CE-ARCH-P3C-INDEX-001 v4→v5;
+ * CE-0002-B3-P4C v5→v6). Migration is a dedicated, host-local operator
+ * action — never a side effect of opening a store.
+ * A normal `openStore` of a recognized non-current store refuses with
  * STORAGE_MIGRATION_REQUIRED; only this entry point performs migrations, and
- * only along explicitly approved paths: {1→2}, {2→3}, {3→4}, {4→5}, and the
- * historical chains {1→3}, {2→4}, {1→4}. Each step commits independently. A
+ * only along explicitly approved historical paths and the explicit chains from
+ * every supported v1-v5 source to v6. Each step commits independently. A
  * refused step whose transaction is proven rolled back leaves a valid store at
  * the earlier version and may be approved and retried on its own. An
  * INDETERMINATE outcome proves neither rollback nor commit: the operator must
  * inspect the durable store shape before any retry and must never retry blindly.
  *
- * The migrations modify no pre-existing object: each applies only additive
- * DDL, appends the approved ledger row (the ledger is insert-only by trigger),
- * and advances `PRAGMA user_version` — all inside one owned BEGIN IMMEDIATE
+ * Historical v1→v5 SQL and checksums stay frozen. Those steps are additive.
+ * The v5→v6 exception rebuilds only `participant_capability` to extend its
+ * closed scope CHECK, verifies exact row preservation before the swap, appends
+ * the approved ledger row, and advances `PRAGMA user_version` — all inside one
  * transaction per step. `store_metadata` is never UPDATEd (its immutability
  * trigger would abort the attempt) and the store UUID is preserved and
  * re-verified. The v1→v2 step bootstraps host trust-root generation 1; the
@@ -79,24 +85,28 @@ import {
  */
 
 export interface MigrateStoreOptions extends StorageConnectionOptions {
-  /** Explicit approved path: single steps { 1→2 }, { 2→3 }, { 3→4 }, { 4→5 },
-   * or the historical chains { 1→3 }, { 2→4 }, { 1→4 }. */
+  /** Explicit approved historical steps/chains, or a chain from any supported
+   * v1-v5 source to the current v6 schema. */
   readonly fromVersion: number;
   readonly toVersion: number;
   /** Private deterministic test seam; production callers omit this. */
   readonly now?: () => string;
   /** Private deterministic test seam; production callers omit this. */
   readonly secretBytes?: () => Uint8Array;
+  /** Private deterministic test seam invoked after initial writer validation
+   * but before BEGIN IMMEDIATE; production callers omit this. */
+  readonly beforeTransaction?: () => void;
   /** Private deterministic test seam invoked inside the owned transaction of
    * each step immediately before commit; production callers omit this. */
   readonly beforeCommit?: () => void;
 }
 
 /** Runs one migration step against the on-disk store: preflight the expected
- * source shape on a disposable snapshot, then re-validate the live writer and
- * apply the step body inside one owned IMMEDIATE transaction. Transaction
- * outcomes (BUSY / ROLLED_BACK / INDETERMINATE) propagate unchanged: no retry,
- * no repair. */
+ * source shape on a disposable snapshot, validate the live writer, acquire the
+ * owned IMMEDIATE transaction, then repeat the complete shape, identity, and
+ * trust-root validation under that write lock before applying any migration
+ * SQL. Transaction outcomes (BUSY / ROLLED_BACK / INDETERMINATE) propagate
+ * unchanged: no retry, no repair. */
 function runMigrationStep(
   options: MigrateStoreOptions,
   databasePath: string,
@@ -131,7 +141,11 @@ function runMigrationStep(
     throw error;
   }
   try {
+    options.beforeTransaction?.();
     withImmediateTransaction(db, (tx) => {
+      // Close the validation-to-write TOCTOU window: this second validation
+      // observes the locked transaction snapshot before any migration SQL.
+      validateWriter(db);
       body(tx, appliedAt);
       options.beforeCommit?.();
     });
@@ -248,6 +262,57 @@ function migrateV4toV5(options: MigrateStoreOptions, databasePath: string): void
   }, (writer) => validateTrustRoot(databasePath, writer));
 }
 
+const CAPABILITY_COLUMNS = [
+  "capability_digest",
+  "participant_id",
+  "scope",
+  "trust_generation",
+  "created_at",
+  "expires_at",
+  "revoked_at",
+  "private_revision",
+  "session_id",
+] as const;
+
+function capabilityProjection(table: "participant_capability" | "participant_capability_v6"): string {
+  return `SELECT ${CAPABILITY_COLUMNS.join(", ")} FROM ${table}`;
+}
+
+/** v5→v6 (CE-0002-B3-P4C): rebuild only the closed capability table
+ * vocabulary, preserving every existing row exactly before the atomic swap. */
+function migrateV5toV6(options: MigrateStoreOptions, databasePath: string): void {
+  runMigrationStep(options, databasePath, "v5", (tx, appliedAt) => {
+    const userVersion = tx.prepare("PRAGMA user_version").get();
+    if (Object.values(userVersion ?? {})[0] !== 5) {
+      throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", "store schema changed during migration");
+    }
+
+    tx.exec(V6_CREATE_COPY_SQL);
+    const sourceCount = tx.prepare("SELECT COUNT(*) AS count FROM participant_capability").get();
+    const targetCount = tx.prepare("SELECT COUNT(*) AS count FROM participant_capability_v6").get();
+    const missing = tx.prepare(`${capabilityProjection("participant_capability")} EXCEPT ${capabilityProjection("participant_capability_v6")} LIMIT 1`).get();
+    const extra = tx.prepare(`${capabilityProjection("participant_capability_v6")} EXCEPT ${capabilityProjection("participant_capability")} LIMIT 1`).get();
+    if (sourceCount?.count !== targetCount?.count || missing !== undefined || extra !== undefined) {
+      throw new StoreLifecycleError(
+        "STORAGE_CORRUPT",
+        "capability rows were not preserved exactly; operator review required",
+      );
+    }
+
+    tx.exec(V6_SWAP_SQL);
+    if (tx.prepare("PRAGMA foreign_key_check").all().length !== 0) {
+      throw new StoreLifecycleError(
+        "STORAGE_CORRUPT",
+        "capability-table rebuild violates foreign keys; operator review required",
+      );
+    }
+    tx.prepare(
+      "INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+    ).run(6, V6_MIGRATION_NAME, V6_MIGRATION_CHECKSUM, appliedAt);
+    tx.exec("PRAGMA user_version=6;");
+  }, (writer) => validateTrustRoot(databasePath, writer));
+}
+
 const APPROVED_PATHS: readonly (readonly [number, number])[] = [
   [1, 2],
   [2, 3],
@@ -256,6 +321,11 @@ const APPROVED_PATHS: readonly (readonly [number, number])[] = [
   [1, 3],
   [2, 4],
   [1, 4],
+  [1, 6],
+  [2, 6],
+  [3, 6],
+  [4, 6],
+  [5, 6],
 ];
 
 export function migrateStore(options: MigrateStoreOptions): DurableStore {
@@ -265,7 +335,7 @@ export function migrateStore(options: MigrateStoreOptions): DurableStore {
   if (!approved) {
     throw new StoreLifecycleError(
       "STORAGE_INCOMPATIBLE",
-      "only the explicitly approved migration paths through v5 are supported",
+      "only the explicitly approved migration paths through v6 are supported",
     );
   }
   const databasePath = prepareDatabasePath(options);
@@ -278,9 +348,18 @@ export function migrateStore(options: MigrateStoreOptions): DurableStore {
   // require the requested migration is refused (zero writes) before any
   // trust-root absence check can run.
   const expectFrom: StoreShapeKind =
-    options.fromVersion === 1 ? "v1" : options.fromVersion === 2 ? "v2" : options.fromVersion === 3 ? "v3" : "v4";
-  const reachesV4 = options.toVersion === 4;
-  const reachesV5 = options.toVersion === 5;
+    options.fromVersion === 1
+      ? "v1"
+      : options.fromVersion === 2
+        ? "v2"
+        : options.fromVersion === 3
+          ? "v3"
+          : options.fromVersion === 4
+            ? "v4"
+            : "v5";
+  const reachesV4 = options.toVersion >= 4;
+  const reachesV5 = options.toVersion >= 5;
+  const reachesV6 = options.toVersion >= 6;
   const preflight = preflightStoreShape(databasePath, (reader, shape) => {
     // Whole-chain precondition (B3-P2C-A): when the path reaches v4 and the
     // source already carries Session rows (v2 or v3), foreign lifecycle state
@@ -298,8 +377,9 @@ export function migrateStore(options: MigrateStoreOptions): DurableStore {
   }
   if (options.fromVersion === 1) migrateV1toV2(options, databasePath);
   if (options.fromVersion <= 2 && options.toVersion >= 3) migrateV2toV3(options, databasePath);
-  if (reachesV4) migrateV3toV4(options, databasePath);
-  if (reachesV5) migrateV4toV5(options, databasePath);
+  if (options.fromVersion <= 3 && reachesV4) migrateV3toV4(options, databasePath);
+  if (options.fromVersion <= 4 && reachesV5) migrateV4toV5(options, databasePath);
+  if (options.fromVersion <= 5 && reachesV6) migrateV5toV6(options, databasePath);
 
   // Proof of success is a full validated reopen: a normal current-version open
   // (including trust-root validation) when the target is current, otherwise a
@@ -307,5 +387,6 @@ export function migrateStore(options: MigrateStoreOptions): DurableStore {
   if (options.toVersion === 2) return openMigratedStore(options, "v2");
   if (options.toVersion === 3) return openMigratedStore(options, "v3");
   if (options.toVersion === 4) return openMigratedStore(options, "v4");
+  if (options.toVersion === 5) return openMigratedStore(options, "v5");
   return openStore(options);
 }

@@ -137,5 +137,5 @@ export function recoverTrustRoot(options: RecoverTrustRootOptions): DurableStore
   // Proof of recovery is a validated reopen under the new generation: a normal
   // open for the current shape, or a shape-validated proof open for any
   // recognized older store that still awaits its explicit migration.
-  return preflight.kind === "v5" ? openStore(options) : openMigratedStore(options, preflight.kind);
+  return preflight.kind === "v6" ? openStore(options) : openMigratedStore(options, preflight.kind);
 }

@@ -353,9 +353,9 @@ export interface OwnerPresentation {
   readonly sessionId: string;
   readonly fencingToken: number;
   readonly now: string;
-  /** Defaults to `resume` for the accepted P2 owner operations. P3A callers
+  /** Defaults to `resume` for accepted P2 owner operations. Later callers
    * must present their exact Session-bound operation scope. */
-  readonly scope?: "resume" | "send" | "read";
+  readonly scope?: "resume" | "send" | "read" | "payload_read";
 }
 
 /**

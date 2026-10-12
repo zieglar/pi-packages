@@ -1111,3 +1111,47 @@ BUSY and INDETERMINATE classification, restart behavior, and query plans.
 `test/storage/inbox-discovery-concurrency.test.ts` uses independent OS processes to
 prove send/list, revocation/list, and release/list valid before-or-after outcomes, plus
 a deterministically held Inbox transaction that excludes an overlapping sender.
+
+## B3-P4C — Schema v6 independent payload capability (HANDOFF-427916)
+
+Status: **implemented for schema and capability authority only**. This phase adds
+no payload-read Storage operation, Session Host issuance, Pi tool, delivery behavior,
+ACK, cursor mutation, receipt, consumption state, takeover, or Completion Authority.
+
+### Schema v6
+
+Schema v6 changes only the closed `participant_capability.scope` vocabulary by
+adding `payload_read`. Every Schema v1-v5 SQL string and checksum remains frozen.
+The explicit v5→v6 migration creates `participant_capability_v6`, copies every
+column and row, verifies equal counts plus bidirectional `EXCEPT` equivalence, drops
+the v5 table, and renames the replacement. The same owned `BEGIN IMMEDIATE` step
+then requires an empty `PRAGMA foreign_key_check`, appends the checksummed v6
+migration ledger row, and advances `user_version` to 6. Any proven failure rolls
+the whole v6 step back to a valid v5 Store; an indeterminate outcome requires
+durable shape inspection and is never retried automatically.
+
+Fresh v6 initialization applies the unchanged v5 foundation followed by the exact
+same v6 rebuild SQL. Fresh and migrated Stores therefore converge on one strict
+approved manifest. Normal Store open accepts only v6 and returns
+`STORAGE_MIGRATION_REQUIRED` for recognized v1-v5 Stores; migration remains an
+explicit operator action. Approved chains from every v1-v5 source to v6 execute
+historical steps in order, with one transaction and commit boundary per step.
+
+### Independent `payload_read` authority
+
+`payload_read` is a new P4C operational, Session-bound scope. The historical P3A
+scope list remains exactly `send` and `read`; `read` remains metadata-only and
+cannot authorize payload disclosure. Capability HMAC derivation includes the exact
+scope, so `read` and `payload_read` tokens are cryptographically non-interchangeable.
+
+Issuance requires the same existing durable ATTACHED Session binding as other
+Session-bound scopes. Participant binding, Session binding, trust generation,
+revocation, expiry, and DETACHED lifecycle invalidation are inherited unchanged.
+The shared current-Owner authorization primitive accepts `payload_read` as an exact
+future operation scope, preserving its ownership, fencing, and active-lease checks.
+No component automatically issues this capability in this phase, and no plaintext
+bearer token is persisted, logged, or exposed through a public DTO.
+
+Evidence is pinned by `test/storage/schema-v6.test.ts` and
+`test/storage/payload-read-capability.test.ts`, plus the unchanged migration, Store,
+capability, messaging, Inbox, ownership, and recovery regression suites.

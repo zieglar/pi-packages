@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 export const APPLICATION_ID = "@zieglar/pi-chat-exchange";
 export const SQLITE_APPLICATION_ID = 0x50434558; // "PCEX"
-export const CURRENT_SCHEMA_VERSION = 5;
+export const CURRENT_SCHEMA_VERSION = 6;
 export const INITIAL_MIGRATION_NAME = "durable-storage-foundation";
 export const V2_MIGRATION_NAME = "b3-communication-lifecycle-migration";
 export const V2_FOUNDATION_NAME = "b3-communication-lifecycle-foundation";
@@ -12,6 +12,8 @@ export const V4_MIGRATION_NAME = "b3-p2c-a-session-lifecycle-migration";
 export const V4_FOUNDATION_NAME = "b3-p2c-a-session-lifecycle-foundation";
 export const V5_MIGRATION_NAME = "b3-p3c-audit-correlation-index-migration";
 export const V5_FOUNDATION_NAME = "b3-p3c-audit-correlation-index-foundation";
+export const V6_MIGRATION_NAME = "b3-p4c-payload-capability-migration";
+export const V6_FOUNDATION_NAME = "b3-p4c-payload-capability-foundation";
 
 const REVISION = "private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1)";
 
@@ -530,4 +532,51 @@ export const V5_FOUNDATION_SQL = V4_FOUNDATION_SQL + V5_ADDITIVE_SQL;
 
 export const V5_FOUNDATION_CHECKSUM = createHash("sha256")
   .update(V5_FOUNDATION_SQL, "utf8")
+  .digest("hex");
+
+/** Schema v6 extends only the closed capability vocabulary. The historical
+ * v5 table remains frozen: v6 rebuilds it with the same column order, PK, FK,
+ * STRICT mode, rows, and Session binding, plus the independent payload_read
+ * scope. Migration code validates exact row equivalence between these two SQL
+ * fragments before executing the swap. */
+export const V6_CREATE_COPY_SQL = `
+CREATE TABLE participant_capability_v6 (
+  capability_digest TEXT PRIMARY KEY CHECK (length(capability_digest) = 64),
+  participant_id TEXT NOT NULL REFERENCES participant(participant_id) ON DELETE RESTRICT,
+  scope TEXT NOT NULL CHECK (scope IN ('create', 'bind', 'join', 'attach', 'resume', 'takeover', 'send', 'ack', 'read', 'payload_read')),
+  trust_generation INTEGER NOT NULL CHECK (trust_generation >= 1),
+  created_at TEXT NOT NULL,
+  expires_at TEXT,
+  revoked_at TEXT,
+  private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1),
+  session_id TEXT
+) STRICT;
+
+INSERT INTO participant_capability_v6 (
+  capability_digest, participant_id, scope, trust_generation, created_at,
+  expires_at, revoked_at, private_revision, session_id
+)
+SELECT
+  capability_digest, participant_id, scope, trust_generation, created_at,
+  expires_at, revoked_at, private_revision, session_id
+FROM participant_capability;
+`;
+
+export const V6_SWAP_SQL = `
+DROP TABLE participant_capability;
+ALTER TABLE participant_capability_v6 RENAME TO participant_capability;
+`;
+
+export const V6_ADDITIVE_SQL = V6_CREATE_COPY_SQL + V6_SWAP_SQL;
+
+export const V6_MIGRATION_CHECKSUM = createHash("sha256")
+  .update(V6_ADDITIVE_SQL, "utf8")
+  .digest("hex");
+
+/** Fresh and explicitly migrated v6 stores execute the same rebuild sequence
+ * and therefore converge to one byte-identical sqlite_schema manifest. */
+export const V6_FOUNDATION_SQL = V5_FOUNDATION_SQL + V6_ADDITIVE_SQL;
+
+export const V6_FOUNDATION_CHECKSUM = createHash("sha256")
+  .update(V6_FOUNDATION_SQL, "utf8")
   .digest("hex");

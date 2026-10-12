@@ -39,6 +39,11 @@ import {
   V5_FOUNDATION_SQL,
   V5_MIGRATION_CHECKSUM,
   V5_MIGRATION_NAME,
+  V6_FOUNDATION_CHECKSUM,
+  V6_FOUNDATION_NAME,
+  V6_FOUNDATION_SQL,
+  V6_MIGRATION_CHECKSUM,
+  V6_MIGRATION_NAME,
 } from "./schema.js";
 import { withImmediateTransaction } from "./transaction.js";
 import { StoreLifecycleError } from "./errors.js";
@@ -129,7 +134,9 @@ function approvedManifest(version: StoreShapeKind): string {
             ? V3_FOUNDATION_SQL
             : version === "v4"
               ? V4_FOUNDATION_SQL
-              : V5_FOUNDATION_SQL,
+              : version === "v5"
+                ? V5_FOUNDATION_SQL
+                : V6_FOUNDATION_SQL,
     );
     const manifest = schemaManifest(reference);
     approvedManifests[version] = manifest;
@@ -200,7 +207,7 @@ interface MigrationLedgerRow {
   readonly checksum: string;
 }
 
-export type StoreShapeKind = "v1" | "v2" | "v3" | "v4" | "v5";
+export type StoreShapeKind = "v1" | "v2" | "v3" | "v4" | "v5" | "v6";
 export interface StoreShape {
   readonly kind: StoreShapeKind;
   readonly metadata: StoreMetadataRow;
@@ -320,6 +327,13 @@ export function classifyStoreShape(db: DatabaseSync): StoreShape {
     ...V4_LEDGERS.map((ledger) => [...ledger, V5_STEP]),
     [[5, V5_FOUNDATION_NAME, V5_FOUNDATION_CHECKSUM]],
   ];
+  // CE-0002-B3-P4C: every approved v5 lineage plus the capability-table
+  // rebuild step, or a fresh v6 foundation.
+  const V6_STEP: readonly [number, string, string] = [6, V6_MIGRATION_NAME, V6_MIGRATION_CHECKSUM];
+  const V6_LEDGERS: readonly (readonly (readonly [number, string, string])[])[] = [
+    ...V5_LEDGERS.map((ledger) => [...ledger, V6_STEP]),
+    [[6, V6_FOUNDATION_NAME, V6_FOUNDATION_CHECKSUM]],
+  ];
   const shapeVersion = ledgerMatches(migrations, V1_LEDGER)
     ? 1
     : ledgerMatches(migrations, V2_MIGRATED_LEDGER) || ledgerMatches(migrations, V2_FRESH_LEDGER)
@@ -330,7 +344,9 @@ export function classifyStoreShape(db: DatabaseSync): StoreShape {
           ? 4
           : V5_LEDGERS.some((ledger) => ledgerMatches(migrations, ledger))
             ? 5
-            : undefined;
+            : V6_LEDGERS.some((ledger) => ledgerMatches(migrations, ledger))
+              ? 6
+              : undefined;
   if (shapeVersion === undefined) {
     throw new StoreLifecycleError(
       "STORAGE_MIGRATION_CHECKSUM_MISMATCH",
@@ -366,15 +382,25 @@ export function classifyStoreShape(db: DatabaseSync): StoreShape {
 }
 
 function shapeKind(version: number): StoreShapeKind {
-  return version === 1 ? "v1" : version === 2 ? "v2" : version === 3 ? "v3" : version === 4 ? "v4" : "v5";
+  return version === 1
+    ? "v1"
+    : version === 2
+      ? "v2"
+      : version === 3
+        ? "v3"
+        : version === 4
+          ? "v4"
+          : version === 5
+            ? "v5"
+            : "v6";
 }
 
-/** Normal-open validation: a recognized v1-v4 store is refused with a typed
- * migration-required result (migration is never implicit); only the current v5
+/** Normal-open validation: a recognized v1-v5 store is refused with a typed
+ * migration-required result (migration is never implicit); only the current v6
  * shape opens, and it must pass host trust-root validation on every open. */
 function readAndValidateStore(db: DatabaseSync, databasePath: string): StoreMetadataRow {
   const shape = classifyStoreShape(db);
-  if (shape.kind !== "v5") {
+  if (shape.kind !== "v6") {
     throw new StoreLifecycleError(
       "STORAGE_MIGRATION_REQUIRED",
       "store schema requires the explicit approved migration to the current schema version",
@@ -412,7 +438,7 @@ export function initializeStore(options: InitializeStoreOptions): DurableStore {
 
   try {
     withImmediateTransaction(db, (tx) => {
-      tx.exec(V5_FOUNDATION_SQL);
+      tx.exec(V6_FOUNDATION_SQL);
       tx.prepare(
         "INSERT INTO store_metadata(singleton, store_uuid, application_id, schema_version, created_at) VALUES (1, ?, ?, ?, ?)",
       ).run(storeUuid, APPLICATION_ID, CURRENT_SCHEMA_VERSION, appliedAt);
@@ -420,8 +446,8 @@ export function initializeStore(options: InitializeStoreOptions): DurableStore {
         "INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
       ).run(
         CURRENT_SCHEMA_VERSION,
-        V5_FOUNDATION_NAME,
-        V5_FOUNDATION_CHECKSUM,
+        V6_FOUNDATION_NAME,
+        V6_FOUNDATION_CHECKSUM,
         appliedAt,
       );
       tx.prepare("INSERT INTO restore_hold(singleton, held) VALUES (1, 0)").run();

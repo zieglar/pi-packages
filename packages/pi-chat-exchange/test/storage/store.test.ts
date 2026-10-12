@@ -15,6 +15,9 @@ import {
   V4_MIGRATION_CHECKSUM,
   V5_FOUNDATION_CHECKSUM,
   V5_FOUNDATION_NAME,
+  V5_MIGRATION_CHECKSUM,
+  V6_FOUNDATION_CHECKSUM,
+  V6_FOUNDATION_NAME,
   SQLITE_APPLICATION_ID,
 } from "../../src/storage/schema.js";
 import {
@@ -56,7 +59,7 @@ describe("private durable store schema and lifecycle", () => {
       now: () => "2026-10-08T00:00:00.000Z",
     });
     try {
-      expect(CURRENT_SCHEMA_VERSION).toBe(5);
+      expect(CURRENT_SCHEMA_VERSION).toBe(6);
       expect(store.storeUuid).toBe(STORE_UUID);
       expect(store.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
       expect(store.database.prepare("PRAGMA application_id").get()).toEqual({ application_id: SQLITE_APPLICATION_ID });
@@ -68,14 +71,14 @@ describe("private durable store schema and lifecycle", () => {
         schema_version: CURRENT_SCHEMA_VERSION,
       });
       expect(store.database.prepare("SELECT version, name, checksum FROM schema_migrations").all()).toEqual([
-        { version: CURRENT_SCHEMA_VERSION, name: V5_FOUNDATION_NAME, checksum: V5_FOUNDATION_CHECKSUM },
+        { version: CURRENT_SCHEMA_VERSION, name: V6_FOUNDATION_NAME, checksum: V6_FOUNDATION_CHECKSUM },
       ]);
     } finally {
       store.close();
     }
   });
 
-  it("preserves every frozen v1-v4 schema checksum", () => {
+  it("preserves every frozen v1-v5 schema checksum", () => {
     expect({
       initial: INITIAL_MIGRATION_CHECKSUM,
       v2Migration: V2_MIGRATION_CHECKSUM,
@@ -84,6 +87,8 @@ describe("private durable store schema and lifecycle", () => {
       v3Foundation: V3_FOUNDATION_CHECKSUM,
       v4Migration: V4_MIGRATION_CHECKSUM,
       v4Foundation: V4_FOUNDATION_CHECKSUM,
+      v5Migration: V5_MIGRATION_CHECKSUM,
+      v5Foundation: V5_FOUNDATION_CHECKSUM,
     }).toEqual({
       initial: "8d4e7ac1af702ac1aaf1dffc9d7c71cd45fedc540457b0ef30f0105ac454cbda",
       v2Migration: "688d44b662ba501b2ca04a873178ee6002896ffbe5d4a8de98be0f4621ab48d9",
@@ -92,6 +97,8 @@ describe("private durable store schema and lifecycle", () => {
       v3Foundation: "8c572d538c373b599142d0e87da9b0218c138293b6b0fa4644bdcbf306dfa7d9",
       v4Migration: "c50851404d529299d69bc8ab57eea601e0fd73a626a59da9b4d96c2a5fe7e658",
       v4Foundation: "e558f1ae27d715e3b5372b4c62f078e68168b3c50c7975e171edef690e96e62c",
+      v5Migration: "2cbf0669141a8aeb9cd134d88387e31367de9dc3c88e02a1467477fe531a44ea",
+      v5Foundation: "976de30d1173a5a9d9181c73e1cb33caa8e3f2af65f4a7cd211d59ded46bda17",
     });
   });
 

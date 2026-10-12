@@ -39,8 +39,8 @@ import {
   V4_FOUNDATION_NAME,
   V4_MIGRATION_CHECKSUM,
   V4_MIGRATION_NAME,
-  V5_FOUNDATION_CHECKSUM,
-  V5_FOUNDATION_NAME,
+  V6_FOUNDATION_CHECKSUM,
+  V6_FOUNDATION_NAME,
 } from "../../src/storage/schema.js";
 import { initializeStore, openStore, preflightStoreShape, type DurableStore } from "../../src/storage/store.js";
 import { StorageTransactionError, withImmediateTransaction } from "../../src/storage/transaction.js";
@@ -167,15 +167,15 @@ function expectTriggerAbort(run: () => unknown, message: string): void {
 // Fresh v4 store
 // ---------------------------------------------------------------------------
 
-describe("current schema v5 store preserves the B3-P2C-A lifecycle", () => {
-  it("initializes at v5 with the v5 foundation ledger and every v4 lifecycle trigger", () => {
+describe("current schema v6 store preserves the B3-P2C-A lifecycle", () => {
+  it("initializes at v6 with the v6 foundation ledger and every v4 lifecycle trigger", () => {
     const active = fixture("ce-b3-p2c-a-fresh-");
-    expect(CURRENT_SCHEMA_VERSION).toBe(5);
-    expect(active.store.schemaVersion).toBe(5);
+    expect(CURRENT_SCHEMA_VERSION).toBe(6);
+    expect(active.store.schemaVersion).toBe(6);
     const db = active.store.database;
-    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 5 });
+    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 6 });
     expect(db.prepare("SELECT version, name, checksum FROM schema_migrations").all()).toEqual([
-      { version: 5, name: V5_FOUNDATION_NAME, checksum: V5_FOUNDATION_CHECKSUM },
+      { version: 6, name: V6_FOUNDATION_NAME, checksum: V6_FOUNDATION_CHECKSUM },
     ]);
     const triggers = db
       .prepare("SELECT name, tbl_name FROM sqlite_schema WHERE type = 'trigger' AND name LIKE 'participant_%session%' ORDER BY name")
@@ -195,7 +195,7 @@ describe("current schema v5 store preserves the B3-P2C-A lifecycle", () => {
       db.prepare("SELECT sql FROM sqlite_schema WHERE name = 'participant_capability'").get()!.sql,
     );
     expect(capabilityDdl).toContain(
-      "scope IN ('create', 'bind', 'join', 'attach', 'resume', 'takeover', 'send', 'ack', 'read')",
+      "scope IN ('create', 'bind', 'join', 'attach', 'resume', 'takeover', 'send', 'ack', 'read', 'payload_read')",
     );
     expect(capabilityDdl).not.toContain("detach");
   });

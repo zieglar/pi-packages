@@ -20,7 +20,7 @@ Pi process A                          Pi process B
          │                                   │
          └──────────┬────────────────────────┘
                     ▼
-        shared durable SQLite store (schema v5)
+        shared durable SQLite store (schema v6)
         host trust-root secret (uid-owned, mode 600)
 ```
 
