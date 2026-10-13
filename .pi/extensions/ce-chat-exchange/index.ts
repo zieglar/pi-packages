@@ -33,6 +33,7 @@ import {
   CeSessionHost,
   type CeHostPolicy,
   type CeMappingIdentifiers,
+  type CeRecipientRef,
 } from "../../../packages/pi-chat-exchange/dist/endpoints/pi/session-host.js";
 import { PI_ADAPTER_KIND } from "../../../packages/pi-chat-exchange/dist/endpoints/pi/contract.js";
 import { initializeStore, openStore } from "../../../packages/pi-chat-exchange/dist/storage/store.js";
@@ -115,6 +116,11 @@ interface AllowlistFile {
     readonly pageSize?: number;
     readonly rawScanLimit?: number;
   };
+  /** CE-0002 B3-P3B reply path: explicit cross-adapter recipients this Pi
+   * host may send to (for example a ChatGPT-side MCP endpoint). Strictly
+   * validated; any malformed entry disables the whole list (fail closed to
+   * same-adapter allowlisted recipients only). */
+  readonly recipients?: readonly { readonly adapter?: string; readonly endpointId?: string }[];
   readonly sessions?: Record<string, { readonly endpointId?: string }>;
 }
 
@@ -152,6 +158,47 @@ function payloadReadEnabled(allowlist: AllowlistFile): boolean {
     return enabled?.enumerable === true && "value" in enabled && enabled.value === true;
   } catch {
     return false;
+  }
+}
+
+/** CE-0002 B3-P3B: strictly validate the operator's explicit cross-adapter
+ * recipients. Absent, empty, or in any way malformed disables the whole
+ * list (undefined) — Pi then sends to same-adapter allowlisted endpoints
+ * only, exactly as before the reply path existed. */
+function crossAdapterRecipients(allowlist: AllowlistFile): readonly CeRecipientRef[] | undefined {
+  try {
+    const raw: unknown = allowlist.recipients;
+    if (raw === undefined) return undefined;
+    if (!Array.isArray(raw) || raw.length === 0) return undefined;
+    const seen = new Set<string>();
+    const recipients: CeRecipientRef[] = [];
+    for (const entry of raw) {
+      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return undefined;
+      const prototype = Object.getPrototypeOf(entry);
+      if (prototype !== Object.prototype && prototype !== null) return undefined;
+      const keys = Reflect.ownKeys(entry);
+      if (keys.length !== 2 || !keys.includes("adapter") || !keys.includes("endpointId")) return undefined;
+      const adapterField = Object.getOwnPropertyDescriptor(entry, "adapter");
+      const endpointField = Object.getOwnPropertyDescriptor(entry, "endpointId");
+      if (adapterField === undefined || !("value" in adapterField) || endpointField === undefined || !("value" in endpointField)) {
+        return undefined;
+      }
+      const adapter = adapterField.value;
+      const endpointId = endpointField.value;
+      if (typeof adapter !== "string" || adapter.length === 0 || adapter.length > 64) return undefined;
+      if (typeof endpointId !== "string" || endpointId.length === 0 || endpointId.length > 256) return undefined;
+      if (adapter === PI_ADAPTER_KIND) return undefined;
+      if (seen.has(endpointId)) return undefined;
+      seen.add(endpointId);
+      recipients.push({ adapter, endpointId });
+    }
+    // A label colliding with an allowlisted session endpoint would shadow
+    // same-adapter routing; refuse the whole list instead.
+    const sessionLabels = new Set(Object.values(allowlist.sessions ?? {}).map((entry) => entry.endpointId));
+    if (recipients.some((entry) => sessionLabels.has(entry.endpointId))) return undefined;
+    return Object.freeze(recipients);
+  } catch {
+    return undefined;
   }
 }
 
@@ -245,6 +292,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         endpointId: typeof entry.endpointId === "string" ? entry.endpointId : "",
       }));
       const envTtl = process.env.CE_LEASE_TTL_SECONDS;
+      const recipients = crossAdapterRecipients(allowlist);
       const policy: CeHostPolicy = {
         adapter: PI_ADAPTER_KIND,
         exchangeNamespace: allowlist.exchangeNamespace ?? "pi-local",
@@ -260,6 +308,10 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         // the exact boolean here — a malformed allowlist setting never reaches
         // the host as a truthy non-boolean.
         ...(payloadReadEnabled(allowlist) ? { payloadRead: { enabled: true } } : {}),
+        // CE-0002 B3-P3B reply path: forward the strictly validated
+        // cross-adapter recipients; absent or malformed stays disabled so
+        // Pi sends exactly as before.
+        ...(recipients === undefined ? {} : { recipients }),
       };
       host = new CeSessionHost(store, policy);
     }

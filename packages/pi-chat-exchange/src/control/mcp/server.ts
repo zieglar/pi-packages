@@ -1,9 +1,11 @@
 /**
- * pi-chat-exchange MCP smoke server (Phase 1).
+ * pi-chat-exchange MCP server (Phase 1 smoke + CE-0002 B3-P3B messaging).
  *
- * Exposes exactly one harmless read-only tool, `ping`, proving the path:
- *
- *   client product -> local plugin/MCP -> pi-chat-exchange smoke server
+ * Phase 1 exposed exactly one harmless read-only tool, `ping`. When the
+ * composition root injects a messaging port (built from trusted launch
+ * configuration), the server additionally lists the chat-exchange messaging
+ * tools (`ce_send`, `ce_inbox_list`, `ce_read_payload`) over that pre-bound
+ * port. Without an injected port the surface is exactly the Phase 1 surface.
  *
  * Implemented on the low-level MCP `Server` so tool I/O is validated with the
  * workspace-standard TypeBox schemas rather than a second schema system, and
@@ -22,6 +24,12 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { Value } from "@sinclair/typebox/value";
 import { PING_TOOL_NAME, PingArgsSchema, PingResultSchema, defaultHostLabel, ping } from "./ping.js";
+import {
+  callMessagingTool,
+  isMessagingToolName,
+  MESSAGING_TOOLS,
+  type ExchangeMessagingPort,
+} from "./messaging-tools.js";
 
 export const SERVER_NAME = "pi-chat-exchange" as const;
 export const SERVER_VERSION = "0.1.0" as const;
@@ -41,18 +49,49 @@ const PING_TOOL = {
   },
 } as const;
 
-export function createExchangeMcpServer(hostLabel: string = defaultHostLabel()): Server {
+/** An endpoint-bound messaging port plus everything the surface needs from the
+ * composition root. The port fixes the sender Endpoint; tool arguments never
+ * carry sender/endpoint/session/capability fields. */
+export interface MessagingServerBinding {
+  readonly port: ExchangeMessagingPort;
+}
+
+export function createExchangeMcpServer(
+  hostLabel: string = defaultHostLabel(),
+  messaging: MessagingServerBinding | undefined = undefined,
+): Server {
   const server = new Server(
     { name: SERVER_NAME, version: SERVER_VERSION },
     { capabilities: { tools: {} } },
   );
 
+  const tools = messaging === undefined ? [PING_TOOL] : [PING_TOOL, ...MESSAGING_TOOLS];
+
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [PING_TOOL],
+    tools,
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
+    if (isMessagingToolName(name)) {
+      if (messaging === undefined) {
+        // Never advertised in this mode, but fail closed all the same.
+        throw new McpError(ErrorCode.MethodNotFound, `unknown tool: ${String(name)}`);
+      }
+      try {
+        return callMessagingTool(messaging.port, name, args ?? {});
+      } catch (error) {
+        if (error instanceof Error && error.name === "MessagingArgsError") {
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            "arguments rejected by the closed input schema; sender/endpoint/session/capability fields are never accepted",
+          );
+        }
+        // The messaging layer reports refusals as isError results; anything
+        // thrown here is unexpected and must not leak error text.
+        throw new McpError(ErrorCode.InternalError, "messaging tool failed closed");
+      }
+    }
     if (name !== PING_TOOL_NAME) {
       throw new McpError(ErrorCode.MethodNotFound, `unknown tool: ${String(name)}`);
     }

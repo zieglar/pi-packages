@@ -18,27 +18,32 @@ Status (this package):
   (message/attempt/endpoint/lease fencing), explicit exchange close,
   non-mutating immutable result reads, publish-once results, plus the
   in-memory idempotency REFERENCE store. See [docs/architecture.md](docs/architecture.md).
-- **Separate planes** — MCP control surface: strictly retained `ping` smoke;
-  Pi endpoint: declaration/documentation only. No ChatGPT endpoint implementation.
+- **Separate planes** — MCP control surface: the `ping` smoke by default, plus
+  CE-0002 B3-P3B messaging tools (`ce_send`, `ce_inbox_list`, `ce_read_payload`)
+  exposed only when the stdio entrypoint is launched with a trusted
+  `--config` binding that fixes one operator-owned Endpoint; the durable host
+  authority lives in `src/host/` and is shared with the Pi endpoint wrapper.
   See [docs/adapter-contracts.md](docs/adapter-contracts.md),
   [docs/chat-bridge-audit-ph0003.md](docs/chat-bridge-audit-ph0003.md) and
   [docs/source-reuse-audit.md](docs/source-reuse-audit.md) for pinned source evidence.
-- **Deferred** — the durable host (broker/storage/API server), every
-  exchange operation beyond `ping`, and real client-product acceptance
-  (NOT_RUN).
+- **Landed since** — CE-0002 B3-P3B: the shared durable host (`src/host/`),
+  the endpoint-bound MCP messaging tools over `--config` launch binding, and
+  the Pi extension reply path. Still deferred: client-product acceptance
+  beyond the two-context dogfood tests (NOT_RUN).
 
 ## Architecture
 
 ```text
-src/bin          composition only (stdio MCP entrypoint)
-src/control/mcp  ping-only control/API surface
-src/endpoints/pi endpoint integration contract only
+src/host        adapter-neutral durable host authority (shared by all endpoints)
+src/bin          composition only (stdio MCP entrypoint + --config binding)
+src/control/mcp  ping smoke by default; messaging tools only via injected port
+src/endpoints/pi endpoint integration contract only (thin wrapper over src/host)
 src/core         pure evidence/authorization rules + in-memory reference
 src/protocol     neutral entities/lifecycle/action grants/support declarations
-```
 
 Dependency direction (gate-enforced from the TypeScript AST, with negative
-fixtures proving rejection): `bin → control/endpoints → core → protocol`.
+fixtures proving rejection): `bin → control/endpoints/host → storage → core →
+protocol`.
 Protocol/core cannot reach outer layers; control and endpoints cannot reach
 each other; endpoints cannot depend on peer integrations or the MCP SDK.
 Protocol/core stay product/transport neutral.
@@ -67,9 +72,33 @@ pnpm run check        # AST architecture gates + negative fixtures
 pnpm run typecheck    # includes compile-negative @ts-expect-error tests
 pnpm run build        # emits dist/ (required before the stdio smoke test)
 pnpm test             # vitest; the stdio smoke FAILS if dist/ is missing
-node dist/bin/mcp-stdio.js   # serve the ping smoke over stdio
+node dist/bin/mcp-stdio.js            # ping smoke only, no durable state
+node dist/bin/mcp-stdio.js --config /abs/path/binding.json   # bind one Endpoint
 pnpm run verify       # check → typecheck → build → test (build before test)
 ```
+
+The `--config` file is operator-controlled launch configuration (absolute
+path, JSON, ≤64 KiB). It fixes the Endpoint identity — store location, exchange
+bootstrap, the bound endpoint, explicit cross-adapter recipients, lease policy,
+and the payload-read opt-in — so MCP tool arguments never select a sender,
+endpoint, session, or capability:
+
+```json
+{
+  "version": 1,
+  "store": { "directory": "/var/lib/chat-exchange", "file": "ce-store.sqlite" },
+  "exchange": { "namespace": "ce-mcp", "idempotencyKey": "exchange-1" },
+  "endpoint": { "adapter": "chatgpt", "endpointId": "chatgpt/main" },
+  "recipients": [{ "adapter": "pi", "endpointId": "pi/main" }],
+  "lease": { "ttlSeconds": 120, "renewIntervalSeconds": 30 },
+  "payloadRead": { "enabled": false }
+}
+```
+
+Lifecycle: startup binds with `requireUnowned` (a crashed previous instance
+refuses startup — no takeover), a heartbeat renews the lease, and SIGTERM/
+SIGINT/stdio-close releases ownership exactly once. `renewIntervalSeconds`
+must be ≤ half the term. Diagnostics go to stderr as status codes only.
 
 ## Security notes
 
@@ -79,6 +108,13 @@ pnpm run verify       # check → typecheck → build → test (build before tes
   events (events carry IDs, digests, lengths, typed outcomes only).
 - Endpoint identity is opaque, non-secret routing identity; credentials stay
   adapter-local.
+- In `--config` mode the MCP server's Endpoint identity comes only from the
+  operator-controlled launch configuration; tool arguments never carry a
+  sender, endpoint, session, or capability field (closed input schemas), and
+  refusals surface fixed codes only. Payload text appears solely in the
+  explicit successful output of `ce_read_payload` behind an untrusted-content
+  warning, and only when `payloadRead.enabled` is exactly `true` in the
+  binding configuration.
 - The MCP surface performs no `process.env` access; `scripts/check-contract.mjs`
   enforces this along with the layering gates.
 

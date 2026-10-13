@@ -16,7 +16,11 @@
  * 5. One endpoint integration cannot depend on a different endpoint integration.
  * 6. Protocol/core stay product-neutral and free of transport SDK dependencies.
  * 7. Endpoint integrations cannot require MCP SDK; no runtime Pi coupling here.
- * 8. MCP control/bin remain environment-free and strictly ping-only.
+ * 8. MCP control/bin remain environment-free; control is ping-only by default
+ *    and gains messaging tools ONLY through the injected, endpoint-bound port
+ *    defined in control/mcp/messaging-tools.ts (never storage/host imports).
+ *    The host layer (src/host) is authority-only: environment-free, MCP-SDK-free,
+ *    and it never reaches control, endpoint, or composition layers.
  * 9. Runtime dependencies must be exactly pinned.
  *
  * Negative fixtures in scripts/fixtures/*.fixture.ts prove the gate REJECTS
@@ -141,7 +145,8 @@ const isStorage = (path) => path.startsWith(join(srcRoot, "storage") + "/");
 const isControl = (path) => path.startsWith(join(srcRoot, "control") + "/");
 const isEndpoints = (path) => path.startsWith(join(srcRoot, "endpoints") + "/");
 const isBin = (path) => path.startsWith(join(srcRoot, "bin") + "/");
-const isOuter = (path) => isStorage(path) || isControl(path) || isEndpoints(path) || isBin(path);
+const isHost = (path) => path.startsWith(join(srcRoot, "host") + "/");
+const isOuter = (path) => isStorage(path) || isControl(path) || isEndpoints(path) || isBin(path) || isHost(path);
 const isMcp = (path) => path.startsWith(join(srcRoot, "control", "mcp") + "/");
 
 function applyRules(file, bucket) {
@@ -211,6 +216,24 @@ function applyRules(file, bucket) {
       push("endpoint integration must not reach another endpoint integration");
     }
   }
+  const inHostRole =
+    isHost(file.path) ||
+    file.roleDir === join(srcRoot, "host") ||
+    file.roleDir.startsWith(join(srcRoot, "host") + "/");
+  if (inHostRole) {
+    if (reaches(file.path, (target) => isControl(target) || isEndpoints(target) || isBin(target))) {
+      push("host layer must not reach control, endpoint, or composition layers");
+    }
+    if (file.external.some((spec) => MCP_SDK.test(spec))) push("host layer must not require the MCP SDK");
+    if (file.envAccess.length > 0) push("host layer must stay environment-free; trusted configuration is passed in");
+  }
+  const inMcpControl =
+    isMcp(file.path) ||
+    file.roleDir === join(srcRoot, "control", "mcp") ||
+    file.roleDir.startsWith(join(srcRoot, "control", "mcp") + "/");
+  if (inMcpControl && reaches(file.path, (target) => isStorage(target) || isHost(target))) {
+    push("MCP control surface must not reach storage or the host; composition belongs in bin");
+  }
   if (isProtocol(file.path) || isCore(file.path) || file.roleDir === join(srcRoot, "protocol") || file.roleDir === join(srcRoot, "core")) {
     for (const identifier of file.identifiers) {
       if (PRODUCT_IDENTIFIER.test(identifier)) {
@@ -229,8 +252,10 @@ function applyRules(file, bucket) {
 
 for (const file of analyzed) applyRules(file, errors);
 
-// MCP surface stays strictly the ping smoke: no capability operation names on
-// the MCP adapter, and the server registers exactly the ping tool.
+// MCP surface: ping stays the only advertised tool by default; the messaging
+// tools exist only as descriptors in messaging-tools.ts and are registered
+// exclusively through the injected, endpoint-bound port. The messaging tool
+// names may appear in control/mcp only inside messaging-tools.ts.
 const capabilitiesSource = readFileSync(join(srcRoot, "protocol", "capabilities.ts"), "utf8");
 const capabilityOperations = [...capabilitiesSource.matchAll(/"([a-z_]+)"/g)].map((match) => match[1]);
 const mcpSources = analyzed.filter((file) => isMcp(file.path));
@@ -242,8 +267,16 @@ for (const operation of capabilityOperations) {
   }
 }
 const serverSource = readFileSync(join(srcRoot, "control", "mcp", "server.ts"), "utf8");
-if (!/tools:\s*\[\s*PING_TOOL\s*\]/.test(serverSource)) {
-  errors.push("src/control/mcp/server.ts: the MCP surface must register exactly the ping tool");
+if (!/messaging === undefined \? \[PING_TOOL\] : \[PING_TOOL, \.\.\.MESSAGING_TOOLS\]/.test(serverSource)) {
+  errors.push("src/control/mcp/server.ts: the MCP surface must stay ping-only by default and add messaging tools only through the injected MESSAGING_TOOLS");
+}
+for (const file of mcpSources) {
+  if (file.path.endsWith("messaging-tools.ts")) continue;
+  for (const name of ["ce_send", "ce_inbox_list", "ce_read_payload"]) {
+    if (file.strings.includes(name)) {
+      errors.push(`${relativePackage(file.path)}: messaging tool name "${name}" may appear only in control/mcp/messaging-tools.ts`);
+    }
+  }
 }
 
 // Runtime dependencies must be exactly pinned (no semver ranges).
@@ -295,6 +328,6 @@ if (errors.length > 0) {
   for (const error of errors.sort()) console.error(`  - ${error}`);
   process.exitCode = 1;
 } else {
-  console.log("PI-CHAT-EXCHANGE CONTRACT OK: private storage boundary, protocol<-core direction, plane and endpoint separation, neutral protocol/core, no Pi coupling, ping-only MCP, pinned deps");
+  console.log("PI-CHAT-EXCHANGE CONTRACT OK: private storage boundary, protocol<-core direction, plane and endpoint separation, neutral protocol/core, no Pi coupling, ping-default MCP with port-bound messaging, host layer isolation, pinned deps");
   for (const proof of provedFixtures.sort()) console.log(`  fixture rejected: ${proof}`);
 }

@@ -62,6 +62,7 @@ at a file):
 | `inboxNotification.enabled` | exact boolean `true` enables lifecycle-triggered advisory checks; missing/false/malformed stays disabled |
 | `inboxNotification.pageSize` | integer 1..50; default 10 |
 | `inboxNotification.rawScanLimit` | integer `pageSize`..2000; default 100 |
+| `recipients` | optional array of `{ adapter, endpointId }` cross-adapter endpoints this Pi host may send to (the reply path, e.g. a ChatGPT-side MCP endpoint). Any malformed entry, a `pi` adapter entry, a duplicate, or a label colliding with a session endpoint disables the whole list; absent means same-adapter allowlisted recipients only |
 
 Environment: `CE_STORE_DIR` (default `./store` next to this file),
 `CE_STORE_FILE` (default `ce-store.sqlite`), `CE_ALLOWLIST`, and
