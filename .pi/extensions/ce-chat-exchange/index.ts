@@ -82,8 +82,14 @@ interface ToolDefinitionView {
 }
 
 interface ExtensionApiView {
-  on(event: "session_start", handler: (event: { reason: string }, ctx: ExtensionContextView) => Promise<void> | void): void;
-  on(event: "session_shutdown", handler: (event: { reason: string }, ctx: ExtensionContextView) => Promise<void> | void): void;
+  on(
+    event: "session_start" | "session_shutdown",
+    handler: (event: { reason: string }, ctx: ExtensionContextView) => Promise<void> | void,
+  ): void;
+  on(
+    event: "agent_settled",
+    handler: (event: { type: "agent_settled" }, ctx: ExtensionContextView) => Promise<void> | void,
+  ): void;
   registerTool(tool: ToolDefinitionView): void;
   registerCommand(
     name: string,
@@ -103,6 +109,12 @@ interface AllowlistFile {
   /** CE-0002-B3-P4D opt-in: only the exact boolean `true` registers the
    * ce_read_payload tool. Missing, false, or malformed fails closed. */
   readonly payloadRead?: { readonly enabled?: boolean };
+  /** Extension-local advisory visibility. This never grants CE authority. */
+  readonly inboxNotification?: {
+    readonly enabled?: boolean;
+    readonly pageSize?: number;
+    readonly rawScanLimit?: number;
+  };
   readonly sessions?: Record<string, { readonly endpointId?: string }>;
 }
 
@@ -143,6 +155,48 @@ function payloadReadEnabled(allowlist: AllowlistFile): boolean {
   }
 }
 
+interface InboxNotificationConfig {
+  readonly pageSize: number;
+  readonly rawScanLimit: number;
+}
+
+/** Strict, fail-closed Extension policy. Unknown fields, accessors, inherited
+ * settings, and out-of-range values disable automatic discovery. */
+function inboxNotificationConfig(allowlist: AllowlistFile): InboxNotificationConfig | undefined {
+  try {
+    const setting: unknown = allowlist.inboxNotification;
+    if (typeof setting !== "object" || setting === null || Array.isArray(setting)) return undefined;
+    const prototype = Object.getPrototypeOf(setting);
+    if (prototype !== Object.prototype && prototype !== null) return undefined;
+
+    const allowed = new Set<PropertyKey>(["enabled", "pageSize", "rawScanLimit"]);
+    if (Reflect.ownKeys(setting).some((key) => !allowed.has(key))) return undefined;
+
+    const enabled = Object.getOwnPropertyDescriptor(setting, "enabled");
+    if (enabled?.enumerable !== true || !("value" in enabled) || enabled.value !== true) return undefined;
+
+    const pageSizeField = Object.getOwnPropertyDescriptor(setting, "pageSize");
+    if (pageSizeField !== undefined &&
+        (pageSizeField.enumerable !== true || !("value" in pageSizeField) ||
+         !Number.isInteger(pageSizeField.value) || pageSizeField.value < 1 || pageSizeField.value > 50)) {
+      return undefined;
+    }
+    const pageSize = pageSizeField === undefined ? 10 : pageSizeField.value as number;
+
+    const rawScanLimitField = Object.getOwnPropertyDescriptor(setting, "rawScanLimit");
+    if (rawScanLimitField !== undefined &&
+        (rawScanLimitField.enumerable !== true || !("value" in rawScanLimitField) ||
+         !Number.isInteger(rawScanLimitField.value) ||
+         rawScanLimitField.value < pageSize || rawScanLimitField.value > 2_000)) {
+      return undefined;
+    }
+    const rawScanLimit = rawScanLimitField === undefined ? 100 : rawScanLimitField.value as number;
+    return Object.freeze({ pageSize, rawScanLimit });
+  } catch {
+    return undefined;
+  }
+}
+
 function openHostStore() {
   const directory = envOr("CE_STORE_DIR", join(EXTENSION_DIR, "store"));
   const filename = envOr("CE_STORE_FILE", "ce-store.sqlite");
@@ -156,19 +210,30 @@ function openHostStore() {
 
 export default function ceChatExchange(pi: ExtensionApiView): void {
   const allowlist = loadAllowlist();
+  const notificationConfig = inboxNotificationConfig(allowlist);
   let host: CeSessionHost | undefined;
   let currentEndpoint: string | undefined;
   let inboxBinding: { readonly piSessionId: string; readonly endpointId: string } | undefined;
   /** Truthful startup failure (e.g. authority absent after lease expiry).
    * Tools report this instead of a misleading not-registered refusal. */
   let startupFailure: CeHostRefusal | undefined;
-  const notify = (ctx: ExtensionContextView, message: string, level: "info" | "warning" | "error" = "info"): void => {
-    if (ctx.hasUI) {
-      try {
-        ctx.ui.notify(message, level);
-      } catch {
-        /* notification is best effort in every mode */
-      }
+  let advisoryState: {
+    readonly generation: object;
+    watermark: number;
+    inFlight: boolean;
+    failureLatched: boolean;
+  } | undefined;
+  const notify = (
+    ctx: ExtensionContextView,
+    message: string,
+    level: "info" | "warning" | "error" = "info",
+  ): boolean => {
+    if (!ctx.hasUI) return false;
+    try {
+      ctx.ui.notify(message, level);
+      return true;
+    } catch {
+      return false;
     }
   };
 
@@ -211,8 +276,113 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     return found;
   };
 
+  /** Capture the currently authorized Extension binding. A cached endpoint alone
+   * never identifies the active Pi Session. */
+  const captureAdvisoryBinding = (ctx: ExtensionContextView) => {
+    const state = advisoryState;
+    if (notificationConfig === undefined || state === undefined || state.failureLatched || state.inFlight || !ctx.hasUI) {
+      return undefined;
+    }
+    try {
+      const piSessionId = ctx.sessionManager.getSessionId();
+      const endpointId = endpointForPiSession(allowlist, piSessionId);
+      const binding = inboxBinding;
+      if (endpointId === undefined || binding === undefined ||
+          binding.piSessionId !== piSessionId || binding.endpointId !== endpointId ||
+          currentEndpoint !== endpointId) {
+        return undefined;
+      }
+      return Object.freeze({ state, binding, generation: state.generation, piSessionId, endpointId });
+    } catch {
+      return undefined;
+    }
+  };
+
+  const advisoryBindingIsCurrent = (
+    ctx: ExtensionContextView,
+    captured: NonNullable<ReturnType<typeof captureAdvisoryBinding>>,
+  ): boolean => {
+    if (advisoryState !== captured.state || captured.state.generation !== captured.generation ||
+        inboxBinding !== captured.binding || currentEndpoint !== captured.endpointId) {
+      return false;
+    }
+    try {
+      const piSessionId = ctx.sessionManager.getSessionId();
+      return piSessionId === captured.piSessionId &&
+        endpointForPiSession(allowlist, piSessionId) === captured.endpointId &&
+        inboxBinding?.piSessionId === piSessionId &&
+        inboxBinding.endpointId === captured.endpointId;
+    } catch {
+      return false;
+    }
+  };
+
+  /** One synchronous, bounded, best-effort advisory check. There is deliberately
+   * no await between binding validation, Storage authorization, publication
+   * validation, and ctx.ui.notify. */
+  const checkInboxAdvisory = (ctx: ExtensionContextView): void => {
+    const captured = captureAdvisoryBinding(ctx);
+    if (captured === undefined || notificationConfig === undefined) return;
+    const { state, endpointId } = captured;
+    state.inFlight = true;
+    try {
+      let result: ReturnType<CeSessionHost["listInbox"]>;
+      try {
+        result = getHost().listInbox(endpointId, {
+          afterAuditSequence: state.watermark,
+          pageSize: notificationConfig.pageSize,
+          rawScanLimit: notificationConfig.rawScanLimit,
+        });
+      } catch (error) {
+        state.failureLatched = true;
+        if (advisoryBindingIsCurrent(ctx, captured)) {
+          const code = error instanceof CeHostRefusal ? error.code : "CE_HOST_UNAVAILABLE";
+          notify(ctx, `Chat Exchange: inbox advisory disabled for this runtime (${code}).`, "warning");
+        }
+        return;
+      }
+
+      // A result authorized for an old Session/runtime must never be published.
+      if (!advisoryBindingIsCurrent(ctx, captured)) {
+        state.failureLatched = true;
+        return;
+      }
+
+      const count = result.messages.length;
+      const incomplete = count === notificationConfig.pageSize || result.scanBudgetExhausted;
+      const nextWatermark = result.continuationAuditSequence ?? state.watermark;
+      if (count === 0 && !incomplete) {
+        state.watermark = Math.max(state.watermark, nextWatermark);
+        return;
+      }
+
+      const message = count === 0
+        ? "Chat Exchange: bounded inbox check incomplete as of this check; additional eligible activity may exist. Run ce_inbox_list to inspect. Advisory only."
+        : `Chat Exchange: ${count} inbox ${count === 1 ? "item" : "items"} observed as of this check${
+            incomplete
+              ? "; this bounded check was incomplete and additional eligible activity may exist"
+              : ""
+          }. Run ce_inbox_list to inspect. Advisory only.`;
+      if (!notify(ctx, message, incomplete ? "warning" : "info")) {
+        state.failureLatched = true;
+        return;
+      }
+      if (advisoryState === state && state.generation === captured.generation) {
+        state.watermark = Math.max(state.watermark, nextWatermark);
+      }
+    } catch {
+      state.failureLatched = true;
+      if (advisoryBindingIsCurrent(ctx, captured)) {
+        notify(ctx, "Chat Exchange: inbox advisory disabled for this runtime (CE_HOST_UNAVAILABLE).", "warning");
+      }
+    } finally {
+      state.inFlight = false;
+    }
+  };
+
   pi.on("session_start", async (event, ctx) => {
     inboxBinding = undefined;
+    advisoryState = undefined;
     const piSessionId = ctx.sessionManager.getSessionId();
     const endpointId = endpointForPiSession(allowlist, piSessionId);
     if (endpointId === undefined) {
@@ -233,11 +403,16 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       pi.appendEntry("ce-mapping", mapping);
       startupFailure = undefined;
       inboxBinding = Object.freeze({ piSessionId, endpointId });
+      advisoryState = notificationConfig === undefined
+        ? undefined
+        : { generation: Object.freeze({}), watermark: 0, inFlight: false, failureLatched: false };
       notify(
         ctx,
         `ce-chat-exchange: endpoint ${mapping.endpointId} bound (participant ${mapping.participantId}, session ${mapping.sessionId})`,
       );
+      checkInboxAdvisory(ctx);
     } catch (error) {
+      advisoryState = undefined;
       startupFailure =
         error instanceof CeHostRefusal ? error : new CeHostRefusal("CE_HOST_UNAVAILABLE");
       notify(ctx, `ce-chat-exchange: session start failed closed (${startupFailure.code})`, "warning");
@@ -250,7 +425,12 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     }
     currentEndpoint = undefined;
     inboxBinding = undefined;
+    advisoryState = undefined;
     startupFailure = undefined;
+  });
+
+  pi.on("agent_settled", (_event, ctx) => {
+    checkInboxAdvisory(ctx);
   });
 
   const refusalResult = (error: unknown): ToolResultView => {

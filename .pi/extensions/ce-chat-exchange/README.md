@@ -1,10 +1,10 @@
-# ce-chat-exchange — CE-0002 B3-P3D/P4D explicit tools
+# ce-chat-exchange — CE-0002 B3-P6B explicit tools and Inbox advisory
 
-Local, Session-authorized messaging with explicit bounded Inbox discovery and
-opt-in authorized payload reading. The B3-P3B runtime slice was verified against
-Pi 0.86.1; the Inbox and payload tools have isolated harness coverage. Real
-two-process dogfood is a separate acceptance phase and is not claimed by these
-instructions.
+Local, Session-authorized messaging with explicit bounded Inbox discovery,
+opt-in authorized payload reading, and an optional lifecycle-triggered count-only
+Inbox advisory. The runtime slice is verified against Pi 0.86.1; Extension
+behavior has an isolated harness. Real two-process dogfood is a separate
+acceptance phase and is not claimed by these instructions.
 ## What it does
 
 - On `session_start`, resolves this Pi session's endpoint from the operator
@@ -13,14 +13,17 @@ instructions.
 - Registers `ce_send`, `ce_read`, `ce_inbox_list`, `/ce-status`, and — only when
   the operator sets `payloadRead.enabled` to the exact boolean `true` — the
   `ce_read_payload` tool.
+- When `inboxNotification.enabled` is the exact boolean `true`, performs one
+  bounded authorized Inbox check after a successful Session binding and after
+  `agent_settled`, then emits count-only advisory UI text when appropriate.
 - Persists the mapping (identifiers only) as a `ce-mapping` custom session
   entry via `pi.appendEntry`.
 - On `session_shutdown`, drops the in-memory capability row.
 
 ## What it deliberately does NOT do
 
-- No ACK, delivery cursor mutation, automatic consumption, background polling,
-  automatic page draining, or cross-process signalling.
+- No ACK, delivery cursor mutation, automatic consumption, timer, background
+  polling, automatic page draining, external idle wake, or cross-process signalling.
 - No external delivery: writing to SQLite never makes a message visible in
   another Pi conversation. `ce_read` returns metadata only. Payload text
   leaves the storage plane solely through an operator-opted-in
@@ -56,6 +59,9 @@ at a file):
 | `exchangeNamespace` / `exchangeIdempotencyKey` | deterministic exchange bootstrap |
 | `leaseTtlSeconds` | ownership lease (30–3600; default 120) |
 | `payloadRead.enabled` | exact boolean `true` registers `ce_read_payload`; missing/false/malformed stays disabled |
+| `inboxNotification.enabled` | exact boolean `true` enables lifecycle-triggered advisory checks; missing/false/malformed stays disabled |
+| `inboxNotification.pageSize` | integer 1..50; default 10 |
+| `inboxNotification.rawScanLimit` | integer `pageSize`..2000; default 100 |
 
 Environment: `CE_STORE_DIR` (default `./store` next to this file),
 `CE_STORE_FILE` (default `ce-store.sqlite`), `CE_ALLOWLIST`, and
@@ -114,6 +120,46 @@ endpoint, checks its successful startup binding, and delegates CE authorization
 to Storage. No raw Store, capability, digest, payload or internal stack is returned.
 BUSY is retryable only by explicit caller action; INDETERMINATE is non-retryable
 until the operator reopens and inspects. The tool never renews, reissues or takes over.
+
+## Inbox advisory notification contract (B3-P6B, operator opt-in)
+
+`inboxNotification.enabled` must be the exact boolean `true`. Unknown fields,
+prototype-bearing or accessor-backed objects, malformed bounds, and missing/false
+settings fail closed to disabled. Advisory configuration never grants CE authority.
+Each check reuses the current Session's existing `read` authority through
+`host.listInbox`; Storage still validates membership, join boundary, current Owner,
+fencing, lease, and capability inside the bounded transaction.
+
+After a successful Session binding and after `agent_settled`, the Extension may
+perform exactly one check with its private page and raw-scan limits. It does not
+drain another page, poll, start a timer, retry automatically, or wake an idle
+runtime. A volatile Audit Sequence watermark avoids rescanning examined rows; it
+is never persisted, never written to `delivery_cursor`, and is reset on runtime
+replacement or shutdown. Null continuation leaves the previous watermark intact.
+Duplicate advisories after a fresh runtime generation are expected.
+
+Published text contains only a bounded item count and fixed advisory wording. It
+never contains Message IDs, Audit Sequences, endpoint/Participant/Session/Store
+identities, keys, digests, lengths, capabilities, or payload. A saturated page or
+exhausted raw-scan budget is labeled incomplete and does not claim a total Inbox
+count. Complete zero-result scans stay silent. Notification is not Delivery, ACK,
+Read, processing, Result, unread state, or Workflow Completion.
+
+The authority-critical path validates the live Pi Session/endpoint/binding before
+discovery and again immediately before publication, with no `await` between those
+checks, synchronous `host.listInbox`, and synchronous `ctx.ui.notify`. A stale
+Session or runtime generation is dropped silently without watermark advance or
+retry. Refusals, unexpected failures, and publication exceptions leave the
+watermark unchanged and latch automatic checks off for that runtime generation;
+the explicit `ce_inbox_list` tool remains independently usable.
+
+UI delivery is best effort. TUI and RPC use `ctx.ui.notify`; JSON/print or any
+context without usable UI skips automatic discovery. PI WEB may retain historical
+notifications in its own bounded daemon memory. That history is not the CE Inbox,
+dismissal is not ACK or consumption, and a retained notice proves only that an
+authorized observation occurred as of that earlier check—not that authority is
+current. Generic RPC clients may display, ignore, log, or retain the event. No
+successful `ctx.ui.notify` call guarantees display or persistence.
 
 ## Authorized payload contract (B3-P4D, operator opt-in)
 
