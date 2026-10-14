@@ -1,90 +1,107 @@
-# ChatGPT Installation — pi-handoff `ping` smoke (manual user steps)
+# ChatGPT Desktop local plugin installation
 
-> **ARCHIVAL (2026-10-06, PH-0002):** the smoke server lives on as
-> pi-chat-exchange (`node dist/bin/mcp-stdio.js` in
-> `packages/pi-chat-exchange`); replace `pi-handoff` names/paths below
-> accordingly. The manual user steps and tunnel mechanics remain accurate
-> as documented during PH-0001. Real ChatGPT acceptance stays NOT_RUN.
+Current OpenAI documentation supports Desktop-only plugins that launch a local
+MCP server over stdio. This package uses that supported format: a portable
+`plugin.json`, root `mcp.json`, and `${PLUGIN_ROOT}` for the bundled server. The
+generated `mcp.json` pins this machine's Node 24 runtime by absolute path, so the
+desktop host never resolves `node` from its restricted `PATH` (diagnosed in
+HANDOFF-946281, fixed in HANDOFF-968413).
 
-Pi cannot perform these steps for you: they require your OpenAI account,
-browser interaction, and a runtime API key. Follow them in order; the final
-step is the real acceptance test. Estimated time: ~10 minutes.
+Official references:
 
-Prerequisites: this repo built (`pnpm run build` in `packages/pi-handoff`),
-`node` on PATH, and a ChatGPT account with permission to create custom MCP
-servers (workspace policy may restrict this).
+- <https://developers.openai.com/plugins/deploy/desktop-only>
+- <https://developers.openai.com/plugins/build/plugins>
 
-## 1. Create the Secure MCP Tunnel
+This path requires neither a public URL nor Secure MCP Tunnel. Public directory
+submission of a local-MCP plugin is a separate flow currently limited to
+allowlisted organizations; local marketplace installation does not publish the
+plugin.
 
-1. Open <https://platform.openai.com/settings/organization/tunnels> and
-   create a tunnel. Note the `tunnel_id`.
-   - Tunnel permissions are organization-level: you need Tunnels **Read** +
-     **Use** (create requires **Manage**). Ask your org owner/RBAC admin if
-     the page shows "Tunnels access required".
-2. Download `tunnel-client` from
-   <https://github.com/openai/tunnel-client/releases/latest>.
-3. Create a runtime API key for the control plane and export it:
+## 1. Build the installable package
 
-   ```bash
-   export CONTROL_PLANE_API_KEY="sk-..."
-   ```
+Requirements: Node.js 24, pnpm 12, and macOS or Linux. The generated `mcp.json`
+launches `/Users/zieglar/.local/share/mise/installs/node/24.21.0/bin/node` by
+absolute path — a ChatGPT Desktop-specific local deployment setting that is not
+portable across machines.
 
-4. Initialize and validate a profile pointing at the pi-handoff stdio server:
+```bash
+cd packages/pi-chat-exchange
+pnpm run package:desktop-plugin
+```
 
-   ```bash
-   tunnel-client init \
-     --sample sample_mcp_stdio_local \
-     --profile pi-handoff \
-     --tunnel-id tunnel_0123456789abcdef0123456789abcdef \
-     --mcp-command "node $HOME/Code/pi-packages/packages/pi-handoff/dist/bin/mcp-stdio.js"
+Generated, ignored artifacts:
 
-   tunnel-client doctor --profile pi-handoff --explain
-   ```
+- `.plugin-build/pi-chat-exchange-0.1.0.zip` — single-root distributable ZIP.
+- `.plugin-build/marketplace/` — ready-to-register local marketplace.
+- `.plugin-build/pi-chat-exchange/` — unpacked inspection copy.
 
-5. Run the client and keep it running:
+The package includes the compiled server and production dependencies. It does
+not include a live endpoint identity, store path, token, capability, or secret.
 
-   ```bash
-   tunnel-client run --profile pi-handoff
-   ```
+## 2. Create the operator binding
 
-## 2. Create and install the personal plugin
+Copy the redacted template outside the plugin installation/cache:
 
-1. In ChatGPT, open <https://chatgpt.com/plugins>, select the plus button,
-   then **Create custom MCP server**.
-2. Name it `pi-handoff`. Under **Connection**, select **Tunnel** and pick the
-   tunnel created above (or paste its `tunnel_id`).
-3. Authentication: **No authentication** (the tunnel itself is the access
-   boundary; do not put API keys in this package).
-4. Review the risk warning, select **I understand and want to continue**, then
-   **Create as a plugin**.
-5. Open <https://chatgpt.com/plugins?view=personal>, open the plugin, and
-   install it with the plus button.
+```bash
+mkdir -p "$HOME/.config/pi-chat-exchange"
+cp plugin/pi-chat-exchange/config/binding.example.json \
+  "$HOME/.config/pi-chat-exchange/mcp-binding.json"
+```
 
-## 3. Invoke `ping` (the acceptance test)
+Edit the copied file:
 
-1. On the ChatGPT homepage, switch the tab from **Chat** to **Work**.
-2. Start a new Work chat. Type `@` in the prompt box and select **pi-handoff**.
-3. Ask: *"Use the pi-handoff ping tool and show me the JSON result."*
-4. Expected result — a JSON object exactly like:
+- `store.directory` must be a normalized absolute POSIX path and not `/`.
+- `endpoint` is the single ChatGPT Desktop-owned Endpoint identity.
+- `recipients` is the explicit cross-adapter allowlist, normally the Pi
+  Endpoint that will receive messages.
+- Leave `payloadRead.enabled` as `false` unless payload reads are explicitly
+  authorized.
 
-   ```json
-   {
-     "service": "pi-handoff",
-     "protocolVersion": 1,
-     "host": "darwin 25.0.0",
-     "status": "reachable"
-   }
-   ```
+The bundled launcher always passes this fixed absolute location to the existing
+`mcp-stdio` entrypoint. MCP tool arguments and environment variables cannot
+select the bound identity or configuration file.
 
-If ChatGPT cannot connect: verify `tunnel-client run` is healthy (the loopback
-admin UI at `/ui`, plus `/healthz` and `/readyz`), that the tunnel is
-associated with the ChatGPT workspace (not only the Platform organization),
-and that the tunnel shows `tunnel-client` connected in Platform settings.
+The launcher also accepts a strict normalized absolute `--config` path for
+local package diagnostics. The shipped `mcp.json` supplies no override, so the
+Desktop path remains the system account location above.
 
-## Notes
+## 3. Install from the local marketplace
 
-- Personal custom MCP servers live only in your account; nothing is
-  published or shared.
-- Do not use a public HTTPS forwarding service in place of the tunnel for
-  anything but a throwaway test — the broker phase must not expose an
-  unauthenticated local control surface to the internet.
+Register the generated marketplace using an absolute path:
+
+```bash
+codex plugin marketplace add \
+  /absolute/path/to/packages/pi-chat-exchange/.plugin-build/marketplace
+```
+
+Restart ChatGPT Desktop. Open **Plugins**, choose **Pi Chat Exchange Local**,
+and install **Pi Chat Exchange**. Start a new local Work/Codex chat after any
+plugin update; existing chats do not reload changed tools.
+
+The desktop host copies local plugins into its cache. Re-run the package command
+and refresh/reinstall the marketplace entry after changing the plugin.
+
+## 4. Targeted acceptance
+
+1. Mention **Pi Chat Exchange** in a new local chat.
+2. Ask it to call `ping`; expect `status: "reachable"`.
+3. Confirm tool discovery lists exactly `ping`, `ce_send`, `ce_inbox_list`, and
+   `ce_read_payload`.
+4. Use `ce_send` for an allowlisted Pi recipient and verify Pi receives it.
+5. Have Pi reply, then verify `ce_inbox_list` discovers the reply.
+6. If payload reads were explicitly enabled, verify `ce_read_payload` returns
+   only the selected message body.
+
+Automated package tests cover steps 2–3 against the bundled artifact. Actual
+ChatGPT Desktop installation and the bidirectional UI workflow remain
+**NOT_RUN** until performed in the desktop client.
+
+## Failure behavior
+
+- Missing/invalid binding: startup fails closed with `CE_MCP_CONFIG_INVALID`.
+- Existing stale ownership after a crash: startup refuses takeover.
+- `payloadRead.enabled: false`: payload reads are refused.
+- Missing pinned Node runtime: `mcp.json` launches `/Users/zieglar/.local/share/mise/installs/node/24.21.0/bin/node`
+  by absolute path. If that runtime moves (for example a mise upgrade), update the
+  `mcp.json` source and repackage; the desktop host no longer needs `node` on `PATH`.
+- Windows: unsupported by the current absolute POSIX config-path contract.

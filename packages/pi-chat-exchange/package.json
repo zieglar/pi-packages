@@ -10,11 +10,13 @@
   "scripts": {
     "test": "vitest run",
     "test:storage": "vitest run test/storage",
+    "test:plugin-package": "CE_PLUGIN_PACKAGE_TEST=1 vitest run test/plugin/local-plugin-package.test.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "tsc -p tsconfig.build.json",
+    "package:desktop-plugin": "node scripts/package-local-plugin.mjs",
     "check": "node scripts/check-contract.mjs",
-    "verify": "pnpm run check && pnpm run typecheck && pnpm run build && pnpm test"
+    "verify": "pnpm run check && pnpm run typecheck && pnpm run build && pnpm test && pnpm run test:plugin-package"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.1",

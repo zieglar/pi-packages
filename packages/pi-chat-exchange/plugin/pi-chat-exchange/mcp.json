@@ -1,0 +1,13 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "pi-chat-exchange": {
+      "type": "stdio",
+      "command": "/Users/zieglar/.local/share/mise/installs/node/24.21.0/bin/node",
+      "args": [
+        "${PLUGIN_ROOT}/server/launch.mjs"
+      ],
+      "cwd": "${PLUGIN_ROOT}"
+    }
+  }
+}

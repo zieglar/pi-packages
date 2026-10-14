@@ -7,6 +7,17 @@
 > contracts: [protocol-v2.md](protocol-v2.md); source-reuse conclusions:
 > [source-reuse-audit.md](source-reuse-audit.md).
 
+> **CURRENT ADDENDUM (2026-10-14):** OpenAI now documents Desktop-only local
+> plugins with a root `mcp.json` stdio entry and `${PLUGIN_ROOT}` launch paths.
+> Local/repo marketplaces are supported for ChatGPT Desktop authoring and
+> private installation. Therefore the historical “no direct local process” and
+> “Secure MCP Tunnel required” findings below no longer describe the current
+> Desktop-only plugin path. See
+> <https://developers.openai.com/plugins/deploy/desktop-only>,
+> <https://developers.openai.com/plugins/build/plugins>, and the current
+> [installation guide](chatgpt-installation.md). Public local-MCP submission
+> remains allowlist-gated; actual Desktop acceptance remains **NOT_RUN**.
+
 Date: 2026-10-05. Sources fetched and read in full on this date. Anything not
 established by these sources is marked UNKNOWN.
 

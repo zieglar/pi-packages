@@ -28,8 +28,9 @@ Status (this package):
   [docs/source-reuse-audit.md](docs/source-reuse-audit.md) for pinned source evidence.
 - **Landed since** — CE-0002 B3-P3B: the shared durable host (`src/host/`),
   the endpoint-bound MCP messaging tools over `--config` launch binding, and
-  the Pi extension reply path. Still deferred: client-product acceptance
-  beyond the two-context dogfood tests (NOT_RUN).
+  the Pi extension reply path. A portable ChatGPT Desktop local plugin package
+  now builds and passes packaged stdio/tool-discovery tests. Still deferred:
+  real Desktop installation and bidirectional UI acceptance (NOT_RUN).
 
 ## Architecture
 
@@ -75,7 +76,14 @@ pnpm test             # vitest; the stdio smoke FAILS if dist/ is missing
 node dist/bin/mcp-stdio.js            # ping smoke only, no durable state
 node dist/bin/mcp-stdio.js --config /abs/path/binding.json   # bind one Endpoint
 pnpm run verify       # check → typecheck → build → test (build before test)
+pnpm run package:desktop-plugin  # validated ZIP + local marketplace
 ```
+
+The Desktop package command emits `.plugin-build/pi-chat-exchange-0.1.0.zip`
+and a registerable `.plugin-build/marketplace/`. It vendors the compiled MCP
+server and production dependencies without live operator configuration. Follow
+[docs/chatgpt-installation.md](docs/chatgpt-installation.md) to create the
+external binding and install it in ChatGPT Desktop.
 
 The `--config` file is operator-controlled launch configuration (absolute
 path, JSON, ≤64 KiB). It fixes the Endpoint identity — store location, exchange
