@@ -14,7 +14,8 @@
  *   are unchanged.
  * - Cross-adapter recipients are available only when the operator lists them
  *   explicitly in `recipients`; without that list Pi sends exactly as before.
- * - No takeover recovery: CE-TAKEOVER-RECOVERY-CALLER-001 stays unresolved.
+ * - No automatic takeover recovery: expired Pi authority still fails closed; the
+ *   separate operator-only recovery caller is not reachable from this wrapper.
  */
 import { PI_ADAPTER_KIND } from "./contract.js";
 import {

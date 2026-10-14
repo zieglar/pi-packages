@@ -28,9 +28,10 @@
  *   never invokes it (the Pi extension) observes the original behavior.
  *   Renewal never revives an expired lease; `end` releases ownership and then
  *   detaches the Session with the Session's own `resume` capability.
- * - No takeover recovery: an expired or superseded lease is refused as
- *   `CE_HOST_AUTHORITY_ABSENT` (CE-TAKEOVER-RECOVERY-CALLER-001 stays
- *   unresolved). Restart never implies ownership recovery.
+ * - This host never performs takeover recovery: an expired or superseded lease
+ *   is refused as `CE_HOST_AUTHORITY_ABSENT`. The separate operator-only caller
+ *   for CE-TAKEOVER-RECOVERY-CALLER-001 is not reachable through this adapter.
+ *   Restart never implies ownership recovery.
  */
 import { EXCHANGE_ID_PATTERN, MESSAGE_ID_PATTERN } from "../protocol/identity.js";
 import { CreationDomainError } from "../storage/creation.js";

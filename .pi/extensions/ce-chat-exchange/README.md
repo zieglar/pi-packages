@@ -28,8 +28,9 @@ acceptance phase and is not claimed by these instructions.
   another Pi conversation. `ce_read` returns metadata only. Payload text
   leaves the storage plane solely through an operator-opted-in
   `ce_read_payload` invocation that Storage fully authorizes first.
-- No automatic takeover recovery (`CE-TAKEOVER-RECOVERY-CALLER-001` stays
-  unresolved). An expired lease fails closed with `CE_HOST_AUTHORITY_ABSENT`.
+- No automatic takeover recovery. An expired lease fails closed with
+  `CE_HOST_AUTHORITY_ABSENT`; the separate operator-only recovery CLI is not
+  registered as a Pi command or model tool.
 - A forked or newly created Pi session never inherits the previous mapping:
   fork/new reasons ignore inherited `ce-mapping` entries entirely.
 
@@ -75,6 +76,35 @@ directory, which is covered by the nested `.gitignore` (`store/`,
 `allowlist.json`) so the database and the host-secret file can never be
 staged; use a dedicated directory per deployment in production.
 
+## Shared-store alignment with the ChatGPT Desktop MCP endpoint
+
+ChatGPT Desktop and Pi are two independent Endpoint Authorities that must agree
+on one Store and one Exchange. They must never share an `endpointId`.
+
+| Side | Adapter | Endpoint | Authority |
+|---|---|---|---|
+| ChatGPT Desktop MCP | `mcp` | `chatgpt-desktop` | its own ownership lease |
+| Pi runtime | `pi` | `pi-main` | its own ownership lease |
+
+To align Pi with the MCP binding without touching the MCP side, copy
+`allowlist.example.json` to `allowlist.json` (git-ignored) and launch Pi with the
+shared store:
+
+```sh
+CE_STORE_DIR="$HOME/.local/share/pi-chat-exchange" \
+CE_ALLOWLIST="$PWD/.pi/extensions/ce-chat-exchange/allowlist.json" \
+  pi --session-id pi-main
+```
+
+`exchangeNamespace` and `exchangeIdempotencyKey` must match the MCP binding
+exactly, otherwise each side bootstraps a different Exchange and neither can see
+the other's Messages. The example ships the matching `local` / `chatgpt-pi`
+pair and the single cross-adapter recipient `mcp/chatgpt-desktop`.
+
+Alignment grants delivery eligibility only. It never shares capabilities, never
+merges ownership, and never lets one side renew, release, or take over the
+other's lease.
+
 ## Prerequisite
 
 Build the package once so this extension can import the compiled host seam:
@@ -86,7 +116,16 @@ pnpm --dir packages/pi-chat-exchange run build
 ## Smoke (two terminals, one shared store)
 
 Terminal A and B must share `CE_STORE_DIR` (or both use the default and run
-in the same installation):
+in the same installation). The shipped example allowlist defines the single
+`pi-main` session used for ChatGPT alignment, so a two-Pi smoke needs two
+session entries added to your own `allowlist.json` first, for example:
+
+```json
+"sessions": {
+  "ceA": { "endpointId": "local/sessionA" },
+  "ceB": { "endpointId": "local/sessionB" }
+}
+```
 
 ```sh
 # terminal A

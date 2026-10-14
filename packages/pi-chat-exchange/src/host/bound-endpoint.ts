@@ -10,7 +10,8 @@
  *
  * - start: `beginSession({ requireUnowned: true })` — an existing ownership row
  *   (live or expired, e.g. after a crash) refuses before any durable write.
- *   No adoption and no takeover (CE-TAKEOVER-RECOVERY-CALLER-001 unresolved).
+ *   This runtime never adopts or takes over; the separate operator-only recovery
+ *   caller must clear one exact expired owner before a normal restart.
  * - heartbeat: `host.renew` on a fixed interval. BUSY rolled back and is
  *   retried only at the next tick; UNCERTAIN or any authority refusal stops
  *   the heartbeat permanently and blocks new sends (no blind retry).

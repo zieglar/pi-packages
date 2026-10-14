@@ -104,7 +104,7 @@ explicitly; INDETERMINATE requires operator reopening/inspection before any retr
 | Case | Behavior |
 |---|---|
 | Pi restart within lease | `resume` re-issues capabilities from validated mapping identifiers |
-| Pi restart after lease expiry | `CE_HOST_AUTHORITY_ABSENT`; operator reauthorization required; no takeover recovery (`CE-TAKEOVER-RECOVERY-CALLER-001`) |
+| Pi restart after lease expiry | `CE_HOST_AUTHORITY_ABSENT`; operator may run the explicit recovery caller after exact expired-owner preflight; Pi never takes over automatically |
 | `/reload` | same Pi session id; mapping re-adopted after validation; stale captured contexts are rejected by the runtime |
 | `/new` / `/fork` | inherited `ce-mapping` entries ignored; fresh provisioning only if the new Pi id is allowlisted |
 | Capability expiry/revocation | `CAPABILITY_REJECTED` surfaces as sanitized refusal; re-issue requires host policy |

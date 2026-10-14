@@ -131,12 +131,25 @@ async function main(): Promise<void> {
     );
   };
 
-  process.on("SIGTERM", () => void initiateShutdown());
-  process.on("SIGINT", () => void initiateShutdown());
-  server.onclose = () => void initiateShutdown();
+  let resolveShutdown!: () => void;
+  const shutdownRequested = new Promise<void>((resolvePromise) => {
+    resolveShutdown = resolvePromise;
+  });
+  const requestShutdown = (): void => resolveShutdown();
+
+  // `on`, not `once`: a repeat SIGTERM/SIGINT during the drain window must be
+  // absorbed by this idempotent request instead of hitting Node's default
+  // disposition and killing the process before the lease is released.
+  process.on("SIGTERM", requestShutdown);
+  process.on("SIGINT", requestShutdown);
+  process.stdin.once("end", requestShutdown);
+  process.stdin.once("close", requestShutdown);
+  server.onclose = requestShutdown;
 
   await server.connect(transport);
   console.error(`CE_MCP_STARTED tools=ping,ce_send,ce_inbox_list,ce_read_payload`);
+  await shutdownRequested;
+  await initiateShutdown();
 }
 
 main().catch((error: unknown) => {

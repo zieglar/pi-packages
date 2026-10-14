@@ -16,8 +16,10 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CeEndpointHost } from "../../src/host/endpoint-host.js";
+import { openStorageConnection } from "../../src/storage/connection.js";
+import { readCurrentOwnership, readSessionBindings } from "../../src/storage/ownership.js";
+import { readParticipantByEndpoint } from "../../src/storage/participant.js";
 import { initializeStore, openStore } from "../../src/storage/store.js";
-
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const stdioEntry = resolve(packageRoot, "dist", "bin", "mcp-stdio.js");
 
@@ -67,8 +69,8 @@ async function launch(configPath: string): Promise<Child> {
       child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
     });
   const notify = (method: string) => child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method })}\n`);
-  const waitExit = () =>
-    new Promise<number | null>((resolvePromise) => child.on("exit", (code) => resolvePromise(code)));
+  const exited = new Promise<number | null>((resolvePromise) => child.once("exit", (code) => resolvePromise(code)));
+  const waitExit = () => exited;
   await new Promise<void>((resolveReady, rejectReady) => {
     const timer = setTimeout(() => rejectReady(new Error(`server never started; stderr: ${stderr.join(" | ")}`)), 15_000);
     const poll = () => {
@@ -96,6 +98,128 @@ describe("MCP stdio entrypoint in --config mode (built artifact)", () => {
   it("requires the built artifact", () => {
     if (!existsSync(stdioEntry)) {
       throw new Error(`built stdio entrypoint missing: ${stdioEntry} — run "pnpm run build" first`);
+    }
+  });
+
+  it("releases ownership and detaches the Session when the client closes stdin", { timeout: 30_000 }, async () => {
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ce-mcp-eof-"));
+    try {
+      const configPath = writeConfig(root);
+      const server = await launch(configPath);
+      const ping = await server.call("tools/call", { name: "ping", arguments: {} });
+      expect((ping.result as { isError?: boolean }).isError).not.toBe(true);
+
+      server.process.stdin.end();
+      expect(await server.waitExit()).toBe(0);
+      expect(server.stderr.filter((line) => line.includes("CE_MCP_STOPPED released=true"))).toHaveLength(1);
+
+      const store = openStore({ directory: join(root, "store"), filename: "ce-store.sqlite" });
+      const participant = readParticipantByEndpoint(store, "chatgpt", "chatgpt/main");
+      expect(participant).toBeDefined();
+      expect(readCurrentOwnership(store, participant!.participantId)).toBeUndefined();
+      expect(readSessionBindings(store, participant!.participantId)).toEqual([]);
+      store.close();
+
+      const restarted = await launch(configPath);
+      restarted.process.kill("SIGTERM");
+      expect(await restarted.waitExit()).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("handles SIGINT and concurrent EOF plus SIGTERM through one idempotent shutdown", { timeout: 30_000 }, async () => {
+    for (const trigger of ["SIGINT", "EOF_AND_SIGTERM"] as const) {
+      const root = mkdtempSync(join(realpathSync(tmpdir()), `ce-mcp-${trigger.toLowerCase()}-`));
+      try {
+        const server = await launch(writeConfig(root));
+        if (trigger === "SIGINT") {
+          server.process.kill("SIGINT");
+        } else {
+          server.process.stdin.end();
+          server.process.kill("SIGTERM");
+        }
+        expect(await server.waitExit()).toBe(0);
+        expect(server.stderr.filter((line) => line.includes("CE_MCP_STOPPED released=true"))).toHaveLength(1);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("supports the documented crash \u2192 operator recovery \u2192 clean restart chain", { timeout: 60_000 }, async () => {
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ce-mcp-chain-"));
+    try {
+      const configPath = writeConfig(root);
+      const crashed = await launch(configPath);
+      crashed.process.kill("SIGKILL");
+      await crashed.waitExit();
+
+      // The stale row blocks a normal restart, exactly as diagnosed.
+      const storeOptions = { directory: join(root, "store"), filename: "ce-store.sqlite" };
+      let store = openStore(storeOptions);
+      const participantId = readParticipantByEndpoint(store, "chatgpt", "chatgpt/main")!.participantId;
+      const stale = readCurrentOwnership(store, participantId)!;
+      store.close();
+
+      // Age the crashed lease into the past the way wall-clock time would; the
+      // recovery caller still demands exactly this durable evidence.
+      const past = new Date(Date.parse(stale.expiresAt) - 3_600_000).toISOString();
+      const aged = { leaseStartedAt: past, expiresAt: new Date(Date.parse(past) + 30_000).toISOString() };
+      const raw = openStorageConnection(storeOptions);
+      try {
+        raw.prepare("UPDATE participant_ownership SET lease_started_at = ?, expires_at = ?").run(aged.leaseStartedAt, aged.expiresAt);
+      } finally {
+        raw.close();
+      }
+
+      const recoverArgs = (expiresAt: string) => [
+        resolve(packageRoot, "scripts", "recover-stale-ownership.mjs"),
+        "--config", configPath,
+        "--confirm-endpoint", "chatgpt/chatgpt/main",
+        "--expect-owner-session", stale.sessionId,
+        "--expect-fencing-token", String(stale.fencingToken),
+        "--expect-lease-started-at", aged.leaseStartedAt,
+        "--expect-expires-at", expiresAt,
+      ];
+
+      const runRecovery = (expiresAt: string) =>
+        new Promise<{ code: number | null; stdout: string; stderr: string }>((resolvePromise) => {
+          const child = spawn(process.execPath, recoverArgs(expiresAt), { stdio: ["ignore", "pipe", "pipe"] });
+          let stdout = "";
+          let stderr = "";
+          child.stdout.setEncoding("utf8");
+          child.stderr.setEncoding("utf8");
+          child.stdout.on("data", (chunk: string) => (stdout += chunk));
+          child.stderr.on("data", (chunk: string) => (stderr += chunk));
+          child.once("exit", (code) => resolvePromise({ code, stdout, stderr }));
+        });
+
+      // Wrong evidence refuses before touching the stale row.
+      const wrongEvidence = await runRecovery(new Date(Date.parse(aged.expiresAt) + 1_000).toISOString());
+      expect(wrongEvidence.code).toBe(1);
+      expect(wrongEvidence.stderr).toBe("CE_RECOVERY_OWNER_MISMATCH\n");
+
+      const recovered = await runRecovery(aged.expiresAt);
+      expect(recovered.stderr).toBe("");
+      expect(recovered.code).toBe(0);
+      expect(JSON.parse(recovered.stdout)).toMatchObject({
+        disposition: "RECOVERED",
+        participantId,
+        final: { ownership: "UNOWNED", recoverySession: "DETACHED" },
+      });
+
+      store = openStore(storeOptions);
+      expect(readCurrentOwnership(store, participantId)).toBeUndefined();
+      store.close();
+
+      // The documented end state: a normal restart binds again and shuts down cleanly.
+      const restarted = await launch(configPath);
+      restarted.process.stdin.end();
+      expect(await restarted.waitExit()).toBe(0);
+      expect(restarted.stderr.filter((line) => line.includes("CE_MCP_STOPPED released=true"))).toHaveLength(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 

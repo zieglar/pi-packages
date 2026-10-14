@@ -79,7 +79,7 @@ pnpm run verify       # check → typecheck → build → test (build before tes
 pnpm run package:desktop-plugin  # validated ZIP + local marketplace
 ```
 
-The Desktop package command emits `.plugin-build/pi-chat-exchange-0.1.0.zip`
+The Desktop package command emits `.plugin-build/pi-chat-exchange-0.1.1.zip`
 and a registerable `.plugin-build/marketplace/`. It vendors the compiled MCP
 server and production dependencies without live operator configuration. Follow
 [docs/chatgpt-installation.md](docs/chatgpt-installation.md) to create the

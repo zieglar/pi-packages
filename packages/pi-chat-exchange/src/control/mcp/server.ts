@@ -32,7 +32,7 @@ import {
 } from "./messaging-tools.js";
 
 export const SERVER_NAME = "pi-chat-exchange" as const;
-export const SERVER_VERSION = "0.1.0" as const;
+export const SERVER_VERSION = "0.1.1" as const;
 
 const PING_TOOL = {
   name: PING_TOOL_NAME,

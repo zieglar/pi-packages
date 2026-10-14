@@ -1,6 +1,6 @@
 {
   "name": "@zieglar/pi-chat-exchange",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Generic chat-exchange protocol with pure core rules, a private durable SQLite foundation, and a minimal MCP ping smoke.",
   "type": "module",
@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "tsc -p tsconfig.build.json",
     "package:desktop-plugin": "node scripts/package-local-plugin.mjs",
+    "recover:ownership": "node scripts/recover-stale-ownership.mjs",
     "check": "node scripts/check-contract.mjs",
     "verify": "pnpm run check && pnpm run typecheck && pnpm run build && pnpm test && pnpm run test:plugin-package"
   },

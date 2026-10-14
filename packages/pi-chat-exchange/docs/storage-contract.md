@@ -809,14 +809,21 @@ identifies which invocation committed, never proves that this caller's takeover
 committed, and never establishes a durable ownership lease (only the ownership
 row does). High-water evidence is effect-level only.
 
-At this phase there is no production caller of `reconcileTakeover`
-(CE-TAKEOVER-RECONCILIATION-EVIDENCE-001): no recovery behavior beyond the
-read classified above is designed, implemented, or promised. Whether a future
-real-clock caller should use a conservative optional-term reconciliation
-contract or another existing-evidence recovery protocol is unresolved and
-tracked as CE-TAKEOVER-RECOVERY-CALLER-001; it must be resolved before the
-first production takeover-recovery caller and before P4. No such API is
-selected or implemented here.
+`reconcileTakeover` still has no production caller
+(CE-TAKEOVER-RECONCILIATION-EVIDENCE-001): a real-clock caller cannot
+reconstruct exact term evidence after an INDETERMINATE result and therefore
+must not fabricate evidence or retry blindly.
+
+CE-TAKEOVER-RECOVERY-CALLER-001 is resolved by the explicit operator-only
+caller in `src/host/ownership-recovery.ts` and
+`scripts/recover-stale-ownership.mjs`. It requires an exact Endpoint plus the
+operator-confirmed old Session, fencing token, lease start, and expiry. It
+refuses absent, mismatched, clock-regressed, or live ownership before recovery
+writes; uses only `bindSession`, Session-bound capabilities,
+`takeoverOwnership`, `releaseOwnership`, and `detachSession`; preserves
+monotonic fencing; and emits a capability-free structured receipt. It is not
+an MCP/Pi tool and is never invoked by normal host startup. Any unknown outcome
+stops for fresh durable inspection without automatic retry.
 
 ### Legacy ownership recovery
 

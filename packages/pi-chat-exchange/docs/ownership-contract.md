@@ -190,13 +190,17 @@ exclusively `takeoverOwnership` under the `takeover` scope.
   unchanged on a later valid read of the same Participant shows that no
   fencing allocation committed for that Participant between the two reads; an
   increased high-water identifies no invocation, proves nothing about this
-  caller's takeover, and never establishes a durable lease. No production
-  caller of `reconcileTakeover` exists at this phase
-  (CE-TAKEOVER-RECONCILIATION-EVIDENCE-001); whether a future real-clock
-  caller gets a conservative optional-term reconciliation contract or another
-  existing-evidence recovery protocol is open and tracked as
-  CE-TAKEOVER-RECOVERY-CALLER-001, to be resolved before the first production
-  takeover-recovery caller and before P4. Full statement:
+  caller's takeover, and never establishes a durable lease. The operator-only
+  recovery caller resolving CE-TAKEOVER-RECOVERY-CALLER-001 deliberately does
+  not call `reconcileTakeover`: before writing it requires exact endpoint and
+  old-owner evidence and an expired durable lease; it then binds a fresh
+  recovery Session, uses the existing Session-bound `takeover` primitive,
+  releases that lease, and detaches the recovery Session. A successful caller
+  returns a capability-free receipt plus durable fencing/session evidence. Any
+  INDETERMINATE stage remains unknown and is never retried automatically.
+  `reconcileTakeover` still has no production caller because a default-clock
+  caller cannot reconstruct exact term boundaries after losing acknowledgement
+  (CE-TAKEOVER-RECONCILIATION-EVIDENCE-001). Full statement:
   `docs/storage-contract.md` §11 "Evidence availability after an uncertain
   outcome".
 - **Legacy ownership.** A migrated v2 row never authorizes and is never
