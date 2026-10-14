@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fake = vi.hoisted(() => {
   class Refusal extends Error {
@@ -10,6 +10,7 @@ const fake = vi.hoisted(() => {
   return {
     Refusal,
     begin: vi.fn(), resume: vi.fn(), drop: vi.fn(), list: vi.fn(),
+    renew: vi.fn(), end: vi.fn(),
     open: vi.fn(), initialize: vi.fn(),
     allowlist: { sessions: { piA: { endpointId: "local/A" }, piB: { endpointId: "local/B" } } },
   };
@@ -24,6 +25,8 @@ vi.mock("../../../dist/endpoints/pi/session-host.js", () => ({
     beginSession = fake.begin;
     resume = fake.resume;
     drop = fake.drop;
+    renew = fake.renew;
+    end = fake.end;
     listInbox = fake.list;
   },
 }));
@@ -57,7 +60,7 @@ interface Tool {
 async function harness() {
   const tools: Tool[] = [];
   const events = new Map<string, (event: { reason: string }, ctx: Context) => Promise<void> | void>();
-  const appendEntry = vi.fn();
+  const appendEntry = vi.fn((customType: string, data: unknown) => { branch.push({ type: "custom", customType, data }); });
   const moduleUrl = new URL("../../../../../.pi/extensions/ce-chat-exchange/index.ts", import.meta.url).href;
   const { default: factory } = await import(moduleUrl);
   factory({
@@ -88,12 +91,16 @@ async function harness() {
 }
 
 beforeEach(() => {
+  vi.useFakeTimers();
+  fake.renew.mockReturnValue({ fencingToken: 1, expiresAt: "2026-10-10T00:02:00.000Z" });
+  fake.end.mockReturnValue({ released: true, detached: true });
   vi.clearAllMocks();
   fake.begin.mockImplementation((endpointId: string) => ({ endpointId, participantId: "prt_test", sessionId: "ses_test", exchangeId: "ho_test" }));
   fake.resume.mockImplementation((endpointId: string, mapping: object) => ({ ...mapping, endpointId }));
   fake.list.mockReturnValue({ messages: [{ messageId: "msg_test", auditSequence: 9 }], continuationAuditSequence: 9, scanBudgetExhausted: false });
 });
 
+afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
 describe("explicit Pi Inbox tool", () => {
   it("registers once with the exact bounded input schema", async () => {
     const h = await harness();

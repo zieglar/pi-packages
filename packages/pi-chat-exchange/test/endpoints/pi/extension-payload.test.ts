@@ -7,7 +7,7 @@
  * absence of payload leakage — not storage authorization, which the real host
  * suites cover.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fake = vi.hoisted(() => {
   class Refusal extends Error {
@@ -19,6 +19,7 @@ const fake = vi.hoisted(() => {
   return {
     Refusal,
     begin: vi.fn(), resume: vi.fn(), drop: vi.fn(), list: vi.fn(), send: vi.fn(),
+    renew: vi.fn(), end: vi.fn(),
     readPayload: vi.fn(),
     open: vi.fn(), initialize: vi.fn(),
     constructedPolicies: [] as unknown[],
@@ -40,6 +41,8 @@ vi.mock("../../../dist/endpoints/pi/session-host.js", () => ({
     beginSession = fake.begin;
     resume = fake.resume;
     drop = fake.drop;
+    renew = fake.renew;
+    end = fake.end;
     listInbox = fake.list;
     send = fake.send;
     readPayload = fake.readPayload;
@@ -79,7 +82,7 @@ const PAYLOAD_TEXT = "PAYLOAD-MARKER-Ø☃-do-not-leak";
 async function harness() {
   const tools: Tool[] = [];
   const events = new Map<string, (event: { reason: string }, ctx: Context) => Promise<void> | void>();
-  const appendEntry = vi.fn();
+  const appendEntry = vi.fn((customType: string, data: unknown) => { branch.push({ type: "custom", customType, data }); });
   const moduleUrl = new URL("../../../../../.pi/extensions/ce-chat-exchange/index.ts", import.meta.url).href;
   const { default: factory } = await import(moduleUrl);
   factory({
@@ -110,6 +113,9 @@ async function harness() {
 }
 
 beforeEach(() => {
+  vi.useFakeTimers();
+  fake.renew.mockReturnValue({ fencingToken: 1, expiresAt: "2026-10-10T00:02:00.000Z" });
+  fake.end.mockReturnValue({ released: true, detached: true });
   vi.clearAllMocks();
   fake.constructedPolicies.length = 0;
   delete fake.allowlist.payloadRead;
@@ -128,6 +134,7 @@ beforeEach(() => {
   });
 });
 
+afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
 describe("explicit Pi payload tool registration", () => {
   it.each([
     ["absent", undefined],

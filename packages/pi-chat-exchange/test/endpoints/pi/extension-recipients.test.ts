@@ -6,7 +6,7 @@
  * field entirely (same-adapter-only sending, the pre-P3B behavior) when the
  * setting is absent, empty, or malformed in any way.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fake = vi.hoisted(() => {
   class Refusal extends Error {
@@ -18,6 +18,7 @@ const fake = vi.hoisted(() => {
   return {
     Refusal,
     begin: vi.fn(), resume: vi.fn(), drop: vi.fn(), list: vi.fn(),
+    renew: vi.fn(), end: vi.fn(),
     open: vi.fn(), initialize: vi.fn(),
     policies: [] as Array<Record<string, unknown>>,
     allowlist: {} as Record<string, unknown>,
@@ -34,6 +35,8 @@ vi.mock("../../../dist/endpoints/pi/session-host.js", () => ({
     beginSession = fake.begin;
     resume = fake.resume;
     drop = fake.drop;
+    renew = fake.renew;
+    end = fake.end;
     listInbox = fake.list;
   },
 }));
@@ -77,11 +80,15 @@ async function start() {
 }
 
 beforeEach(() => {
+  vi.useFakeTimers();
+  fake.renew.mockReturnValue({ fencingToken: 1, expiresAt: "2026-10-10T00:02:00.000Z" });
+  fake.end.mockReturnValue({ released: true, detached: true });
   vi.clearAllMocks();
   fake.policies.length = 0;
   fake.begin.mockImplementation((endpointId: string) => ({ endpointId, participantId: "prt_test", sessionId: "ses_test", exchangeId: "ho_test" }));
 });
 
+afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
 const BASE = {
   sessions: { piA: { endpointId: "local/A" }, piB: { endpointId: "local/B" } },
 };

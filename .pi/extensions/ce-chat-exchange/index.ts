@@ -125,6 +125,13 @@ interface AllowlistFile {
 }
 
 const EXTENSION_DIR = join(fileURLToPath(import.meta.url), "..");
+// Reload replaces the module. Retain only refusal codes in process memory as a
+// fallback if the identifier-only session diagnostic could not be persisted.
+// This cache can deny adoption, never grant it, and contains no capabilities.
+const FAILURE_CACHE = Symbol.for("ce-chat-exchange.lifecycle-failures");
+const processFailureCodes = ((globalThis as typeof globalThis & {
+  [FAILURE_CACHE]?: Map<string, "CE_HOST_AUTHORITY_ABSENT" | "CE_HOST_UNCERTAIN" | "CE_HOST_UNAVAILABLE">;
+})[FAILURE_CACHE] ??= new Map());
 
 function envOr(name: string, fallback: string): string {
   const value = process.env[name];
@@ -261,6 +268,24 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   let host: CeSessionHost | undefined;
   let currentEndpoint: string | undefined;
   let inboxBinding: { readonly piSessionId: string; readonly endpointId: string } | undefined;
+  const failureKey = (piSessionId: string, endpointId: string): string => JSON.stringify([
+    envOr("CE_STORE_DIR", join(EXTENSION_DIR, "store")), envOr("CE_STORE_FILE", "ce-store.sqlite"),
+    piSessionId, endpointId,
+  ]);
+  const envTtl = process.env.CE_LEASE_TTL_SECONDS;
+  const configuredTtl = allowlist.leaseTtlSeconds === undefined ? 120 : allowlist.leaseTtlSeconds;
+  const leaseTtlSeconds = envTtl !== undefined && envTtl !== "" ? Number(envTtl) : configuredTtl;
+  type Generation = {
+    readonly piSessionId: string;
+    readonly endpointId: string;
+    readonly ctx: ExtensionContextView;
+    timer: ReturnType<typeof setInterval> | undefined;
+    renewal: Promise<void> | undefined;
+    stopping: boolean;
+    failure: CeHostRefusal | undefined;
+  };
+  let generation: Generation | undefined;
+  let shutdownInFlight: Promise<void> | undefined;
   /** Truthful startup failure (e.g. authority absent after lease expiry).
    * Tools report this instead of a misleading not-registered refusal. */
   let startupFailure: CeHostRefusal | undefined;
@@ -291,18 +316,13 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         piSessionId,
         endpointId: typeof entry.endpointId === "string" ? entry.endpointId : "",
       }));
-      const envTtl = process.env.CE_LEASE_TTL_SECONDS;
       const recipients = crossAdapterRecipients(allowlist);
       const policy: CeHostPolicy = {
         adapter: PI_ADAPTER_KIND,
         exchangeNamespace: allowlist.exchangeNamespace ?? "pi-local",
         exchangeIdempotencyKey: allowlist.exchangeIdempotencyKey ?? "pi-local-exchange",
         allowlist: sessions,
-        ...(envTtl !== undefined && envTtl !== ""
-          ? { leaseTtlSeconds: Number(envTtl) }
-          : allowlist.leaseTtlSeconds === undefined
-            ? {}
-            : { leaseTtlSeconds: allowlist.leaseTtlSeconds }),
+        leaseTtlSeconds,
         // CE-0002-B3-P4D: forward the operator opt-in into the host policy so
         // the registered tool and the host capability gate agree. Normalized to
         // the exact boolean here — a malformed allowlist setting never reaches
@@ -432,7 +452,112 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     }
   };
 
+  const stopHeartbeat = (state: Generation): void => {
+    if (state.timer !== undefined) clearInterval(state.timer);
+    state.timer = undefined;
+  };
+
+  // Diagnostics contain lookup labels and fixed codes only, never authority.
+  // Any matching marker blocks adoption; a later mapping cannot clear it.
+  const persistedFailure = (ctx: ExtensionContextView, piSessionId: string, endpointId: string): CeHostRefusal | undefined => {
+    const cached = processFailureCodes.get(failureKey(piSessionId, endpointId));
+    if (cached !== undefined) return new CeHostRefusal(cached);
+    for (const entry of ctx.sessionManager.getBranch()) {
+      if (entry.type !== "custom" || entry.customType !== "ce-lifecycle-blocked") continue;
+      const data = entry.data as Record<string, unknown> | undefined;
+      if (data?.piSessionId !== piSessionId || data.endpointId !== endpointId) continue;
+      const code = data.code === "CE_HOST_AUTHORITY_ABSENT" || data.code === "CE_HOST_UNCERTAIN"
+        ? data.code : "CE_HOST_UNAVAILABLE";
+      return new CeHostRefusal(code);
+    }
+    return undefined;
+  };
+
+  const failLifecycle = (state: Generation, error: unknown): void => {
+    if (state.failure !== undefined) return;
+    const code = error instanceof CeHostRefusal &&
+      (error.code === "CE_HOST_AUTHORITY_ABSENT" || error.code === "CE_HOST_UNCERTAIN")
+      ? error.code : "CE_HOST_UNAVAILABLE";
+    processFailureCodes.set(failureKey(state.piSessionId, state.endpointId), code);
+    state.failure = new CeHostRefusal(code); // Lifecycle failures never suggest a retry.
+    startupFailure = state.failure;
+    stopHeartbeat(state);
+    currentEndpoint = undefined;
+    inboxBinding = undefined;
+    advisoryState = undefined;
+    try {
+      pi.appendEntry("ce-lifecycle-blocked", { piSessionId: state.piSessionId, endpointId: state.endpointId, code });
+    } catch {
+      notify(state.ctx, "ce-chat-exchange: lifecycle diagnostic persistence failed (CE_HOST_UNAVAILABLE)", "warning");
+    }
+    // A synchronous renewal may still be unwinding. Discard only after it settles.
+    if (state.renewal === undefined) host?.drop(state.endpointId);
+    notify(state.ctx, `ce-chat-exchange: lifecycle failed closed (${code})`, "warning");
+  };
+
+  const startHeartbeat = (state: Generation): void => {
+    state.timer = setInterval(() => {
+      if (generation !== state || state.stopping || state.failure !== undefined || state.renewal !== undefined) return;
+      let settle!: () => void;
+      state.renewal = new Promise<void>((resolve) => { settle = resolve; });
+      try {
+        if (state.ctx.sessionManager.getSessionId() !== state.piSessionId) {
+          throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+        }
+        getHost().renew(state.endpointId);
+      } catch (error) {
+        failLifecycle(state, error);
+      } finally {
+        state.renewal = undefined;
+        if (state.failure !== undefined) host?.drop(state.endpointId);
+        settle();
+      }
+    }, leaseTtlSeconds * 1_000 / 4);
+    state.timer.unref();
+  };
+
+  const shutdown = (reason: string): Promise<void> => {
+    if (shutdownInFlight !== undefined) return shutdownInFlight;
+    const state = generation;
+    if (state === undefined) return Promise.resolve();
+    // Invalidate before any await: queued ticks, tools, and advisories are stale.
+    state.stopping = true;
+    stopHeartbeat(state);
+    currentEndpoint = undefined;
+    inboxBinding = undefined;
+    advisoryState = undefined;
+    const finish = async (): Promise<void> => {
+      if (state.renewal !== undefined) await state.renewal;
+      try {
+        if (reason !== "reload" && state.failure === undefined) {
+          const result = getHost().end(state.endpointId);
+          if (result.released !== true || result.detached !== true) {
+            throw new CeHostRefusal("CE_HOST_UNCERTAIN");
+          }
+        }
+      } catch (error) {
+        failLifecycle(state, error);
+      } finally {
+        host?.drop(state.endpointId);
+        if (generation === state) generation = undefined;
+      }
+    };
+    // Install the completion latch before synchronous end/drop can re-enter.
+    let resolve!: () => void;
+    let reject!: (error: unknown) => void;
+    const completion = new Promise<void>((onResolve, onReject) => { resolve = onResolve; reject = onReject; });
+    shutdownInFlight = completion;
+    void finish().then(
+      () => { shutdownInFlight = undefined; resolve(); },
+      () => { shutdownInFlight = undefined; reject(new CeHostRefusal("CE_HOST_UNAVAILABLE")); },
+    );
+    return completion;
+  };
+
   pi.on("session_start", async (event, ctx) => {
+    if (generation !== undefined || shutdownInFlight !== undefined) await shutdown(event.reason === "reload" ? "reload" : "new");
+    currentEndpoint = undefined;
+    startupFailure = undefined;
     inboxBinding = undefined;
     advisoryState = undefined;
     const piSessionId = ctx.sessionManager.getSessionId();
@@ -444,17 +569,22 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     currentEndpoint = endpointId;
 
     try {
+      const blocked = persistedFailure(ctx, piSessionId, endpointId);
+      if (blocked !== undefined) throw blocked;
       const sessionHost = getHost();
       const adoptable = event.reason === "startup" || event.reason === "reload" || event.reason === "resume";
       const inherited = adoptable ? lastMappingEntry(ctx) : undefined;
+      if (event.reason === "reload" && inherited === undefined) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
       const mapping: CeMappingIdentifiers =
         inherited !== undefined
           ? sessionHost.resume(endpointId, inherited)
           : sessionHost.beginSession(endpointId);
+      generation = { piSessionId, endpointId, ctx, timer: undefined, renewal: undefined, stopping: false, failure: undefined };
       // Persist identifiers only; never credentials.
       pi.appendEntry("ce-mapping", mapping);
       startupFailure = undefined;
       inboxBinding = Object.freeze({ piSessionId, endpointId });
+      startHeartbeat(generation);
       advisoryState = notificationConfig === undefined
         ? undefined
         : { generation: Object.freeze({}), watermark: 0, inFlight: false, failureLatched: false };
@@ -464,22 +594,18 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       );
       checkInboxAdvisory(ctx);
     } catch (error) {
+      if (generation !== undefined) failLifecycle(generation, error);
+      host?.drop(endpointId);
+      currentEndpoint = undefined;
+      inboxBinding = undefined;
       advisoryState = undefined;
-      startupFailure =
-        error instanceof CeHostRefusal ? error : new CeHostRefusal("CE_HOST_UNAVAILABLE");
+      startupFailure = generation?.failure ??
+        (error instanceof CeHostRefusal ? error : new CeHostRefusal("CE_HOST_UNAVAILABLE"));
       notify(ctx, `ce-chat-exchange: session start failed closed (${startupFailure.code})`, "warning");
     }
   });
 
-  pi.on("session_shutdown", async (_event, _ctx) => {
-    if (currentEndpoint !== undefined && host !== undefined) {
-      host.drop(currentEndpoint);
-    }
-    currentEndpoint = undefined;
-    inboxBinding = undefined;
-    advisoryState = undefined;
-    startupFailure = undefined;
-  });
+  pi.on("session_shutdown", (event) => shutdown(event.reason));
 
   pi.on("agent_settled", (_event, ctx) => {
     checkInboxAdvisory(ctx);
@@ -505,6 +631,18 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     };
   };
 
+  const guardedEndpoint = (ctx: ExtensionContextView): string => {
+    if (startupFailure !== undefined) throw startupFailure;
+    const piSessionId = ctx.sessionManager.getSessionId();
+    const endpointId = endpointForPiSession(allowlist, piSessionId);
+    if (endpointId === undefined) throw new CeHostRefusal("CE_HOST_ENDPOINT_NOT_ALLOWED");
+    if (inboxBinding === undefined) throw new CeHostRefusal("CE_HOST_NOT_REGISTERED");
+    if (inboxBinding.piSessionId !== piSessionId || inboxBinding.endpointId !== endpointId || currentEndpoint !== endpointId) {
+      throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+    }
+    return endpointId;
+  };
+
   pi.registerTool({
     name: "ce_send",
     label: "Chat Exchange Send",
@@ -523,15 +661,10 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       required: ["to", "text", "idempotencyKey"],
       additionalProperties: false,
     },
-    async execute(_toolCallId, params): Promise<ToolResultView> {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<ToolResultView> {
       try {
-        if (startupFailure !== undefined) {
-          return refusalResult(startupFailure);
-        }
-        if (currentEndpoint === undefined) {
-          return refusalResult(new CeHostRefusal("CE_HOST_NOT_REGISTERED"));
-        }
-        const result = getHost().send(currentEndpoint, params);
+        const endpointId = guardedEndpoint(ctx);
+        const result = getHost().send(endpointId, params);
         return {
           content: [
             {
@@ -563,15 +696,10 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       required: ["messageId"],
       additionalProperties: false,
     },
-    async execute(_toolCallId, params): Promise<ToolResultView> {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<ToolResultView> {
       try {
-        if (startupFailure !== undefined) {
-          return refusalResult(startupFailure);
-        }
-        if (currentEndpoint === undefined) {
-          return refusalResult(new CeHostRefusal("CE_HOST_NOT_REGISTERED"));
-        }
-        const result = getHost().readMetadata(currentEndpoint, params);
+        const endpointId = guardedEndpoint(ctx);
+        const result = getHost().readMetadata(endpointId, params);
         return {
           content: [
             {

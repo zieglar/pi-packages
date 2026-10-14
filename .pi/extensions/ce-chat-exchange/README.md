@@ -8,8 +8,9 @@ acceptance phase and is not claimed by these instructions.
 ## What it does
 
 - On `session_start`, resolves this Pi session's endpoint from the operator
-  allowlist, then either recovers the persisted mapping (reasons
-  `startup` / `reload` / `resume`) or provisions a fresh CE Session.
+  allowlist, then validates a persisted mapping through `resume()` (reasons
+  `startup` / `reload` / `resume`) or provisions an initial CE Session. Reload
+  without a mapping refuses; it never provisions a replacement automatically.
 - Registers `ce_send`, `ce_read`, `ce_inbox_list`, `/ce-status`, and — only when
   the operator sets `payloadRead.enabled` to the exact boolean `true` — the
   `ce_read_payload` tool.
@@ -18,12 +19,26 @@ acceptance phase and is not claimed by these instructions.
   `agent_settled`, then emits count-only advisory UI text when appropriate.
 - Persists the mapping (identifiers only) as a `ce-mapping` custom session
   entry via `pi.appendEntry`.
-- On `session_shutdown`, drops the in-memory capability row.
+- After successful binding, starts one unref'd Ownership Heartbeat: default
+  30 seconds with TTL 120 seconds; configured TTL is retained and the interval
+  is one quarter of that term. Renewal advances revision, not fencing.
+- On reload, stops Heartbeat, waits for an in-flight synchronous renew, and drops
+  the old in-memory capability without ending valid durable Ownership/Session.
+  The new generation must revalidate with `resume()` before starting its timer.
+- On quit or Session replacement (`new` / `resume` / `fork`), stops Heartbeat,
+  waits for renew, then calls `host.end()` once to release Ownership and detach.
+  A failed or unconfirmed renew/end stops tools and automatic renewal; cleanup
+  is never retried blindly. Identifier-only `ce-lifecycle-blocked` session entries
+  deny subsequent adoption. A process-local refusal-code cache also survives
+  reload if diagnostic persistence fails; it can only deny, never grant authority.
+  If both persistence fails and the process exits, this volatile fallback is lost:
+  operator inspection is required before restart. No automatic recovery is added.
 
 ## What it deliberately does NOT do
 
-- No ACK, delivery cursor mutation, automatic consumption, timer, background
-  polling, automatic page draining, external idle wake, or cross-process signalling.
+- No ACK, delivery cursor mutation, automatic consumption, Inbox polling,
+  automatic page draining, external idle wake, or cross-process signalling.
+  The Ownership Heartbeat never reads or sends Messages.
 - No external delivery: writing to SQLite never makes a message visible in
   another Pi conversation. `ce_read` returns metadata only. Payload text
   leaves the storage plane solely through an operator-opted-in

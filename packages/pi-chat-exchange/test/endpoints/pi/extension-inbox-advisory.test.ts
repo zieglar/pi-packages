@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fake = vi.hoisted(() => {
   class Refusal extends Error {
@@ -12,6 +12,7 @@ const fake = vi.hoisted(() => {
     begin: vi.fn(),
     resume: vi.fn(),
     drop: vi.fn(),
+    renew: vi.fn(), end: vi.fn(),
     list: vi.fn(),
     send: vi.fn(),
     read: vi.fn(),
@@ -32,6 +33,8 @@ vi.mock("../../../dist/endpoints/pi/session-host.js", () => ({
     beginSession = fake.begin;
     resume = fake.resume;
     drop = fake.drop;
+    renew = fake.renew;
+    end = fake.end;
     listInbox = fake.list;
     send = fake.send;
     readMetadata = fake.read;
@@ -94,7 +97,7 @@ async function harness(parsedAllowlist?: unknown) {
   const tools: Tool[] = [];
   const events = new Map<string, Handler>();
   const registrations: string[] = [];
-  const appendEntry = vi.fn();
+  const appendEntry = vi.fn((customType: string, data: unknown) => { branch.push({ type: "custom", customType, data }); });
   const { default: factory } = await import(MODULE_URL);
   const parseSpy = parsedAllowlist === undefined
     ? undefined
@@ -172,6 +175,9 @@ async function harness(parsedAllowlist?: unknown) {
 }
 
 beforeEach(() => {
+  vi.useFakeTimers();
+  fake.renew.mockReturnValue({ fencingToken: 1, expiresAt: "2026-10-10T00:02:00.000Z" });
+  fake.end.mockReturnValue({ released: true, detached: true });
   vi.clearAllMocks();
   fake.allowlist = baseAllowlist();
   fake.begin.mockImplementation((endpointId: string) => ({
@@ -191,6 +197,7 @@ beforeEach(() => {
   });
 });
 
+afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
 describe("Inbox advisory strict configuration", () => {
   it.each([
     ["missing", undefined],
