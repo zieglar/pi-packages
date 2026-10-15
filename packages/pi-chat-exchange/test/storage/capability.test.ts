@@ -105,9 +105,10 @@ describe("Host Capability issuance (B3-P1B)", () => {
       () => issueCapability(active.store, { participantId: "prt_01ARZ3NDEKTSV4RRFFQ69G5FAV", scope: "join" }, { now: () => NOW }),
       "PARTICIPANT_NOT_FOUND",
     );
-    // ACK remains non-operational in P3A; send/read become Session-bound below.
+    // No universal reconciliation scope is authorized. ACK has its own
+    // Session-bound scope (ack-capability.test.ts).
     expectRefusal(
-      () => issueCapability(active.store, { participantId: created.participantId, scope: "ack" }, { now: () => NOW }),
+      () => issueCapability(active.store, { participantId: created.participantId, scope: "reconcile" }, { now: () => NOW }),
       "CAPABILITY_SCOPE_UNSUPPORTED",
     );
     expect(rowCounts(active).capability).toBe("0");

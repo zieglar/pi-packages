@@ -355,7 +355,7 @@ export interface OwnerPresentation {
   readonly now: string;
   /** Defaults to `resume` for accepted P2 owner operations. Later callers
    * must present their exact Session-bound operation scope. */
-  readonly scope?: "resume" | "send" | "read" | "payload_read";
+  readonly scope?: "resume" | "send" | "read" | "payload_read" | "ack";
 }
 
 /**

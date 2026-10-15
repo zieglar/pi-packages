@@ -30,11 +30,14 @@ export interface ReadableHandle {
  *   over: by revocation (P1A) and by generation binding.
  *
  * Operational scopes are phase-bounded: P1 create/bind/join, P2 attach/resume/
- * takeover, P3A send/metadata-only read, and P4C payload_read. ACK remains
- * schema vocabulary only and is refused. `resume`, `takeover`, `send`, `read`,
- * and `payload_read` are Session-bound: each authorizes only the Session it
- * was durably issued to.
- *
+ * takeover, P3A send/metadata-only read, P4C payload_read, and the P3B
+ * authorization-plane-only `ack`. No durable ACK operation, receipt, audit
+ * row, or public surface exists yet: `ack` admits the acknowledgment
+ * authority into the capability plane (issuance, classification, revocation)
+ * and the current-Owner authorization chain only, and no other scope gains
+ * acknowledgment authority. `resume`, `takeover`, `send`, `read`,
+ * `payload_read`, and `ack` are Session-bound: each authorizes only the
+ * Session it was durably issued to.
  * Verification always happens inside the caller's owned transaction, against
  * the same consistent snapshot as the mutation it authorizes. Refusals are a
  * single sanitized classification: the capability plane is never an oracle
@@ -69,6 +72,11 @@ export type P3ACapabilityScope = (typeof P3A_CAPABILITY_SCOPES)[number];
  * lease, membership, endpoint, and Message eligibility in one transaction. */
 export const P4C_CAPABILITY_SCOPES = ["payload_read"] as const;
 export type P4CCapabilityScope = (typeof P4C_CAPABILITY_SCOPES)[number];
+/** CE-0002-B3-P3B: independent ACK authority. Admission to this private
+ * authorization plane does not implement an ACK operation or receipt. */
+export const P3B_CAPABILITY_SCOPES = ["ack"] as const;
+export type P3BCapabilityScope = (typeof P3B_CAPABILITY_SCOPES)[number];
+
 
 /** Scopes whose authority is durably bound to exactly one Session. */
 export const SESSION_BOUND_CAPABILITY_SCOPES = [
@@ -76,6 +84,7 @@ export const SESSION_BOUND_CAPABILITY_SCOPES = [
   "takeover",
   ...P3A_CAPABILITY_SCOPES,
   ...P4C_CAPABILITY_SCOPES,
+  ...P3B_CAPABILITY_SCOPES,
 ] as const;
 export type SessionBoundCapabilityScope = (typeof SESSION_BOUND_CAPABILITY_SCOPES)[number];
 
@@ -89,6 +98,7 @@ export const OPERATIONAL_CAPABILITY_SCOPES = [
   ...P2B_CAPABILITY_SCOPES,
   ...P3A_CAPABILITY_SCOPES,
   ...P4C_CAPABILITY_SCOPES,
+  ...P3B_CAPABILITY_SCOPES,
 ] as const;
 export type OperationalCapabilityScope = (typeof OPERATIONAL_CAPABILITY_SCOPES)[number];
 
@@ -267,8 +277,8 @@ export function classifyCapability(
   // The persisted `detached_at` of its bound Session is the source of
   // truth, so a DETACHED Session makes the capability permanently unusable
   // for every presenter — read-time invalidation only; no capability row is
-  // ever rewritten as a side effect of Detach. P3A `send`/`read` and P4C
-  // `payload_read` inherit this check; ACK remains non-operational. The binding
+  // ever rewritten as a side effect of Detach. P3A `send`/`read`, P4C
+  // `payload_read`, and P3B `ack` inherit this check inside the
   // caller's transaction: a Session-bound capability whose binding is missing
   // or malformed is inconsistent durable state — refused as corruption,
   // never adopted (schema v4 makes row deletion trigger-impossible, so this
