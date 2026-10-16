@@ -4,6 +4,35 @@ Consolidated contract for the accepted private SQLite durable storage of
 Chat Exchange. Every normative claim below is backed by accepted test or
 implementation evidence; see the traceability matrix at the end.
 
+## E2-A current-only v7 implementation candidate
+
+This section supersedes historical version/migration requirements below for the
+E2-A implementation candidate; parent review/acceptance remains pending.
+
+Fresh stores use the complete direct final `src/storage/current-schema.ts` v7
+foundation, not historical COPY/DROP/RENAME composition. The one fresh ledger row
+is `(7, b3-p3b-direct-current-ack-foundation,
+fd07d7a0e65183700c7f71e1f5522c59ef053f1e316eb4bb93596f5b3309b5b1)`.
+Metadata initialization version and user_version are both 7. Exact schema, ledger,
+identity, integrity, foreign keys, restore-hold and host trust root are validated
+before COMMIT and again before publishing a handle. A separately pinned static
+94-object manifest is in `test/storage/support/current-v7-manifest.json`.
+
+Normal open refuses unsupported/old/mixed shapes with STORAGE_INCOMPATIBLE and
+separate operator-approved Dev Reset guidance; it never resets, deletes, repairs,
+reinitializes or migrates. Foreign identity, too-new, checksum, corruption,
+filesystem, hold and trust-root refusals keep their distinct typed meanings.
+Historical SQL/checksums and migration.ts remain unchanged; they are not a v7
+upgrade service or an E2-A normal-open prerequisite.
+
+Initialization owns exception-safe connection cleanup, including secret generation.
+Failed initialization can leave refused filesystem artifacts; no automatic deletion
+or repeat is performed. An uncertain/lost response can leave a complete committed
+Store. Failure never by itself proves rollback; fresh full validation is required.
+
+The new private ACK/receipt reconciliation semantics are specified in
+[delivery-ack-contract.md](delivery-ack-contract.md). No public ACK transport is added.
+
 Scope labels used throughout:
 
 - **public contract** — behavior callers can rely on;

@@ -52,8 +52,8 @@ import {
  *   writes.
  * - `ack` stays cryptographically and semantically disjoint from
  *   `resume`/`send`/`read`/`payload_read` in both directions.
- * - No ACK operation, receipt persistence, audit event, schema change, or
- *   public surface exists in this phase.
+ * - This E1 authorization seam never executes ACK or writes receipt evidence,
+ *   including under the current E2-A receipt-capable schema.
  *
  * The protected lookup below is the smallest private testable seam consistent
  * with the current patterns: authorization runs first inside one owned
@@ -456,7 +456,7 @@ describe("independent Session-bound ack capability scope (CE-0002-B3-P3B E1)", (
     );
   });
 
-  it("adds no receipt table, audit kind, cursor write, or schema change in this phase", () => {
+  it("keeps authorization-only lookup non-ACK with the current empty receipt schema", () => {
     const w = ackWorld();
     const ack = w.ackFor(S1);
     const outcome = ackProtectedLookup(w, { sessionId: S1, fencingToken: 1, capability: ack }, 30);
@@ -464,9 +464,10 @@ describe("independent Session-bound ack capability scope (CE-0002-B3-P3B E1)", (
 
     const view = reader(w.active);
     try {
-      // No ACK receipt persistence exists; the schema version is untouched.
-      expect(view.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='delivery_ack_receipt'").all()).toEqual([]);
-      expect(view.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 6 });
+      // E2-A rebaseline: table availability is independent of ACK execution.
+      expect(view.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='delivery_ack_receipt'").all()).toEqual([{name:"delivery_ack_receipt"}]);
+      expect(view.prepare("SELECT count(*) AS n FROM delivery_ack_receipt").get()).toEqual({n:0});
+      expect(view.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 7 });
       // The only audit kinds are the frozen vocabulary: no receipt_recorded
       // row was written by any authorization or lookup above.
       expect(view.prepare("SELECT DISTINCT kind FROM audit_event ORDER BY kind").all()).toEqual([

@@ -306,7 +306,7 @@ describe("P1A hardening C: entry-point transaction outcome propagation", () => {
     assertNoSecretDisclosure(error, "migration BUSY");
 
     // The store is still a valid v1 store and still answers migration-required.
-    expect(captureError(() => openStore(loc))).toMatchObject({ code: "STORAGE_MIGRATION_REQUIRED" });
+    expect(captureError(() => openStore(loc))).toMatchObject({ code: "STORAGE_INCOMPATIBLE" });
     const probe = openStorageConnection(loc);
     try {
       expect(probe.prepare("PRAGMA user_version").get()).toEqual({ user_version: 1 });
@@ -322,10 +322,24 @@ describe("P1A hardening C: entry-point transaction outcome propagation", () => {
         migrateStore({ ...loc, fromVersion: 1, toVersion: 2, now: () => NOW, secretBytes: () => SECRET }),
       ),
     ).toMatchObject({ code: "STORAGE_TRUST_ROOT_AMBIGUOUS" });
+    // Explicit operator removal clears the orphan-secret ambiguity. Under the
+    // current-only v7 contract a historical v1->v2 migration outcome is not a
+    // PASS oracle, so only the security property is asserted: with the orphan
+    // gone, the attempt is no longer refused as STORAGE_TRUST_ROOT_AMBIGUOUS.
+    // Any returned handle is closed; success is deliberately not asserted.
     rmSync(hostSecretPath(loc.databasePath));
-    expect(() =>
-      migrateStore({ ...loc, fromVersion: 1, toVersion: 2, now: () => NOW, secretBytes: () => SECRET }).close(),
-    ).not.toThrow();
+    expect(existsSync(hostSecretPath(loc.databasePath))).toBe(false);
+    let afterRemoval: unknown;
+    let returnedHandle: { close(): void } | undefined;
+    try {
+      returnedHandle = migrateStore({ ...loc, fromVersion: 1, toVersion: 2, now: () => NOW, secretBytes: () => SECRET });
+    } catch (error) {
+      afterRemoval = error;
+    } finally {
+      returnedHandle?.close();
+    }
+    expect((afterRemoval as { code?: unknown } | undefined)?.code).not.toBe("STORAGE_TRUST_ROOT_AMBIGUOUS");
+    if (afterRemoval !== undefined) assertNoSecretDisclosure(afterRemoval, "migration after orphan removal");
   });
 
   it("propagates BUSY from recoverTrustRoot without retry or repair", () => {

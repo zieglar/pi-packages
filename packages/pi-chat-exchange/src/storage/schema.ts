@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 
 export const APPLICATION_ID = "@zieglar/pi-chat-exchange";
 export const SQLITE_APPLICATION_ID = 0x50434558; // "PCEX"
-export const CURRENT_SCHEMA_VERSION = 6;
+export const CURRENT_SCHEMA_VERSION = 7;
+export { V7_FOUNDATION_NAME, V7_FOUNDATION_SQL, V7_FOUNDATION_CHECKSUM } from "./current-schema.js";
 export const INITIAL_MIGRATION_NAME = "durable-storage-foundation";
 export const V2_MIGRATION_NAME = "b3-communication-lifecycle-migration";
 export const V2_FOUNDATION_NAME = "b3-communication-lifecycle-foundation";

@@ -290,7 +290,7 @@ describe("host trust root (B3-P1A)", () => {
     }
 
     expect(preflightStoreShape(join(loc.directory, loc.filename)).kind).toBe("v4");
-    expect(() => openStore(loc)).toThrowError(expect.objectContaining({ code: "STORAGE_MIGRATION_REQUIRED" }));
+    expect(() => openStore(loc)).toThrowError(expect.objectContaining({ code: "STORAGE_INCOMPATIBLE" }));
   });
 
   it("refuses recovery while any secret file exists (no silent overwrite, zero writes)", () => {

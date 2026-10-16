@@ -44,10 +44,14 @@ import {
   V6_FOUNDATION_SQL,
   V6_MIGRATION_CHECKSUM,
   V6_MIGRATION_NAME,
+  V7_FOUNDATION_SQL,
+  V7_FOUNDATION_NAME,
+  V7_FOUNDATION_CHECKSUM,
 } from "./schema.js";
-import { withImmediateTransaction } from "./transaction.js";
+import { withImmediateTransaction, StorageTransactionError } from "./transaction.js";
 import { StoreLifecycleError } from "./errors.js";
 import { assertTrustRootAbsent, createHostSecretFile, validateTrustRoot } from "./trust-root.js";
+import { requireInstant } from "./participant-identity.js";
 export { StoreLifecycleError } from "./errors.js";
 export type { StoreLifecycleErrorCode } from "./errors.js";
 
@@ -136,7 +140,7 @@ function approvedManifest(version: StoreShapeKind): string {
               ? V4_FOUNDATION_SQL
               : version === "v5"
                 ? V5_FOUNDATION_SQL
-                : V6_FOUNDATION_SQL,
+                : version === "v6" ? V6_FOUNDATION_SQL : V7_FOUNDATION_SQL,
     );
     const manifest = schemaManifest(reference);
     approvedManifests[version] = manifest;
@@ -207,7 +211,7 @@ interface MigrationLedgerRow {
   readonly checksum: string;
 }
 
-export type StoreShapeKind = "v1" | "v2" | "v3" | "v4" | "v5" | "v6";
+export type StoreShapeKind = "v1" | "v2" | "v3" | "v4" | "v5" | "v6" | "v7";
 export interface StoreShape {
   readonly kind: StoreShapeKind;
   readonly metadata: StoreMetadataRow;
@@ -243,15 +247,10 @@ function assertRestoreHoldReleased(db: DatabaseSync): void {
   }
 }
 
-/** Classifies a store into exactly one approved shape. Recognition of a
- * pristine v1 store (STORAGE_MIGRATION_REQUIRED on normal open) is separated
- * from drift (STORAGE_INCOMPATIBLE), tamper (STORAGE_MIGRATION_CHECKSUM_MISMATCH),
- * and newer versions (STORAGE_SCHEMA_TOO_NEW). `store_metadata.schema_version`
- * is the schema version at initialization (1 for migrated stores, 2 for fresh
- * v2 stores); it is never updated, and the v1 immutability trigger keeps it
- * that way. The live version is `PRAGMA user_version`, which must equal the
- * ledger's highest entry. */
-export function classifyStoreShape(db: DatabaseSync): StoreShape {
+/** Classify exact schema/ledger/identity. Historical recognition is retained for
+ * existing private diagnostics; currentOnly refuses old shapes before constructing
+ * any historical reference manifest. No initialization or migration runs here. */
+export function classifyStoreShape(db: DatabaseSync, currentOnly = false): StoreShape {
   assertIntegrity(db);
 
   const sqliteApplicationId = firstColumn(db, "PRAGMA application_id");
@@ -297,6 +296,8 @@ export function classifyStoreShape(db: DatabaseSync): StoreShape {
     );
   }
 
+  // SAFETY: each projected ledger field is validated structurally and against
+  // exact approved tuples by ledgerMatches before any row is trusted.
   const migrations = db
     .prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version")
     .all() as unknown as MigrationLedgerRow[];
@@ -346,7 +347,7 @@ export function classifyStoreShape(db: DatabaseSync): StoreShape {
             ? 5
             : V6_LEDGERS.some((ledger) => ledgerMatches(migrations, ledger))
               ? 6
-              : undefined;
+              : ledgerMatches(migrations, [[7, V7_FOUNDATION_NAME, V7_FOUNDATION_CHECKSUM]]) ? 7 : undefined;
   if (shapeVersion === undefined) {
     throw new StoreLifecycleError(
       "STORAGE_MIGRATION_CHECKSUM_MISMATCH",
@@ -370,11 +371,18 @@ export function classifyStoreShape(db: DatabaseSync): StoreShape {
     );
   }
 
+  if (currentOnly && shapeVersion !== 7) {
+    throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", "unsupported Store; separate operator-approved Dev Reset required");
+  }
+
   const requiredTables = shapeVersion === 1 ? V1_REQUIRED_TABLES : V2_REQUIRED_TABLES;
   for (const table of requiredTables) {
     if (!tables.has(table)) {
       throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", `required private table ${table} is missing`);
     }
+  }
+  if (shapeVersion === 7 && !tables.has("delivery_ack_receipt")) {
+    throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", "current receipt schema is missing");
   }
   assertApprovedSchema(db, shapeKind(shapeVersion));
   assertRestoreHoldReleased(db);
@@ -392,18 +400,17 @@ function shapeKind(version: number): StoreShapeKind {
           ? "v4"
           : version === 5
             ? "v5"
-            : "v6";
+            : version === 6 ? "v6" : "v7";
 }
 
-/** Normal-open validation: a recognized v1-v5 store is refused with a typed
- * migration-required result (migration is never implicit); only the current v6
- * shape opens, and it must pass host trust-root validation on every open. */
+/** Normal open is current-only. Old shapes are recognized for truthful refusal,
+ * never upgraded or rebuilt through this path. The host root is checked on every open. */
 function readAndValidateStore(db: DatabaseSync, databasePath: string): StoreMetadataRow {
-  const shape = classifyStoreShape(db);
-  if (shape.kind !== "v6") {
+  const shape = classifyStoreShape(db, true);
+  if (shape.kind !== "v7") {
     throw new StoreLifecycleError(
-      "STORAGE_MIGRATION_REQUIRED",
-      "store schema requires the explicit approved migration to the current schema version",
+      "STORAGE_INCOMPATIBLE",
+      "unsupported Store; separate operator-approved Dev Reset required",
     );
   }
   validateTrustRoot(databasePath, db);
@@ -423,22 +430,29 @@ export function initializeStore(options: InitializeStoreOptions): DurableStore {
   // Refuse ambiguous preexisting secrets before creating any artifact (B3-P1A).
   assertTrustRootAbsent(databasePath);
 
-  const storeUuid = (options.storeUuid ?? randomUUID)();
-  if (!isStoreUuid(storeUuid)) {
-    throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", "store UUID generator returned an invalid UUID");
+  let storeUuid: string;
+  let appliedAt: string;
+  try {
+    storeUuid = (options.storeUuid ?? randomUUID)();
+    appliedAt = requireInstant((options.now ?? (() => new Date().toISOString()))(), "initialization time");
+    if (!isStoreUuid(storeUuid)) throw new Error("invalid UUID");
+  } catch {
+    throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", "store initialization identity generation failed");
   }
-  const appliedAt = (options.now ?? (() => new Date().toISOString()))();
   const db = openStorageConnection(options, undefined, true);
 
   // Host Trust Root bootstrap (B3-P1A): the secret file is created before the
   // schema transaction. A crash between the two leaves DB file plus orphan
   // secret; the next attempt refuses at STORAGE_ALREADY_INITIALIZED or at the
   // pre-creation absence check — operator review, never automatic cleanup.
-  const secretDigest = createHostSecretFile(databasePath, options.secretBytes);
-
   try {
+    const generated = options.secretBytes;
+    const safeSecretBytes = generated === undefined ? undefined : () => {
+      try { return generated(); } catch { throw new Error("host secret generation failed"); }
+    };
+    const secretDigest = createHostSecretFile(databasePath, safeSecretBytes);
     withImmediateTransaction(db, (tx) => {
-      tx.exec(V6_FOUNDATION_SQL);
+      tx.exec(V7_FOUNDATION_SQL);
       tx.prepare(
         "INSERT INTO store_metadata(singleton, store_uuid, application_id, schema_version, created_at) VALUES (1, ?, ?, ?, ?)",
       ).run(storeUuid, APPLICATION_ID, CURRENT_SCHEMA_VERSION, appliedAt);
@@ -446,8 +460,8 @@ export function initializeStore(options: InitializeStoreOptions): DurableStore {
         "INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
       ).run(
         CURRENT_SCHEMA_VERSION,
-        V6_FOUNDATION_NAME,
-        V6_FOUNDATION_CHECKSUM,
+        V7_FOUNDATION_NAME,
+        V7_FOUNDATION_CHECKSUM,
         appliedAt,
       );
       tx.prepare("INSERT INTO restore_hold(singleton, held) VALUES (1, 0)").run();
@@ -457,14 +471,18 @@ export function initializeStore(options: InitializeStoreOptions): DurableStore {
       tx.exec(
         `PRAGMA application_id=${SQLITE_APPLICATION_ID}; PRAGMA user_version=${CURRENT_SCHEMA_VERSION};`,
       );
+      // Full proof in the owned transaction, not a header-only admission.
+      readAndValidateStore(db, databasePath);
     });
     return handle(db, readAndValidateStore(db, databasePath), databasePath);
   } catch (error) {
     return closeAfterFailure(
       db,
-      error instanceof StoreLifecycleError
-        ? error
-        : new StoreLifecycleError("STORAGE_CORRUPT", "store initialization failed", { cause: error }),
+      error instanceof StorageTransactionError
+        ? new StorageTransactionError("store initialization transaction failed", error.stage, {outcome:error.outcome,busy:error.retryable})
+        : error instanceof StoreLifecycleError
+          ? new StoreLifecycleError(error.code, error.message)
+          : new StoreLifecycleError("STORAGE_CORRUPT", "store initialization failed"),
     );
   }
 }

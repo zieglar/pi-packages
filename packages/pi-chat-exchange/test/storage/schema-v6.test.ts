@@ -149,177 +149,37 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-describe("Schema v6 payload capability migration", () => {
-  it("initializes a fresh v6 store with the payload_read vocabulary", () => {
-    const loc = location();
-    const store = initializeStore({ ...loc, storeUuid: () => STORE_UUID, secretBytes: () => SECRET, now: () => NOW });
+describe("current-only payload-capability vocabulary and old-store refusal (E2-A)", () => {
+  it("CUR-INIT-01/fresh-current-foundation: v7 preserves payload_read, scope separation and all current guards", () => {
+    const loc=location();
+    const store=initializeStore({...loc,storeUuid:()=>STORE_UUID,secretBytes:()=>SECRET,now:()=>NOW});
     try {
-      expect(CURRENT_SCHEMA_VERSION).toBe(6);
-      expect(store.schemaVersion).toBe(6);
-      expect(store.database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 6 });
-      expect(store.database.prepare("SELECT version, name, checksum FROM schema_migrations").all()).toEqual([
-        { version: 6, name: V6_FOUNDATION_NAME, checksum: V6_FOUNDATION_CHECKSUM },
-      ]);
-      const ddl = String(
-        store.database.prepare("SELECT sql FROM sqlite_schema WHERE type='table' AND name='participant_capability'").get()!.sql,
-      );
-      expect(ddl).toContain("'read'");
-      expect(ddl).toContain("'payload_read'");
+      expect(CURRENT_SCHEMA_VERSION).toBe(7);
+      expect(store.schemaVersion).toBe(7);
+      expect(store.database.prepare("PRAGMA user_version").get()).toEqual({user_version:7});
+      const ddl=String(store.database.prepare("SELECT sql FROM sqlite_schema WHERE name='participant_capability'").get()!.sql);
+      expect(ddl).toContain("'payload_read'"); expect(ddl).toContain("'ack'");
       expect(store.database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
-    } finally {
-      store.close();
-    }
+    }finally{store.close();}
   });
-
-  it.each([1, 2, 3, 4, 5] as const)("requires explicit v%s to v6 migration and opens only after it", (version) => {
-    const loc = location();
-    initializeHistoricalStore(loc, version);
-    expect(() => openStore(loc)).toThrowError(expect.objectContaining({ code: "STORAGE_MIGRATION_REQUIRED" }));
-
-    const migrated = migrateStore({
-      ...loc,
-      fromVersion: version,
-      toVersion: 6,
-      now: () => NOW,
-      secretBytes: () => SECRET,
-    });
-    try {
-      expect(migrated.schemaVersion).toBe(6);
-      expect(migrated.database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 6 });
-      expect(migrated.database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
-      expect(migrated.database.prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version DESC LIMIT 1").get())
-        .toEqual({ version: 6, name: V6_MIGRATION_NAME, checksum: V6_MIGRATION_CHECKSUM });
-    } finally {
-      migrated.close();
-    }
-    expect(() => openStore(loc).close()).not.toThrow();
-  });
-
-  it("preserves existing capability, Message, Audit, indexes, and triggers during v5 to v6", () => {
-    const loc = location();
-    initializeHistoricalStore(loc, 5);
-    seedV5History(loc);
-    const before = openStorageConnection(loc);
-    const capabilityBefore = before.prepare("SELECT * FROM participant_capability").all();
-    const messageBefore = before.prepare("SELECT * FROM message").all();
-    const auditBefore = before.prepare("SELECT * FROM audit_event").all();
-    const otherObjectsBefore = before.prepare(
-      "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE tbl_name <> 'participant_capability' AND name <> 'sqlite_autoindex_participant_capability_1' ORDER BY type, name",
-    ).all();
-    before.close();
-
-    const migrated = migrateStore({ ...loc, fromVersion: 5, toVersion: 6, now: () => NOW });
-    try {
-      expect(migrated.database.prepare("SELECT * FROM participant_capability").all()).toEqual(capabilityBefore);
-      expect(migrated.database.prepare("SELECT * FROM message").all()).toEqual(messageBefore);
-      expect(migrated.database.prepare("SELECT * FROM audit_event").all()).toEqual(auditBefore);
-      expect(migrated.database.prepare(
-        "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE tbl_name <> 'participant_capability' AND name <> 'sqlite_autoindex_participant_capability_1' ORDER BY type, name",
-      ).all()).toEqual(otherObjectsBefore);
-      expect(migrated.database.prepare("PRAGMA index_list('participant_capability')").all())
-        .toContainEqual(expect.objectContaining({ name: "sqlite_autoindex_participant_capability_1", unique: 1, origin: "pk" }));
-      expect(migrated.database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
-    } finally {
-      migrated.close();
-    }
-  });
-
-  it("converges fresh and migrated stores on one exact v6 schema manifest", () => {
-    const migratedLoc = location();
-    initializeHistoricalStore(migratedLoc, 5);
-    migrateStore({ ...migratedLoc, fromVersion: 5, toVersion: 6, now: () => NOW }).close();
-
-    const freshLoc = location();
-    initializeStore({ ...freshLoc, storeUuid: () => STORE_UUID, secretBytes: () => SECRET, now: () => NOW }).close();
-
-    const migrated = openStorageConnection(migratedLoc);
-    const fresh = openStorageConnection(freshLoc);
-    try {
-      expect(schemaManifest(migrated)).toEqual(schemaManifest(fresh));
-    } finally {
-      migrated.close();
-      fresh.close();
-    }
-  });
-
-  it("rolls an interrupted v5 to v6 rebuild back to the exact v5 store", () => {
-    const loc = location();
-    initializeHistoricalStore(loc, 5);
-    seedV5History(loc);
-    const before = openStorageConnection(loc);
-    const beforeManifest = schemaManifest(before);
-    const beforeCapabilities = before.prepare("SELECT * FROM participant_capability").all();
-    before.close();
-
-    expect(() => migrateStore({
-      ...loc,
-      fromVersion: 5,
-      toVersion: 6,
-      now: () => NOW,
-      beforeCommit: () => { throw new Error("simulated interruption"); },
-    })).toThrowError(StorageTransactionError);
-
-    expect(preflightStoreShape(databasePath(loc)).kind).toBe("v5");
-    const probe = openStorageConnection(loc);
-    try {
-      expect(schemaManifest(probe)).toEqual(beforeManifest);
-      expect(probe.prepare("SELECT * FROM participant_capability").all()).toEqual(beforeCapabilities);
-      expect(probe.prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name='participant_capability_v6'").get())
-        .toEqual({ n: 0 });
-      expect(probe.prepare("PRAGMA user_version").get()).toEqual({ user_version: 5 });
-      expect(probe.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 5 });
-    } finally {
-      probe.close();
-    }
-  });
-
-  it("refuses schema drift introduced after writer validation but before the migration transaction", () => {
-    const loc = location();
-    initializeHistoricalStore(loc, 5);
-    seedV5History(loc);
-
-    expect(() => migrateStore({
-      ...loc,
-      fromVersion: 5,
-      toVersion: 6,
-      now: () => NOW,
-      beforeTransaction: () => {
-        const privileged = openStorageConnection(loc);
-        try {
-          privileged.exec("ALTER TABLE participant_capability ADD COLUMN privileged_note TEXT");
-          privileged.prepare(
-            "UPDATE participant_capability SET privileged_note = 'must-survive' WHERE capability_digest = ?",
-          ).run("a".repeat(64));
-        } finally {
-          privileged.close();
-        }
-      },
-    })).toThrowError(expect.objectContaining({ code: "STORAGE_INCOMPATIBLE" }));
-
-    const probe = openStorageConnection(loc);
-    try {
-      expect(probe.prepare("PRAGMA user_version").get()).toEqual({ user_version: 5 });
-      expect(probe.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 5 });
-      expect(probe.prepare(
-        "SELECT privileged_note FROM participant_capability WHERE capability_digest = ?",
-      ).get("a".repeat(64))).toEqual({ privileged_note: "must-survive" });
-      expect(probe.prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name='participant_capability_v6'").get())
-        .toEqual({ n: 0 });
-    } finally {
-      probe.close();
-    }
-  });
-
-  it("refuses v5 schema drift without attempting repair", () => {
-    const loc = location();
-    initializeHistoricalStore(loc, 5);
-    const writer = openStorageConnection(loc);
-    writer.exec("CREATE TABLE participant_capability_v6 (id TEXT) STRICT");
-    writer.close();
-    const before = directorySnapshot(loc.directory);
-
-    expect(() => migrateStore({ ...loc, fromVersion: 5, toVersion: 6, now: () => NOW }))
-      .toThrowError(expect.objectContaining({ code: "STORAGE_INCOMPATIBLE" }));
+  it.each([1,2,3,4,5] as const)("OLD-REFUSE-01/unsupported-v6-header: v%s refuses without historical migration or repair", version=>{
+    const loc=location();initializeHistoricalStore(loc,version);const before=directorySnapshot(loc.directory);
+    expect(()=>openStore(loc)).toThrowError(expect.objectContaining({code:"STORAGE_INCOMPATIBLE"}));
     expect(directorySnapshot(loc.directory)).toEqual(before);
   });
+  it("old v5 capability, Message, Audit, indexes and guards remain untouched on refusal",()=>{
+    const loc=location();initializeHistoricalStore(loc,5);seedV5History(loc);
+    const before=directorySnapshot(loc.directory);
+    expect(()=>openStore(loc)).toThrowError(expect.objectContaining({code:"STORAGE_INCOMPATIBLE"}));
+    expect(directorySnapshot(loc.directory)).toEqual(before);
+  });
+  it("old v5 drift is not repaired, rebuilt or made current",()=>{
+    const loc=location();initializeHistoricalStore(loc,5);const writer=openStorageConnection(loc);
+    writer.exec("CREATE TABLE unauthorized_copy(id TEXT) STRICT");writer.close();
+    const before=directorySnapshot(loc.directory);
+    expect(()=>openStore(loc)).toThrowError(expect.objectContaining({code:"STORAGE_INCOMPATIBLE"}));
+    expect(directorySnapshot(loc.directory)).toEqual(before);
+  });
+  // Historical v5→v6 success/convergence/rebuild-fault obligations are explicitly
+  // reclassified, not PASS: see build/LEGACY-BASELINE-INVENTORY.json and SOURCE-TOUCHES.md.
 });

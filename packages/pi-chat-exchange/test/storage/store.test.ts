@@ -16,8 +16,8 @@ import {
   V5_FOUNDATION_CHECKSUM,
   V5_FOUNDATION_NAME,
   V5_MIGRATION_CHECKSUM,
-  V6_FOUNDATION_CHECKSUM,
-  V6_FOUNDATION_NAME,
+  V7_FOUNDATION_CHECKSUM,
+  V7_FOUNDATION_NAME,
   SQLITE_APPLICATION_ID,
 } from "../../src/storage/schema.js";
 import {
@@ -59,7 +59,7 @@ describe("private durable store schema and lifecycle", () => {
       now: () => "2026-10-08T00:00:00.000Z",
     });
     try {
-      expect(CURRENT_SCHEMA_VERSION).toBe(6);
+      expect(CURRENT_SCHEMA_VERSION).toBe(7);
       expect(store.storeUuid).toBe(STORE_UUID);
       expect(store.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
       expect(store.database.prepare("PRAGMA application_id").get()).toEqual({ application_id: SQLITE_APPLICATION_ID });
@@ -71,7 +71,7 @@ describe("private durable store schema and lifecycle", () => {
         schema_version: CURRENT_SCHEMA_VERSION,
       });
       expect(store.database.prepare("SELECT version, name, checksum FROM schema_migrations").all()).toEqual([
-        { version: CURRENT_SCHEMA_VERSION, name: V6_FOUNDATION_NAME, checksum: V6_FOUNDATION_CHECKSUM },
+        { version: CURRENT_SCHEMA_VERSION, name: V7_FOUNDATION_NAME, checksum: V7_FOUNDATION_CHECKSUM },
       ]);
     } finally {
       store.close();
@@ -109,6 +109,7 @@ describe("private durable store schema and lifecycle", () => {
         "attempt",
         "audit_event",
         "current_claim",
+        "delivery_ack_receipt",
         "delivery_cursor",
         "disposition",
         "evidence_application",

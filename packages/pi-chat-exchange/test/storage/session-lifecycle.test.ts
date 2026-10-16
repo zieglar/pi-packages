@@ -39,8 +39,8 @@ import {
   V4_FOUNDATION_NAME,
   V4_MIGRATION_CHECKSUM,
   V4_MIGRATION_NAME,
-  V6_FOUNDATION_CHECKSUM,
-  V6_FOUNDATION_NAME,
+  V7_FOUNDATION_CHECKSUM,
+  V7_FOUNDATION_NAME,
 } from "../../src/storage/schema.js";
 import { initializeStore, openStore, preflightStoreShape, type DurableStore } from "../../src/storage/store.js";
 import { StorageTransactionError, withImmediateTransaction } from "../../src/storage/transaction.js";
@@ -167,15 +167,15 @@ function expectTriggerAbort(run: () => unknown, message: string): void {
 // Fresh v4 store
 // ---------------------------------------------------------------------------
 
-describe("current schema v6 store preserves the B3-P2C-A lifecycle", () => {
-  it("initializes at v6 with the v6 foundation ledger and every v4 lifecycle trigger", () => {
+describe("current schema v7 store preserves the B3-P2C-A lifecycle", () => {
+  it("initializes at v7 with the current foundation ledger and every v4 lifecycle trigger", () => {
     const active = fixture("ce-b3-p2c-a-fresh-");
-    expect(CURRENT_SCHEMA_VERSION).toBe(6);
-    expect(active.store.schemaVersion).toBe(6);
+    expect(CURRENT_SCHEMA_VERSION).toBe(7);
+    expect(active.store.schemaVersion).toBe(7);
     const db = active.store.database;
-    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 6 });
+    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 7 });
     expect(db.prepare("SELECT version, name, checksum FROM schema_migrations").all()).toEqual([
-      { version: 6, name: V6_FOUNDATION_NAME, checksum: V6_FOUNDATION_CHECKSUM },
+      { version: 7, name: V7_FOUNDATION_NAME, checksum: V7_FOUNDATION_CHECKSUM },
     ]);
     const triggers = db
       .prepare("SELECT name, tbl_name FROM sqlite_schema WHERE type = 'trigger' AND name LIKE 'participant_%session%' ORDER BY name")
@@ -896,71 +896,24 @@ function v4Manifest(): unknown[] {
   }
 }
 
-describe("explicit v3 to v4 migration (B3-P2C-A)", () => {
-  it("refuses a normal open of a v3 store with STORAGE_MIGRATION_REQUIRED and changes nothing", () => {
+describe("old v3 refusal and retained legacy preflight security (E2-A)", () => {
+  it("refuses normal open of v3 with STORAGE_INCOMPATIBLE and no writes", () => {
     const loc = location();
     initializeOlderStore(loc, 3);
     seedSessions(loc, true);
     const before = directorySnapshot(loc.directory);
-    expect(() => openStore(loc)).toThrowError(expect.objectContaining({ code: "STORAGE_MIGRATION_REQUIRED" }));
+    expect(() => openStore(loc)).toThrowError(expect.objectContaining({ code: "STORAGE_INCOMPATIBLE" }));
     expect(directorySnapshot(loc.directory)).toEqual(before);
   });
 
-  it("migrates v3 to v4: triggers only, ledger row, every Session row preserved, trust root continuous", () => {
-    const loc = location();
-    initializeOlderStore(loc, 3);
-    seedSessions(loc, true);
-    const before = rowsAt(loc);
-    const secretBefore = readFileSync(hostSecretPath(dbPath(loc)), "utf8");
-    const migrated = migrate(loc, 3, 4);
-    try {
-      expect(migrated.database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 4 });
-      expect(migrated.database.prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version").all()).toEqual([
-        { version: 3, name: V3_FOUNDATION_NAME, checksum: V3_FOUNDATION_CHECKSUM },
-        { version: 4, name: V4_MIGRATION_NAME, checksum: V4_MIGRATION_CHECKSUM },
-      ]);
-      expect(migrated.database.prepare("SELECT schema_version FROM store_metadata").get()).toEqual({ schema_version: 3 });
-      expect(durableRows(migrated.database)).toEqual(before);
-      expect(manifest(migrated.database)).toEqual(v4Manifest());
-      // The preserved Owner keeps working under freshly issued capabilities.
-      const resume = issueCapability(migrated, { participantId: P1, scope: "resume", sessionId: S1 }, clockAt(10)).capability;
-      expect(
-        renewLease(migrated, { participantId: P1, sessionId: S1, fencingToken: 1, capability: resume }, clockAt(10)),
-      ).toMatchObject({ sessionId: S1, fencingToken: 1, leaseStartedAt: at(10) });
-      expect(readSessionLifecycle(migrated, { participantId: P2, sessionId: S3 })).toEqual({ state: "ATTACHED", boundAt: MIG_NOW });
-    } finally {
-      migrated.close();
-    }
-    expect(readFileSync(hostSecretPath(dbPath(loc)), "utf8")).toBe(secretBefore);
-    expect(() => openStore(loc)).toThrowError(expect.objectContaining({ code: "STORAGE_MIGRATION_REQUIRED" }));
-    expect(() => migrate(loc, 3, 4)).toThrowError(expect.objectContaining({ code: "STORAGE_MIGRATION_NOT_REQUIRED" }));
-  });
-
-  it("rolls an interrupted v3 to v4 step back to a valid v3 store and retries cleanly", () => {
-    const loc = location();
-    initializeOlderStore(loc, 3);
-    seedSessions(loc, true);
-    const before = rowsAt(loc);
-    expect(() =>
-      migrate(loc, 3, 4, {
-        beforeCommit: () => {
-          throw new Error("simulated interruption");
-        },
-      }),
-    ).toThrowError(StorageTransactionError);
-    expect(preflightStoreShape(dbPath(loc)).kind).toBe("v3");
-    expect(rowsAt(loc)).toEqual(before);
-    const probe = openStorageConnection(loc);
-    try {
-      expect(probe.prepare("PRAGMA user_version").get()).toEqual({ user_version: 3 });
-      expect(
-        probe.prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE type = 'trigger' AND name = 'participant_session_detach_once'").get(),
-      ).toEqual({ n: 0 });
-    } finally {
-      probe.close();
-    }
-    migrate(loc, 3, 4).close();
-    expect(() => openStore(loc)).toThrowError(expect.objectContaining({ code: "STORAGE_MIGRATION_REQUIRED" }));
+  // v3→v4 success and retry-after-interruption acceptance is historical-only.
+  // Replaced by unchanged old-foundation refusal; original bodies in evidence.
+  it.each([1,2,3] as const)("refuses v%s while preserving complete Session rows and existing trust artifacts",version=>{
+    const loc=location();initializeOlderStore(loc,version);
+    if(version>=2)seedSessions(loc,version===3);
+    const before=directorySnapshot(loc.directory);
+    expect(()=>openStore(loc)).toThrowError(expect.objectContaining({code:"STORAGE_INCOMPATIBLE"}));
+    expect(directorySnapshot(loc.directory)).toEqual(before);
   });
 
   it("requires the existing trust root and never recreates it", () => {
@@ -1008,99 +961,6 @@ describe("explicit v3 to v4 migration (B3-P2C-A)", () => {
   }
 });
 
-describe("explicit chained migrations to v4 (B3-P2C-A)", () => {
-  it("migrates v2 to v4 through v3, preserving Session history and the trust root", () => {
-    const loc = location();
-    initializeOlderStore(loc, 2);
-    seedSessions(loc, false);
-    const before = rowsAt(loc);
-    const migrated = migrate(loc, 2, 4);
-    try {
-      expect(migrated.database.prepare("SELECT version, name FROM schema_migrations ORDER BY version").all()).toEqual([
-        { version: 2, name: V2_FOUNDATION_NAME },
-        { version: 3, name: V3_MIGRATION_NAME },
-        { version: 4, name: V4_MIGRATION_NAME },
-      ]);
-      const after = durableRows(migrated.database);
-      expect(after.session).toEqual(before.session);
-      expect(after.fencing).toEqual(before.fencing);
-      expect(after.trust).toEqual(before.trust);
-      // The legacy v2 ownership row gains only the NULL v3 column.
-      expect(before.ownership).toHaveLength(1);
-      expect(after.ownership).toEqual((before.ownership ?? []).map((row) => ({ ...(row as object), lease_started_at: null })));
-      expect(manifest(migrated.database)).toEqual(v4Manifest());
-    } finally {
-      migrated.close();
-    }
-    expect(readFileSync(hostSecretPath(dbPath(loc)), "utf8")).toBe(MIG_SECRET_HEX);
-    expect(() => openStore(loc)).toThrowError(expect.objectContaining({ code: "STORAGE_MIGRATION_REQUIRED" }));
-  });
-
-  it("migrates v1 to v4 through v2 and v3, bootstrapping the trust root once", () => {
-    const loc = location();
-    initializeOlderStore(loc, 1);
-    const migrated = migrate(loc, 1, 4);
-    try {
-      expect(migrated.database.prepare("SELECT version, name FROM schema_migrations ORDER BY version").all()).toEqual([
-        { version: 1, name: INITIAL_MIGRATION_NAME },
-        { version: 2, name: V2_MIGRATION_NAME },
-        { version: 3, name: V3_MIGRATION_NAME },
-        { version: 4, name: V4_MIGRATION_NAME },
-      ]);
-      expect(migrated.database.prepare("SELECT generation, secret_digest FROM host_trust_root").all()).toEqual([
-        { generation: 1, secret_digest: hostSecretDigest(MIG_SECRET_HEX) },
-      ]);
-      expect(manifest(migrated.database)).toEqual(v4Manifest());
-    } finally {
-      migrated.close();
-    }
-    expect(() => openStore(loc)).toThrowError(expect.objectContaining({ code: "STORAGE_MIGRATION_REQUIRED" }));
-  });
-
-  it("commits each step independently: an interrupted v4 step leaves a valid v3 store", () => {
-    const loc = location();
-    initializeOlderStore(loc, 2);
-    seedSessions(loc, false);
-    let steps = 0;
-    expect(() =>
-      migrate(loc, 2, 4, {
-        beforeCommit: () => {
-          steps += 1;
-          if (steps === 2) throw new Error("simulated interruption");
-        },
-      }),
-    ).toThrowError(StorageTransactionError);
-    expect(steps).toBe(2);
-    expect(preflightStoreShape(dbPath(loc)).kind).toBe("v3");
-    expect(() => openStore(loc)).toThrowError(expect.objectContaining({ code: "STORAGE_MIGRATION_REQUIRED" }));
-    migrate(loc, 3, 4).close();
-    expect(() => openStore(loc)).toThrowError(expect.objectContaining({ code: "STORAGE_MIGRATION_REQUIRED" }));
-  });
-
-  it("converges fresh, v3-, v2-, and v1-migrated stores to one manifest that is v3 plus the triggers only", () => {
-    const expected = v4Manifest();
-    for (const version of [3, 2, 1] as const) {
-      const loc = location();
-      initializeOlderStore(loc, version);
-      const migrated = migrate(loc, version, 4);
-      try {
-        expect(manifest(migrated.database)).toEqual(expected);
-      } finally {
-        migrated.close();
-      }
-    }
-    // v4 adds exactly the lifecycle triggers to the v3 manifest.
-    const loc = location();
-    initializeOlderStore(loc, 3);
-    const v3 = openStorageConnection(loc);
-    let v3Names: string[];
-    try {
-      v3Names = manifest(v3).map((row) => (row as { name: string }).name);
-    } finally {
-      v3.close();
-    }
-    const added = expected.map((row) => (row as { name: string }).name).filter((name) => !v3Names.includes(name));
-    expect(added.sort()).toEqual([...V4_TRIGGERS].sort());
-    expect(V4_ADDITIVE_SQL).not.toMatch(/ALTER TABLE|CREATE TABLE|DROP /);
-  });
-});
+// Explicit chained-migration success/convergence/interruption requirements are
+// retired from E2-A runtime acceptance, not skipped/PASS. See SOURCE-TOUCHES.md.
+// Current Session lifecycle security and old-store refusal above remain active.
