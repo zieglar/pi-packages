@@ -24,6 +24,8 @@ import { readFileSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { runStdioServer, createExchangeMcpServer } from "../control/mcp/server.js";
+import { CE_ACK_TOOL, MESSAGING_TOOL_NAMES } from "../control/mcp/messaging-tools.js";
+import { PING_TOOL_NAME } from "../control/mcp/ping.js";
 import { CeEndpointHost } from "../host/endpoint-host.js";
 import { CeBoundEndpoint } from "../host/bound-endpoint.js";
 import {
@@ -95,6 +97,7 @@ async function main(): Promise<void> {
     exchangeIdempotencyKey: config.exchange.idempotencyKey,
     leaseTtlSeconds: config.lease.ttlSeconds,
     payloadRead: { enabled: config.payloadRead.enabled },
+    ack: { enabled: config.ack.enabled },
   });
 
   const bound = CeBoundEndpoint.start(host, config.endpoint.endpointId, {
@@ -111,7 +114,9 @@ async function main(): Promise<void> {
     },
   });
 
-  const server = createExchangeMcpServer(undefined, { port: bound });
+  // HANDOFF-CE-E2B-01: advertise `ce_ack` only when the validated binding
+  // declares the ack opt-in; the default surface stays exactly four tools.
+  const server = createExchangeMcpServer(undefined, { port: bound, ackEnabled: config.ack.enabled });
   const transport = new StdioServerTransport();
 
   let initiated = false;
@@ -147,7 +152,15 @@ async function main(): Promise<void> {
   server.onclose = requestShutdown;
 
   await server.connect(transport);
-  console.error(`CE_MCP_STARTED tools=ping,ce_send,ce_inbox_list,ce_read_payload`);
+  // HANDOFF-CE-E2B-01: the diagnostic mirrors exactly what the server above
+  // advertises for this binding (same construction, same order) — ce_ack
+  // appears only when the operator ack opt-in is enabled.
+  const advertisedTools = [
+    PING_TOOL_NAME,
+    ...MESSAGING_TOOL_NAMES,
+    ...(config.ack.enabled ? [CE_ACK_TOOL.name] : []),
+  ];
+  console.error(`CE_MCP_STARTED tools=${advertisedTools.join(",")}`);
   await shutdownRequested;
   await initiateShutdown();
 }

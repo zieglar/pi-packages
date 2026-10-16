@@ -21,6 +21,11 @@ export const CE_SEND_TOOL_NAME = "ce_send" as const;
 export const CE_INBOX_LIST_TOOL_NAME = "ce_inbox_list" as const;
 export const CE_READ_PAYLOAD_TOOL_NAME = "ce_read_payload" as const;
 export const MESSAGING_TOOL_NAMES = [CE_SEND_TOOL_NAME, CE_INBOX_LIST_TOOL_NAME, CE_READ_PAYLOAD_TOOL_NAME] as const;
+/** HANDOFF-CE-E2B-01: `ce_ack` is advertised ONLY when the binding declares the
+ * operator ack opt-in (see server.ts); it is deliberately NOT part of the
+ * always-advertised messaging trio below. */
+export const CE_ACK_TOOL_NAME = "ce_ack" as const;
+export type AckToolName = typeof CE_ACK_TOOL_NAME;
 export type MessagingToolName = (typeof MESSAGING_TOOL_NAMES)[number];
 
 const closed = { additionalProperties: false } as const;
@@ -45,10 +50,30 @@ export const ReadPayloadArgsSchema = Type.Object(
   { messageId: Type.String({ minLength: 1, maxLength: 64, description: "Explicit id discovered through ce_inbox_list" }) },
   closed,
 );
+export const AckArgsSchema = Type.Object(
+  {
+    messageId: Type.String({
+      minLength: 30,
+      maxLength: 30,
+      pattern: "^msg_[0-9A-HJKMNP-TV-Z]{26}$",
+      description: "Explicit id discovered through ce_inbox_list or an authorized read"
+    }),
+    payloadDigest: Type.String({
+      minLength: 64,
+      maxLength: 64,
+      pattern: "^[0-9a-f]{64}$",
+      description: "SHA-256 hex digest copied exactly from an authorized ce_read_payload result; never computed by the caller"
+    }),
+    payloadLength: Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER, description: "Byte length copied exactly from an authorized ce_read_payload result" }),
+    messageCreatedAuditSequence: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER, description: "The auditSequence of the authorized read result for that message" }),
+  },
+  closed,
+);
 
 export type SendArgs = Static<typeof SendArgsSchema>;
 export type InboxListArgs = Static<typeof InboxListArgsSchema>;
 export type ReadPayloadArgs = Static<typeof ReadPayloadArgsSchema>;
+export type AckArgs = Static<typeof AckArgsSchema>;
 
 /** The only capability the MCP server holds: an Endpoint-bound port. */
 export interface ExchangeMessagingPort {
@@ -72,6 +97,19 @@ export interface ExchangeMessagingPort {
     readonly createdAt: string;
     readonly auditSequence: number;
     readonly payloadText: string;
+  };
+  /** HANDOFF-CE-E2B-01 delivery ACK: returns durable receipt evidence only. */
+  acknowledge(input: AckArgs): {
+    readonly disposition: "CREATED" | "REPLAYED";
+    readonly receipt: {
+      readonly receiptId: string;
+      readonly exchangeId: string;
+      readonly messageId: string;
+      readonly endpoint: { readonly adapter: string; readonly endpointId: string };
+      readonly kind: "delivery_ack";
+      readonly createdAt: string;
+    };
+    readonly receiptAuditSequence: number;
   };
 }
 
@@ -118,6 +156,25 @@ export const MESSAGING_TOOLS: readonly MessagingToolDescriptor[] = [
   },
 ];
 
+/** HANDOFF-CE-E2B-01 opt-in-only ACK descriptor. Advertised by the server
+ * only when the binding declares the operator ack opt-in. */
+export type AckToolDescriptor = Omit<MessagingToolDescriptor, "name"> & { readonly name: AckToolName };
+
+export const CE_ACK_TOOL: AckToolDescriptor = {
+  name: CE_ACK_TOOL_NAME,
+  description:
+    "Record one immutable recipient reception receipt for a message addressed to this server's fixed endpoint, " +
+    "by explicit id. Copy payloadDigest, payloadLength, and messageCreatedAuditSequence exactly from an authorized read " +
+    "of that message (ce_read_payload returns payloadDigest, payloadLength, and the auditSequence to use as " +
+    "messageCreatedAuditSequence); never compute, guess, or transform them yourself. Idempotent per message: an " +
+    "equivalent repeat returns the original receipt unchanged. This records reception only: it is not proof of " +
+    "delivery, of having read or understood the text, of processing, or of task completion, and it hides nothing from " +
+    "the inbox. If the result is CE_HOST_UNCERTAIN the outcome is unknown: do not retry; ask the operator to inspect " +
+    "durable state.",
+  inputSchema: { ...AckArgsSchema },
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+};
+
 export interface ToolCallResult {
   [key: string]: unknown;
   content: Array<{ type: "text"; text: string }>;
@@ -156,8 +213,22 @@ function refusalResult(error: unknown): ToolCallResult {
   };
 }
 
+/** ACK BUSY reports rollback without granting caller retry permission. */
+function ackRefusalResult(error: unknown): ToolCallResult {
+  const refusal = refusalOf(error);
+  if (refusal.code !== "CE_HOST_BUSY") return refusalResult(error);
+  return {
+    content: [{
+      type: "text",
+      text: `chat-exchange refused: ${refusal.code}${refusal.reason === null ? "" : ` (${refusal.reason})`}; rolled back; rollback does not authorize retry; retry requires explicit operator or upper-layer approval`,
+    }],
+    structuredContent: { code: refusal.code, reason: refusal.reason, retryable: false },
+    isError: true,
+  };
+}
+
 export class MessagingArgsError extends Error {
-  constructor(readonly tool: MessagingToolName) {
+  constructor(readonly tool: MessagingToolName | AckToolName) {
     super(`${tool}: invalid arguments; closed schema rejected the request shape`);
     this.name = "MessagingArgsError";
   }
@@ -167,10 +238,14 @@ export function isMessagingToolName(name: unknown): name is MessagingToolName {
   return typeof name === "string" && (MESSAGING_TOOL_NAMES as readonly string[]).includes(name);
 }
 
+export function isAckToolName(name: unknown): name is AckToolName {
+  return typeof name === "string" && name === CE_ACK_TOOL_NAME;
+}
+
 /** Validate the closed schema, then call the bound port. Schema failures throw
  * `MessagingArgsError` (mapped to JSON-RPC invalid params by the server);
  * port refusals become sanitized `isError` tool results. */
-export function callMessagingTool(port: ExchangeMessagingPort, name: MessagingToolName, args: unknown): ToolCallResult {
+export function callMessagingTool(port: ExchangeMessagingPort, name: MessagingToolName | AckToolName, args: unknown): ToolCallResult {
   const input = args ?? {};
   switch (name) {
     case CE_SEND_TOOL_NAME: {
@@ -247,6 +322,44 @@ export function callMessagingTool(port: ExchangeMessagingPort, name: MessagingTo
         };
       } catch (error) {
         return refusalResult(error);
+      }
+    }
+    case CE_ACK_TOOL_NAME: {
+      if (!Value.Check(AckArgsSchema, input)) throw new MessagingArgsError(name);
+      try {
+        const acked = port.acknowledge({
+          messageId: input.messageId,
+          payloadDigest: input.payloadDigest,
+          payloadLength: input.payloadLength,
+          messageCreatedAuditSequence: input.messageCreatedAuditSequence,
+        });
+        // The frozen public receipt projection only: no acknowledging Session,
+        // fencing token, trust generation, or capability ever appears here.
+        const evidence = {
+          disposition: acked.disposition,
+          receipt: Object.freeze({
+            receiptId: acked.receipt.receiptId,
+            exchangeId: acked.receipt.exchangeId,
+            messageId: acked.receipt.messageId,
+            endpoint: Object.freeze({
+              adapter: acked.receipt.endpoint.adapter,
+              endpointId: acked.receipt.endpoint.endpointId,
+            }),
+            kind: acked.receipt.kind,
+            createdAt: acked.receipt.createdAt,
+          }),
+          receiptAuditSequence: acked.receiptAuditSequence,
+        };
+        return {
+          content: [{
+            type: "text",
+            text: `${JSON.stringify(evidence)}\nReception receipt recorded. This is not proof of delivery, read, processing, or task completion, and the message stays in the inbox.`,
+          }],
+          structuredContent: evidence,
+          isError: false,
+        };
+      } catch (error) {
+        return ackRefusalResult(error);
       }
     }
   }

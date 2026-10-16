@@ -24,5 +24,8 @@
   },
   "payloadRead": {
     "enabled": false
+  },
+  "ack": {
+    "enabled": false
   }
 }

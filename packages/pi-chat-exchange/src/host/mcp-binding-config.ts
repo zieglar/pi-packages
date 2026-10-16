@@ -25,6 +25,8 @@ export interface McpBindingConfig {
   readonly recipients: readonly CeRecipientRef[];
   readonly lease: { readonly ttlSeconds: number; readonly renewIntervalSeconds: number };
   readonly payloadRead: { readonly enabled: boolean };
+  /** HANDOFF-CE-E2B-01 operator ACK opt-in; disabled unless explicitly set. */
+  readonly ack: { readonly enabled: boolean };
 }
 
 /** Sanitized configuration refusal: a fixed code plus a structural field path;
@@ -132,6 +134,16 @@ function payloadReadPolicy(value: unknown): McpBindingConfig["payloadRead"] {
   return Object.freeze({ enabled: fields.enabled });
 }
 
+/** HANDOFF-CE-E2B-01: the ACK opt-in is validated exactly like `payloadRead`.
+ * Absent means disabled; only a real boolean is accepted, and an unknown or
+ * accessor-backed field refuses with a structural path, never a value. */
+function ackPolicy(value: unknown): McpBindingConfig["ack"] {
+  if (value === undefined) return Object.freeze({ enabled: false });
+  const fields = plain(value, "ack", ["enabled"], ["enabled"]);
+  if (typeof fields.enabled !== "boolean") throw new McpBindingConfigError("ack.enabled");
+  return Object.freeze({ enabled: fields.enabled });
+}
+
 /** Validate an already-parsed JSON value. Unknown fields, wrong types, unsafe
  * paths, out-of-range lease settings, duplicate or self-referencing
  * recipients, and credential-shaped strings are all refused. */
@@ -139,7 +151,7 @@ export function parseMcpBindingConfig(raw: unknown): McpBindingConfig {
   const fields = plain(
     raw,
     "config",
-    ["version", "store", "exchange", "endpoint", "recipients", "lease", "payloadRead"],
+    ["version", "store", "exchange", "endpoint", "recipients", "lease", "payloadRead", "ack"],
     ["version", "store", "exchange", "endpoint", "recipients"],
   );
   if (fields.version !== MCP_BINDING_CONFIG_VERSION) throw new McpBindingConfigError("config.version");
@@ -168,5 +180,6 @@ export function parseMcpBindingConfig(raw: unknown): McpBindingConfig {
     recipients: Object.freeze(recipients),
     lease: leasePolicy(fields.lease),
     payloadRead: payloadReadPolicy(fields.payloadRead),
+    ack: ackPolicy(fields.ack),
   });
 }

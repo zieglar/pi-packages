@@ -21,6 +21,7 @@
  */
 import {
   CeHostRefusal,
+  type CeAckResult,
   type CeEndpointHost,
   type CeInboxResult,
   type CeReadPayloadResult,
@@ -176,6 +177,27 @@ export class CeBoundEndpoint {
 
   readPayload(input: { readonly messageId: string }): CeReadPayloadResult {
     return this.#run(false, () => this.#host.readPayload(this.#endpointId, { messageId: input.messageId }));
+  }
+
+  /** HANDOFF-CE-E2B-01 delivery ACK. It is a durable WRITE, so it runs through
+   * the same admission gate as `send`: a permanently stopped heartbeat or a
+   * closing endpoint refuses it before the host is reached. The four metadata
+   * fields are copied by the caller from an authorized read; no endpoint,
+   * session, or capability parameter exists on this call. */
+  acknowledge(input: {
+    readonly messageId: string;
+    readonly payloadDigest: string;
+    readonly payloadLength: number;
+    readonly messageCreatedAuditSequence: number;
+  }): CeAckResult {
+    return this.#run(true, () =>
+      this.#host.acknowledge(this.#endpointId, {
+        messageId: input.messageId,
+        payloadDigest: input.payloadDigest,
+        payloadLength: input.payloadLength,
+        messageCreatedAuditSequence: input.messageCreatedAuditSequence,
+      }),
+    );
   }
 
   /** Graceful, idempotent shutdown. Calls after the first return the first

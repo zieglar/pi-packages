@@ -26,6 +26,8 @@ import { Value } from "@sinclair/typebox/value";
 import { PING_TOOL_NAME, PingArgsSchema, PingResultSchema, defaultHostLabel, ping } from "./ping.js";
 import {
   callMessagingTool,
+  CE_ACK_TOOL,
+  isAckToolName,
   isMessagingToolName,
   MESSAGING_TOOLS,
   type ExchangeMessagingPort,
@@ -54,6 +56,10 @@ const PING_TOOL = {
  * carry sender/endpoint/session/capability fields. */
 export interface MessagingServerBinding {
   readonly port: ExchangeMessagingPort;
+  /** HANDOFF-CE-E2B-01: the operator ack opt-in from the validated binding
+   * configuration. Absent (or not exactly `true`) means `ce_ack` is neither
+   * advertised nor callable; the base four-tool surface is unchanged. */
+  readonly ackEnabled?: boolean;
 }
 
 export function createExchangeMcpServer(
@@ -65,15 +71,29 @@ export function createExchangeMcpServer(
     { capabilities: { tools: {} } },
   );
 
+  // NOTE: the line below is a pinned check-contract anchor (ping-only by
+  // default; messaging tools only through the injected MESSAGING_TOOLS) and
+  // must keep its exact shape.
   const tools = messaging === undefined ? [PING_TOOL] : [PING_TOOL, ...MESSAGING_TOOLS];
+  // HANDOFF-CE-E2B-01: `ce_ack` is advertised last, and only on the explicit
+  // operator ack opt-in carried by the binding.
+  const advertised = messaging?.ackEnabled === true ? [...tools, CE_ACK_TOOL] : tools;
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools,
+    tools: advertised,
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
-    if (isMessagingToolName(name)) {
+    // HANDOFF-CE-E2B-01: `ce_ack` exists only behind the explicit opt-in; a
+    // call without it fails closed exactly like an unadvertised tool.
+    if (isAckToolName(name)) {
+      if (messaging === undefined || messaging.ackEnabled !== true) {
+        // Never advertised in this mode, but fail closed all the same.
+        throw new McpError(ErrorCode.MethodNotFound, `unknown tool: ${String(name)}`);
+      }
+    }
+    if (isMessagingToolName(name) || isAckToolName(name)) {
       if (messaging === undefined) {
         // Never advertised in this mode, but fail closed all the same.
         throw new McpError(ErrorCode.MethodNotFound, `unknown tool: ${String(name)}`);

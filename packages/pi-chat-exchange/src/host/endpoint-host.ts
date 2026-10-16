@@ -34,6 +34,8 @@
  *   Restart never implies ownership recovery.
  */
 import { EXCHANGE_ID_PATTERN, MESSAGE_ID_PATTERN } from "../protocol/identity.js";
+import { SHA256_HEX_PATTERN } from "../protocol/entities.js";
+import { recordDeliveryAck, type DeliveryAckResult } from "../storage/delivery-ack.js";
 import { CreationDomainError } from "../storage/creation.js";
 import { createExchange } from "../storage/creation.js";
 import { CreationRequestError } from "../storage/creation-request.js";
@@ -111,6 +113,11 @@ export interface CeEndpointHostPolicy {
    * stays disabled (fail closed). The decision is fixed for the Host
    * instance's lifetime and never re-read from the policy object. */
   readonly payloadRead?: { readonly enabled?: boolean };
+  /** HANDOFF-CE-E2B-01 operator ACK opt-in. Only the exact boolean `true`
+   * enables the ACK surface; a missing, false, or malformed setting stays
+   * disabled (fail closed). Fixed for the Host instance's lifetime and never
+   * re-read from the policy object. */
+  readonly ack?: { readonly enabled?: boolean };
   /** Test seam for the advisory clock used by lease status reads. */
   readonly now?: () => string;
 }
@@ -153,6 +160,7 @@ export type CeHostRefusalCode =
   | "CE_HOST_BUSY"
   | "CE_HOST_UNCERTAIN"
   | "CE_HOST_UNAVAILABLE"
+  | "CE_HOST_ACK_DISABLED"
   | "CE_HOST_PAYLOAD_DISABLED"
   | "CE_HOST_PAYLOAD_TOO_LARGE"
   | "CE_HOST_PAYLOAD_INVALID_UTF8";
@@ -167,6 +175,7 @@ const REFUSAL_DETAIL: Record<CeHostRefusalCode, string> = {
   CE_HOST_BUSY: "durable store is contended; the request rolled back and may be retried as a whole",
   CE_HOST_UNCERTAIN:
     "transaction outcome is unknown; reopen and inspect durable state before any retry",
+  CE_HOST_ACK_DISABLED: "acknowledgement recording is disabled by operator policy",
   CE_HOST_PAYLOAD_DISABLED: "payload reading is disabled by operator policy",
   CE_HOST_PAYLOAD_TOO_LARGE: "payload exceeds the fixed operator exposure limit",
   CE_HOST_PAYLOAD_INVALID_UTF8: "payload is not valid UTF-8 text",
@@ -226,6 +235,24 @@ export interface CeReadPayloadResult {
   readonly payloadText: string;
 }
 
+/** HANDOFF-CE-E2B-01 ACK evidence. This is the frozen public Receipt
+  * projection and nothing else: the acknowledging Session, fencing token,
+  * trust generation, capability, and payload bytes stay private to Storage. */
+export interface CeAckReceipt {
+  readonly receiptId: string;
+  readonly exchangeId: string;
+  readonly messageId: string;
+  readonly endpoint: CeRecipientRef;
+  readonly kind: "delivery_ack";
+  readonly createdAt: string;
+}
+
+export interface CeAckResult {
+  readonly disposition: "CREATED" | "REPLAYED";
+  readonly receipt: CeAckReceipt;
+  readonly receiptAuditSequence: number;
+}
+
 export interface CeInboxResult {
   readonly messages: readonly { readonly messageId: string; readonly auditSequence: number }[];
   readonly continuationAuditSequence: number | null;
@@ -256,6 +283,10 @@ interface EndpointAuthority {
    * enabled when this authority was provisioned — a disabled policy issues
    * no payload capability at all. */
   readonly payloadReadCapability: string | undefined;
+  /** HANDOFF-CE-E2B-01: undefined unless the operator ACK opt-in was enabled
+   * when this authority was provisioned or resumed — a disabled policy issues
+   * no ack capability at all. Memory-only, like every other capability here. */
+  readonly ackCapability: string | undefined;
   /** Session-bound `resume` capability, issued lazily and only by the
    * explicit lifecycle operations (`renew`, `end`); memory-only like the rest. */
   resumeCapability: string | undefined;
@@ -266,18 +297,34 @@ interface EndpointAuthority {
  * an oversized payload is refused whole, never partially returned. */
 const PAYLOAD_EXPOSURE_LIMIT_BYTES = 65_536;
 
+/** HANDOFF-CE-E2B-01 closed ACK request: exactly the Message metadata a caller
+  * must copy from an authorized read. No authority field is accepted here. */
+const ACK_REQUEST_FIELDS = ["messageId", "payloadDigest", "payloadLength", "messageCreatedAuditSequence"] as const;
+
+function isSafeIntegerAtLeast(value: unknown, minimum: number): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= minimum;
+}
+
 /** Only the exact boolean `true` enables payload exposure. A missing, false,
  * or malformed setting (wrong type, truthy string, number, null, or a
  * non-object section) fails closed to disabled. */
-function payloadReadEnabled(policy: CeEndpointHostPolicy): boolean {
+function optInEnabled(setting: unknown): boolean {
   try {
-    const setting: unknown = policy.payloadRead;
     if (!isPlainObject(setting) || Array.isArray(setting)) return false;
     const enabled = Object.getOwnPropertyDescriptor(setting, "enabled");
     return enabled?.enumerable === true && "value" in enabled && enabled.value === true;
   } catch {
     return false;
   }
+}
+
+function payloadReadEnabled(policy: CeEndpointHostPolicy): boolean {
+  try { return optInEnabled(policy.payloadRead); } catch { return false; }
+}
+
+/** HANDOFF-CE-E2B-01: the ACK opt-in uses the identical exact-`true` rule. */
+function ackEnabled(policy: CeEndpointHostPolicy): boolean {
+  try { return optInEnabled(policy.ack); } catch { return false; }
 }
 
 function clampLeaseTtl(policy: CeEndpointHostPolicy): number {
@@ -387,6 +434,10 @@ export class CeEndpointHost {
    * lifetime: computed once from the policy so later mutation of the policy
    * object can never enable or disable payload exposure mid-flight. */
   readonly #payloadReadEnabled: boolean;
+  /** HANDOFF-CE-E2B-01 operator ACK decision, fixed for the Host lifetime by
+   * the same rule, so later mutation of the policy object cannot enable or
+   * disable the ACK surface mid-flight. */
+  readonly #ackEnabled: boolean;
   /** Explicit cross-adapter recipients, validated and frozen at construction. */
   readonly #recipients: readonly CeRecipientRef[];
   readonly #seams: ClockSeam;
@@ -408,6 +459,7 @@ export class CeEndpointHost {
     this.#policy = policy;
     this.#leaseTtlSeconds = clampLeaseTtl(policy);
     this.#payloadReadEnabled = payloadReadEnabled(policy);
+    this.#ackEnabled = ackEnabled(policy);
     this.#seams = policy.now === undefined ? {} : { now: policy.now };
   }
 
@@ -577,6 +629,11 @@ export class CeEndpointHost {
       const payloadReadCapability = this.#payloadReadEnabled
         ? issueCapability(this.#store, { participantId, scope: "payload_read", sessionId }, this.#seams).capability
         : undefined;
+      // HANDOFF-CE-E2B-01: the independent Session-bound `ack` scope, issued
+      // only under the operator opt-in and never persisted or returned.
+      const ackCapability = this.#ackEnabled
+        ? issueCapability(this.#store, { participantId, scope: "ack", sessionId }, this.#seams).capability
+        : undefined;
       this.#authorities.set(endpointId, {
         endpointId,
         participantId,
@@ -585,6 +642,7 @@ export class CeEndpointHost {
         sendCapability,
         readCapability,
         payloadReadCapability,
+        ackCapability,
         resumeCapability: undefined,
       });
     } catch (error) {
@@ -643,6 +701,11 @@ export class CeEndpointHost {
       const payloadReadCapability = this.#payloadReadEnabled
         ? issueCapability(this.#store, { participantId, scope: "payload_read", sessionId }, this.#seams).capability
         : undefined;
+      // HANDOFF-CE-E2B-01: a validated restart within the active lease also
+      // re-issues fresh memory-only ack authority under the same policy.
+      const ackCapability = this.#ackEnabled
+        ? issueCapability(this.#store, { participantId, scope: "ack", sessionId }, this.#seams).capability
+        : undefined;
       this.#authorities.set(endpointId, {
         endpointId,
         participantId,
@@ -651,6 +714,7 @@ export class CeEndpointHost {
         sendCapability,
         readCapability,
         payloadReadCapability,
+        ackCapability,
         resumeCapability: undefined,
       });
     } catch (error) {
@@ -881,6 +945,83 @@ export class CeEndpointHost {
       createdAt: message.createdAt,
       auditSequence: authorized.auditSequence,
       payloadText,
+    });
+  }
+
+  /** HANDOFF-CE-E2B-01 Session-authorized delivery ACK over the committed
+   * E2-A storage path. The fixed sanitized policy gate comes first, so a
+   * disabled deployment answers identically regardless of registration state;
+   * then the closed four-field request is validated, and Storage alone decides
+   * authority, eligibility, and natural-key idempotency inside one owned
+   * transaction. The caller supplies NO authority field: Participant, Session,
+   * fencing token, capability, Exchange, and trusted clock all come from host
+   * memory. Recording an ACK changes no Message delivery state, no cursor, and
+   * no task state, and it is not proof of reading, processing, or completion. */
+  acknowledge(endpointId: string, input: unknown): CeAckResult {
+    if (!this.#ackEnabled) throw new CeHostRefusal("CE_HOST_ACK_DISABLED");
+    const authority = this.#authority(endpointId);
+    let request: Record<string, unknown>;
+    try {
+      request = captureFields(input, ACK_REQUEST_FIELDS, ACK_REQUEST_FIELDS, "request");
+    } catch {
+      throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
+    }
+    const { messageId, payloadDigest, payloadLength, messageCreatedAuditSequence } = request;
+    if (
+      typeof messageId !== "string" ||
+      !MESSAGE_ID_PATTERN.test(messageId) ||
+      typeof payloadDigest !== "string" ||
+      !SHA256_HEX_PATTERN.test(payloadDigest) ||
+      !isSafeIntegerAtLeast(payloadLength, 0) ||
+      !isSafeIntegerAtLeast(messageCreatedAuditSequence, 1)
+    ) {
+      throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
+    }
+    if (authority.ackCapability === undefined) throw new CeHostRefusal("CE_HOST_ACK_DISABLED");
+
+    let recorded: DeliveryAckResult;
+    try {
+      const fencingToken = this.#currentFencing(authority);
+      recorded = recordDeliveryAck(
+        this.#store,
+        {
+          participantId: authority.participantId,
+          sessionId: authority.sessionId,
+          fencingToken,
+          capability: authority.ackCapability,
+          exchangeId: authority.exchangeId,
+          messageId,
+          payloadDigest,
+          payloadLength,
+          messageCreatedAuditSequence,
+        },
+        this.#seams,
+      );
+    } catch (error) {
+      const refusal = toRefusal(error);
+      if (refusal.code === "CE_HOST_BUSY") {
+        // Proven ACK rollback is a transaction fact, not retry authorization.
+        const ackRefusal = new CeHostRefusal("CE_HOST_BUSY", false, refusal.reason);
+        ackRefusal.message = "durable store is contended; the ACK request rolled back; rollback does not authorize retry; retry requires explicit operator or upper-layer approval";
+        throw ackRefusal;
+      }
+      throw refusal;
+    }
+    const receipt = recorded.receipt;
+    // Defensive: an ACK receipt is `delivery_ack` by the storage contract.
+    // Never publish evidence that disagrees with the frozen projection.
+    if (receipt.kind !== "delivery_ack") throw new CeHostRefusal("CE_HOST_UNAVAILABLE");
+    return Object.freeze({
+      disposition: recorded.disposition,
+      receipt: Object.freeze({
+        receiptId: receipt.receiptId,
+        exchangeId: receipt.exchangeId,
+        messageId: receipt.messageId,
+        endpoint: Object.freeze({ adapter: receipt.endpoint.adapter, endpointId: receipt.endpoint.endpointId }),
+        kind: receipt.kind,
+        createdAt: receipt.createdAt,
+      }),
+      receiptAuditSequence: recorded.receiptAuditSequence,
     });
   }
 

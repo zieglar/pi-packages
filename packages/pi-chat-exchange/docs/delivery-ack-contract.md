@@ -1,6 +1,6 @@
 # Private delivery ACK storage contract (E2-A)
 
-Implementation candidate for HANDOFF-CE-P3B-02. Parent review/acceptance remains required. No Pi/MCP/host transport surface is added or enabled.
+The private storage contract was implemented in HANDOFF-CE-P3B-02 (E2-A). HANDOFF-CE-E2B-01 adds the operator-opt-in MCP/host surface described below without changing that storage contract. This document is not evidence of real ChatGPT dogfood or release.
 
 ## Meaning and authority
 
@@ -41,5 +41,46 @@ Proven rollback and `INDETERMINATE` remain distinct. Busy does not authorize ret
 ACK never changes Message/state/body/revision, attempt, claim, cursor, result, ownership, membership, task or transport state. Reads/discovery never implicitly ACK; ACK does not hide Messages. Receipt audits occupy raw inbox scan budget. Continuation remains the last raw sequence actually examined, not an ACK watermark or prefetch tail. Empty receipt-only pages can advance continuation without returning Messages; callers explicitly request subsequent pages.
 
 No bodies, credentials, host secrets or arbitrary causes enter receipt/audit results, logs or errors. Private hooks are synchronous, value-free, capture defensively, reject unsupported results without inspecting them, and replace caller exceptions before domain-error translation. Test instrumentation is privileged, not a sandbox.
+
+## MCP surface (HANDOFF-CE-E2B-01)
+
+One opt-in MCP tool now exposes this committed storage contract. The private
+storage functions, their ordering, and their guarantees above are unchanged.
+
+- The tool is named `ce_ack`. Its closed input is exactly `{messageId,
+  payloadDigest, payloadLength, messageCreatedAuditSequence}`; unknown fields
+  and any authority-bearing field are rejected as JSON-RPC invalid params
+  before any port call. The digest, length, and creation sequence must be
+  copied from an authorized read (`ce_read_payload` returns exactly
+  `payloadDigest`, `payloadLength`, and the creation `auditSequence`) — never
+  computed or transformed by the caller or model.
+- The host injects Participant, Session, fencing token, the Session-bound `ack`
+  capability, and the Exchange. The caller supplies no authority field, and the
+  capability is issued only while the operator opt-in is enabled (at
+  provisioning and at a validated `resume`); it is memory-only.
+- Advertisement is operator opt-in only: the MCP binding configuration gains an
+  optional `"ack": { "enabled": boolean }` section, disabled by default. A
+  deployment without the opt-in advertises exactly `ping`, `ce_send`,
+  `ce_inbox_list`, `ce_read_payload`, and a `ce_ack` call there fails closed
+  (MethodNotFound). With the opt-in, `ce_ack` is listed last.
+- A disabled policy refuses `CE_HOST_ACK_DISABLED` before registration state.
+  Storage refusals map through the existing sanitized host refusal set
+  (`CE_HOST_AUTHORITY_ABSENT`, `CE_HOST_INVALID_REQUEST`, `CE_HOST_BUSY`,
+  `CE_HOST_UNCERTAIN`, `CE_HOST_UNAVAILABLE`); `CE_HOST_UNCERTAIN` is never
+  retryable and must not be retried by the caller.
+  For ACK only, `CE_HOST_BUSY` preserves the original safe storage reason and
+  proven rollback classification, but both host and MCP report `retryable: false`
+  as caller policy: rollback does not authorize retry. Another ACK invocation
+  requires explicit operator or upper-layer approval; no retry is orchestrated.
+  Existing send/read refusal behavior is unchanged.
+- The tool response is the frozen public Receipt projection plus `disposition`
+  and `receiptAuditSequence`: `CREATED` for the first ACK, `REPLAYED` with the
+  identical original receipt for an equivalent repeat. The acknowledging
+  Session, fencing token, trust generation, and capability never appear in any
+  result, refusal, or log.
+- Recording an ACK still changes no Message delivery state, cursor, inbox
+  visibility, or task state, and remains a recipient reception statement
+  only — not proof of delivery, reading, understanding, processing, or task
+  completion.
 
 See `storage-contract.md` for current-only v7 bootstrap/gates. Existing historical migration code remains immutable and is not an E2-A upgrade or normal-open path. Volume traversal tests establish bounded work/index use, not a production latency SLO or release authorization.

@@ -27,6 +27,20 @@ function port(overrides: Partial<ExchangeMessagingPort> = {}): ExchangeMessaging
       auditSequence: 3,
       payloadText: "ok",
     }),
+    // HANDOFF-CE-E2B-01: the port contract now carries the ACK operation; the
+    // stub is never reached by the pre-existing assertions below.
+    acknowledge: () => ({
+      disposition: "CREATED",
+      receipt: {
+        receiptId: "rcpt_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        exchangeId: "exc_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        messageId: "msg_1",
+        endpoint: { adapter: "chatgpt", endpointId: "chatgpt/main" },
+        kind: "delivery_ack",
+        createdAt: "2026-10-14T00:00:00.000Z",
+      },
+      receiptAuditSequence: 4,
+    }),
     ...overrides,
   };
 }

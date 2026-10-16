@@ -56,6 +56,8 @@ Edit the copied file:
   Endpoint that will receive messages.
 - Leave `payloadRead.enabled` as `false` unless payload reads are explicitly
   authorized.
+- Leave `ack.enabled` as `false` unless reception-receipt recording is explicitly
+  authorized; `ce_ack` is advertised only when it is exactly `true`.
 
 The bundled launcher always passes this fixed absolute location to the existing
 `mcp-stdio` entrypoint. MCP tool arguments and environment variables cannot
@@ -85,12 +87,18 @@ and refresh/reinstall the marketplace entry after changing the plugin.
 
 1. Mention **Pi Chat Exchange** in a new local chat.
 2. Ask it to call `ping`; expect `status: "reachable"`.
-3. Confirm tool discovery lists exactly `ping`, `ce_send`, `ce_inbox_list`, and
-   `ce_read_payload`.
+3. Confirm tool discovery lists the four base tools: `ping`, `ce_send`,
+   `ce_inbox_list`, and `ce_read_payload`, plus `ce_ack` only if the independent
+   ACK opt-in is enabled (step 7). ACK opt-in alone does not enable payload reads.
 4. Use `ce_send` for an allowlisted Pi recipient and verify Pi receives it.
 5. Have Pi reply, then verify `ce_inbox_list` discovers the reply.
 6. If payload reads were explicitly enabled, verify `ce_read_payload` returns
    only the selected message body.
+7. If the ACK opt-in (`"ack": { "enabled": true }`) was explicitly set, verify
+   tool discovery additionally lists `ce_ack`; an ACK whose digest, length, and
+   creation sequence were copied from `ce_read_payload` returns `CREATED` (first
+   call) or `REPLAYED` (repeat). Without the opt-in the tool list stays exactly
+   the four tools above and `ce_ack` calls fail closed.
 
 Automated package tests cover steps 2–3 against the bundled artifact. Actual
 ChatGPT Desktop installation and the bidirectional UI workflow remain
