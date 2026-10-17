@@ -25,7 +25,7 @@ while (ancestor !== root) {
 }
 const packageRoot = resolve(import.meta.dirname, "..");
 const name = "pi-chat-exchange-gate-b1-debug";
-const version = "0.1.0-debug.1";
+const version = "0.1.0-debug.2";
 const marketplace = join(root, "marketplace");
 const output = join(marketplace, "plugins", name);
 function noLinks(path) {
@@ -54,7 +54,7 @@ plugin.name = name; plugin.version = version;
 plugin.extensions["com.openai"].interface.displayName = "Pi Chat Exchange Gate B1 Debug";
 // No defaultPrompt change: discovery does not authorize invoking a tool.
 writeFileSync(join(output, "plugin.json"), JSON.stringify(plugin, null, 2) + "\n");
-writeFileSync(join(output, "mcp.json"), JSON.stringify({ mcpServers: { [name]: { type: "stdio", command: "./bin/launch", args: ["--config", configPath], cwd: "${PLUGIN_ROOT}" } } }, null, 2) + "\n");
+writeFileSync(join(output, "mcp.json"), JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", mcpServers: { [name]: { type: "stdio", command: "./bin/launch", args: ["--config", configPath], cwd: "${PLUGIN_ROOT}" } } }, null, 2) + "\n");
 const manifest = join(marketplace, ".agents/plugins/marketplace.json");
 mkdirSync(dirname(manifest), { recursive: true });
 writeFileSync(manifest, JSON.stringify({ name: "pi-chat-exchange-gate-b1-debug-local", interface: { displayName: "Pi Chat Exchange Debug Local" }, plugins: [{ name, source: { source: "local", path: `./plugins/${name}` }, policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" }, category: "Productivity" }] }, null, 2) + "\n");

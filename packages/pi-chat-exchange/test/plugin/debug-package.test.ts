@@ -21,6 +21,11 @@ it("packages a distinct debug identity with contained launcher and same-process 
     const mcp = JSON.parse(readFileSync(join(output, "mcp.json"), "utf8"));
     expect(mcp.mcpServers[plugin.name].command).toBe("./bin/launch");
     expect(readFileSync(join(output, "server/launch.mjs"), "utf8")).toContain('["--require", join(pluginRoot, "bin/version-guard.cjs"), entrypoint');
+    // DIAG-04: generated mcp.json must carry the same $schema as the valid frozen baseline,
+    // preserving every other field and the contained launcher projection.
+    const baselineMcp = JSON.parse(readFileSync(join(root, "plugin/pi-chat-exchange/mcp.json"), "utf8"));
+    expect(mcp.$schema, "missing $schema reproduces the Desktop plugin/read parse failure").toBe(baselineMcp.$schema);
+    expect(Object.keys(mcp).sort()).toEqual(Object.keys(baselineMcp).sort());
     expect(spawnSync(process.execPath, args, { encoding: "utf8" }).status).not.toBe(0);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
