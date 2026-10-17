@@ -23,6 +23,8 @@ import {
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
 import { Value } from "@sinclair/typebox/value";
+import { argumentShape, debugEvent, errorSummary } from "../debug-log.js";
+import { observeTransport } from "./debug-transport.js";
 import { PING_TOOL_NAME, PingArgsSchema, PingResultSchema, defaultHostLabel, ping } from "./ping.js";
 import {
   callMessagingTool,
@@ -70,6 +72,7 @@ export function createExchangeMcpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     { capabilities: { tools: {} } },
   );
+  debugEvent("server", "SERVER_CREATED");
 
   // NOTE: the line below is a pinned check-contract anchor (ping-only by
   // default; messaging tools only through the injected MESSAGING_TOOLS) and
@@ -78,13 +81,19 @@ export function createExchangeMcpServer(
   // HANDOFF-CE-E2B-01: `ce_ack` is advertised last, and only on the explicit
   // operator ack opt-in carried by the binding.
   const advertised = messaging?.ackEnabled === true ? [...tools, CE_ACK_TOOL] : tools;
+  for (const tool of advertised) debugEvent("tool", "TOOL_REGISTERED", { tool: tool.name });
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: advertised,
-  }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    debugEvent("mcp", "MCP_TOOLS_LIST", { count: advertised.length });
+    return { tools: advertised };
+  });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
+    const tool = isMessagingToolName(name) || isAckToolName(name) || name === PING_TOOL_NAME ? name : "unknown-tool";
+    const started = Date.now();
+    debugEvent("tool", "TOOL_CALL_STARTED", { tool, args: argumentShape(args) });
+    try {
     // HANDOFF-CE-E2B-01: `ce_ack` exists only behind the explicit opt-in; a
     // call without it fails closed exactly like an unadvertised tool.
     if (isAckToolName(name)) {
@@ -99,7 +108,10 @@ export function createExchangeMcpServer(
         throw new McpError(ErrorCode.MethodNotFound, `unknown tool: ${String(name)}`);
       }
       try {
-        return callMessagingTool(messaging.port, name, args ?? {});
+        debugEvent("tool", "TOOL_DISPATCH", { tool, stage: "bound-port" });
+        const result = callMessagingTool(messaging.port, name, args ?? {});
+        debugEvent("tool", "TOOL_CALL_COMPLETED", { tool, isError: result.isError, durationMs: Date.now() - started });
+        return result;
       } catch (error) {
         if (error instanceof Error && error.name === "MessagingArgsError") {
           throw new McpError(
@@ -127,6 +139,7 @@ export function createExchangeMcpServer(
       // payload that violates the frozen schema.
       throw new McpError(ErrorCode.InternalError, "ping result failed schema validation");
     }
+    debugEvent("tool", "TOOL_CALL_COMPLETED", { tool, isError: false, durationMs: Date.now() - started });
     return {
       content: [
         { type: "text", text: JSON.stringify(result) },
@@ -134,6 +147,10 @@ export function createExchangeMcpServer(
       structuredContent: result,
       isError: false,
     };
+    } catch (error) {
+      debugEvent("tool", "TOOL_CALL_FAILED", { tool, ...errorSummary(error), durationMs: Date.now() - started });
+      throw error;
+    }
   });
 
   return server;
@@ -142,6 +159,9 @@ export function createExchangeMcpServer(
 /** Run the smoke server over stdio. Resolves when the transport closes. */
 export async function runStdioServer(hostLabel: string = defaultHostLabel()): Promise<void> {
   const server = createExchangeMcpServer(hostLabel);
-  const transport = new StdioServerTransport();
+  const transport = observeTransport(new StdioServerTransport());
+  debugEvent("server", "TRANSPORT_CREATED");
   await server.connect(transport);
+  debugEvent("server", "TRANSPORT_CONNECTED");
+  debugEvent("server", "SERVER_READY", { mode: "ping-only" });
 }
