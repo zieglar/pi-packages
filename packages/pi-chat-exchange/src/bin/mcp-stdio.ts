@@ -132,7 +132,10 @@ async function main(): Promise<void> {
   debugEvent("authority", "OWNERSHIP_ACQUIRED", { owned: true });
   // HANDOFF-CE-E2B-01: advertise `ce_ack` only when the validated binding
   // declares the ack opt-in; the default surface stays exactly four tools.
-  const server = createExchangeMcpServer(undefined, { port: bound, ackEnabled: config.ack.enabled });
+  const server = createExchangeMcpServer(undefined, { port: bound, ackEnabled: config.ack.enabled, executionGuard: config.debugExecutionGuard });
+  if (config.debugExecutionGuard.enabled) {
+    debugEvent("server", "EXECUTION_GUARD_ARMED", { scope: "tools/call", stage: "unified-dispatch-entry" });
+  }
   const transport = observeTransport(new StdioServerTransport());
   debugEvent("server", "TRANSPORT_CREATED");
 

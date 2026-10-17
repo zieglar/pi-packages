@@ -27,6 +27,11 @@ export interface McpBindingConfig {
   readonly payloadRead: { readonly enabled: boolean };
   /** HANDOFF-CE-E2B-01 operator ACK opt-in; disabled unless explicitly set. */
   readonly ack: { readonly enabled: boolean };
+  /** HANDOFF-CE-DIAG-06 development-only execution guard opt-in: when exactly
+   * `true`, the MCP server blocks every `tools/call` at the unified dispatch
+   * entry (before any business handler) and answers with a fixed JSON-RPC
+   * error. Absent means disabled; the production surface is unchanged. */
+  readonly debugExecutionGuard: { readonly enabled: boolean };
 }
 
 /** Sanitized configuration refusal: a fixed code plus a structural field path;
@@ -144,6 +149,16 @@ function ackPolicy(value: unknown): McpBindingConfig["ack"] {
   return Object.freeze({ enabled: fields.enabled });
 }
 
+/** HANDOFF-CE-DIAG-06: the development execution guard opt-in is validated
+ * exactly like `ack`. Absent means disabled; only a real boolean is accepted,
+ * and an unknown or accessor-backed field refuses with a structural path. */
+function debugExecutionGuardPolicy(value: unknown): McpBindingConfig["debugExecutionGuard"] {
+  if (value === undefined) return Object.freeze({ enabled: false });
+  const fields = plain(value, "debugExecutionGuard", ["enabled"], ["enabled"]);
+  if (typeof fields.enabled !== "boolean") throw new McpBindingConfigError("debugExecutionGuard.enabled");
+  return Object.freeze({ enabled: fields.enabled });
+}
+
 /** Validate an already-parsed JSON value. Unknown fields, wrong types, unsafe
  * paths, out-of-range lease settings, duplicate or self-referencing
  * recipients, and credential-shaped strings are all refused. */
@@ -151,7 +166,7 @@ export function parseMcpBindingConfig(raw: unknown): McpBindingConfig {
   const fields = plain(
     raw,
     "config",
-    ["version", "store", "exchange", "endpoint", "recipients", "lease", "payloadRead", "ack"],
+    ["version", "store", "exchange", "endpoint", "recipients", "lease", "payloadRead", "ack", "debugExecutionGuard"],
     ["version", "store", "exchange", "endpoint", "recipients"],
   );
   if (fields.version !== MCP_BINDING_CONFIG_VERSION) throw new McpBindingConfigError("config.version");
@@ -181,5 +196,6 @@ export function parseMcpBindingConfig(raw: unknown): McpBindingConfig {
     lease: leasePolicy(fields.lease),
     payloadRead: payloadReadPolicy(fields.payloadRead),
     ack: ackPolicy(fields.ack),
+    debugExecutionGuard: debugExecutionGuardPolicy(fields.debugExecutionGuard),
   });
 }

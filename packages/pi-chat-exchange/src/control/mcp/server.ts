@@ -62,6 +62,12 @@ export interface MessagingServerBinding {
    * configuration. Absent (or not exactly `true`) means `ce_ack` is neither
    * advertised nor callable; the base four-tool surface is unchanged. */
   readonly ackEnabled?: boolean;
+  /** HANDOFF-CE-DIAG-06: development-only execution guard. When exactly
+   * `true`, EVERY `tools/call` is refused at the unified dispatch entry
+   * below — before the ack gate, the messaging port, or ping can run. The
+   * refusal is a fixed JSON-RPC error carrying no tool arguments; the
+   * diagnostic records only the tool name and request id. */
+  readonly executionGuard?: { readonly enabled: boolean };
 }
 
 export function createExchangeMcpServer(
@@ -88,10 +94,26 @@ export function createExchangeMcpServer(
     return { tools: advertised };
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
     const tool = isMessagingToolName(name) || isAckToolName(name) || name === PING_TOOL_NAME ? name : "unknown-tool";
     const started = Date.now();
+    // HANDOFF-CE-DIAG-06: the single unified dispatch entry. When the
+    // development execution guard is armed, refuse BEFORE any business
+    // handler — ack gate, messaging port, argument validation, even ping.
+    // Fail closed for every tool name and every argument shape; the fixed
+    // error text never echoes tool arguments.
+    if (messaging?.executionGuard?.enabled === true) {
+      // Privacy: mirror the transport projection — numeric ids are safe to
+      // log verbatim, string ids only as type+length (never raw client text).
+      const requestId = extra.requestId;
+      debugEvent("tool", "TOOL_CALL_BLOCKED", {
+        tool,
+        ...(typeof requestId === "number" ? { requestId } : typeof requestId === "string" ? { requestIdType: "string", requestIdLength: requestId.length } : {}),
+        reason: "development execution guard",
+      });
+      throw new McpError(ErrorCode.InternalError, "tools/call blocked by development execution guard");
+    }
     debugEvent("tool", "TOOL_CALL_STARTED", { tool, args: argumentShape(args) });
     try {
     // HANDOFF-CE-E2B-01: `ce_ack` exists only behind the explicit opt-in; a

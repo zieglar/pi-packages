@@ -6,7 +6,7 @@ import { appendFileSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, 
 import { join, resolve } from "node:path";
 
 export type DebugMetadata = Readonly<Record<string, unknown>>;
-const FIELDS = new Set(["stage", "method", "requestId", "requestIdType", "requestIdLength", "tool", "args", "errorType", "stackFrames", "code", "isError", "durationMs", "count", "released", "detached", "signal", "exitCode", "version", "fencing", "owned", "mode", "origin"]);
+const FIELDS = new Set(["stage", "method", "requestId", "requestIdType", "requestIdLength", "tool", "args", "errorType", "stackFrames", "code", "isError", "durationMs", "count", "released", "detached", "signal", "exitCode", "version", "fencing", "owned", "mode", "origin", "reason", "scope"]);
 export function createDebugLog(directory: string) {
   return (component: string, event: string, metadata: DebugMetadata = {}): void => {
     // Include serialization in the guard: even hostile getters/cycles cannot

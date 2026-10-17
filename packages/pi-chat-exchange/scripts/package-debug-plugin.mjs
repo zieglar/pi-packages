@@ -25,7 +25,7 @@ while (ancestor !== root) {
 }
 const packageRoot = resolve(import.meta.dirname, "..");
 const name = "pi-chat-exchange-gate-b1-debug";
-const version = "0.1.0-debug.2";
+const version = "0.1.0-debug.3";
 const marketplace = join(root, "marketplace");
 const output = join(marketplace, "plugins", name);
 function noLinks(path) {
