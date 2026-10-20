@@ -8,19 +8,29 @@
  * - `setup` uses only the secure TUI + Keychain path; non-TUI or an
  *   unavailable custom component refuses CE_TUNNEL_INPUT_UNAVAILABLE and
  *   writes no configuration and no secret anywhere.
- * - `start` without the explicit offline opt-in refuses
- *   CE_TUNNEL_CREDENTIAL_HANDOFF_BLOCKED; a real client start is unreachable.
+ * - `start` without the explicit offline opt-in routes to the REAL background
+ *   manager (LOCAL-BACKGROUND-01) and refuses CE_TUNNEL_PROFILE_INVALID when no
+ *   operator-managed profile exists; a plaintext credential hand-off stays
+ *   unreachable in both modes.
  * - three separate status keys: CE runtime, offline tunnel health, and recent
  *   observed client activity. No URL, key, or path; never a ChatGPT-online
  *   claim; ACK is never completion; activity is only an actual attributed
  *   (clearly simulated) event, otherwise "no activity observed".
  * - unknown arguments are never echoed back.
  */
+import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const MODULE_URL = new URL("../../../../.pi/extensions/ce-chat-exchange/index.ts", import.meta.url).href;
 
-beforeEach(() => vi.stubEnv("CE_ALLOWLIST", "/dev/null"));
+beforeEach(() => {
+  vi.stubEnv("CE_ALLOWLIST", "/dev/null");
+  // LOCAL-BACKGROUND-01: this file pins the OFFLINE surfaces by default; the
+  // real-mode routing tests below override per-test. The profile override keeps
+  // real-mode paths away from the operator's actual profile and key.
+  vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", "1");
+  vi.stubEnv("CE_TUNNEL_PROFILE", `${tmpdir()}/ce-ext-nonexistent/tunnel.yaml`);
+});
 afterEach(() => vi.unstubAllEnvs());
 
 interface Ctx {
@@ -153,11 +163,17 @@ describe("B1.1 /ce-tunnel — setup never leaves the secure path", () => {
 });
 
 describe("B1.1 /ce-tunnel — start and stop stay offline", () => {
-  it("refuses start without the explicit offline opt-in", async () => {
+  it("routes start to the gated real background manager without the offline opt-in (LOCAL-BACKGROUND-01 v2)", async () => {
+    vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", undefined as unknown as string);
     const ctx = context();
     await (await tunnel()).handler("start", ctx);
-    expect(messages(ctx)).toContain("CE_TUNNEL_CREDENTIAL_HANDOFF_BLOCKED");
+    expect(messages(ctx)).toContain("CE_TUNNEL_BACKGROUND_UNAUTHORIZED");
     expect(ctx.ui.notify.mock.calls[0]?.[1]).toBe("warning");
+    // Even with the gate open, a missing operator profile refuses cleanly.
+    vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");
+    const ctx2 = context();
+    await (await tunnel()).handler("start", ctx2);
+    expect(messages(ctx2)).toContain("CE_TUNNEL_PROFILE_INVALID");
   });
 
   it("stop with nothing running is a safe no-op, not a false success claim", async () => {
@@ -166,6 +182,27 @@ describe("B1.1 /ce-tunnel — start and stop stay offline", () => {
     const text = messages(ctx);
     expect(text).not.toMatch(/disconnected from ChatGPT|delivered|acknowledged/i);
     expect(text).toMatch(/not running|no owned|stopped/i);
+  });
+});
+
+describe("LOCAL-BACKGROUND-01 /ce-tunnel — real background mode surface", () => {
+  it("status reports the measured real-background vocabulary, never offline text", async () => {
+    vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", undefined as unknown as string);
+    const ctx = context();
+    await (await tunnel()).handler("status", ctx);
+    const text = messages(ctx);
+    expect(text).toContain("real background");
+    expect(text).toContain("STOPPED");
+    expect(text).toContain("not delivery/ACK/completion evidence");
+    expect(String(statuses(ctx).get("ce-tunnel"))).toContain("real background");
+    expect(String(statuses(ctx).get("ce-client"))).toContain("not observed");
+  });
+
+  it("stop with no owned record is a safe no-op and signals nothing", async () => {
+    vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", undefined as unknown as string);
+    const ctx = context();
+    await (await tunnel()).handler("stop", ctx);
+    expect(messages(ctx)).toContain("no owned real background tunnel record");
   });
 });
 

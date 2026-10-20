@@ -616,6 +616,8 @@ function notifications(ctx: FakeCtx): string {
 
 beforeEach(() => {
   vi.stubEnv("CE_ALLOWLIST", "/dev/null");
+  // LOCAL-BACKGROUND-01: these lifecycle tests drive the mocked OFFLINE manager.
+  vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", "1");
   managerScript.current = { disposeMode: "resolve" };
   managerLog.created = 0;
   managerLog.disposes = 0;

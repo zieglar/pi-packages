@@ -51,6 +51,10 @@ import {
   createTunnelManager,
   type TunnelManager,
 } from "../../../packages/pi-chat-exchange/dist/tunnel/manager.js";
+import {
+  createBackgroundTunnelManager,
+  type BackgroundTunnelManager,
+} from "../../../packages/pi-chat-exchange/dist/tunnel/background-manager.js";
 
 // ---------------------------------------------------------------------------
 // Minimal structural types (verified against Pi 0.86.1 declarations).
@@ -300,7 +304,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   // Transport UI, the offline manager, and any in-flight credential capture
   // belong to THIS factory instance, independently of CE generation.
   let lastUiPort: ExtensionContextView | undefined;
-  let tunnelManager: TunnelManager | undefined;
+  let tunnelManager: TunnelManager | BackgroundTunnelManager | undefined;
   type BoundedTaskCleanup = { readonly task: Promise<void>; readonly wait: Promise<void> };
   let credentialCapture: AbortController | undefined;
   let setupTask: Promise<void> | undefined;
@@ -323,9 +327,19 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     // Created on demand, never in the factory: Pi loads extensions in contexts
     // that never start a session (docs/extensions.md, runtime lifecycle).
     tunnelManager ??= createTunnelManager({ env: process.env });
+    return tunnelManager as TunnelManager;
+  };
+  /** LOCAL-BACKGROUND-01: without the exact offline opt-in, /ce-tunnel drives
+   *  the REAL background client manager (persistent ownership record + process
+   *  identity verification; survives this Pi session; never auto-started). */
+  const isRealBackground = (): boolean => process.env.CE_TUNNEL_OFFLINE_TEST !== "1";
+  const activeManager = (): TunnelManager | BackgroundTunnelManager => {
+    if (!isRealBackground()) return offlineManager();
+    if (tunnelManager === undefined || !("kind" in tunnelManager)) {
+      tunnelManager = createBackgroundTunnelManager({ env: process.env });
+    }
     return tunnelManager;
   };
-
   const bindTaskCleanup = (task: Promise<void>): BoundedTaskCleanup => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const wait = Promise.race([
@@ -350,14 +364,17 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   const publishTunnelStatus = (ctx: ExtensionContextView): void => {
     if (ctx.mode !== "tui") return;
     lastUiPort = ctx;
-    const status = offlineManager().status();
+    const manager = activeManager();
+    const status = manager.status();
     ctx.ui.setStatus?.("ce", ceStatusText());
     ctx.ui.setStatus?.("ce-tunnel", status.label);
     ctx.ui.setStatus?.(
       "ce-client",
-      status.clientActivity.observed
-        ? "Client · simulated activity observed this run"
-        : "Client · no activity observed this run",
+      "kind" in manager
+        ? "Client · not observed by this manager (real background mode)"
+        : (status as ReturnType<TunnelManager["status"]>).clientActivity.observed
+          ? "Client · simulated activity observed this run"
+          : "Client · no activity observed this run",
     );
   };
 
@@ -420,6 +437,14 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       if (transportRelease !== undefined) return transportRelease;
       const manager = tunnelManager;
       if (manager === undefined) return Promise.resolve();
+      if ("kind" in manager) {
+        // LOCAL-BACKGROUND-01: the real background daemon is owned by its
+        // persistent record, not by this Pi session; teardown never signals it.
+        // This branch runs BEFORE the release latch is taken, so the latch is
+        // never held by a completed real-mode cleanup (C7).
+        if (tunnelManager === manager) tunnelManager = undefined;
+        return Promise.resolve();
+      }
       const attempt = (async () => {
         try {
           await manager.dispose();
@@ -1080,9 +1105,9 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   const SUBCOMMANDS: ReadonlyArray<{ value: string; description: string }> = [
     { value: "setup", description: "capture the credential with masked TUI input into the macOS Keychain" },
     { value: "authorize", description: "grant the locally built helper read access via the native macOS keychain prompt (one explicit user decision)" },
-    { value: "start", description: "start the bundled OFFLINE simulator (explicit opt-in required)" },
-    { value: "stop", description: "stop the offline simulator this session owns" },
-    { value: "status", description: "show CE, offline tunnel and observed client-activity segments" },
+    { value: "start", description: "start the real background tunnel client (or the offline simulator under CE_TUNNEL_OFFLINE_TEST=1)" },
+    { value: "stop", description: "stop the tunnel instance this manager provably owns (one SIGTERM, verified exit)" },
+    { value: "status", description: "show CE segment plus measured tunnel state (STOPPED/STARTING/CONNECTED/DEGRADED/UNKNOWN)" },
     { value: "help", description: "list the subcommands and their limits" },
   ];
 
@@ -1226,7 +1251,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   const registerTunnelCommand = (): void => {
     pi.registerCommand("ce-tunnel", {
       description:
-        "Tunnel transport manager (offline scope): setup/authorize/start/stop/status/help. Transport only; never delivery/ACK evidence",
+        "Tunnel transport manager: setup/authorize (offline scope) plus start/stop/status for the real background client (or offline simulator under explicit opt-in). Transport only; never delivery/ACK evidence",
       getArgumentCompletions: (prefix: string) =>
         SUBCOMMANDS.filter((sub) => sub.value.startsWith(prefix)).map((sub) => ({
           value: sub.value,
@@ -1236,13 +1261,31 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       async handler(args, ctx) {
         const sub = args.trim().split(/\s+/)[0] ?? "";
         if (sub === "" || sub === "status") {
-          const status = offlineManager().status();
+          const manager = activeManager();
+          if ("kind" in manager) {
+            // Real background: one actual measurement (identity + health probe)
+            // before displaying; a bare PID is never reported as CONNECTED.
+            const view = await manager.refresh();
+            publishTunnelStatus(ctx);
+            notify(
+              ctx,
+              `ce-tunnel: ce=${ceStatusText()} | tunnel(real background)=${view.state} evidence=${view.evidence}` +
+                (view.pid !== undefined ? ` pid=${view.pid}` : "") +
+                (view.runId !== undefined ? ` run=${view.runId}` : "") +
+                (view.tunnelId !== undefined ? ` tunnel=${view.tunnelId}` : "") +
+                (view.startedAt !== undefined ? ` started=${view.startedAt}` : "") +
+                (view.note !== undefined ? ` | note=${view.note}` : "") +
+                " — transport only; not delivery/ACK/completion evidence. MCP reachable does not imply any message was delivered.",
+            );
+            return;
+          }
+          const status = manager.status();
           publishTunnelStatus(ctx);
           notify(
             ctx,
             `ce-tunnel: ce=${ceStatusText()} | tunnel(offline simulated)=state=${status.state} evidence=${status.evidence} | ` +
               `client=${status.clientActivity.observed ? "simulated activity observed this run" : "no activity observed this run"}` +
-              ` — offline/simulated transport only; not delivery/ACK/completion evidence. A real client start stays blocked.`,
+              " — offline/simulated transport only; not delivery/ACK/completion evidence. A real client start stays blocked.",
           );
           // A teardown whose stop could not be confirmed kept the owned handle;
           // report the closed code rather than silently swallowing it.
@@ -1257,10 +1300,11 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
             `ce-tunnel subcommands: ${SUBCOMMANDS.map((s) => s.value).join(", ")}. ` +
               `setup = masked TUI capture into the Keychain (synthetic offline scope); ` +
               `authorize = ONE user-triggered native macOS keychain authorization for the locally built helper (you choose Allow / Always Allow); ` +
-              `start/stop = the bundled OFFLINE simulator only, requiring CE_TUNNEL_OFFLINE_TEST=1; ` +
+              `start/stop = with CE_TUNNEL_OFFLINE_TEST=1 the bundled OFFLINE simulator; otherwise the REAL background client ` +
+                `(detached, survives this session; ownership record + process-identity verified; manual only — no autostart/reconnect); ` +
               `status = separate CE, offline tunnel and observed client-activity segments. ` +
               `Transport only: never delivery, ACK, reconciliation or completion evidence. ` +
-              `A real tunnel client start and every plaintext credential hand-off remain blocked.`,
+              `Every plaintext credential hand-off stays blocked: the client reads the operator's own key file via the profile's file: reference; this manager never touches the value.`,
           );
           return;
         }
@@ -1273,8 +1317,26 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           return;
         }
         if (sub === "start") {
+          const manager = activeManager();
+          if ("kind" in manager) {
+            try {
+              const started = await manager.start();
+              publishTunnelStatus(ctx);
+              notify(
+                ctx,
+                started.alreadyRunning
+                  ? `ce-tunnel: real background tunnel already running (run ${started.runId}, pid ${started.pid}, tunnel ${started.tunnelId}, started ${started.startedAt}); no second instance started`
+                  : `ce-tunnel: real background tunnel started (run ${started.runId}, pid ${started.pid}, tunnel ${started.tunnelId}, health=${started.health}, started ${started.startedAt}); ` +
+                    "detached from this Pi session; transport readiness is not delivery/ACK evidence",
+              );
+            } catch (error) {
+              publishTunnelStatus(ctx);
+              notify(ctx, `ce-tunnel: start refused ${refusalText(error)}`, "warning");
+            }
+            return;
+          }
           try {
-            const started = await offlineManager().start();
+            const started = await manager.start();
             publishTunnelStatus(ctx);
             notify(
               ctx,
@@ -1287,7 +1349,26 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           return;
         }
         if (sub === "stop") {
-          const manager = offlineManager();
+          const manager = activeManager();
+          if ("kind" in manager) {
+            const ownedRun = manager.runId();
+            try {
+              await manager.stop();
+              publishTunnelStatus(ctx);
+              const noteAfter = manager.status().note;
+              notify(
+                ctx,
+                ownedRun === undefined
+                  ? "ce-tunnel: no owned real background tunnel record; nothing was stopped"
+                  : `ce-tunnel: stopped the owned real background tunnel (run ${ownedRun}); exit verified, ownership record closed` +
+                    (noteAfter !== undefined ? `; note=${noteAfter}` : ""),
+              );
+            } catch (error) {
+              publishTunnelStatus(ctx);
+              notify(ctx, `ce-tunnel: stop refused ${refusalText(error)}; ownership retained; run status again to confirm nothing else remains`, "warning");
+            }
+            return;
+          }
           if (!manager.status().running) {
             notify(ctx, "ce-tunnel: no owned offline simulator is running; nothing was stopped");
             publishTunnelStatus(ctx);

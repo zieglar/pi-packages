@@ -37,6 +37,8 @@ afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); bridge.create = undefi
 
 async function extension() {
   vi.stubEnv("CE_ALLOWLIST", "/dev/null");
+  // LOCAL-BACKGROUND-01: these lifecycle tests drive the mocked OFFLINE manager.
+  vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", "1");
   const commands = new Map<string, { handler: (args: string, ctx: typeof context) => unknown }>();
   const events = new Map<string, (event: { reason: string }, ctx: typeof context) => unknown>();
   const url = new URL("../../../../.pi/extensions/ce-chat-exchange/index.ts", import.meta.url).href;

@@ -36,6 +36,10 @@ export const TUNNEL_REFUSAL_CODES = [
   "CE_TUNNEL_CONFIG_CONFLICT",
   "CE_TUNNEL_KEYCHAIN_AUTH_REQUIRED",
   "CE_TUNNEL_KEYCHAIN_USER_CANCELED",
+  // LOCAL-BACKGROUND-01 amendment (reviewed with the background manager):
+  "CE_TUNNEL_BACKGROUND_UNAUTHORIZED",
+  "CE_TUNNEL_MANAGER_BUSY",
+  "CE_TUNNEL_STATE_CORRUPT",
 ] as const;
 
 export type TunnelRefusalCode = (typeof TUNNEL_REFUSAL_CODES)[number];
@@ -58,6 +62,9 @@ const MESSAGES: Readonly<Record<TunnelRefusalCode, string>> = Object.freeze({
   CE_TUNNEL_KEYCHAIN_AUTH_REQUIRED:
     "reading the credential needs a one-time macOS keychain authorization for this helper build",
   CE_TUNNEL_KEYCHAIN_USER_CANCELED: "the macOS keychain authorization prompt was dismissed",
+  CE_TUNNEL_BACKGROUND_UNAUTHORIZED: "real background start requires the explicit CE_TUNNEL_BACKGROUND_ALLOW=1 opt-in",
+  CE_TUNNEL_MANAGER_BUSY: "another manager holds this tunnel's ownership lock",
+  CE_TUNNEL_STATE_CORRUPT: "the ownership record exists but is unreadable; refusing to guess",
 });
 
 /** A sanitized transport refusal: fixed code plus an optional field path. */

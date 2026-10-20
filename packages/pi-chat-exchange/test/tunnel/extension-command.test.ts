@@ -6,9 +6,17 @@
  * not-yet-wired subcommands, no echo of unknown input (secrecy), TUI-only
  * status-bar publishing, and value-bearing completions.
  */
+import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-beforeEach(() => vi.stubEnv("CE_ALLOWLIST", "/dev/null"));
+beforeEach(() => {
+  vi.stubEnv("CE_ALLOWLIST", "/dev/null");
+  // LOCAL-BACKGROUND-01: default this file to the OFFLINE simulator surfaces;
+  // real-mode routing tests override per-test. The profile override keeps any
+  // accidental real-mode code path far from the operator's actual profile.
+  vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", "1");
+  vi.stubEnv("CE_TUNNEL_PROFILE", `${tmpdir()}/ce-ext-nonexistent/tunnel.yaml`);
+});
 afterEach(() => vi.unstubAllEnvs());
 
 interface UiPort {
@@ -95,14 +103,22 @@ describe("/ce-tunnel — B1 offline wiring (T18)", () => {
     expect(notifications[0]?.message).toContain("not delivery/ACK/completion evidence");
   });
 
-  // B1.1 contract update: setup/start/stop now exist on the secure offline-only
-  // path, so the blanket "not implemented" gate is replaced by per-subcommand
-  // refusals. No subcommand may reach a real client or a plaintext hand-off.
-  it("refuses start and setup with closed CE_TUNNEL_* codes", async () => {
+  // LOCAL-BACKGROUND-01 v2 contract (Lane S S1): without BOTH the offline
+  // opt-in and the explicit CE_TUNNEL_BACKGROUND_ALLOW=1 gate, `start` refuses
+  // before touching a profile, a process, or a credential.
+  it("refuses start (real mode gate) and setup with closed CE_TUNNEL_* codes", async () => {
+    vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", undefined as unknown as string);
     const start = makeCtx("tui");
     await (await ceTunnel()).handler("start", start.ctx);
     expect(start.notifications[0]?.level).toBe("warning");
-    expect(start.notifications[0]?.message).toContain("CE_TUNNEL_CREDENTIAL_HANDOFF_BLOCKED");
+    expect(start.notifications[0]?.message).toContain("CE_TUNNEL_BACKGROUND_UNAUTHORIZED");
+
+    // With the gate open but no operator profile, the refusal is still clean.
+    vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");
+    const start2 = makeCtx("tui");
+    await (await ceTunnel()).handler("start", start2.ctx);
+    expect(start2.notifications[0]?.message).toContain("CE_TUNNEL_PROFILE_INVALID");
+    expect(start2.notifications[0]?.message).not.toContain("ce-ext-nonexistent");
 
     // This mock UI port exposes no `ui.custom`, so masked capture is absent.
     const setup = makeCtx("tui");

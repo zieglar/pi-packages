@@ -20,7 +20,11 @@ async function instance() {
     event: (name: string, reason: string, ctx: Context) => events.get(name)!({ reason }, ctx),
   };
 }
-beforeEach(() => vi.stubEnv("CE_ALLOWLIST", "/dev/null"));
+beforeEach(() => {
+  vi.stubEnv("CE_ALLOWLIST", "/dev/null");
+  // LOCAL-BACKGROUND-01: this file pins the OFFLINE simulator surfaces.
+  vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", "1");
+});
 afterEach(() => vi.unstubAllEnvs());
 // B1.1 contract update: the transport now publishes THREE separate status keys
 // (CE runtime, offline tunnel health, observed client activity) instead of one,
