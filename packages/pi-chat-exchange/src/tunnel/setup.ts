@@ -18,6 +18,7 @@ import {
   type BackgroundTunnelManager, type TunnelProfileFacts,
 } from "./background-manager.js";
 import { buildTunnelMcpCommand, buildTunnelProfile, parseTunnelMcpCommand, replaceTunnelMcpBindingPath, serializeTunnelProfile, validateTunnelIdentity } from "./profile.js";
+import { ensureManagedBinding } from "./managed-binding.js";
 
 const MAX_PROFILE_BYTES = 65_536;
 const invalid = (field: string): TunnelRefusal => new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", field);
@@ -53,21 +54,27 @@ function readConfiguration(path: string, max: number, field: string, absent: boo
 
 /** Static formal JSON validation only. Does not even stat the configured Store.
  * Returns the selected reference, not endpoint/recipient/lease authority. */
+/** Identities a binding read must never resolve to: the credential link itself
+ * (lstat) and, for a symlinked credential, its target (stat) — without opening
+ * credential contents. ENOENT means no credential exists yet, so no exclusion. */
+function credentialExclusion(credentialFile: string | undefined): readonly FileIdentity[] | undefined {
+  if (credentialFile === undefined) return undefined;
+  try {
+    const credentialEntry = fs.lstatSync(credentialFile);
+    const credentialTarget = credentialEntry.isSymbolicLink() ? fs.statSync(credentialFile) : credentialEntry;
+    return [credentialEntry, credentialTarget];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw invalid("binding");
+  }
+}
+
 export function validateTunnelBindingFile(path: string, credentialFile?: string): { readonly path: string } {
   absolute(path, "binding.path");
   try {
-    let excluded: readonly FileIdentity[] | undefined;
+    const excluded = credentialExclusion(credentialFile);
     if (credentialFile !== undefined) {
       if (path === credentialFile) throw invalid("binding");
-      try {
-        // lstat excludes a binding hardlink to the credential link itself; stat
-        // adds the link target without opening credential contents. The latter
-        // prevents a binding path at a credential symlink target from passing
-        // through to readConfiguration.
-        const credentialEntry = fs.lstatSync(credentialFile);
-        const credentialTarget = credentialEntry.isSymbolicLink() ? fs.statSync(credentialFile) : credentialEntry;
-        excluded = [credentialEntry, credentialTarget];
-      } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw invalid("binding"); }
       const selected = fs.lstatSync(path);
       if (excluded?.some((identity) => sameFile(identity, selected))) throw invalid("binding");
     }
@@ -88,19 +95,32 @@ export interface TunnelSetupInspection {
   readonly organizationId: string | undefined;
   readonly mcpCommand: string | undefined;
   readonly bindingPath: string | undefined;
+  /** Managed-binding recipients when the current binding is CE-managed for this
+   * identity; undefined when absent, invalid, or not CE-managed. Never contents
+   * of any credential. */
+  readonly bindingRecipients: readonly import("../host/endpoint-host.js").CeRecipientRef[] | undefined;
   readonly credentialConfigured: boolean;
 }
 export type TunnelSetupCredential = { readonly kind: "keep" } | { readonly kind: "replace"; readonly secret: string };
+/** Binding selection. `managed` derives a CE-owned binding from identity; `path`
+ * references an operator-selected existing config; `keep` (undefined) reuses the
+ * profile's current binding. Managed never widens message permissions. */
+export type TunnelSetupBinding =
+  | { readonly kind: "managed"; readonly recipients?: readonly import("../host/endpoint-host.js").CeRecipientRef[] }
+  | { readonly kind: "path"; readonly path: string };
 export interface TunnelSetupSaveInput {
   readonly expectedRevision: string | null;
   readonly tunnelId: string;
   /** undefined/empty means Not configured, not preserve-the-old-value. */
   readonly organizationId?: string;
   readonly credential: TunnelSetupCredential;
-  /** Required on first creation. On edit, omission keeps the old binding;
-   * an explicit path authorizes a change after the caller's change review.
+  /** Binding selection. On edit, omission keeps the old binding. An explicit
+   * `{ kind: "path" }` authorizes a change to an operator-selected file after the
+   * caller's change review. `{ kind: "managed" }` derives and persists a
+   * CE-managed binding from the tunnel identity; with no usable binding at all
+   * (first setup) managed is the default and never requires a typed path.
    * Executable/script/channel and unrelated YAML are always preserved. */
-  readonly bindingPath?: string;
+  readonly binding?: TunnelSetupBinding;
   readonly signal?: AbortSignal;
 }
 export type TunnelSetupSaveResult =
@@ -218,9 +238,28 @@ export function createTunnelProfileSetup(options: TunnelProfileSetupOptions): Tu
     if (facts !== undefined) {
       try { checkKeyFileMetadata(facts.keyFile); credentialConfigured = true; } catch { /* Replace remains possible. */ }
     }
+    // Wizard prefill: read the referenced binding only through the trusted parser,
+    // and expose recipients only for a CE-managed document whose provenance matches
+    // this profile's identity. Any failure degrades to an unknown (kept) binding.
+    let bindingRecipients: TunnelSetupInspection["bindingRecipients"];
+    if (facts !== undefined && bindingPath !== undefined) {
+      try {
+        // Same exclusion boundary as validateTunnelBindingFile: a binding path
+        // resolving to the credential (or its link target) is never opened.
+        if (bindingPath === facts.keyFile) throw invalid("binding");
+        const excluded = credentialExclusion(facts.keyFile);
+        const selected = fs.lstatSync(bindingPath);
+        if (excluded?.some((identity) => sameFile(identity, selected))) throw invalid("binding");
+        const parsed = parseMcpBindingConfig(JSON.parse(readConfiguration(bindingPath, MCP_BINDING_CONFIG_MAX_BYTES, "binding", false, excluded)!));
+        if (parsed.managed !== undefined && parsed.managed.tunnelId === facts.tunnelId
+            && (parsed.managed.organizationId ?? undefined) === (facts.organizationId ?? undefined)) {
+          bindingRecipients = parsed.recipients;
+        }
+      } catch { /* An unreadable/foreign binding stays untouched: keep. */ }
+    }
     return Object.freeze({ profilePath, exists: text !== undefined, revision: revisionOf(text),
       tunnelId: facts?.tunnelId, organizationId: facts?.organizationId, mcpCommand: facts?.mcpCommand,
-      bindingPath, credentialConfigured });
+      bindingPath, bindingRecipients, credentialConfigured });
   };
   const save = async (input: TunnelSetupSaveInput): Promise<TunnelSetupSaveResult> => {
     if (input.signal?.aborted) return { kind: "cancelled" };
@@ -240,22 +279,15 @@ export function createTunnelProfileSetup(options: TunnelProfileSetupOptions): Tu
       }
       const existingBinding = facts?.mcpCommand === undefined ? undefined : parseTunnelMcpCommand(facts.mcpCommand).bindingPath;
       if (facts !== undefined && existingBinding === undefined) throw invalid("mcp.commands");
-      const bindingPath = input.bindingPath ?? existingBinding;
-      if (bindingPath === undefined) throw invalid("binding.path");
-      validateTunnelBindingFile(bindingPath, facts?.keyFile);
-      const changedCommand = facts?.mcpCommand !== undefined && bindingPath !== existingBinding
-        ? replaceTunnelMcpBindingPath(facts.mcpCommand, bindingPath) : undefined;
-      const credentialDirectory = join(dirname(profilePath), ".credentials");
-      const keyFile = input.credential.kind === "keep" ? facts!.keyFile : join(credentialDirectory, `credential-${randomUUID()}`);
-      const nextText = text === undefined ? serializeTunnelProfile(buildTunnelProfile({
-        tunnelId: input.tunnelId, ...(input.organizationId ? { organizationId: input.organizationId } : {}), keyFile,
-        healthUrlFile: join(dirname(profilePath), "health.url"),
-        mcpCommand: buildTunnelMcpCommand({ nodePath: options.nodePath ?? process.execPath,
-          scriptPath: options.mcpScriptPath ?? fileURLToPath(new URL("../bin/mcp-stdio.js", import.meta.url)), bindingPath }),
-      })) : updateProfile(text, input, keyFile, changedCommand);
-      parseTunnelProfile(nextText); // Same decoder as real start, before any write.
-      if (Buffer.byteLength(nextText, "utf8") > MAX_PROFILE_BYTES) throw invalid("profile.size");
-      const temporaryProfile = `${profilePath}.${randomUUID()}.tmp`;
+      // Binding selection. An explicit operator path is validated as before.
+      // `managed` (or first-setup default) derives a CE-owned binding from the
+      // tunnel identity; it never widens message permissions and never requires
+      // a typed path. Omission keeps the profile's existing binding.
+      // `owned` and the transaction state are declared before any binding write,
+      // and the cleanup try/finally opens immediately after, so a newly created
+      // managed generation is registered for rollback and ANY later precommit
+      // refusal (including profile.size) removes it. A reused/historical file is
+      // never owned by this transaction.
       const owned: { path: string; ino: number; dev: number }[] = [];
       let committed = false;
       let directoryFd: number | undefined;
@@ -270,8 +302,81 @@ export function createTunnelProfileSetup(options: TunnelProfileSetupOptions): Tu
           io.fsyncSync(fd);
         } finally { io.closeSync(fd); }
       };
+      let bindingPath: string;
       try {
-        guard.assertIntact();
+      if (input.binding?.kind === "path") {
+        bindingPath = input.binding.path;
+        validateTunnelBindingFile(bindingPath, facts?.keyFile);
+      } else if (input.binding?.kind === "managed" || existingBinding === undefined) {
+        // Managed binding: identity-derived, operator-owned, minimal permissions.
+        // First setup (no existing binding) defaults here; the wizard never asks
+        // for a binding file path.
+        const managedInput: Parameters<typeof ensureManagedBinding>[1] = {
+          tunnelId: input.tunnelId, organizationId: input.organizationId || undefined, adapter: "pi",
+          ...(facts?.keyFile !== undefined ? { credentialFile: facts.keyFile } : {}),
+          ...(input.binding?.kind === "managed" && input.binding.recipients !== undefined
+            ? { recipients: input.binding.recipients } : {}),
+        };
+        const managed = ensureManagedBinding(profilePath, managedInput);
+        bindingPath = managed.path;
+        // C-R1: register a NEWLY created managed generation immediately so any
+        // later precommit refusal (e.g. profile.size) removes it; a reused/
+        // historical file is never owned by this transaction.
+        // A-R8: a published managed candidate is a VALID, atomically-committed
+        // generation (validated staging -> linkSync). It is NOT registered for
+        // rollback: deleting a shared-pathname binding on a precommit refusal could
+        // remove a concurrent replacement or a binding another config already
+        // references. Retaining it is safe and idempotent — a retry reuses it.
+      } else {
+        // Keep: reuse the profile's current binding, validated as before.
+        // C-R2: when the identity changes but the current binding is CE-managed
+        // (provenance matching the OLD identity), regenerate it for the new
+        // identity carrying the operator's existing recipients, so the profile
+        // and its binding never disagree about tunnel identity. A legacy/
+        // non-managed binding keeps the existing keep rule unchanged.
+        const identityChanged = facts !== undefined && (input.tunnelId !== facts.tunnelId ||
+          (input.organizationId || undefined) !== (facts.organizationId ?? undefined));
+        let existingManagedRecipients: readonly import("../host/endpoint-host.js").CeRecipientRef[] | undefined;
+        if (identityChanged && facts !== undefined) {
+          try {
+            if (existingBinding === facts.keyFile) throw invalid("binding");
+            const excluded = credentialExclusion(facts.keyFile);
+            const selected = fs.lstatSync(existingBinding);
+            if (excluded?.some((identity) => sameFile(identity, selected))) throw invalid("binding");
+            const parsed = parseMcpBindingConfig(JSON.parse(readConfiguration(existingBinding, MCP_BINDING_CONFIG_MAX_BYTES, "binding", false, excluded)!));
+            if (parsed.managed !== undefined && parsed.managed.tunnelId === facts.tunnelId &&
+                (parsed.managed.organizationId ?? undefined) === (facts.organizationId ?? undefined)) {
+              existingManagedRecipients = parsed.recipients;
+            }
+          } catch { /* Unreadable/foreign binding: fall through to plain keep. */ }
+        }
+        if (identityChanged && existingManagedRecipients !== undefined) {
+          const managed = ensureManagedBinding(profilePath, {
+            tunnelId: input.tunnelId, organizationId: input.organizationId || undefined, adapter: "pi",
+            ...(facts?.keyFile !== undefined ? { credentialFile: facts.keyFile } : {}),
+            recipients: existingManagedRecipients,
+          });
+          bindingPath = managed.path;
+          // See above: a published managed candidate is retained, never rolled back.
+        } else {
+          bindingPath = existingBinding;
+          validateTunnelBindingFile(bindingPath, facts?.keyFile);
+        }
+      }
+      const changedCommand = facts?.mcpCommand !== undefined && bindingPath !== existingBinding
+        ? replaceTunnelMcpBindingPath(facts.mcpCommand, bindingPath) : undefined;
+      const credentialDirectory = join(dirname(profilePath), ".credentials");
+      const keyFile = input.credential.kind === "keep" ? facts!.keyFile : join(credentialDirectory, `credential-${randomUUID()}`);
+      const nextText = text === undefined ? serializeTunnelProfile(buildTunnelProfile({
+        tunnelId: input.tunnelId, ...(input.organizationId ? { organizationId: input.organizationId } : {}), keyFile,
+        healthUrlFile: join(dirname(profilePath), "health.url"),
+        mcpCommand: buildTunnelMcpCommand({ nodePath: options.nodePath ?? process.execPath,
+          scriptPath: options.mcpScriptPath ?? fileURLToPath(new URL("../bin/mcp-stdio.js", import.meta.url)), bindingPath }),
+      })) : updateProfile(text, input, keyFile, changedCommand);
+      parseTunnelProfile(nextText); // Same decoder as real start, before any write.
+      if (Buffer.byteLength(nextText, "utf8") > MAX_PROFILE_BYTES) throw invalid("profile.size");
+      const temporaryProfile = `${profilePath}.${randomUUID()}.tmp`;
+      guard.assertIntact();
         if (input.signal?.aborted) return { kind: "cancelled" };
         if (input.credential.kind === "replace") cleanupCredentialDirectory = credentialDirectoryGuard(credentialDirectory);
         directoryFd = io.openSync(dirname(profilePath), fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);

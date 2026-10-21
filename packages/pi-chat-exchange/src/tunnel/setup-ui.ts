@@ -14,17 +14,25 @@
 import { defineMenu, runMenu, sanitizeTerminalText, type MenuContext, type MenuScreen, type MenuTransition } from "@narumitw/pi-tui-kit";
 import { isTunnelRefusalCode, TunnelRefusal, type TunnelRefusalCode } from "./codes.js";
 import { captureTunnelSecret, type SecureInputUiView, type TunnelKeyProtocol } from "./secure-input.js";
+import { formatRecipientList, parseRecipientList } from "./managed-binding.js";
+import type { CeRecipientRef } from "../host/endpoint-host.js";
 export interface SetupUiContext extends MenuContext { readonly ui: SecureInputUiView; }
 export interface ExistingSetupValues {
   readonly tunnelId: string;
   readonly organizationId?: string;
+  /** Existing binding reference, shown for transparency only — never edited as a path. */
   readonly bindingPath: string;
+  /** Current managed recipients when known; empty means none. */
+  readonly recipients?: readonly CeRecipientRef[];
   readonly credentialConfigured: boolean;
 }
 export interface SetupProposal {
   readonly tunnelId: string;
   readonly organizationId?: string;
-  readonly bindingPath: string;
+  /** Present only when the operator changed the recipient list. Absent keeps the
+   * existing binding unchanged; on first setup the domain derives the CE-managed
+   * default (no recipients). Never a file path. */
+  readonly recipients?: readonly CeRecipientRef[];
   readonly credential: { readonly kind: "keep" } | { readonly kind: "replace"; readonly secret: string };
 }
 export interface SetupWizardOptions {
@@ -32,8 +40,6 @@ export interface SetupWizardOptions {
   /** Host-injected key protocol (no Pi import in `src/`). */
   readonly keys: TunnelKeyProtocol;
   readonly existing?: ExistingSetupValues;
-  /** Static parser only; no Store/endpoint/child/network side effects. */
-  readonly validateBinding: (path: string, signal?: AbortSignal) => Promise<void>;
   /** Borrowed secret: do not retain the proposal after the transaction settles. */
   readonly save: (proposal: SetupProposal, signal: AbortSignal) => Promise<void | { readonly kind: "cancelled" }>;
   readonly signal?: AbortSignal;
@@ -45,9 +51,9 @@ export type SetupUiOutcome =
   | { readonly status: "cancelled" }
   | { readonly status: "refused"; readonly code: "CE_TUNNEL_INPUT_UNAVAILABLE" | "CE_TUNNEL_SETUP_FAILED" };
 
-type Screen = "tunnel" | "organization" | "bindingChoice" | "binding" | "credential" | "reviewEntry" | "review" | "changes" | "save" | "edit";
-type Action = "tunnel" | "organization" | "binding" | "keepBinding" | "keepCredential" | "capture" | "review" | "save";
-interface Draft { tunnelId: string; organizationId: string; bindingPath: string; error: string; credential: "keep" | "replace" | "missing"; }
+type Screen = "tunnel" | "organization" | "recipients" | "credential" | "reviewEntry" | "review" | "changes" | "save" | "edit";
+type Action = "tunnel" | "organization" | "recipients" | "keepCredential" | "capture" | "review" | "save";
+interface Draft { tunnelId: string; organizationId: string; recipientsText: string; error: string; credential: "keep" | "replace" | "missing"; }
 const TUNNEL = /^tunnel_[A-Za-z0-9]{8,}$/;
 const ORGANIZATION = /^org-[A-Za-z0-9]{1,128}$/;
 const cancelled = (): SetupUiOutcome => ({ status: "cancelled" });
@@ -100,7 +106,8 @@ export async function runSetupWizard(ctx: SetupUiContext, options: SetupWizardOp
     return component;
   }, customOptions) } };
   const existing = options.existing;
-  const draft: Draft = { tunnelId: existing?.tunnelId ?? "", organizationId: existing?.organizationId ?? "", bindingPath: existing?.bindingPath ?? "", error: "", credential: existing?.credentialConfigured ? "keep" : "missing" };
+  const existingRecipientsText = existing?.recipients === undefined ? undefined : formatRecipientList(existing.recipients);
+  const draft: Draft = { tunnelId: existing?.tunnelId ?? "", organizationId: existing?.organizationId ?? "", recipientsText: existingRecipientsText ?? "", error: "", credential: existing?.credentialConfigured ? "keep" : "missing" };
   let secret: string | undefined;
   let outcome: SetupUiOutcome = cancelled();
   // Deliberately not a Kit state field: neither Kit renderers nor errors see it.
@@ -117,14 +124,45 @@ export async function runSetupWizard(ctx: SetupUiContext, options: SetupWizardOp
     for (const [label, oldValue, newValue] of [
       ["Tunnel ID", existing.tunnelId, draft.tunnelId],
       ["Organization", existing.organizationId || "Not configured", draft.organizationId || "Not configured"],
-      ["MCP binding", existing.bindingPath, draft.bindingPath],
+      ...(recipientsChanged() ? [["Recipients", existingRecipientsText ?? "Keep existing binding", draft.recipientsText || "None"] as const] : []),
     ]) if (oldValue !== newValue) result.push(`${label}: ${oldValue} → ${newValue}`);
     return result;
+  };
+  // Recipients change detection: a known (managed) list compares by text; a
+  // legacy binding with unknown recipients is kept unless the operator enters
+  // a new list (empty text can never mean "clear" for an unknown existing set).
+  const normalizeRecipients = (text: string): string => {
+    try { return formatRecipientList(parseRecipientList(text, { adapter: "pi", endpointId: "ce-self" })); } catch { return text.trim(); }
+  };
+  const recipientsChanged = (): boolean => {
+    if (existing === undefined) return draft.recipientsText.trim() !== "";
+    // Unknown existing recipients: any blank/whitespace input keeps the binding
+    // untouched; only a concrete new list changes it.
+    if (existingRecipientsText === undefined) return draft.recipientsText.trim() !== "";
+    // Known list: compare normalized values, not raw text.
+    return normalizeRecipients(existingRecipientsText) !== normalizeRecipients(draft.recipientsText);
+  };
+  // Identity change detection mirrors setup.save: only Tunnel ID / Organization.
+  const identityChanged = (): boolean => existing !== undefined &&
+    (draft.tunnelId !== existing.tunnelId ||
+      (draft.organizationId || undefined) !== (existing.organizationId || undefined));
+  const bindingSummary = (): string => {
+    if (existing !== undefined && !recipientsChanged()) {
+      // D-R3: identity change + known CE-managed binding regenerates it for the
+      // new identity (carrying existing recipients) — never "Keep existing".
+      if (identityChanged() && existingRecipientsText !== undefined) {
+        return `MCP Binding\nRegenerate for new identity (recipients kept)`;
+      }
+      return `MCP Binding\nKeep existing (${existing.bindingPath})`;
+    }
+    return `MCP Binding\nCE-managed (generated automatically)`;
   };
   const summary = (): string => [
     `Profile\n${options.profilePath}`, `Tunnel\n${draft.tunnelId}`,
     `Organization\n${draft.organizationId || "Not configured"}`,
-    `MCP Binding\n${draft.bindingPath}`,
+    `Recipients\n${existing !== undefined && !recipientsChanged() && existingRecipientsText === undefined
+      ? "Unchanged (existing binding kept)" : draft.recipientsText || "None (default)"}`,
+    bindingSummary(),
     `Credential\n${draft.credential === "keep" ? "Keep existing" : existing?.credentialConfigured ? "Replace" : "Provided"}`,
     ...changes(),
   ].join("\n\n");
@@ -135,18 +173,17 @@ export async function runSetupWizard(ctx: SetupUiContext, options: SetupWizardOp
     screens: {
       tunnel: () => input(step(1, "Tunnel ID"), draft.tunnelId, "tunnel"),
       organization: () => input(step(2, "Organization ID — optional, may be left empty"), draft.organizationId, "organization"),
-      bindingChoice: () => ({ kind: "actions", title: step(3, "MCP Binding"), lines: [...lines(), draft.bindingPath], hint: "close", items: [{ id: "keep", label: "Keep existing MCP binding", action: "keepBinding" }, { id: "change", label: "Change MCP binding", to: "binding" }, { id: "back", label: "Back", to: "organization" }, cancelItem] }),
-      binding: () => input(step(3, "MCP Binding config path"), draft.bindingPath, "binding"),
+      recipients: () => input(step(3, "Recipients — optional, adapter:endpointId comma-separated"), draft.recipientsText, "recipients"),
       credential: () => ({ kind: "actions", title: step(4, "Credential · API key"), lines: [...lines(), ...(existing?.credentialConfigured ? ["Existing credential configured"] : ["A masked API key is required."])], hint: "close", items: [
         ...(existing?.credentialConfigured ? [{ id: "keep", label: "Keep existing credential", action: "keepCredential" as const }] : []),
         { id: "replace", label: existing?.credentialConfigured ? "Replace credential" : "Provide API key (masked)", action: "capture" },
-        { id: "back", label: "Back", to: existing ? "bindingChoice" : "binding" }, cancelItem,
+        { id: "back", label: "Back", to: "recipients" as const }, cancelItem,
       ] }),
       reviewEntry: () => ({ kind: "actions", title: "Review configuration", lines: lines(), hint: "close", items: [{ id: "review", label: "Review", to: "review" }, { id: "edit", label: "Back · Edit configuration", to: "edit" }, cancelItem] }),
       review: () => ({ kind: "review", title: "Review · Tunnel configuration", content: summary(), format: { kind: "text" }, hint: "close", confirm: { id: "continue", label: "Continue", action: "review" } }),
       changes: () => ({ kind: "review", title: "Existing Tunnel configuration will be changed", content: changes().join("\n\n"), format: { kind: "text" }, hint: "close", confirm: { id: "confirm-change", label: "Confirm identity / routing changes", action: "review" } }),
       save: () => ({ kind: "actions", title: "Save confirmation", lines: ["Only Save configuration writes the proposed configuration.", ...lines()], hint: "close", items: [{ id: "save", label: "Save configuration", action: "save" }, { id: "back", label: "Back · Edit configuration", to: "edit" }, cancelItem] }),
-      edit: () => ({ kind: "actions", title: "Edit configuration", lines: lines(), hint: "close", items: [{ id: "tunnel", label: "Tunnel ID", to: "tunnel" }, { id: "organization", label: "Organization ID", to: "organization" }, { id: "binding", label: "MCP binding", to: "binding" }, { id: "credential", label: "Credential", to: "credential" }, { id: "back", label: "Back · Review", to: "reviewEntry" }, cancelItem] }),
+      edit: () => ({ kind: "actions", title: "Edit configuration", lines: lines(), hint: "close", items: [{ id: "tunnel", label: "Tunnel ID", to: "tunnel" }, { id: "organization", label: "Organization ID", to: "organization" }, { id: "recipients", label: "Recipients", to: "recipients" }, { id: "credential", label: "Credential", to: "credential" }, { id: "back", label: "Back · Review", to: "reviewEntry" }, cancelItem] }),
     },
     actions: {
       tunnel: ({ value = "" }) => {
@@ -157,17 +194,17 @@ export async function runSetupWizard(ctx: SetupUiContext, options: SetupWizardOp
       organization: ({ value = "" }) => {
         draft.organizationId = value; draft.error = "";
         if (value && !ORGANIZATION.test(value)) { draft.error = "Invalid Organization ID"; return to("organization"); }
-        return to(existing ? "bindingChoice" : "binding");
+        return to("recipients");
       },
-      binding: async ({ value = "" }) => {
-        draft.bindingPath = value; draft.error = "";
+      recipients: ({ value = "" }) => {
+        draft.recipientsText = value; draft.error = "";
         try {
-          if (!value.startsWith("/") || /[\x00-\x1f\x7f]/.test(value)) throw new Error();
-          await options.validateBinding(value, signal);
-        } catch { draft.error = "Invalid MCP binding config"; return to("binding"); }
+          // Parse now so a malformed list never leaves this step. The domain
+          // re-parses at Save; nothing here grants send eligibility.
+          parseRecipientList(value, { adapter: "pi", endpointId: "ce-self" });
+        } catch { draft.error = "Invalid recipients (use adapter:endpointId, comma-separated)"; return to("recipients"); }
         return signal.aborted ? close : to("credential");
       },
-      keepBinding: () => { draft.error = ""; return to("credential"); },
       keepCredential: () => { secret = undefined; draft.credential = "keep"; return to("reviewEntry"); },
       capture: async () => {
         secret = undefined;
@@ -182,12 +219,13 @@ export async function runSetupWizard(ctx: SetupUiContext, options: SetupWizardOp
       review: ({ itemId }) => to(itemId === "confirm-change" || changes().length === 0 ? "save" : "changes"),
       save: async () => {
         if (signal.aborted) return close;
-        if (!TUNNEL.test(draft.tunnelId) || (draft.organizationId !== "" && !ORGANIZATION.test(draft.organizationId)) || !draft.bindingPath || (draft.credential === "keep" && !existing?.credentialConfigured) || (draft.credential !== "keep" && !secret)) {
+        if (!TUNNEL.test(draft.tunnelId) || (draft.organizationId !== "" && !ORGANIZATION.test(draft.organizationId)) || (draft.credential === "keep" && !existing?.credentialConfigured) || (draft.credential !== "keep" && !secret)) {
           outcome = failed(); return close;
         }
         try {
           const credential = draft.credential === "keep" ? { kind: "keep" as const } : { kind: "replace" as const, secret: secret! };
-          const result = await options.save({ tunnelId: draft.tunnelId, ...(draft.organizationId ? { organizationId: draft.organizationId } : {}), bindingPath: draft.bindingPath, credential }, signal);
+          const recipients = recipientsChanged() ? parseRecipientList(draft.recipientsText, { adapter: "pi", endpointId: "ce-self" }) : undefined;
+          const result = await options.save({ tunnelId: draft.tunnelId, ...(draft.organizationId ? { organizationId: draft.organizationId } : {}), ...(recipients === undefined ? {} : { recipients }), credential }, signal);
           if (result?.kind === "cancelled") { outcome = cancelled(); return close; }
           saved = true;
           outcome = { status: "saved" };

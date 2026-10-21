@@ -18,22 +18,35 @@ PasswordInput or SecretInput. The Kit's ordinary input is never used for a key.
 Kit 0.66.0 also supplies a generic masked interaction; CE retains its specialized
 bounded ASCII/paste validation, sink-only result contract, and timeout policy.
 
-First setup collects Tunnel ID, optional Organization ID, an explicitly selected
-existing MCP binding JSON path, and a key. The review shows only nonsecret
-configuration and credential intent. Only final Save enters the transaction.
-Existing-profile editing preserves the binding and offers Keep existing
-credential / Replace credential. Keeping a credential does not read its content.
-Identity or binding changes require an additional old-to-new review/confirmation.
+First setup collects Tunnel ID, optional Organization ID, an optional
+Recipients list, and a key. The review shows only nonsecret configuration and
+credential intent. Only final Save enters the transaction. The MCP binding is
+never a typed file path: it is derived from the tunnel identity as a CE-managed
+document (`ce-<tunnel tail6>-<org tail6>.yaml`, preserving case, under a fixed
+`.ce-bindings` directory beside the profile). An unchanged existing valid managed
+binding is reused by exact identity + content match; a changed recipients list
+writes a new digest-suffixed generation without mutating the base; a same-name
+file carrying a different identity is refused, never reused or overwritten.
+Existing-profile editing keeps the binding untouched unless recipients change OR
+the tunnel identity (Tunnel ID / Organization) changes while the current binding
+is CE-managed — in that case the binding is regenerated for the new identity,
+carrying the existing recipients unchanged.
+Keeping a credential does not read its content.
+Identity or recipients changes require an additional old-to-new review/confirmation.
 Escape, Cancel, interaction timeout, or disposal of a nonsecret Kit page resolves
 as `CANCELLED` before Save; the wrapper drains Kit's pending handler barrier and
 does not write profile, credential, or Keychain. Starting is always a separate
 explicit action.
 ## Binding selection is static validation, not authority acquisition
 
-No historical binding or Store is automatically selected. Binding validation reads
-only the chosen ordinary nonsymlink configuration file and uses the formal MCP
-binding parser. It does not open/create the configured Store, bind an endpoint,
-read/ACK/send a message, launch a child, or establish a network connection.
+No historical binding or Store is automatically selected. A CE-managed binding
+is generated only from the tunnel identity and the operator-entered recipients,
+with minimal permissions (`recipients` defaults to `[]`; payloadRead, ack, and
+debugExecutionGuard disabled). The generated document is still validated by the
+formal MCP binding parser before any reference. It does not open/create the
+configured Store, bind an endpoint, read/ACK/send a message, launch a child, or
+establish a network connection; the Store is created lazily by the MCP server on
+first use, not by setup.
 
 ## Persistence and concurrency
 

@@ -3,7 +3,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTunnelProfileSetup, validateTunnelBindingFile, type SetupFileOperations } from "../../dist/tunnel/setup.js";
-import { buildTunnelMcpCommand, buildTunnelProfile, serializeTunnelProfile } from "../../dist/tunnel/profile.js";
+import { buildTunnelMcpCommand, buildTunnelProfile, parseTunnelMcpCommand, serializeTunnelProfile } from "../../dist/tunnel/profile.js";
 import { createBackgroundTunnelManager, parseTunnelProfile, resolveTunnelProfilePath, type BackgroundManagerOptions } from "../../dist/tunnel/background-manager.js";
 
 const SECRET = "synthetic-key-ONLY-test-123456";
@@ -89,7 +89,7 @@ describe("real profile setup domain", () => {
   });
   it("creates a complete profile and independent 0600 generation, only file: in YAML", async () => {
     const h = harness(false);
-    const result = await h.setup.save({ ...proposal(h), bindingPath: h.bindingPath });
+    const result = await h.setup.save({ ...proposal(h), binding: { kind: "path" as const, path: h.bindingPath } });
     expect(result).toMatchObject({ kind: "saved", profilePath: h.profilePath, durability: "synced" });
     const text = fs.readFileSync(h.profilePath, "utf8"); const facts = parseTunnelProfile(text);
     expect(facts).toMatchObject({ tunnelId: ID, organizationId: "org-new", mcpCommand: expect.stringContaining(h.bindingPath) });
@@ -140,11 +140,26 @@ describe("real profile setup domain", () => {
     expect(text).not.toContain("organization_id"); expect(text).toContain("# preserve operator comments\nmcp:");
     expect(parseTunnelProfile(text).mcpCommand).toBe(h.command);
   });
-  it("new profile requires binding and Replace; Keep requires valid metadata", async () => {
-    const h = harness(false); const before = names(h);
-    await expect(h.setup.save(proposal(h))).rejects.toMatchObject({ code: "CE_TUNNEL_PROFILE_INVALID" });
-    await expect(h.setup.save({ ...proposal(h), bindingPath: h.bindingPath, credential: { kind: "keep" } })).rejects.toMatchObject({ code: "CE_TUNNEL_KEY_MISSING" });
-    expect(names(h)).toEqual(before);
+  it("new profile derives the managed binding by default; Replace required; Keep requires valid metadata", async () => {
+    const h = harness(false);
+    // No binding input at all: a CE-managed minimal-permission binding is
+    // generated beside the profile (never a typed path, recipients default []).
+    const saved = await h.setup.save(proposal(h));
+    expect(saved).toMatchObject({ kind: "saved" });
+    const managedDir = join(h.dir, ".ce-bindings");
+    const bindings = fs.readdirSync(managedDir);
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]).toBe("ce-123456-rg-new.yaml"); // tunnel_…123456 tail + org-new tail
+    const parsed = parseTunnelProfile(fs.readFileSync(h.profilePath, "utf8"));
+    expect(parsed.mcpCommand).toContain(join(managedDir, bindings[0]!));
+    const bindingDoc = JSON.parse(fs.readFileSync(join(managedDir, bindings[0]!), "utf8"));
+    expect(bindingDoc.managed).toEqual({ tunnelId: ID, organizationId: "org-new", adapter: "pi" });
+    expect(bindingDoc.recipients).toEqual([]);
+    // Keep without an existing valid credential still refuses.
+    const h2 = harness(false);
+    const before2 = names(h2);
+    await expect(h2.setup.save({ ...proposal(h2), credential: { kind: "keep" } })).rejects.toMatchObject({ code: "CE_TUNNEL_KEY_MISSING" });
+    expect(names(h2)).toEqual(before2); // refusal leaves zero residue
     const old = harness(); fs.chmodSync(old.key, 0o644);
     await expect(old.setup.save({ ...proposal(old), credential: { kind: "keep" } })).rejects.toMatchObject({ code: "CE_TUNNEL_KEY_PERMS_INVALID" });
   });
@@ -235,7 +250,7 @@ describe("real profile setup domain", () => {
         },
       },
     });
-    expect(await setup.save({ expectedRevision: null, tunnelId: ID, bindingPath: h.bindingPath, credential: { kind: "replace", secret: SECRET } }))
+    expect(await setup.save({ expectedRevision: null, tunnelId: ID, binding: { kind: "path" as const, path: h.bindingPath }, credential: { kind: "replace", secret: SECRET } }))
       .toMatchObject({ kind: "saved", durability: "uncertain" });
   });
 
@@ -329,6 +344,43 @@ describe("real profile setup domain", () => {
     finally { release(); }
     expect(await saving).toMatchObject({ kind: "saved" });
   });
+  it("C-R1: a precommit failure after managed binding creation retains the valid published generation (A-R8)", async () => {
+    let h: ReturnType<typeof harness>;
+    const io: Partial<SetupFileOperations> = { fsyncSync: () => { throw new Error(SECRET); } };
+    h = harness(false, io); const before = names(h);
+    let error: unknown; try { await h.setup.save(proposal(h)); } catch (e) { error = e; }
+    expect(error).toMatchObject({ code: "CE_TUNNEL_PROFILE_INVALID" });
+    expect(JSON.stringify(error)).not.toContain(SECRET);
+    // A published managed candidate is a VALID, atomically-committed generation —
+    // it is RETAINED (never deleted by shared pathname), so a retry reuses it.
+    const bindingDir = join(h.dir, ".ce-bindings");
+    expect(fs.readdirSync(bindingDir).filter((n) => n.startsWith("ce-")).length).toBe(1);
+    expect(fs.lstatSync(bindingDir).mode & 0o777).toBe(0o700);
+    // The old/absent profile is untouched (no commit happened).
+    expect(fs.existsSync(h.profilePath)).toBe(false);
+    expect(names(h)).toEqual([...before, ".ce-bindings"].sort());
+  });
+  it("C-R2: identity change regenerates a managed binding for the new identity, keeping recipients", async () => {
+    const h = harness(false);
+    const saved = await h.setup.save({ ...proposal(h), binding: { kind: "managed", recipients: [{ adapter: "chatgpt", endpointId: "chatgpt/main" }] } });
+    expect(saved).toMatchObject({ kind: "saved" });
+    const oldDir = join(h.dir, ".ce-bindings");
+    const oldDoc = JSON.parse(fs.readFileSync(join(oldDir, fs.readdirSync(oldDir)[0]!), "utf8"));
+    expect(oldDoc.managed.tunnelId).toBe(ID);
+    const next = await h.setup.save({
+      expectedRevision: h.setup.inspect().revision, tunnelId: "tunnel_zzzzzz999999", organizationId: "org-new",
+      credential: { kind: "keep" },
+    });
+    expect(next).toMatchObject({ kind: "saved" });
+    const parsed = parseTunnelProfile(fs.readFileSync(h.profilePath, "utf8"));
+    expect(parsed.tunnelId).toBe("tunnel_zzzzzz999999");
+    expect(parsed.mcpCommand).toBeDefined();
+    const bindingPath = parseTunnelMcpCommand(parsed.mcpCommand!).bindingPath;
+    expect(bindingPath).toBeDefined();
+    const newDoc = JSON.parse(fs.readFileSync(bindingPath!, "utf8"));
+    expect(newDoc.managed).toEqual({ tunnelId: "tunnel_zzzzzz999999", organizationId: "org-new", adapter: "pi" });
+    expect(newDoc.recipients).toEqual([{ adapter: "chatgpt", endpointId: "chatgpt/main" }]);
+  });
   it("O_EXCL failures never unlink an existing collision file", async () => {
     let collision = "";
     const h = harness(true, { openSync: (...args) => {
@@ -354,7 +406,7 @@ describe("real profile setup domain", () => {
       const h = harness(existing);
       const manager = createBackgroundTunnelManager({ ...h.opts, clientPath: join(h.dir, "NO-SUCH-CLIENT") });
       const setup = createTunnelProfileSetup({ env: {}, profilePath: h.profilePath, manager, nodePath: "/abs/node", mcpScriptPath: "/abs/mcp-stdio.js" });
-      await expect(setup.save({ ...proposal(h), bindingPath: h.bindingPath })).resolves.toMatchObject({ kind: "saved" });
+      await expect(setup.save({ ...proposal(h), binding: { kind: "path" as const, path: h.bindingPath } })).resolves.toMatchObject({ kind: "saved" });
     });
     it.each(["running", "stop-unconfirmed"] as const)("health unavailable + %s owner refuses setup", async (state) => {
       const h = harness(true);
@@ -391,7 +443,7 @@ describe("explicit existing binding changes", () => {
     fs.writeFileSync(h.profilePath, before);
     const oldKey = fs.readFileSync(h.key);
     const credential = kind === "keep" ? { kind } : { kind, secret: SECRET };
-    expect(await h.setup.save({ ...proposal(h), organizationId: "org-old", bindingPath: selected, credential })).toMatchObject({ kind: "saved" });
+    expect(await h.setup.save({ ...proposal(h), organizationId: "org-old", binding: { kind: "path" as const, path: selected }, credential })).toMatchObject({ kind: "saved" });
     const after = fs.readFileSync(h.profilePath, "utf8"); const facts = parseTunnelProfile(after);
     const nextCommand = oldCommand.replace(h.bindingPath, () => `'${selected}'`);
     expect(facts.mcpCommand).toBe(nextCommand);
@@ -410,13 +462,13 @@ describe("explicit existing binding changes", () => {
     const before = names(h); const bytes = fs.readFileSync(h.profilePath); let writes = 0;
     const setup = createTunnelProfileSetup({ env: {}, profilePath: h.profilePath, manager: h.manager,
       io: { writeFileSync: (...args) => { writes++; fs.writeFileSync(...args); } } });
-    await expect(setup.save({ ...proposal(h), bindingPath: selected })).rejects.toMatchObject({ code: "CE_TUNNEL_PROFILE_INVALID" });
+    await expect(setup.save({ ...proposal(h), binding: { kind: "path" as const, path: selected } })).rejects.toMatchObject({ code: "CE_TUNNEL_PROFILE_INVALID" });
     expect(writes).toBe(0); expect(names(h)).toEqual(before); expect(fs.readFileSync(h.profilePath)).toEqual(bytes);
   });
   it.each(["same-path", "hardlink"])("selected binding cannot alias old credential during Replace: %s", async (alias) => {
     const h = harness(); const selected = alias === "same-path" ? h.key : join(h.dir, "new-binding.json");
     if (alias === "hardlink") fs.linkSync(h.key, selected);
-    const input = { ...proposal(h), bindingPath: selected }; const before = names(h); const bytes = fs.readFileSync(h.profilePath);
+    const input = { ...proposal(h), binding: { kind: "path" as const, path: selected } }; const before = names(h); const bytes = fs.readFileSync(h.profilePath);
     const opened = vi.spyOn(fs, "openSync");
     await expect(h.setup.save(input)).rejects.toMatchObject({ code: "CE_TUNNEL_PROFILE_INVALID" });
     expect(opened.mock.calls.some(([path]) => path === selected)).toBe(false);
@@ -445,7 +497,7 @@ describe("explicit existing binding changes", () => {
     const setup = createTunnelProfileSetup({ env: {}, profilePath, manager, nodePath: "/abs/node", mcpScriptPath: "/abs/mcp-stdio.js" });
     expect(setup.inspect()).toMatchObject({ exists: false, revision: null });
     expect(fs.existsSync(join(h.dir, "new-config"))).toBe(false);
-    expect(await setup.save({ expectedRevision: null, tunnelId: ID, bindingPath: h.bindingPath,
+    expect(await setup.save({ expectedRevision: null, tunnelId: ID, binding: { kind: "path" as const, path: h.bindingPath },
       credential: { kind: "replace", secret: SECRET } })).toMatchObject({ kind: "saved" });
     expect(fs.lstatSync(join(h.dir, "new-config", "tunnel")).mode & 0o777).toBe(0o700);
     expect(fs.lstatSync(profilePath).mode & 0o777).toBe(0o600);
@@ -462,5 +514,29 @@ describe("command/profile encoding", () => {
   });
   it.each(["/tmp/a;touch-pwn.json", "/tmp/$(echo-pwn).json", "/tmp/a'b.json", "/tmp/a\nb.json"])("rejects unsafe command path %s", (bindingPath) => {
     expect(() => buildTunnelMcpCommand({ nodePath: "/abs/node", scriptPath: "/abs/mcp-stdio.js", bindingPath })).toThrow();
+  });
+  it("C-R1b: a profile.size refusal after managed binding creation retains the valid generation; old profile untouched (A-R8)", async () => {
+    // Existing profile padded near the 64 KiB limit: building nextText (longer
+    // command referencing a new managed binding) exceeds MAX_PROFILE_BYTES and
+    // must refuse WITHOUT leaving the newly created managed binding behind.
+    const h = harness();
+    // Pad the existing profile to just below the 64 KiB read limit so it still
+    // loads, while the rebuilt profile (longer .credentials key + managed
+    // binding command) exceeds it and must refuse.
+    const base = fs.readFileSync(h.profilePath, "utf8");
+    const padded = `${base}\n# ${"x".repeat(Math.max(0, 65_536 - Buffer.byteLength(base, "utf8") - 60))}\n`;
+    expect(Buffer.byteLength(padded, "utf8")).toBeLessThan(65_536);
+    fs.writeFileSync(h.profilePath, padded);
+    const before = names(h);
+    let error: unknown;
+    try {
+      await h.setup.save({ ...proposal(h), binding: { kind: "managed", recipients: [{ adapter: "chatgpt", endpointId: "chatgpt/main" }] } });
+    } catch (e) { error = e; }
+    expect(error).toMatchObject({ code: "CE_TUNNEL_PROFILE_INVALID", field: "profile.size" });
+    // A-R8: the published managed generation is VALID and atomically committed, so
+    // it is retained (never deleted by shared pathname); historical files preserved.
+    const bindingDir = join(h.dir, ".ce-bindings");
+    expect(fs.readdirSync(bindingDir).filter((n) => n.startsWith("ce-")).length).toBe(1);
+    expect(fs.readFileSync(h.profilePath, "utf8")).toBe(padded); // old profile untouched
   });
 });

@@ -1173,10 +1173,20 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
               tunnelId: inspected.tunnelId!,
               ...(inspected.organizationId ? { organizationId: inspected.organizationId } : {}),
               bindingPath: inspected.bindingPath!, credentialConfigured: inspected.credentialConfigured,
+              ...(inspected.bindingRecipients === undefined ? {} : { recipients: inspected.bindingRecipients }),
             } } : {}),
-            validateBinding: async (path) => { setup.validateBinding(path); },
             save: async (proposal, signal) => {
-              const saved = await setup.save({ ...proposal, expectedRevision: inspected.revision, signal });
+              // INTEGRATION-TUI-01: binding selection is never a typed path here.
+              // Changed recipients regenerate the CE-managed binding; absent
+              // recipients keep the profile's current binding unchanged; a first
+              // setup defaults to the CE-managed minimal-permission binding.
+              const saved = await setup.save({
+                expectedRevision: inspected.revision, tunnelId: proposal.tunnelId,
+                ...(proposal.organizationId ? { organizationId: proposal.organizationId } : {}),
+                credential: proposal.credential,
+                ...(proposal.recipients === undefined ? {} : { binding: { kind: "managed", recipients: proposal.recipients } }),
+                signal,
+              });
               if (saved.kind === "cancelled") return saved;
               durability = saved.durability;
             },

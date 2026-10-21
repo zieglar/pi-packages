@@ -15,7 +15,7 @@ const existing = { tunnelId: "tunnel_abcdefgh", organizationId: "org-old", bindi
 function setup(overrides: Partial<SetupWizardOptions> = {}) {
   const h = createTuiHarness({ rows: 40, width: 120 }); live.push(h);
   const save = vi.fn(async (_proposal: SetupProposal) => undefined);
-  const validateBinding = vi.fn(async (_path: string) => undefined);
+  const validateBinding = vi.fn(async (_path: string) => undefined); // legacy mock: must never be called
   const notify = vi.fn(); const input = vi.fn(); const appendEntry = vi.fn();
   let disposeComponent: (() => void) | undefined;
   const custom: typeof h.custom = (factory, options) => h.custom((...args) => {
@@ -27,7 +27,7 @@ function setup(overrides: Partial<SetupWizardOptions> = {}) {
     return component;
   }, options);
   const ctx = { mode: "tui", hasUI: true, ui: { custom, notify, input }, appendEntry } as unknown as SetupUiContext;
-  const options: SetupWizardOptions = { profilePath: "/fixtures/tunnel.yaml", keys: TEST_KEYS, validateBinding, save, ...overrides };
+  const options: SetupWizardOptions = { profilePath: "/fixtures/tunnel.yaml", keys: TEST_KEYS, save, ...overrides };
   return { h, ctx, options, save, validateBinding, notify, input, appendEntry, disposeComponent: () => disposeComponent?.() };
 }
 async function tick() { for (let i = 0; i < 35; i++) await Promise.resolve(); }
@@ -35,16 +35,17 @@ async function press(h: TuiHarness, key: Parameters<TuiHarness["press"]>[0] = "t
 async function choose(h: TuiHarness, index = 0) { for (let i = 0; i < index; i++) h.press("tui.select.down"); await press(h); }
 async function enter(h: TuiHarness, text: string) { h.send("\x15"); h.type(text); await press(h, "tui.input.submit"); }
 function frame(h: TuiHarness) { return h.render().join("\n"); }
+async function fullFrame(h: TuiHarness) { const first = frame(h); for (let i = 0; i < 20; i++) { h.press("tui.select.down"); await tick(); } return `${first}\n${frame(h)}`; }
 async function start(s: ReturnType<typeof setup>) { const task = (await adapter()).runSetupWizard(s.ctx, s.options); await s.h.waitForOpen(); return { task }; }
 async function firstToCredential(s: ReturnType<typeof setup>) {
   // The wizard opens directly at step 1 (Tunnel ID): no Profile/Continue step.
   await enter(s.h, "tunnel_12345678");
   await enter(s.h, "");
-  await enter(s.h, "/fixtures/binding.json");
+  await enter(s.h, "");
 }
 async function existingToCredential(s: ReturnType<typeof setup>) {
   await enter(s.h, existing.tunnelId); await enter(s.h, existing.organizationId);
-  await choose(s.h); // Keep binding
+  await enter(s.h, ""); // Recipients: empty keeps the existing binding
 }
 async function capture(s: ReturnType<typeof setup>, value = "test-only-canary-PRIVATE") {
   await choose(s.h); // Capture / replace depending existing
@@ -98,7 +99,7 @@ describe("Kit setup interaction contract", () => {
     expect(frame(s.h)).toMatch(/optional/i);
     await enter(s.h, "");
     expect(frame(s.h)).toContain("Tunnel Setup · 3/4");
-    await enter(s.h, "/fixtures/binding.json");
+    await enter(s.h, "");
     expect(frame(s.h)).toContain("Tunnel Setup · 4/4");
     expect(frame(s.h)).toMatch(/masked/i);
     await press(s.h, "tui.select.cancel");
@@ -111,11 +112,12 @@ describe("Kit setup interaction contract", () => {
     await firstToCredential(s);
     await capture(s);
     await choose(s.h); // Review entry -> review document
-    const review = frame(s.h);
+    const review = await fullFrame(s.h);
     expect(review).toContain(s.options.profilePath);
     expect(review).toContain("tunnel_12345678");
     expect(review).toContain("Not configured");
     expect(review).toContain("MCP Binding");
+    expect(review).toContain("CE-managed (generated automatically)");
     expect(review).toContain("Provided");
     expect(review.includes("test-only-canary-PRIVATE")).toBe(false);
     await press(s.h, "tui.select.cancel");
@@ -132,21 +134,21 @@ describe("Kit setup interaction contract", () => {
     await enter(s.h, "bad"); expect(frame(s.h)).toContain("Tunnel ID"); expect(frame(s.h)).toContain("Invalid Tunnel ID");
     await enter(s.h, "tunnel_12345678"); expect(frame(s.h)).toContain("Organization ID");
     await enter(s.h, "bad"); expect(frame(s.h)).toContain("Organization ID"); expect(frame(s.h)).toContain("Invalid Organization ID");
-    await enter(s.h, ""); expect(frame(s.h)).toContain("MCP Binding");
-    s.validateBinding.mockRejectedValueOnce(new Error("private parser diagnostic"));
-    await enter(s.h, "/fixtures/bad.json"); expect(frame(s.h)).toContain("MCP Binding"); expect(frame(s.h)).toContain("Invalid MCP binding config");
-    expect(frame(s.h)).not.toContain("private parser diagnostic");
-    await enter(s.h, "/fixtures/binding.json");
+    await enter(s.h, ""); expect(frame(s.h)).toContain("Recipients");
+    // Malformed recipient input is refused inline; no file path is ever asked.
+    await enter(s.h, "not a recipient"); expect(frame(s.h)).toContain("Recipients"); expect(frame(s.h)).toContain("Invalid recipients");
+    expect(s.validateBinding).not.toHaveBeenCalled();
+    await enter(s.h, "");
     await capture(s);
     await choose(s.h);
-    const review = frame(s.h); expect(review).toContain("Not configured"); expect(review).toContain("Provided");
+    const review = await fullFrame(s.h); expect(review).toContain("Not configured"); expect(review).toContain("Provided");
     expect(review).toContain("tunnel_12345678"); expect(review.includes("test-only-canary-PRIVATE")).toBe(false);
     expect(s.save).not.toHaveBeenCalled();
     await press(s.h); expect(s.save).not.toHaveBeenCalled();
     await choose(s.h); expect(await task).toEqual({ status: "saved" });
     expect(s.save).toHaveBeenCalledTimes(1);
     const proposal = s.save.mock.calls[0]![0];
-    expect(proposal.tunnelId).toBe("tunnel_12345678"); expect(proposal.bindingPath).toBe("/fixtures/binding.json");
+    expect(proposal.tunnelId).toBe("tunnel_12345678"); expect(proposal.recipients).toBeUndefined();
     expect(proposal.credential.kind).toBe("replace");
     for (const fn of [s.input, s.notify, s.appendEntry]) expect(fn).not.toHaveBeenCalled();
     expect(JSON.stringify(await task).includes("PRIVATE")).toBe(false);
@@ -157,29 +159,30 @@ describe("Kit setup interaction contract", () => {
     expect(frame(s.h)).toContain("Tunnel Setup · 1/4");
     expect(frame(s.h)).toContain(existing.tunnelId);
     await press(s.h, "tui.input.submit"); expect(frame(s.h)).toContain(existing.organizationId);
-    await press(s.h, "tui.input.submit"); await choose(s.h); // keep binding
+    await enter(s.h, existing.organizationId); // Organization unchanged
+    await enter(s.h, ""); // Recipients: unchanged -> existing binding kept
     expect(frame(s.h)).toContain("Keep existing credential");
     await choose(s.h); await finish(s);
     expect(await task).toEqual({ status: "saved" });
     expect(s.validateBinding).not.toHaveBeenCalled();
     expect(s.save.mock.calls[0]![0].credential).toEqual({ kind: "keep" });
-    expect(s.save.mock.calls[0]![0].bindingPath).toBe(existing.bindingPath);
+    expect(s.save.mock.calls[0]![0].recipients).toBeUndefined();
   });
 
   it("existing credential Replace uses CE masked capture and displays intent only", async () => {
     const s = setup({ existing }); const { task } = await start(s);
     await existingToCredential(s); await choose(s.h, 1);
     s.h.type("test-only-replacement-PRIVATE"); s.h.send("\r"); await tick();
-    await choose(s.h); expect(frame(s.h)).toContain("Replace"); expect(frame(s.h).includes("replacement-PRIVATE")).toBe(false);
+    await choose(s.h); const reviewFrame = await fullFrame(s.h); expect(reviewFrame).toContain("Replace"); expect(reviewFrame.includes("replacement-PRIVATE")).toBe(false);
     await press(s.h); await choose(s.h);
     expect((await task).status).toBe("saved"); expect(s.save.mock.calls[0]![0].credential.kind).toBe("replace");
   });
 
-  it.each(["tunnel", "organization", "binding"])("%s changes require an additional identity/routing review", async (field) => {
+  it.each(["tunnel", "organization", "recipients"])("%s changes require an additional identity/routing review", async (field) => {
     const s = setup({ existing }); const { task } = await start(s);
     await enter(s.h, field === "tunnel" ? "tunnel_changed1" : existing.tunnelId);
     await enter(s.h, field === "organization" ? "org-new" : existing.organizationId);
-    if (field === "binding") { await choose(s.h, 1); await enter(s.h, "/fixtures/new.json"); }
+    if (field === "recipients") { await enter(s.h, "chatgpt:chatgpt/main"); }
     else await choose(s.h);
     await choose(s.h); await choose(s.h); await press(s.h);
     expect(frame(s.h)).toContain("Existing Tunnel configuration will be changed");
@@ -225,35 +228,33 @@ describe("Kit setup interaction contract", () => {
     await press(s.h, "tui.select.cancel"); expect(await task).toEqual({ status: "cancelled" }); expect(s.save).not.toHaveBeenCalled();
   });
 
-  it.each(["profile", "tunnel", "organization", "binding", "credential", "secret", "review-entry", "review", "save"])("Escape at %s leaves zero persistence side effects", async (step) => {
+  it.each(["tunnel", "organization", "recipients", "credential", "secret", "review-entry", "review", "save"])("Escape at %s leaves zero persistence side effects", async (step) => {
     const s = setup(); const { task } = await start(s);
-    const steps = ["profile", "tunnel", "organization", "binding", "credential", "secret", "review-entry", "review", "save"];
+    const steps = ["tunnel", "organization", "recipients", "credential", "secret", "review-entry", "review", "save"];
     const target = steps.indexOf(step);
-    if (target > 0) await choose(s.h);
-    if (target > 1) await enter(s.h, "tunnel_12345678");
+    if (target > 0) await enter(s.h, "tunnel_12345678");
+    if (target > 1) await enter(s.h, "");
     if (target > 2) await enter(s.h, "");
-    if (target > 3) await enter(s.h, "/fixtures/binding.json");
-    if (target > 4) await choose(s.h);
-    if (target > 5) { s.h.type("isolated-canary"); s.h.send("\r"); await tick(); }
-    if (target > 6) await choose(s.h);
-    if (target > 7) await press(s.h);
+    if (target > 3) await choose(s.h);
+    if (target > 4) { s.h.type("isolated-canary"); s.h.send("\r"); await tick(); }
+    if (target > 5) await choose(s.h);
+    if (target > 6) await press(s.h);
     await press(s.h, "tui.select.cancel");
     expect(await task).toEqual({ status: "cancelled" }); expect(s.save).not.toHaveBeenCalled(); expect(s.notify).not.toHaveBeenCalled();
   });
 
-  it.each(["profile", "tunnel", "organization", "binding", "credential", "secret", "review-entry", "review", "save"].flatMap((step) => ["timeout", "abort", "ctrl-c"].map((reason) => ({ step, reason }))))("$reason at $step owns and closes the current Kit/CE component", async ({ step, reason }) => {
+  it.each(["tunnel", "organization", "recipients", "credential", "secret", "review-entry", "review", "save"].flatMap((step) => ["timeout", "abort", "ctrl-c"].map((reason) => ({ step, reason }))))("$reason at $step owns and closes the current Kit/CE component", async ({ step, reason }) => {
     vi.useFakeTimers();
     const controller = new AbortController();
     const s = setup({ timeoutMs: 1000, signal: controller.signal }); const { task } = await start(s);
-    const target = ["profile", "tunnel", "organization", "binding", "credential", "secret", "review-entry", "review", "save"].indexOf(step);
-    if (target > 0) await choose(s.h);
-    if (target > 1) await enter(s.h, "tunnel_12345678");
+    const target = ["tunnel", "organization", "recipients", "credential", "secret", "review-entry", "review", "save"].indexOf(step);
+    if (target > 0) await enter(s.h, "tunnel_12345678");
+    if (target > 1) await enter(s.h, "");
     if (target > 2) await enter(s.h, "");
-    if (target > 3) await enter(s.h, "/fixtures/binding.json");
-    if (target > 4) await choose(s.h);
-    if (target > 5) { s.h.type("isolated-canary"); s.h.send("\r"); await tick(); }
-    if (target > 6) await choose(s.h);
-    if (target > 7) await press(s.h);
+    if (target > 3) await choose(s.h);
+    if (target > 4) { s.h.type("isolated-canary"); s.h.send("\r"); await tick(); }
+    if (target > 5) await choose(s.h);
+    if (target > 6) await press(s.h);
     if (reason === "timeout") await vi.advanceTimersByTimeAsync(1001);
     else if (reason === "abort") controller.abort();
     else s.h.send("\x03");
@@ -272,27 +273,80 @@ describe("Kit setup interaction contract", () => {
     expect(await task).toEqual({ status: "cancelled" }); expect(s.save).not.toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("awaits owned validation on abort, without detached work or saving", async () => {
-    const controller = new AbortController(); let release!: () => void;
-    const validation = new Promise<void>((resolve) => { release = resolve; });
-    const s = setup({ signal: controller.signal, validateBinding: () => validation }); const { task } = await start(s);
-    await choose(s.h); await enter(s.h, "tunnel_12345678"); await enter(s.h, "");
-    s.h.type("/fixtures/binding.json"); s.h.press("tui.input.submit"); await tick(); controller.abort();
-    let settled = false; void task.then(() => { settled = true; }); await tick(); expect(settled).toBe(false);
-    release(); expect(await task).toEqual({ status: "cancelled" }); expect(s.save).not.toHaveBeenCalled();
-  });
-
-  it("Escape during pending binding validation cancels instead of advancing after validation completes", async () => {
-    let release!: () => void;
-    const pending = new Promise<void>((resolve) => { release = resolve; });
-    const s = setup({ validateBinding: () => pending }); const { task } = await start(s);
-    await choose(s.h); await enter(s.h, "tunnel_12345678"); await enter(s.h, "");
-    s.h.type("/fixtures/binding.json"); s.h.press("tui.input.submit"); await tick();
-    s.h.press("tui.select.cancel"); await tick(); release(); await tick();
-    expect(s.h.isOpen, "Escape must not advance to Credential after pending validation").toBe(false);
+  it("the wizard never asks for a binding file path; recipients validate inline and stay on the step", async () => {
+    const s = setup(); const { task } = await start(s);
+    await enter(s.h, "tunnel_12345678"); await enter(s.h, "");
+    expect(frame(s.h)).toContain("Recipients");
+    // No binding-path prompt: the recipients step is a business choice, not YAML.
+    // (The profile context line legitimately shows the profile's own .yaml path.)
+    expect(frame(s.h).split("\n")[1]).not.toMatch(/path|\.ya?ml|\.json/i);
+    for (const bad of ["only-adapter", "pi:pi/self", "chatgpt:dup, chatgpt:dup", "chatgpt:cap_0123456789abcdef"]) {
+      await enter(s.h, bad);
+      expect(frame(s.h)).toContain("Recipients");
+      expect(frame(s.h)).toContain("Invalid recipients");
+    }
+    expect(s.validateBinding).not.toHaveBeenCalled();
+    await press(s.h, "tui.select.cancel");
     expect(await task).toEqual({ status: "cancelled" }); expect(s.save).not.toHaveBeenCalled();
   });
 
+  it("entered recipients flow into the proposal; unchanged edit keeps the binding untouched", async () => {
+    const s = setup(); const { task } = await start(s);
+    await enter(s.h, "tunnel_12345678"); await enter(s.h, "");
+    await enter(s.h, "chatgpt:chatgpt/main, mcp:ops/alerts");
+    await capture(s);
+    await choose(s.h); await press(s.h); await choose(s.h);
+    expect((await task).status).toBe("saved");
+    expect(s.save.mock.calls[0]![0].recipients).toEqual([
+      { adapter: "chatgpt", endpointId: "chatgpt/main" },
+      { adapter: "mcp", endpointId: "ops/alerts" },
+    ]);
+  });
+
+
+  it("blank recipients input keeps a foreign/unknown binding (no silent empty replacement)", async () => {
+    const legacy = { ...existing, bindingPath: "/fixtures/legacy.json" };
+    const s = setup({ existing: legacy }); const { task } = await start(s);
+    await enter(s.h, existing.tunnelId); await enter(s.h, existing.organizationId);
+    await enter(s.h, "   "); // blank recipients -> keep existing binding
+    await choose(s.h); // Keep credential
+    await choose(s.h); // Review entry -> review document
+    const review = await fullFrame(s.h);
+    expect(review).toContain("Keep existing (/fixtures/legacy.json)");
+    expect(review).toContain("Unchanged (existing binding kept)");
+    expect(review).not.toContain("CE-managed (generated automatically)");
+    await press(s.h); await choose(s.h);
+    expect((await task).status).toBe("saved");
+    expect(s.save.mock.calls[0]![0].recipients).toBeUndefined();
+  });
+
+  it("editing a known managed recipients list prefills and only real changes count", async () => {
+    const managed = { ...existing, recipients: [{ adapter: "chatgpt", endpointId: "chatgpt/main" }] };
+    const s = setup({ existing: managed }); const { task } = await start(s);
+    await enter(s.h, managed.tunnelId); await enter(s.h, managed.organizationId);
+    expect(frame(s.h)).toContain("chatgpt:chatgpt/main");
+    await enter(s.h, "chatgpt:chatgpt/main"); // identical -> not a change
+    await choose(s.h); await choose(s.h); await press(s.h); await choose(s.h);
+    expect((await task).status).toBe("saved");
+    expect(s.save.mock.calls[0]![0].recipients).toBeUndefined();
+  });
+
+  it("identity change with a known managed binding shows Regenerate in Review (recipients kept)", async () => {
+    const managed = { ...existing, recipients: [{ adapter: "chatgpt", endpointId: "chatgpt/main" }] };
+    const s = setup({ existing: managed }); const { task } = await start(s);
+    await enter(s.h, "tunnel_newidentity"); // Tunnel ID changed
+    await enter(s.h, managed.organizationId);
+    await enter(s.h, "chatgpt:chatgpt/main"); // recipients unchanged
+    await choose(s.h); // Keep credential
+    await choose(s.h); // Review entry
+    const review = await fullFrame(s.h);
+    // Identity changed + managed binding: must NOT say Keep existing.
+    expect(review).toContain("Regenerate for new identity (recipients kept)");
+    expect(review).not.toContain("Keep existing (/fixtures/old.json)");
+    await press(s.h, "tui.select.cancel");
+    expect(await task).toEqual({ status: "cancelled" });
+    expect(s.save).not.toHaveBeenCalled();
+  });
   it("Save has a completion barrier: abort after entry cannot report false cancellation", async () => {
     const controller = new AbortController(); let release!: () => void;
     const saving = new Promise<void>((resolve) => { release = resolve; });

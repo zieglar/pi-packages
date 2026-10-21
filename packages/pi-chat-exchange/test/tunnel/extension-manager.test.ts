@@ -59,7 +59,7 @@ describe("real tunnel manager extension routing", () => {
       await activateUi(h); // Manager Set Up Tunnel -> Wizard step 1
       await inputUi(h, "tunnel_12345678");
       await inputUi(h, "");
-      await inputUi(h, binding);
+      await inputUi(h, ""); // Recipients: none (managed default)
       await activateUi(h); // Provide API key
       h.type(privateValue);
       expect(h.render().join("\n").includes(privateValue)).toBe(false);
@@ -76,7 +76,13 @@ describe("real tunnel manager extension routing", () => {
       expect(text.includes(privateValue)).toBe(false);
       expect(readFileSync(facts.keyFile, "utf8") === privateValue).toBe(true);
       expect(lstatSync(facts.keyFile).mode & 0o777).toBe(0o600);
-      expect(facts.mcpCommand?.includes(binding)).toBe(true);
+      // The binding is CE-managed: identity-derived name beside the profile,
+      // never the operator-typed path, with no implicit recipients.
+      const managedBinding = join(f.directory, ".ce-bindings", "ce-345678-none.yaml");
+      expect(facts.mcpCommand?.includes(managedBinding)).toBe(true);
+      const managedDoc = JSON.parse(readFileSync(managedBinding, "utf8"));
+      expect(managedDoc.managed).toMatchObject({ tunnelId: "tunnel_12345678", adapter: "pi" });
+      expect(managedDoc.recipients).toEqual([]);
       expect(existsSync(store)).toBe(false);
       expect(h.render().join("\n").includes("tunnel_12345678")).toBe(false);
       await activateUi(h); // Start: exact gate remains closed
