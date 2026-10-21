@@ -1,0 +1,11 @@
+{
+  "exchangeNamespace": "local",
+  "exchangeIdempotencyKey": "chatgpt-pi",
+  "leaseTtlSeconds": 120,
+  "payloadRead": { "enabled": false },
+  "inboxNotification": { "enabled": false, "pageSize": 10, "rawScanLimit": 100 },
+  "recipients": [{ "adapter": "mcp", "endpointId": "chatgpt-desktop" }],
+  "sessions": {
+    "pi-main": { "endpointId": "pi-main" }
+  }
+}

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packagesRoot = resolve(root, "packages");
-const allowedPackageDirectories = new Set(["wayforge"]);
+const allowedPackageDirectories = new Set(["wayforge", "pi-chat-exchange"]);
 const requiredScripts = ["typecheck", "test", "check"];
 const dependencyFields = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
 const runtimeDependencyFields = ["dependencies", "peerDependencies", "optionalDependencies"];

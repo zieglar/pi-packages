@@ -1,0 +1,33 @@
+#!/bin/sh
+# DIAG-01 isolated derivative only; fixed pin, no downloads or env switches.
+set -u
+umask 077
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd) || exit 78
+logdir="$root/server/.debug-logs"
+logfile="$logdir/ce-debug-$$.jsonl"
+log() {
+  line=$(printf '{"ts":"%s","pid":%s,"component":"launcher-shell","event":"%s"}' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$$" "$1")
+  printf '%s\n' "$line" >&2 || :
+  # Directory is private and artifact-owned. Refuse pre-existing links.
+  if [ ! -L "$logdir" ] && [ ! -L "$logfile" ]; then
+    (mkdir -p "$logdir" && printf '%s\n' "$line" >> "$logfile") 2>/dev/null || :
+  fi
+}
+log LAUNCH_STARTED
+mise=/opt/homebrew/bin/mise
+if [ ! -x "$mise" ]; then log LAUNCH_FAILED; log LAUNCH_EXITED; exit 78; fi
+if [ ! -f "$root/bin/version-guard.cjs" ] || [ ! -f "$root/server/launch.mjs" ]; then log LAUNCH_FAILED; log LAUNCH_EXITED; exit 78; fi
+MISE_EXEC_AUTO_INSTALL=0 MISE_AUTO_INSTALL=0 MISE_NOT_FOUND_AUTO_INSTALL=0 MISE_YES=0
+export MISE_EXEC_AUTO_INSTALL MISE_AUTO_INSTALL MISE_NOT_FOUND_AUTO_INSTALL MISE_YES
+# Wait/forward signals so launcher failures and exit are observable even if mise fails.
+"$mise" exec node@24.21.0 -- node --require "$root/bin/version-guard.cjs" "$root/server/launch.mjs" "$@" <&0 &
+child=$!
+trap 'log PROCESS_SIGNAL; kill -TERM "$child" 2>/dev/null || :' TERM
+trap 'log PROCESS_SIGNAL; kill -INT "$child" 2>/dev/null || :' INT
+wait "$child"
+code=$?
+# wait may be interrupted by a signal; retain child lifetime rather than orphan it.
+while kill -0 "$child" 2>/dev/null; do wait "$child"; code=$?; done
+if [ "$code" -ne 0 ]; then log LAUNCH_FAILED; fi
+log LAUNCH_EXITED
+exit "$code"
