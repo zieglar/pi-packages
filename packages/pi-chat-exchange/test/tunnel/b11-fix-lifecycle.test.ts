@@ -41,7 +41,7 @@ async function extension() {
   vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", "1");
   const commands = new Map<string, { handler: (args: string, ctx: typeof context) => unknown }>();
   const events = new Map<string, (event: { reason: string }, ctx: typeof context) => unknown>();
-  const url = new URL("../../../../.pi/extensions/ce-chat-exchange/index.ts", import.meta.url).href;
+  const url = new URL("../../pi-extension/index.ts", import.meta.url).href;
   const { default: factory } = await import(url) as { default: (pi: unknown) => void };
   factory({ on: (name: string, handler: never) => events.set(name, handler),
     registerCommand: (name: string, options: never) => commands.set(name, options), registerTool() {}, appendEntry() {} });

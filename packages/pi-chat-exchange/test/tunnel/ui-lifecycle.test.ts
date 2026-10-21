@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const MODULE_URL = new URL("../../../../.pi/extensions/ce-chat-exchange/index.ts", import.meta.url).href;
+const MODULE_URL = new URL("../../pi-extension/index.ts", import.meta.url).href;
 function context(mode = "tui") {
   return {
     mode, hasUI: true, cwd: "/synthetic",

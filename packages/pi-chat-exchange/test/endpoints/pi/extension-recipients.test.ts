@@ -63,7 +63,7 @@ async function start() {
   // allowlist.
   vi.resetModules();
   const events = new Map<string, (event: { reason: string }, ctx: Context) => Promise<void> | void>();
-  const moduleUrl = new URL("../../../../../.pi/extensions/ce-chat-exchange/index.ts", import.meta.url).href;
+  const moduleUrl = new URL("../../../pi-extension/index.ts", import.meta.url).href;
   const { default: factory } = await import(moduleUrl);
   factory({
     on(name: string, handler: (event: { reason: string }, ctx: Context) => Promise<void> | void) { events.set(name, handler); },

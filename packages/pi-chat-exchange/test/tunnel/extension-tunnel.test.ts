@@ -21,7 +21,7 @@
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const MODULE_URL = new URL("../../../../.pi/extensions/ce-chat-exchange/index.ts", import.meta.url).href;
+const MODULE_URL = new URL("../../pi-extension/index.ts", import.meta.url).href;
 
 beforeEach(() => {
   vi.stubEnv("CE_ALLOWLIST", "/dev/null");

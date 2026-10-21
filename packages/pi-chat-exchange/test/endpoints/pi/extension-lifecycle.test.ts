@@ -27,7 +27,7 @@ vi.mock("../../../dist/endpoints/pi/session-host.js", async (original) => {
   };
 });
 
-const MODULE_URL = new URL("../../../../../.pi/extensions/ce-chat-exchange/index.ts", import.meta.url).href;
+const MODULE_URL = new URL("../../../pi-extension/index.ts", import.meta.url).href;
 type Entry = Record<string, unknown>;
 type Context = {
   mode: string; hasUI: boolean; cwd: string;

@@ -47,7 +47,7 @@ interface Api {
 }
 
 const MODULE_URL = new URL(
-  "../../../../.pi/extensions/ce-chat-exchange/index.ts",
+  "../../pi-extension/index.ts",
   import.meta.url,
 ).href;
 

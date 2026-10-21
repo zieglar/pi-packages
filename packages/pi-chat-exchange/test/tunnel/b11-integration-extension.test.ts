@@ -16,7 +16,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TunnelRefusal } from "../../../../packages/pi-chat-exchange/dist/tunnel/codes.js";
 
-const MODULE_URL = new URL("../../../../.pi/extensions/ce-chat-exchange/index.ts", import.meta.url).href;
+const MODULE_URL = new URL("../../pi-extension/index.ts", import.meta.url).href;
 
 const requestAuthorization = vi.fn();
 const plainRead = vi.fn();

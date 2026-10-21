@@ -34,27 +34,27 @@ import {
   type CeHostPolicy,
   type CeMappingIdentifiers,
   type CeRecipientRef,
-} from "../../../packages/pi-chat-exchange/dist/endpoints/pi/session-host.js";
-import { PI_ADAPTER_KIND } from "../../../packages/pi-chat-exchange/dist/endpoints/pi/contract.js";
-import { initializeStore, openStore } from "../../../packages/pi-chat-exchange/dist/storage/store.js";
-import { TunnelRefusal } from "../../../packages/pi-chat-exchange/dist/tunnel/codes.js";
+} from "../dist/endpoints/pi/session-host.js";
+import { PI_ADAPTER_KIND } from "../dist/endpoints/pi/contract.js";
+import { initializeStore, openStore } from "../dist/storage/store.js";
+import { TunnelRefusal } from "../dist/tunnel/codes.js";
 import {
   captureTunnelSecret,
   type SecureInputUiView,
-} from "../../../packages/pi-chat-exchange/dist/tunnel/secure-input.js";
+} from "../dist/tunnel/secure-input.js";
 import {
   createKeychainCredentialStore,
   createNativeKeychainRunner,
   OFFLINE_SYNTHETIC_SCOPE,
-} from "../../../packages/pi-chat-exchange/dist/tunnel/keychain.js";
+} from "../dist/tunnel/keychain.js";
 import {
   createTunnelManager,
   type TunnelManager,
-} from "../../../packages/pi-chat-exchange/dist/tunnel/manager.js";
+} from "../dist/tunnel/manager.js";
 import {
   createBackgroundTunnelManager,
   type BackgroundTunnelManager,
-} from "../../../packages/pi-chat-exchange/dist/tunnel/background-manager.js";
+} from "../dist/tunnel/background-manager.js";
 
 // ---------------------------------------------------------------------------
 // Minimal structural types (verified against Pi 0.86.1 declarations).

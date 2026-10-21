@@ -574,7 +574,7 @@ vi.mock("../../dist/tunnel/manager.js", async () => {
   };
 });
 
-const EXTENSION_URL = new URL("../../../../.pi/extensions/ce-chat-exchange/index.ts", import.meta.url).href;
+const EXTENSION_URL = new URL("../../pi-extension/index.ts", import.meta.url).href;
 
 interface FakeCtx {
   mode: string;

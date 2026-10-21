@@ -13,7 +13,7 @@ see `tunnel-local.md` (HOST-07), which B1.1 does not change.
 | Keychain CRUD | `src/tunnel/keychain.ts` + `native/tunnel-keychain.swift` | one exact item per validated scope |
 | Offline simulator | `src/tunnel/offline-client.ts` | fake client, no socket, no credential |
 | Owned lifecycle | `src/tunnel/manager.ts` | start/stop/status of that simulator only |
-| Commands and status | `.pi/extensions/ce-chat-exchange/index.ts` | `/ce-tunnel setup\|authorize\|start\|stop\|status\|help` |
+| Commands and status | `packages/pi-chat-exchange/pi-extension/index.ts` | `/ce-tunnel setup\|authorize\|start\|stop\|status\|help` |
 
 ## Hard limits
 

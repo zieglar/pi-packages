@@ -26,7 +26,7 @@ Pi process A                          Pi process B
 
 - `src/endpoints/pi/session-host.ts` is the only host-side composition layer.
   It imports no Pi SDK types; plain data in, plain data out.
-- `.pi/extensions/ce-chat-exchange/index.ts` is the Pi runtime adapter. It
+- `packages/pi-chat-exchange/pi-extension/index.ts` is the Pi runtime adapter. It
   holds no credentials itself; all authority is delegated to the host seam.
 - Chat Exchange owns Participant/Session/message authority. Pi owns the
   runtime and SessionManager. Wayforge retains Completion Authority. No
@@ -139,4 +139,4 @@ explicitly; INDETERMINATE requires operator reopening/inspection before any retr
   `test/endpoints/pi/extension-payload.test.ts` (extension harness; no real
   Pi dogfood claimed).
 - New Inbox dogfood procedure (not executed in B3-P3D implementation):
-  `.pi/extensions/ce-chat-exchange/README.md`, isolated two-process acceptance.
+  `packages/pi-chat-exchange/pi-extension/README.md`, isolated two-process acceptance.
