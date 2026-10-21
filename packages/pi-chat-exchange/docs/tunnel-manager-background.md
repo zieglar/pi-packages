@@ -19,6 +19,13 @@ run side by side.
   --pid <owned> --require-control-plane-poll --json`, parsed by the frozen
   `health.ts` rules and stamped once per completion by the shared recorder.
   PID liveness alone is never CONNECTED.
+- Background startup has a **45s** default window, measured from run allocation:
+  the external client 0.0.16 defaults to a 30s initial long-poll plus a 5s
+  deadline guardrail, with 10s allowance for startup, probes and scheduling.
+  These are external defaults, not dynamically synchronized configuration.
+  The shared offline simulator retains its 30s window; explicit timing overrides
+  remain authoritative. Required-poll readiness and verified cleanup are unchanged;
+  no automatic restart or post-deadline recovery is introduced.
 - Status vocabulary: `STOPPED / STARTING / CONNECTED / DEGRADED / UNKNOWN`.
   Stale evidence lapses to UNKNOWN on read; a pure read never refreshes state.
 
@@ -69,9 +76,68 @@ run side by side.
   metadata only (regular, non-symlink, owner-only 0600 — `profile.ts`
   `checkKeyFileRequirements`). Inline values and `env:` references refuse
   `CE_TUNNEL_CREDENTIAL_HANDOFF_BLOCKED`.
+- **Organization context (LOCAL-BACKGROUND-05).** The optional profile field
+  `control_plane.organization_id` is a double-quoted, escape-free scalar with
+  local grammar `org-[A-Za-z0-9]{1,128}`. This is a bounded syntax policy, not
+  proof of server-side organization/Tunnel/Connector binding. Missing fields
+  preserve legacy behavior; an organization-scoped Tunnel may still reject
+  requests without one. Empty, invalid, repeated (even identical) fields and
+  extra-header overrides are refused before spawn.
+  The client reads the unchanged explicit `--profile-file` itself. Version
+  0.0.16 advertises organization ID as the `OpenAI-Organization` request header
+  and precedence flags > environment > YAML > defaults. Manager spawn adds no
+  organization flags and retains its existing minimal environment whitelist:
+  parent `CONTROL_PLANE_*`, `OPENAI_*` and `TUNNEL_CLIENT_*` overrides are not
+  forwarded. Thus the explicit profile is the only organization input here.
+  For example, add `organization_id: "org-Example123"` under `control_plane`
+  (two-space indentation) after confirming the target's non-secret metadata.
+  Existing profiles are never automatically migrated: changing a historical
+  Tunnel ID or adding organization context requires explicit operator approval.
+  No live authentication or real-Tunnel readiness is implied by local parsing.
 - **PID reuse safety.** Every later status/stop re-verifies BOTH the exact
   command line and the exact process start key. A mismatch reports UNKNOWN /
   refuses `CE_TUNNEL_EXTERNAL_INSTANCE`; nothing is adopted or signalled.
+- **Wrapper exec identity (LOCAL-BACKGROUND-03).** Homebrew installs the
+  client as a shim script (`#!/bin/bash` plus `exec "<Cellar libexec>" "$@"`),
+  so ps shows `/bin/bash <shim> run …` before the exec and `<cellar> run …`
+  after it — same pid, same start key. At spawn time the manager reads the
+  client file once and derives the acceptable identity set from explicit
+  evidence only: the direct argv always; the `<interpreter> <shim>` form only
+  from a no-argument `#!/abs/path` shebang; the post-exec form only from a
+  single strict `exec "<abs>" "$@"` line whose target is absolute, normalized,
+  printable, and an existing regular file. The exec form is persisted on the
+  record (`commandIdentityExec`) so later sessions recognize the exec'd
+  process. The exec form additionally requires the WHOLE file to be the
+  canonical shim shape (shebang + exactly one strict exec line; other lines
+  only blank or comments) — heredoc bodies, indented exec lines, or extra
+  statements forfeit it. Anything unknown or ambiguous (relative/unquoted/
+  multi-exec lines, missing target, oversized or unreadable shim) yields no
+  form and stays fail closed. Basename equality, pidfiles, and process names
+  are never evidence. A non-canonical wrapper (extra statements, heredocs, an
+  unreadable or oversized script) therefore DEGRADES to unmanageable after its
+  exec — identity mismatch, UNKNOWN, `CE_TUNNEL_STOP_UNCONFIRMED` — and the
+  instance is never mis-signalled; recovery is the documented manual,
+  identity-verified termination. Identity capture itself also accepts only the
+  evidence-derived identity set, so a client whose file cannot be read yields
+  an unconfirmed (pending) run rather than a substring-matched one.
+- **Pending-run PID-reuse bar (S-1/F1).** A spawn whose identity was never
+  captured (identity-pending, memory-only) keeps its child handle: the handle's
+  exit event is first-class proof that OUR spawn died, after which any process
+  at that pid is a foreign reuser. The proof is archived PER RUN ID (runIds are
+  UUIDs and never reused), the listener is armed before the identity-capture
+  window, and a later start never resets another run's evidence — so the
+  dual-run stop path cannot sever it; dispose() likewise keeps the proof while
+  a pending run survives, because stop/refresh stay callable after dispose.
+  Such a run is then closed as exited and
+  is NEVER adopted or signalled — re-acquisition requires a live child link
+  plus exact membership in the evidence-derived identity set. Stop notes
+  distinguish "exit observed after SIGTERM" from "exit observed (process
+  already gone); no signal sent". On-disk `null` values for optional record
+  fields (`commandIdentityExec`, `termRequestedAt`) are normalized to absent
+  at load, so a foreign null can neither forge an identity nor suppress a
+  termination signal. A pending run whose process is gone is superseded
+  directly (`identityPending` stripped before persist), so a later start does
+  not fail with a misleading `CE_TUNNEL_STATE_CORRUPT`.
 - **One SIGTERM per run, ever.** `termRequestedAt` is persisted, so even a
   later Pi session never re-signals. Timeout refuses
   `CE_TUNNEL_STOP_UNCONFIRMED` and **retains** the record. No SIGKILL, no bulk

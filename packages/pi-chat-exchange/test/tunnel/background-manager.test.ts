@@ -13,10 +13,11 @@
  */
 import { mkdtempSync, writeFileSync, chmodSync, readFileSync, symlinkSync, mkdirSync, readdirSync, rmSync, lstatSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   createBackgroundTunnelManager,
+  resolveWrapperIdentityEvidence,
   type BackgroundManagerOptions,
   type DaemonChildHandle,
   type ProcessIdentity,
@@ -24,7 +25,6 @@ import {
 import type { HealthProbeInput } from "../../src/tunnel/health.js";
 
 const TUNNEL_ID = "tunnel_abcdef1234567890";
-const CLIENT = "/opt/homebrew/bin/tunnel-client";
 const SELF_KEY = "Mon Oct 12 00:00:00 2026";
 
 interface Harness {
@@ -36,12 +36,20 @@ interface Harness {
   readonly profilePath: string;
   readonly statePath: string;
   readonly keyPath: string;
+  /** Per-harness client path inside the tmp dir; never created by the default
+   *  harness, so wrapper resolution finds nothing and records stay free of the
+   *  exec alternative (LOCAL-BACKGROUND-03 hermeticity). */
+  readonly client: string;
   probes: HealthProbeInput[];
   clock: number;
   unknownPids: Set<number>;
   onSpawn?: (() => void) | undefined;
   onProbe?: (() => void) | undefined;
   onInspect?: ((pid: number) => void) | undefined;
+  /** S-1: child-handle exit listeners captured by the spawn seam, per pid. */
+  readonly exitListeners: Map<number, { exit?: ((code: number | null, signal: string | null) => void) | undefined }>;
+  /** S-1: deliver the spawned child's exit event (spawn-linked death proof). */
+  fireExit(pid: number): void;
 }
 
 function healthyProbe(): HealthProbeInput {
@@ -87,27 +95,39 @@ function makeHarness(env: NodeJS.ProcessEnv = {}): Harness {
     "",
   ].join("\n"), { mode: 0o600 });
   const statePath = join(dir, "background-state.json");
+  const client = join(dir, "tunnel-client");
   const procs = new Map<number, ProcessIdentity>();
   const spawnCalls: Harness["spawnCalls"] = [];
   const signals: Harness["signals"] = [];
+  const exitListeners: Harness["exitListeners"] = new Map();
   const harness: Harness = {
-    dir, profilePath, statePath, keyPath, procs, spawnCalls, signals,
+    dir, profilePath, statePath, keyPath, client, procs, spawnCalls, signals,
     probes: [],
     clock: 1_760_000_000_000,
     unknownPids: new Set(),
+    exitListeners,
+    fireExit: (pid) => { harness.exitListeners.get(pid)?.exit?.(0, null); },
     options: {
       env: { CE_TUNNEL_BACKGROUND_ALLOW: "1", ...env },
       get now() { return () => harness.clock; },
       profilePath,
       stateFilePath: statePath,
-      clientPath: CLIENT,
+      clientPath: client,
       timing: { startupTimeoutMs: 5_000, pollIntervalMs: 5_000, freshnessMs: 15_000, failThresholdN: 3, recoverThresholdM: 2, stopGraceMs: 1_000 },
       spawn: (executable, args, opts) => {
         spawnCalls.push({ executable, args, detached: opts.detached });
         harness.onSpawn?.();
         const pid = 40_000 + spawnCalls.length;
-        procs.set(pid, { pid, command: `${CLIENT} run --profile-file ${profilePath}`, startedKey: "Tue Oct 20 06:30:09 2026" });
-        const handle: DaemonChildHandle = { pid, unref: () => undefined, on: () => undefined };
+        procs.set(pid, { pid, command: `${client} run --profile-file ${profilePath}`, startedKey: "Tue Oct 20 06:30:09 2026" });
+        const listeners: { exit?: ((code: number | null, signal: string | null) => void) | undefined } = {};
+        exitListeners.set(pid, listeners);
+        const handle: DaemonChildHandle = {
+          pid,
+          unref: () => undefined,
+          on(event: string, listener: unknown): void {
+            if (event === "exit") listeners.exit = listener as (code: number | null, signal: string | null) => void;
+          },
+        };
         return handle;
       },
       inspectProcess: async (pid) => {
@@ -144,7 +164,7 @@ function diskRecord(h: Harness, runId: string, pid: number, extra: Record<string
     version: 1, runId, pid, profilePath: h.profilePath,
     profileSha256: "f".repeat(64), tunnelId: TUNNEL_ID, keyFile: h.keyPath,
     urlFile: join(h.dir, "health.url"), logPath: join(h.dir, "background-tunnel.log"),
-    commandIdentity: `${CLIENT} run --profile-file ${h.profilePath}`,
+    commandIdentity: `${h.client} run --profile-file ${h.profilePath}`,
     processStartedKey: "Tue Oct 20 10:00:00 2026", startedAt: Date.now(),
     state: "running", ...extra,
   };
@@ -153,6 +173,86 @@ function diskRecord(h: Harness, runId: string, pid: number, extra: Record<string
 function recordState(h: Harness): Record<string, unknown> {
   return JSON.parse(readFileSync(h.statePath, "utf8")) as Record<string, unknown>;
 }
+
+describe("BACKGROUND-05 default background startup budget", () => {
+  const noPoll: HealthProbeInput = {
+    stdout: JSON.stringify({ result: "fail", healthz: { ok: true, body: "live" },
+      readyz: { ok: true }, process: { running: true }, control_plane_poll: { ok: false } }),
+    exitCode: 2,
+  };
+
+  function defaultOptions(h: Harness): BackgroundManagerOptions {
+    const { timing, ...options } = h.options;
+    void timing; // Exercise the production default, not the harness's 5s override.
+    return { ...options, signal: (pid, signal) => {
+      h.signals.push({ pid, signal });
+      h.procs.delete(pid); // Simulate the same owned child's SIGTERM exit.
+      rmSync(join(h.dir, "health.url"), { force: true });
+    } };
+  }
+
+  it("accepts first successful-poll health at 35s, beyond the old 30s window", async () => {
+    const h = makeHarness();
+    const m = createBackgroundTunnelManager({ ...defaultOptions(h), probeHealth: async () => {
+      h.clock = Number(recordState(h).startedAt) + 35_001;
+      return healthyProbe();
+    } });
+    const result = await m.start();
+    expect(result.health).toBe("connected");
+    expect(m.status().state).toBe("CONNECTED");
+    expect(h.signals).toEqual([]);
+    await m.stop();
+    expect(h.signals).toEqual([{ pid: 40_001, signal: "SIGTERM" }]);
+    expect(recordState(h).state).toBe("stopped");
+  });
+
+  it("does not accept local live/ready health while required poll is false at 31s", async () => {
+    const h = makeHarness();
+    let calls = 0;
+    const m = createBackgroundTunnelManager({ ...defaultOptions(h), probeHealth: async () => {
+      calls += 1;
+      h.clock = Number(recordState(h).startedAt) + (calls === 1 ? 31_000 : 36_000);
+      return calls === 1 ? noPoll : healthyProbe();
+    } });
+    const result = await m.start();
+    expect(calls).toBe(2);
+    expect(result.health).toBe("connected");
+    expect(m.status().state).toBe("CONNECTED");
+    expect(h.signals).toEqual([]);
+    await m.stop();
+  });
+
+  it("times out at the new 45s deadline if poll never succeeds, with verified cleanup", async () => {
+    const h = makeHarness();
+    let calls = 0;
+    const m = createBackgroundTunnelManager({ ...defaultOptions(h), probeHealth: async () => {
+      const offsets = [31_000, 44_999, 45_000];
+      h.clock = Number(recordState(h).startedAt) + offsets[calls++]!;
+      return noPoll;
+    } });
+    await expect(m.start()).rejects.toMatchObject({ code: "CE_TUNNEL_READY_TIMEOUT" });
+    expect(calls).toBe(3);
+    expect(h.signals).toEqual([{ pid: 40_001, signal: "SIGTERM" }]);
+    expect(recordState(h).state).toBe("stopped");
+    expect(recordState(h).termRequestedAt).toBeDefined();
+    expect(recordState(h).note).toBe("startup not confirmed; verified stop");
+    expect(h.procs.size).toBe(0);
+    expect(readdirSync(h.dir).some((name) => name.includes("lock"))).toBe(false);
+    await m.stop();
+    expect(h.signals).toHaveLength(1);
+  });
+
+  it("still refuses a first healthy completion exactly at 45s and cleans up once", async () => {
+    const h = makeHarness();
+    const m = createBackgroundTunnelManager({ ...defaultOptions(h), probeHealth: async () => {
+      h.clock = Number(recordState(h).startedAt) + 45_000;
+      return healthyProbe();
+    } });
+    await expect(m.start()).rejects.toMatchObject({ code: "CE_TUNNEL_READY_TIMEOUT" });
+    expect(h.signals).toEqual([{ pid: 40_001, signal: "SIGTERM" }]);
+    expect(recordState(h).state).toBe("stopped");
+  });
+});
 
 describe("background manager v2 — baseline acceptance", () => {
   it("first start spawns ONE detached client and persists a 0600 record", async () => {
@@ -238,7 +338,7 @@ describe("background manager v2 — baseline acceptance", () => {
     const h = makeHarness();
     h.probes.push(healthyProbe());
     await createBackgroundTunnelManager(h.options).start();
-    h.procs.set(40_001, { pid: 40_001, command: `${CLIENT} run --profile-file ${h.profilePath}`, startedKey: "Wed Oct 21 00:00:00 2026" });
+    h.procs.set(40_001, { pid: 40_001, command: `${h.client} run --profile-file ${h.profilePath}`, startedKey: "Wed Oct 21 00:00:00 2026" });
     const m2 = createBackgroundTunnelManager(h.options);
     await m2.refresh();
     expect(m2.status().state).toBe("UNKNOWN");
@@ -248,7 +348,7 @@ describe("background manager v2 — baseline acceptance", () => {
 
   it("refuses to race a foreign client on the same profile", async () => {
     const h = makeHarness();
-    h.procs.set(55_555, { pid: 55_555, command: `${CLIENT} run --profile-file ${h.profilePath}`, startedKey: "Tue Oct 20 05:00:00 2026" });
+    h.procs.set(55_555, { pid: 55_555, command: `${h.client} run --profile-file ${h.profilePath}`, startedKey: "Tue Oct 20 05:00:00 2026" });
     await expect(createBackgroundTunnelManager(h.options).start()).rejects.toMatchObject({ code: "CE_TUNNEL_EXTERNAL_INSTANCE" });
     expect(h.spawnCalls).toHaveLength(0);
   });
@@ -509,7 +609,7 @@ describe("background manager v2 — review regression coverage", () => {
       version: 1, runId: "bg-run-b", pid: 40_002, profilePath: h.profilePath,
       profileSha256: "b".repeat(64), tunnelId: TUNNEL_ID, keyFile: h.keyPath,
       urlFile: join(h.dir, "health.url"), logPath: join(h.dir, "background-tunnel.log"),
-      commandIdentity: `${CLIENT} run --profile-file ${h.profilePath}`,
+      commandIdentity: `${h.client} run --profile-file ${h.profilePath}`,
       processStartedKey: "Tue Oct 20 07:00:00 2026", startedAt: Date.now(),
       state: "running",
     };
@@ -634,7 +734,7 @@ describe("background manager v2 — review regression coverage", () => {
     // The exact expected command line IS adopted and stoppable.
     h.procs.set(40_001, {
       pid: 40_001,
-      command: `${CLIENT} run --profile-file ${h.profilePath}`,
+      command: `${h.client} run --profile-file ${h.profilePath}`,
       startedKey: "Wed Oct 21 00:00:01 2026",
     });
     const stop = m.stop({ graceMs: 300 });
@@ -740,7 +840,7 @@ describe("background manager v2 — review regression coverage", () => {
       version: 1, runId: "bg-run-b", pid: 40_010, profilePath: h.profilePath,
       profileSha256: "c".repeat(64), tunnelId: TUNNEL_ID, keyFile: h.keyPath,
       urlFile: join(h.dir, "health.url"), logPath: join(h.dir, "background-tunnel.log"),
-      commandIdentity: `${CLIENT} run --profile-file ${h.profilePath}`,
+      commandIdentity: `${h.client} run --profile-file ${h.profilePath}`,
       processStartedKey: "Tue Oct 20 08:00:00 2026", startedAt: Date.now(),
       state: "running",
     };
@@ -835,7 +935,7 @@ describe("background manager v2 — review regression coverage", () => {
           version: 1, runId: "bg-run-b", pid: 40_010, profilePath: h.profilePath,
           profileSha256: "d".repeat(64), tunnelId: TUNNEL_ID, keyFile: h.keyPath,
           urlFile: join(h.dir, "health.url"), logPath: join(h.dir, "background-tunnel.log"),
-          commandIdentity: `${CLIENT} run --profile-file ${h.profilePath}`,
+          commandIdentity: `${h.client} run --profile-file ${h.profilePath}`,
           processStartedKey: "Tue Oct 20 09:00:00 2026", startedAt: Date.now(),
           state: "running",
         };
@@ -894,7 +994,7 @@ describe("background manager v2 — review regression coverage", () => {
       version: 1, runId: "bg-run-b", pid: 40_010, profilePath: h.profilePath,
       profileSha256: "e".repeat(64), tunnelId: TUNNEL_ID, keyFile: h.keyPath,
       urlFile: join(h.dir, "health.url"), logPath: join(h.dir, "background-tunnel.log"),
-      commandIdentity: `${CLIENT} run --profile-file ${h.profilePath}`,
+      commandIdentity: `${h.client} run --profile-file ${h.profilePath}`,
       processStartedKey: "Tue Oct 20 09:30:00 2026", startedAt: Date.now(),
       state: "running",
     };
@@ -935,7 +1035,7 @@ describe("background manager v2 — review regression coverage", () => {
     await m.refresh();
     const rec = recordState(h) as Record<string, unknown>;
     expect(rec.identityPending).toBeUndefined(); // stripped on persist
-    expect(rec.commandIdentity).toBe(`${CLIENT} run --profile-file ${h.profilePath}`);
+    expect(rec.commandIdentity).toBe(`${h.client} run --profile-file ${h.profilePath}`);
     expect(rec.state).toBe("running");
     expect(m.runId()).toBeDefined();
   });
@@ -1070,5 +1170,747 @@ describe("background manager v2 — review regression coverage", () => {
     expect(status.state).toBe("STOPPED");
     const rec = recordState(h) as Record<string, unknown>;
     expect(rec.state).toBe("stopped"); // never resurrected
+  });
+});
+
+describe("LOCAL-BACKGROUND-03 — F2 Homebrew wrapper exec identity", () => {
+  // BACKGROUND-02 real-run evidence: /opt/homebrew/bin/tunnel-client is a
+  // two-line brew shim (`#!/bin/bash` + `exec "<Cellar libexec>" "$@"`).
+  // ps first shows `/bin/bash <shim> run …`, then after exec `<cellar> run …`
+  // — same pid, same lstart. The exact-argv matcher misjudged the exec'd form
+  // as EXTERNAL_INSTANCE / STOP_UNCONFIRMED (fail-closed but unmanageable).
+  const WRAP_KEY = "Tue Oct 20 06:30:09 2026"; // exec preserves pid + lstart
+  const bashForm = (h: Harness): string => `/bin/bash ${h.client} run --profile-file ${h.profilePath}`;
+  const execForm = (h: Harness, cellar: string): string => `${cellar} run --profile-file ${h.profilePath}`;
+
+  /** Turn h.client into a brew-style wrapper script exec'ing `cellar`. */
+  const writeWrapper = (h: Harness, cellar: string): void => {
+    mkdirSync(dirname(cellar), { recursive: true });
+    writeFileSync(cellar, "client-binary", { mode: 0o755 });
+    writeFileSync(h.client, `#!/bin/bash\nexec "${cellar}" "$@"\n`, { mode: 0o755 });
+  };
+
+  /** First inspection of pid sees the pre-exec bash form (kernel shebang). */
+  const capturePreExec = (h: Harness): void => {
+    let armed = true;
+    h.onInspect = (pid) => {
+      if (armed && pid === 40_001) {
+        armed = false;
+        h.procs.set(pid, { pid, command: bashForm(h), startedKey: WRAP_KEY });
+      }
+    };
+  };
+
+  it("F2 core: a session-B manager recognizes and stops the exec'd wrapper instance", async () => {
+    const h = makeHarness();
+    const cellar = join(h.dir, "libexec", "tunnel-client");
+    writeWrapper(h, cellar);
+    capturePreExec(h);
+    h.probes.push(healthyProbe());
+    const m1 = createBackgroundTunnelManager(h.options);
+    await m1.start();
+    // Identity was captured in the pre-exec bash form (as in the real run).
+    expect(recordState(h).commandIdentity).toBe(bashForm(h));
+    // bash now execs the real binary: same pid, same startedKey, new argv0.
+    h.onInspect = undefined;
+    h.procs.set(40_001, { pid: 40_001, command: execForm(h, cellar), startedKey: WRAP_KEY });
+    // A fresh Pi session must recognize THIS instance, not misread it as foreign.
+    const m2 = createBackgroundTunnelManager(h.options);
+    h.probes.push(healthyProbe());
+    await m2.refresh();
+    expect(m2.status().note ?? "").not.toContain("identity mismatch");
+    const stop = m2.stop({ graceMs: 300 });
+    await flush();
+    expect(h.signals).toEqual([{ pid: 40_001, signal: "SIGTERM" }]);
+    h.procs.delete(40_001);
+    await stop;
+    expect(recordState(h).state).toBe("stopped");
+    expect(m2.status().state).toBe("STOPPED");
+  });
+
+  it("F2: duplicate start after wrapper exec reports alreadyRunning, not EXTERNAL_INSTANCE", async () => {
+    const h = makeHarness();
+    const cellar = join(h.dir, "libexec", "tunnel-client");
+    writeWrapper(h, cellar);
+    capturePreExec(h);
+    h.probes.push(healthyProbe());
+    const m1 = createBackgroundTunnelManager(h.options);
+    const started = await m1.start();
+    h.onInspect = undefined;
+    h.procs.set(40_001, { pid: 40_001, command: execForm(h, cellar), startedKey: WRAP_KEY });
+    const m2 = createBackgroundTunnelManager(h.options);
+    const again = await m2.start();
+    expect(again.alreadyRunning).toBe(true);
+    expect(again.runId).toBe(started.runId);
+    expect(h.spawnCalls).toHaveLength(1); // never a second instance
+  });
+
+  it("F2: identity captured AFTER the exec (post-exec form) stays manageable", async () => {
+    const h = makeHarness();
+    const cellar = join(h.dir, "libexec", "tunnel-client");
+    writeWrapper(h, cellar);
+    // The exec lands before the first ps sample: capture sees the cellar form.
+    h.onInspect = (pid) => {
+      if (pid === 40_001) h.procs.set(pid, { pid, command: execForm(h, cellar), startedKey: WRAP_KEY });
+    };
+    h.probes.push(healthyProbe());
+    const m1 = createBackgroundTunnelManager(h.options);
+    await m1.start();
+    expect(recordState(h).commandIdentity).toBe(execForm(h, cellar));
+    h.onInspect = undefined;
+    const m2 = createBackgroundTunnelManager(h.options);
+    const stop = m2.stop({ graceMs: 300 });
+    await flush();
+    expect(h.signals).toEqual([{ pid: 40_001, signal: "SIGTERM" }]);
+    h.procs.delete(40_001);
+    await stop;
+    expect(recordState(h).state).toBe("stopped");
+  });
+
+  it("F2: a direct (non-script) client gains NO exec alternative and keeps exact matching", async () => {
+    const h = makeHarness();
+    writeFileSync(h.client, "not-a-script-binary", { mode: 0o755 });
+    h.probes.push(healthyProbe());
+    const m1 = createBackgroundTunnelManager(h.options);
+    await m1.start();
+    const rec = recordState(h);
+    expect("commandIdentityExec" in rec).toBe(false);
+    // Exact form still manages; a rewritten argv0 still refuses.
+    h.procs.set(40_001, { pid: 40_001, command: `/usr/local/bin/${basename(h.client)} run --profile-file ${h.profilePath}`, startedKey: WRAP_KEY });
+    const m2 = createBackgroundTunnelManager(h.options);
+    await m2.refresh();
+    expect(m2.status().state).toBe("UNKNOWN");
+    await expect(m2.stop({ graceMs: 300 })).rejects.toMatchObject({ code: "CE_TUNNEL_STOP_UNCONFIRMED" });
+    expect(h.signals).toHaveLength(0);
+  });
+
+  it("F2: a missing client binary gains NO exec alternative (default harness)", async () => {
+    const h = makeHarness();
+    h.probes.push(healthyProbe());
+    const m1 = createBackgroundTunnelManager(h.options);
+    await m1.start();
+    expect("commandIdentityExec" in recordState(h)).toBe(false);
+  });
+
+  it("F2: PID reuse with the exec'd argv (same argv, different lstart) refuses", async () => {
+    const h = makeHarness();
+    const cellar = join(h.dir, "libexec", "tunnel-client");
+    writeWrapper(h, cellar);
+    capturePreExec(h);
+    h.probes.push(healthyProbe());
+    await createBackgroundTunnelManager(h.options).start();
+    h.onInspect = undefined;
+    // The daemon died and the pid was recycled by a same-argv process.
+    h.procs.set(40_001, { pid: 40_001, command: execForm(h, cellar), startedKey: "Wed Oct 21 00:00:00 2026" });
+    const m2 = createBackgroundTunnelManager(h.options);
+    await m2.refresh();
+    expect(m2.status().state).toBe("UNKNOWN");
+    await expect(m2.stop({ graceMs: 300 })).rejects.toMatchObject({ code: "CE_TUNNEL_STOP_UNCONFIRMED" });
+    await expect(m2.start()).rejects.toMatchObject({ code: "CE_TUNNEL_EXTERNAL_INSTANCE" });
+    expect(h.signals).toHaveLength(0);
+    expect(h.spawnCalls).toHaveLength(1);
+  });
+
+  it("F2: a DIFFERENT cellar build (argv mismatch) is never adopted or signalled", async () => {
+    const h = makeHarness();
+    const cellar = join(h.dir, "libexec", "tunnel-client");
+    writeWrapper(h, cellar);
+    capturePreExec(h);
+    h.probes.push(healthyProbe());
+    await createBackgroundTunnelManager(h.options).start();
+    h.onInspect = undefined;
+    h.procs.set(40_001, {
+      pid: 40_001,
+      command: execForm(h, join(h.dir, "libexec-9.9.9", "tunnel-client")),
+      startedKey: WRAP_KEY,
+    });
+    const m2 = createBackgroundTunnelManager(h.options);
+    await m2.refresh();
+    expect(m2.status().state).toBe("UNKNOWN");
+    await expect(m2.stop({ graceMs: 300 })).rejects.toMatchObject({ code: "CE_TUNNEL_STOP_UNCONFIRMED" });
+    expect(h.signals).toHaveLength(0);
+  });
+
+  it("F2: a forged argv merely CONTAINING the exec form refuses (exact match only)", async () => {
+    const h = makeHarness();
+    const cellar = join(h.dir, "libexec", "tunnel-client");
+    writeWrapper(h, cellar);
+    capturePreExec(h);
+    h.probes.push(healthyProbe());
+    await createBackgroundTunnelManager(h.options).start();
+    h.onInspect = undefined;
+    h.procs.set(40_001, {
+      pid: 40_001,
+      command: `bash -c 'exec -a "${execForm(h, cellar)}" sleep 1000'`,
+      startedKey: WRAP_KEY,
+    });
+    const m2 = createBackgroundTunnelManager(h.options);
+    await expect(m2.stop({ graceMs: 300 })).rejects.toMatchObject({ code: "CE_TUNNEL_STOP_UNCONFIRMED" });
+    expect(h.signals).toHaveLength(0);
+  });
+
+  it("F2: a corrupt commandIdentityExec field fails closed as STATE_CORRUPT", async () => {
+    const h = makeHarness();
+    h.probes.push(healthyProbe());
+    await createBackgroundTunnelManager(h.options).start();
+    const rec = recordState(h);
+    writeFileSync(h.statePath, JSON.stringify({ ...rec, commandIdentityExec: 42 }), { mode: 0o600 });
+    const m2 = createBackgroundTunnelManager(h.options);
+    await expect(m2.start()).rejects.toMatchObject({ code: "CE_TUNNEL_STATE_CORRUPT" });
+    expect(h.spawnCalls).toHaveLength(1);
+    writeFileSync(h.statePath, JSON.stringify({ ...rec, commandIdentityExec: "" }), { mode: 0o600 });
+    const m3 = createBackgroundTunnelManager(h.options);
+    await expect(m3.start()).rejects.toMatchObject({ code: "CE_TUNNEL_STATE_CORRUPT" });
+  });
+
+  it("F2: pending (never-captured) ownership re-acquires the exec'd identity before signalling", async () => {
+    const h = makeHarness();
+    const cellar = join(h.dir, "libexec", "tunnel-client");
+    writeWrapper(h, cellar);
+    h.unknownPids.add(40_001); // identity capture window expires → pending
+    const m = createBackgroundTunnelManager(h.options);
+    await expect(m.start()).rejects.toMatchObject({ code: "CE_TUNNEL_SPAWN_FAILED" });
+    expect(m.runId()).toBeDefined(); // ownership retained in memory
+    // The child exec's into the cellar form before any later inspection.
+    h.unknownPids.delete(40_001);
+    h.procs.set(40_001, { pid: 40_001, command: execForm(h, cellar), startedKey: WRAP_KEY });
+    const stop = m.stop({ graceMs: 300 });
+    await flush();
+    expect(h.signals).toEqual([{ pid: 40_001, signal: "SIGTERM" }]);
+    h.procs.delete(40_001);
+    await stop;
+    expect(m.runId()).toBeUndefined();
+  });
+
+  it("F2: pending re-acquisition also accepts the pre-exec bash form", async () => {
+    const h = makeHarness();
+    const cellar = join(h.dir, "libexec", "tunnel-client");
+    writeWrapper(h, cellar);
+    h.unknownPids.add(40_001);
+    const m = createBackgroundTunnelManager(h.options);
+    await expect(m.start()).rejects.toMatchObject({ code: "CE_TUNNEL_SPAWN_FAILED" });
+    h.unknownPids.delete(40_001);
+    h.procs.set(40_001, { pid: 40_001, command: bashForm(h), startedKey: WRAP_KEY });
+    const stop = m.stop({ graceMs: 300 });
+    await flush();
+    expect(h.signals).toEqual([{ pid: 40_001, signal: "SIGTERM" }]);
+    h.procs.delete(40_001);
+    await stop;
+  });
+
+  it("F2: pending re-acquisition still refuses a forged/unknown argv", async () => {
+    const h = makeHarness();
+    const cellar = join(h.dir, "libexec", "tunnel-client");
+    writeWrapper(h, cellar);
+    h.unknownPids.add(40_001);
+    const m = createBackgroundTunnelManager(h.options);
+    await expect(m.start()).rejects.toMatchObject({ code: "CE_TUNNEL_SPAWN_FAILED" });
+    h.unknownPids.delete(40_001);
+    h.procs.set(40_001, { pid: 40_001, command: `/usr/bin/curl --profile-file ${h.profilePath}`, startedKey: WRAP_KEY });
+    await expect(m.stop({ graceMs: 300 })).rejects.toMatchObject({ code: "CE_TUNNEL_STOP_UNCONFIRMED" });
+    expect(h.signals).toHaveLength(0);
+    expect(m.runId()).toBeDefined(); // ownership retained
+  });
+
+  it("F2: wrapper stop timeout stays UNKNOWN, retains ownership, and never re-signals", async () => {
+    const h = makeHarness();
+    const cellar = join(h.dir, "libexec", "tunnel-client");
+    writeWrapper(h, cellar);
+    capturePreExec(h);
+    h.probes.push(healthyProbe());
+    const m = createBackgroundTunnelManager(h.options);
+    await m.start();
+    h.onInspect = undefined;
+    h.procs.set(40_001, { pid: 40_001, command: execForm(h, cellar), startedKey: WRAP_KEY });
+    await expect(m.stop({ graceMs: 300 })).rejects.toMatchObject({ code: "CE_TUNNEL_STOP_UNCONFIRMED" });
+    expect(h.signals).toHaveLength(1);
+    expect(recordState(h).state).toBe("stop-unconfirmed");
+    const retry = m.stop({ graceMs: 300 });
+    await flush();
+    expect(h.signals).toHaveLength(1); // ledger: at most one signal
+    h.procs.delete(40_001);
+    await retry;
+    expect(recordState(h).state).toBe("stopped");
+  });
+});
+
+describe("LOCAL-BACKGROUND-03 — wrapper evidence parser (resolveWrapperIdentityEvidence)", () => {
+  const mk = (name: string, text: string): string => {
+    const dir = mkdtempSync(join(tmpdir(), "ce-bg03-wrap-"));
+    const p = join(dir, name);
+    writeFileSync(p, text, { mode: 0o755 });
+    return p;
+  };
+
+  it("parses the canonical brew shim (shebang + quoted exec \"$@\")", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ce-bg03-brew-"));
+    const cellar = join(dir, "Cellar", "tunnel-client", "0.0.16", "libexec", "tunnel-client");
+    mkdirSync(dirname(cellar), { recursive: true });
+    writeFileSync(cellar, "bin", { mode: 0o755 });
+    const shim = join(dir, "bin", "tunnel-client");
+    mkdirSync(dirname(shim), { recursive: true });
+    writeFileSync(shim, `#!/bin/bash\nexec "${cellar}" "$@"\n`, { mode: 0o755 });
+    const link = join(dir, "linked-tunnel-client");
+    symlinkSync(shim, link);
+    for (const p of [shim, link]) {
+      const ev = resolveWrapperIdentityEvidence(p);
+      expect(ev?.shellPrefix).toBe("/bin/bash");
+      expect(ev?.execTarget).toBe(cellar);
+    }
+  });
+
+  it("missing file → undefined (no evidence, fail closed)", () => {
+    expect(resolveWrapperIdentityEvidence(join(tmpdir(), "ce-bg03-definitely-missing", "x"))).toBeUndefined();
+  });
+
+  it("non-script binary → no forms", () => {
+    const p = mk("client", "\x7fELF fake binary");
+    expect(resolveWrapperIdentityEvidence(p)).toEqual({});
+  });
+
+  it("shebang WITH interpreter args is not accepted as shell-prefix evidence", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ce-bg03-env-"));
+    const cellar = join(dir, "cellar-bin");
+    writeFileSync(cellar, "bin", { mode: 0o755 });
+    const p = mk("client", `#!/usr/bin/env bash\nexec "${cellar}" "$@"\n`);
+    const ev = resolveWrapperIdentityEvidence(p);
+    expect(ev?.shellPrefix).toBeUndefined(); // ambiguous interpreter form
+    expect(ev?.execTarget).toBe(cellar); // exec evidence still valid
+  });
+
+  it("a relative exec target is not evidence", () => {
+    const p = mk("client", '#!/bin/bash\nexec "../libexec/tunnel-client" "$@"\n');
+    expect(resolveWrapperIdentityEvidence(p)?.execTarget).toBeUndefined();
+  });
+
+  it("two exec lines are ambiguous → no exec evidence", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ce-bg03-two-"));
+    const cellar = join(dir, "cellar-bin");
+    writeFileSync(cellar, "bin", { mode: 0o755 });
+    const p = mk("client", `#!/bin/bash\nexec "${cellar}" "$@"\nexec "${cellar}" "$@"\n`);
+    expect(resolveWrapperIdentityEvidence(p)?.execTarget).toBeUndefined();
+  });
+
+  it("unquoted or argument-carrying exec lines are not evidence", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ce-bg03-unq-"));
+    const cellar = join(dir, "cellar-bin");
+    writeFileSync(cellar, "bin", { mode: 0o755 });
+    expect(resolveWrapperIdentityEvidence(mk("c1", `#!/bin/bash\nexec ${cellar} "$@"\n`))?.execTarget).toBeUndefined();
+    expect(resolveWrapperIdentityEvidence(mk("c2", `#!/bin/bash\nexec "${cellar}" --json "$@"\n`))?.execTarget).toBeUndefined();
+    expect(resolveWrapperIdentityEvidence(mk("c3", `#!/bin/bash\nexec env FOO=1 "${cellar}" "$@"\n`))?.execTarget).toBeUndefined();
+  });
+
+  it("an exec target that does not exist on disk is not evidence", () => {
+    const p = mk("client", '#!/bin/bash\nexec "/no/such/cellar/tunnel-client" "$@"\n');
+    expect(resolveWrapperIdentityEvidence(p)?.execTarget).toBeUndefined();
+  });
+
+  it("a non-normalized exec target is not evidence", () => {
+    const p = mk("client", '#!/bin/bash\nexec "/opt/homebrew/../homebrew/Cellar/x" "$@"\n');
+    expect(resolveWrapperIdentityEvidence(p)?.execTarget).toBeUndefined();
+  });
+});
+
+describe("LOCAL-BACKGROUND-03 — C-1 parser strictness (Lane C)", () => {
+  const mk2 = (name: string, text: string): string => {
+    const dir = mkdtempSync(join(tmpdir(), "ce-bg03-c1-"));
+    const p = join(dir, name);
+    writeFileSync(p, text, { mode: 0o755 });
+    return p;
+  };
+
+  it("C-1: a heredoc body is never exec evidence (Lane C's example)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ce-bg03-c1hd-"));
+    const cat = join(dir, "cat-bin");
+    writeFileSync(cat, "bin", { mode: 0o755 });
+    // Lane C's counterexample: the column-0 exec line sits INSIDE a heredoc
+    // (never executed); the REAL exec is the indented line below it.
+    const p = mk2("client", '#!/bin/bash\n: <<\'IGNORED\'\nexec "/bin/sleep" "$@"\nIGNORED\n  exec "' + cat + '" "$@"\n');
+    const ev = resolveWrapperIdentityEvidence(p);
+    expect(ev?.execTarget).toBeUndefined(); // neither the heredoc line nor the indented one
+    expect(ev?.shellPrefix).toBe("/bin/bash"); // shebang evidence stands on its own
+  });
+
+  it("C-1: extra statements (set -e / exports) forfeit exec evidence", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ce-bg03-c1ex-"));
+    const cellar = join(dir, "cellar-bin");
+    writeFileSync(cellar, "bin", { mode: 0o755 });
+    const withSet = mk2("c1", '#!/bin/bash\nset -e\nexec "' + cellar + '" "$@"\n');
+    expect(resolveWrapperIdentityEvidence(withSet)?.execTarget).toBeUndefined();
+    const withExport = mk2("c2", '#!/bin/bash\nexport HOMEBREW_PREFIX=/opt/homebrew\nexec "' + cellar + '" "$@"\n');
+    expect(resolveWrapperIdentityEvidence(withExport)?.execTarget).toBeUndefined();
+  });
+
+  it("C-1: comments and blanks around one strict exec line keep evidence", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ce-bg03-c1ok-"));
+    const cellar = join(dir, "cellar-bin");
+    writeFileSync(cellar, "bin", { mode: 0o755 });
+    const p = mk2("client", '#!/bin/bash\n# Homebrew shim\n\nexec "' + cellar + '" "$@"\n');
+    const ev = resolveWrapperIdentityEvidence(p);
+    expect(ev?.shellPrefix).toBe("/bin/bash");
+    expect(ev?.execTarget).toBe(cellar);
+  });
+
+  it("C-1: an indented exec line alone is not evidence (column-0 only)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ce-bg03-c1in-"));
+    const cellar = join(dir, "cellar-bin");
+    writeFileSync(cellar, "bin", { mode: 0o755 });
+    const p = mk2("client", '#!/bin/bash\n  exec "' + cellar + '" "$@"\n');
+    expect(resolveWrapperIdentityEvidence(p)?.execTarget).toBeUndefined();
+  });
+});
+
+describe("LOCAL-BACKGROUND-03 — S-1 pending run vs PID reuse (Lane S)", () => {
+  // A pending (never-identity-captured) run has NO startedKey anchor. Before
+  // the fix, re-acquisition trusted argv membership alone: if our spawn died
+  // and a foreign process with an allowed argv recycled the pid, stop() would
+  // adopt the foreign process's startedKey and SIGTERM it. The child handle's
+  // exit event is spawn-linked death proof that bars adoption and signalling.
+
+  it("S-1: pending run + exited spawn + same-argv pid reuser → no adoption, no signal", async () => {
+    const h = makeHarness();
+    h.unknownPids.add(40_001); // capture window expires → identityPending
+    const m = createBackgroundTunnelManager(h.options);
+    await expect(m.start()).rejects.toMatchObject({ code: "CE_TUNNEL_SPAWN_FAILED" });
+    expect(m.runId()).toBeDefined(); // pending ownership retained in memory
+    // Our spawn dies; a foreign process with an allowed argv recycles the pid.
+    h.fireExit(40_001);
+    h.unknownPids.delete(40_001);
+    h.procs.set(40_001, { pid: 40_001, command: `${h.client} run --profile-file ${h.profilePath}`, startedKey: "Wed Oct 21 00:00:00 2026" });
+    await m.stop({ graceMs: 300 });
+    expect(h.signals).toHaveLength(0); // foreign process never signalled
+    expect(m.runId()).toBeUndefined(); // pending run closed via spawn-link exit proof
+    const rec = recordState(h);
+    expect(rec.state).toBe("stopped");
+    expect(rec.processStartedKey ?? "").not.toBe("Wed Oct 21 00:00:00 2026"); // foreign anchor never adopted
+    expect(rec.note).toBe("exit observed (process already gone); no signal sent"); // C-v2-1: exact honest wording
+  });
+
+  it("S-1: refresh treats an exited pending spawn as proven exit, never adopts the reuser", async () => {
+    const h = makeHarness();
+    h.unknownPids.add(40_001);
+    const m = createBackgroundTunnelManager(h.options);
+    await expect(m.start()).rejects.toMatchObject({ code: "CE_TUNNEL_SPAWN_FAILED" });
+    h.fireExit(40_001);
+    h.unknownPids.delete(40_001);
+    h.procs.set(40_001, { pid: 40_001, command: `${h.client} run --profile-file ${h.profilePath}`, startedKey: "Wed Oct 21 00:00:00 2026" });
+    h.probes.push(UNREACHABLE);
+    await m.refresh();
+    expect(m.status().state).not.toBe("CONNECTED");
+    expect(m.status().state).not.toBe("DEGRADED");
+    // The refresh persists the exit with the child-link wording (C-v2-1 exact).
+    const rec = recordState(h);
+    expect(rec.state).toBe("stopped");
+    expect(rec.note).toBe("spawn exit observed via child link; no respawn");
+    // A later stop is a no-op; the foreign reuser is never signalled.
+    await m.stop({ graceMs: 300 });
+    expect(h.signals).toHaveLength(0);
+  });
+
+  it("S-1: exit INSIDE the capture window (before the pending record) still bars adoption and signal", async () => {
+    const h = makeHarness();
+    h.unknownPids.add(40_001); // the capture loop keeps seeing "unknown"…
+    let fired = false;
+    h.onInspect = (pid) => {
+      if (pid === 40_001 && !fired) {
+        fired = true;
+        h.fireExit(40_001); // …while the child dies mid-window, pre-record
+      }
+    };
+    const m = createBackgroundTunnelManager(h.options);
+    await expect(m.start()).rejects.toMatchObject({ code: "CE_TUNNEL_SPAWN_FAILED" });
+    expect(m.runId()).toBeDefined(); // pending ownership, exit evidence inherited
+    h.onInspect = undefined;
+    h.unknownPids.delete(40_001);
+    // A foreign same-argv process recycles the pid.
+    h.procs.set(40_001, { pid: 40_001, command: `${h.client} run --profile-file ${h.profilePath}`, startedKey: "Wed Oct 21 00:00:00 2026" });
+    await m.stop({ graceMs: 300 });
+    expect(h.signals).toHaveLength(0);
+    const rec = recordState(h);
+    expect(rec.state).toBe("stopped");
+    expect(rec.note).toBe("exit observed (process already gone); no signal sent");
+    expect(rec.processStartedKey ?? "").not.toBe("Wed Oct 21 00:00:00 2026");
+  });
+
+  it("S-1: a LIVE pending spawn still re-acquires and stops normally (guard is precise)", async () => {
+    const h = makeHarness();
+    h.unknownPids.add(40_001);
+    const m = createBackgroundTunnelManager(h.options);
+    await expect(m.start()).rejects.toMatchObject({ code: "CE_TUNNEL_SPAWN_FAILED" });
+    // No exit event: the pid still belongs to our spawn; argv match adopts it.
+    h.unknownPids.delete(40_001);
+    const stop = m.stop({ graceMs: 300 });
+    await flush();
+    expect(h.signals).toEqual([{ pid: 40_001, signal: "SIGTERM" }]);
+    h.procs.delete(40_001);
+    await stop;
+    expect(m.runId()).toBeUndefined();
+  });
+
+  it("S-1: exit AFTER adoption keeps the adopted anchors (normal termination path)", async () => {
+    const h = makeHarness();
+    h.unknownPids.add(40_001);
+    const m = createBackgroundTunnelManager(h.options);
+    await expect(m.start()).rejects.toMatchObject({ code: "CE_TUNNEL_SPAWN_FAILED" });
+    h.unknownPids.delete(40_001);
+    // Adopt while alive (argv match + live child link), then the child exits.
+    const stop = m.stop({ graceMs: 300 });
+    await flush();
+    expect(h.signals).toEqual([{ pid: 40_001, signal: "SIGTERM" }]);
+    h.fireExit(40_001);
+    h.procs.delete(40_001);
+    await stop;
+    expect(recordState(h).state).toBe("stopped");
+    expect(recordState(h).note).toContain("SIGTERM"); // signalled run keeps honest wording
+  });
+});
+
+describe("LOCAL-BACKGROUND-03 — C-v2-3 record hygiene", () => {
+  it("a null commandIdentityExec on disk normalizes to absent (declared type preserved)", async () => {
+    const h = makeHarness();
+    h.probes.push(healthyProbe());
+    await createBackgroundTunnelManager(h.options).start();
+    const rec = recordState(h);
+    writeFileSync(h.statePath, JSON.stringify({ ...rec, commandIdentityExec: null }), { mode: 0o600 });
+    const m2 = createBackgroundTunnelManager(h.options);
+    h.probes.push(healthyProbe());
+    await m2.refresh(); // loads fine; null behaves exactly as absent
+    expect(m2.status().state).toBe("CONNECTED");
+    const stop = m2.stop({ graceMs: 300 });
+    await flush();
+    expect(h.signals).toEqual([{ pid: 40_001, signal: "SIGTERM" }]);
+    h.procs.delete(40_001);
+    await stop;
+    expect(recordState(h).state).toBe("stopped");
+  });
+});
+
+describe("LOCAL-BACKGROUND-03 — v4 structural findings (Lane C F1/F2)", () => {
+  it("F1: a second start must NOT sever a surviving pending run's exit binding (no signal to the reuser)", async () => {
+    const h = makeHarness();
+    // start#1: the child dies INSIDE the capture window (the dominant pending
+    // path) — pending run#1 carries spawn-linked exit evidence for pid 40001.
+    h.unknownPids.add(40_001);
+    let fired = false;
+    h.onInspect = (pid) => {
+      if (pid === 40_001 && !fired) {
+        fired = true;
+        h.fireExit(40_001);
+        h.procs.delete(40_001); // a dead child disappears from ps
+      }
+    };
+    const m = createBackgroundTunnelManager(h.options);
+    await expect(m.start()).rejects.toMatchObject({ code: "CE_TUNNEL_SPAWN_FAILED" });
+    expect(m.runId()).toBeDefined();
+    h.onInspect = undefined;
+    h.unknownPids.delete(40_001);
+    // A foreign-session record whose pid is absent lets start#2 proceed (it is
+    // markStopped first) — the S5-7 dual-run shape this regression guards.
+    writeFileSync(h.statePath, JSON.stringify(diskRecord(h, "foreign-run", 50_001)), { mode: 0o600 });
+    // start#2 succeeds (spawn seam pid 40002, identity captured, persisted).
+    // v3 reset the single-slot evidence here, severing run#1's binding.
+    h.probes.push(healthyProbe(), healthyProbe(), healthyProbe(), healthyProbe());
+    await m.start();
+    expect(m.status().state).toBe("CONNECTED");
+    // The dead child's pid is recycled by a foreign same-argv process.
+    h.procs.set(40_001, { pid: 40_001, command: `${h.client} run --profile-file ${h.profilePath}`, startedKey: "Wed Oct 21 00:00:00 2026" });
+    const stop = m.stop({ graceMs: 300 });
+    await flush();
+    // The foreign reuser at 40001 is never signalled; the live run#2 daemon is.
+    expect(h.signals.filter((s) => s.pid === 40_001)).toHaveLength(0);
+    expect(h.signals.filter((s) => s.pid === 40_002)).toEqual([{ pid: 40_002, signal: "SIGTERM" }]);
+    h.procs.delete(40_001);
+    h.procs.delete(40_002);
+    await stop;
+    expect(recordState(h).state).toBe("stopped");
+  });
+
+  it("F2: a null termRequestedAt on disk normalizes to absent (termination is not suppressed)", async () => {
+    const h = makeHarness();
+    h.probes.push(healthyProbe());
+    await createBackgroundTunnelManager(h.options).start();
+    const rec = recordState(h);
+    writeFileSync(h.statePath, JSON.stringify({ ...rec, termRequestedAt: null }), { mode: 0o600 });
+    const m2 = createBackgroundTunnelManager(h.options);
+    const stop = m2.stop({ graceMs: 300 });
+    await flush();
+    // A foreign null must NOT read as "SIGTERM already requested".
+    expect(h.signals).toEqual([{ pid: 40_001, signal: "SIGTERM" }]);
+    h.procs.delete(40_001);
+    await stop;
+    const after = recordState(h);
+    expect(after.state).toBe("stopped");
+    expect(after.note).toBe("exit observed after SIGTERM"); // honest: we DID signal
+  });
+});
+
+describe("LOCAL-BACKGROUND-03 — v5 findings (Lane S S4-1 / Lane C C-v4-1)", () => {
+  it("S4-1: dispose() must NOT sever a surviving pending run's exit proof (no signal to the reuser)", async () => {
+    const h = makeHarness();
+    // start: the child dies inside the capture window → pending run, exit proof
+    // archived for pid 40001.
+    h.unknownPids.add(40_001);
+    let fired = false;
+    h.onInspect = (pid) => {
+      if (pid === 40_001 && !fired) {
+        fired = true;
+        h.fireExit(40_001);
+        h.procs.delete(40_001);
+      }
+    };
+    const m = createBackgroundTunnelManager(h.options);
+    await expect(m.start()).rejects.toMatchObject({ code: "CE_TUNNEL_SPAWN_FAILED" });
+    expect(m.runId()).toBeDefined();
+    h.onInspect = undefined;
+    h.unknownPids.delete(40_001);
+    // Session teardown: dispose must NOT clear the archived exit proof.
+    await m.dispose();
+    // The dead child's pid is recycled by a foreign same-argv process.
+    h.procs.set(40_001, { pid: 40_001, command: `${h.client} run --profile-file ${h.profilePath}`, startedKey: "Wed Oct 21 00:00:00 2026" });
+    await m.stop({ graceMs: 300 });
+    expect(h.signals).toHaveLength(0); // foreign reuser never signalled
+    const rec = recordState(h);
+    expect(rec.state).toBe("stopped");
+    expect(rec.note).toBe("exit observed (process already gone); no signal sent");
+    expect(rec.processStartedKey ?? "").not.toBe("Wed Oct 21 00:00:00 2026");
+  });
+
+  it("C-v4-1: a pending run whose process is gone is superseded (start succeeds, no misleading STATE_CORRUPT)", async () => {
+    const h = makeHarness();
+    // start#1: child dies in the capture window → pending run, no disk record.
+    h.unknownPids.add(40_001);
+    let fired = false;
+    h.onInspect = (pid) => {
+      if (pid === 40_001 && !fired) {
+        fired = true;
+        h.fireExit(40_001);
+        h.procs.delete(40_001);
+      }
+    };
+    const m = createBackgroundTunnelManager(h.options);
+    await expect(m.start()).rejects.toMatchObject({ code: "CE_TUNNEL_SPAWN_FAILED" });
+    h.onInspect = undefined;
+    h.unknownPids.delete(40_001);
+    // start#2 must supersede the absent pending run (spawn #2) rather than
+    // throw CE_TUNNEL_STATE_CORRUPT.
+    h.probes.push(healthyProbe(), healthyProbe(), healthyProbe(), healthyProbe());
+    await m.start();
+    expect(m.status().state).toBe("CONNECTED");
+    expect(h.spawnCalls).toHaveLength(2);
+  });
+});
+
+describe("LOCAL-BACKGROUND-03 — v6 finding (Lane C C-v5-1)", () => {
+  it("C-v5-1: dispose racing an in-flight start does not drop the exit proof (no signal to the reuser)", async () => {
+    const h = makeHarness();
+    // The child dies inside the capture window; dispose is invoked from the
+    // inspect seam WHILE start is still in flight (pending record not yet set).
+    h.unknownPids.add(40_001);
+    const m = createBackgroundTunnelManager(h.options);
+    let fired = false;
+    let disposePromise: Promise<void> | undefined;
+    h.onInspect = (pid) => {
+      if (pid === 40_001 && !fired) {
+        fired = true;
+        h.fireExit(40_001); // exit proof archived for run#1 …
+        h.procs.delete(40_001);
+        disposePromise = m.dispose(); // … then dispose races the in-flight start
+      }
+    };
+    await expect(m.start()).rejects.toMatchObject({ code: "CE_TUNNEL_SPAWN_FAILED" });
+    h.onInspect = undefined;
+    h.unknownPids.delete(40_001);
+    await disposePromise; // dispose settles only after the start settles
+    // The dead child's pid is recycled by a foreign same-argv process.
+    h.procs.set(40_001, { pid: 40_001, command: `${h.client} run --profile-file ${h.profilePath}`, startedKey: "Wed Oct 21 00:00:00 2026" });
+    await m.stop({ graceMs: 300 });
+    expect(h.signals).toHaveLength(0); // exit proof survived dispose
+    const rec = recordState(h);
+    expect(rec.state).toBe("stopped");
+    expect(rec.processStartedKey ?? "").not.toBe("Wed Oct 21 00:00:00 2026");
+  });
+});
+
+describe("LOCAL-BACKGROUND-05 — profile-only organization context", () => {
+  const ORG = "org-TestOrganization123"; // synthetic, never an operator identifier
+  function addControlFields(h: Harness, fields: string): string {
+    const text = readFileSync(h.profilePath, "utf8").replace("control_plane:\n", `control_plane:\n${fields}\n`);
+    writeFileSync(h.profilePath, text, { mode: 0o600 });
+    return text;
+  }
+
+  it("accepts an organization in the exact profile passed to spawn, without argv or environment overrides", async () => {
+    const h = makeHarness({
+      CONTROL_PLANE_ORGANIZATION_ID: "org-ConflictingParent",
+      CONTROL_PLANE_TUNNEL_ID: "tunnel_conflictingparent",
+      CONTROL_PLANE_EXTRA_HEADERS: "OpenAI-Organization: org-ConflictingHeader",
+      CONTROL_PLANE_API_KEY: "synthetic-parent-not-a-real-key",
+      OPENAI_API_KEY: "synthetic-parent-not-a-real-key",
+      TUNNEL_CLIENT_CONFIG: "/tmp/untrusted-config.yaml",
+      TUNNEL_CLIENT_PROFILE_FILE: "/tmp/untrusted-profile.yaml",
+    });
+    const expectedProfile = addControlFields(h, `  organization_id: "${ORG}"`);
+    let called = false;
+    const spawn = h.options.spawn!;
+    const m = createBackgroundTunnelManager({ ...h.options, spawn: (exe, args, opts) => {
+      called = true;
+      expect(args).toEqual(["run", "--profile-file", h.profilePath]);
+      expect(readFileSync(args[2]!, "utf8")).toBe(expectedProfile);
+      expect(expectedProfile).toContain(`  organization_id: "${ORG}"`);
+      for (const name of Object.keys(h.options.env).filter((name) => /^(CONTROL_PLANE_|OPENAI_|TUNNEL_CLIENT_)/.test(name))) {
+        expect(opts.env[name], name).toBeUndefined();
+      }
+      return spawn(exe, args, opts);
+    } });
+    h.probes.push(healthyProbe());
+    await m.start();
+    expect(called).toBe(true);
+    expect(h.spawnCalls).toHaveLength(1);
+    expect(readFileSync(h.profilePath, "utf8")).toBe(expectedProfile);
+  });
+
+  it("keeps missing organization backwards compatible and does not inherit one from the parent", async () => {
+    const h = makeHarness({ CONTROL_PLANE_ORGANIZATION_ID: "org-ParentOnly" });
+    const spawn = h.options.spawn!;
+    const m = createBackgroundTunnelManager({ ...h.options, spawn: (exe, args, opts) => {
+      expect(readFileSync(args[2]!, "utf8")).not.toContain("organization_id:");
+      expect(opts.env.CONTROL_PLANE_ORGANIZATION_ID).toBeUndefined();
+      return spawn(exe, args, opts);
+    } });
+    h.probes.push(healthyProbe());
+    await m.start();
+    expect(h.spawnCalls).toHaveLength(1); // seam health is not real authentication
+  });
+
+  it.each([
+    ["empty", '  organization_id: ""'],
+    ["bare prefix", '  organization_id: "org-"'],
+    ["wrong prefix", '  organization_id: "team-Abc123"'],
+    ["unquoted", '  organization_id: org-Abc123'],
+    ["single quoted", "  organization_id: 'org-Abc123'"],
+    ["leading whitespace", '  organization_id: " org-Abc123"'],
+    ["trailing whitespace", '  organization_id: "org-Abc123 "'],
+    ["escaped value", '  organization_id: "org-Abc\\n123"'],
+    ["header injection", '  organization_id: "org-Abc\rOpenAI-Organization: other"'],
+    ["non ASCII", '  organization_id: "org-Abcé123"'],
+    ["overlong", `  organization_id: "org-${"a".repeat(129)}"`],
+    ["duplicate same", `  organization_id: "${ORG}"\n  organization_id: "${ORG}"`],
+    ["duplicate conflict", `  organization_id: "${ORG}"\n  organization_id: "org-Other"`],
+    ["header conflict", `  organization_id: "${ORG}"\n  extra_headers: "OpenAI-Organization: org-Other"`],
+  ])("rejects %s before spawn", async (_name, fields) => {
+    const h = makeHarness();
+    addControlFields(h, fields!);
+    const m = createBackgroundTunnelManager(h.options);
+    await expect(m.start()).rejects.toMatchObject({ code: "CE_TUNNEL_PROFILE_INVALID" });
+    expect(h.spawnCalls).toHaveLength(0);
+    expect(h.signals).toHaveLength(0);
+  });
+
+  it("accepts the bounded upper limit of the local organization grammar", async () => {
+    const h = makeHarness();
+    addControlFields(h, `  organization_id: "org-${"a".repeat(128)}"`);
+    h.probes.push(healthyProbe());
+    await createBackgroundTunnelManager(h.options).start();
+    expect(h.spawnCalls).toHaveLength(1);
   });
 });

@@ -163,7 +163,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import {
   chmodSync, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync,
-  readFileSync, renameSync, rmSync, unlinkSync, writeFileSync,
+  readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, normalize } from "node:path";
 import { TunnelRefusal } from "./codes.js";
@@ -276,6 +276,12 @@ interface TunnelRecord {
   readonly mcpCommand: string | undefined;
   readonly logPath: string;
   readonly commandIdentity: string;
+  /** Evidence-based post-exec identity for a wrapper client (LOCAL-BG-03 F2):
+   *  `<wrapper exec target> run --profile-file <profilePath>`, captured at
+   *  spawn time from the wrapper script's strict exec line. Absent for direct
+   *  binaries and for records written before this field existed (fail closed:
+   *  only commandIdentity is accepted then). */
+  readonly commandIdentityExec?: string | undefined;
   readonly processStartedKey: string;
   readonly startedAt: number;
   readonly termRequestedAt: number | undefined;
@@ -298,6 +304,14 @@ type RecordLoad =
   | { readonly kind: "none" }
   | { readonly kind: "ok"; readonly record: TunnelRecord }
   | { readonly kind: "corrupt" };
+
+// Background-only budget for the external 0.0.16 client's defaults: initial
+// long-poll 30s + deadline guardrail 5s + 10s startup/probe/scheduling margin.
+// No authoritative client timing config is available here. Keep the shared
+// offline timing and explicit caller overrides unchanged; retain required poll.
+const DEFAULT_BACKGROUND_TUNNEL_TIMING: TunnelTiming = Object.freeze({
+  ...DEFAULT_TUNNEL_TIMING, startupTimeoutMs: 45_000,
+});
 
 const DEFAULT_CLIENT_PATH = "/opt/homebrew/bin/tunnel-client";
 const DEFAULT_PROFILE_PATH = "/Users/zieglar/.config/pi-chat-exchange/tunnel/tunnel.yaml";
@@ -331,7 +345,7 @@ function parseProfileFacts(text: string): ProfileFacts {
   }
   type Section = "control_plane" | "health" | "admin_ui" | "harpoon" | "log" | "mcp";
   const SECTION_KEYS: Record<Section, ReadonlySet<string>> = {
-    control_plane: new Set(["base_url", "tunnel_id", "api_key"]),
+    control_plane: new Set(["base_url", "tunnel_id", "api_key", "organization_id"]),
     health: new Set(["listen_addr", "url_file"]),
     admin_ui: new Set(["open_browser", "allow_remote_ui", "log_buffer_events"]),
     harpoon: new Set(["capture_payloads"]),
@@ -407,6 +421,12 @@ function parseProfileFacts(text: string): ProfileFacts {
         break;
       case "control_plane.tunnel_id": found.tunnelId = quoted(rawValue!, tag); break;
       case "control_plane.api_key": found.apiKey = quoted(rawValue!, tag); break;
+      case "control_plane.organization_id":
+        // BG05: optional, profile-only organization context. The client reads
+        // this same file; no argv/header injection or parent-env override.
+        // This is a bounded local grammar, not remote binding validation.
+        bare(quoted(rawValue!, tag), tag, /^org-[A-Za-z0-9]{1,128}$/);
+        break;
       case "health.listen_addr":
         bare(quoted(rawValue!, tag), tag, /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{1,5}$/);
         break;
@@ -543,6 +563,73 @@ function defaultSpawnDaemon(logPath: string): BackgroundSpawnSeam {
 }
 
 // ---------------------------------------------------------------------------
+// Wrapper identity evidence (LOCAL-BACKGROUND-03 F2). Homebrew installs the
+// client as a two-line shim (`#!/bin/bash` + `exec "<Cellar libexec>" "$@"`);
+// ps therefore shows `/bin/bash <shim> run …` before the exec and `<cellar>
+// run …` after it — same pid, same lstart. The exact-argv matcher must accept
+// ONLY the forms backed by explicit evidence gathered here; anything unknown
+// or ambiguous yields no form (fail closed). Basename equality is never
+// evidence, and neither is a pidfile or a process name.
+// ---------------------------------------------------------------------------
+export interface WrapperIdentityEvidence {
+  /** Interpreter of a no-argument `#!/abs/path` shebang (e.g. /bin/bash).
+   *  A shebang carrying arguments (`#!/usr/bin/env bash`) is ambiguous about
+   *  the final argv0 and yields NO shell-prefix form. */
+  readonly shellPrefix?: string | undefined;
+  /** Literal target of a single strict `exec "<abs>" "$@"` line. The target
+   *  must be absolute, normalized, printable, and an existing regular file;
+   *  anything else (relative, unquoted, extra args, multiple exec lines,
+   *  missing target) yields NO exec form. */
+  readonly execTarget?: string | undefined;
+}
+
+const MAX_WRAPPER_BYTES = 4096;
+const SHEBANG_RE = /^#!(\/[^\s\u0000]+)$/;
+const WRAPPER_EXEC_RE = /^exec "(\/[^"\\\r\n\u0000]+)" "\$@"$/;
+
+export function resolveWrapperIdentityEvidence(clientPath: string): WrapperIdentityEvidence | undefined {
+  let text: string;
+  try {
+    const stat = statSync(clientPath); // follows the brew bin symlink
+    if (!stat.isFile() || stat.size === 0 || stat.size > MAX_WRAPPER_BYTES) return undefined;
+    text = readFileSync(clientPath, "utf8");
+  } catch {
+    return undefined;
+  }
+  if (!text.startsWith("#!")) return {}; // direct binary: no wrapper forms
+  const lines = text.split("\n");
+  const shebang = SHEBANG_RE.exec((lines[0] ?? "").replace(/\r$/, ""));
+  const shellPrefix = shebang !== null && /^[ -~]+$/.test(shebang[1]!) && normalize(shebang[1]!) === shebang[1]!
+    ? shebang[1]!
+    : undefined;
+  const evidence: { shellPrefix?: string | undefined; execTarget?: string | undefined } =
+    shellPrefix === undefined ? {} : { shellPrefix };
+  // C-1 (Lane C): the exec form is accepted only when the ENTIRE file is the
+  // canonical shim shape — shebang, then exactly ONE strict exec line, with
+  // every other line blank or a comment. Anything else (heredocs, indented or
+  // argument-carrying exec, conditionals, extra statements) means the file's
+  // execution semantics are not fully understood here, so NO exec evidence is
+  // produced (fail closed). The shell-prefix form rests on the shebang alone,
+  // which the kernel honors regardless of the script body.
+  const meaningful = lines.slice(1).filter((line) => {
+    const trimmed = line.trim();
+    return trimmed !== "" && !trimmed.startsWith("#");
+  });
+  if (meaningful.length !== 1) return evidence;
+  const execMatch = WRAPPER_EXEC_RE.exec(meaningful[0]!); // column-0, strict
+  if (execMatch === null) return evidence;
+  const target = execMatch[1]!;
+  if (!/^[ -~]+$/.test(target) || normalize(target) !== target) return evidence;
+  try {
+    if (!statSync(target).isFile()) return evidence;
+  } catch {
+    return evidence;
+  }
+  evidence.execTarget = target;
+  return evidence;
+}
+
+// ---------------------------------------------------------------------------
 // Ownership record (S7/S8): strict load, random-name O_EXCL temp, 0700 dir.
 // ---------------------------------------------------------------------------
 
@@ -587,6 +674,8 @@ function loadRecord(file: string): RecordLoad {
     typeof r.runId === "string" && r.runId.length > 0 &&
     typeof r.pid === "number" && Number.isSafeInteger(r.pid) && r.pid > 0 &&
     typeof r.commandIdentity === "string" && typeof r.processStartedKey === "string" &&
+    (r.commandIdentityExec === undefined || r.commandIdentityExec === null ||
+      (typeof r.commandIdentityExec === "string" && r.commandIdentityExec.length > 0 && r.commandIdentityExec.length <= 4096)) &&
     typeof r.profilePath === "string" && typeof r.tunnelId === "string" &&
     typeof r.urlFile === "string" && typeof r.keyFile === "string" &&
     typeof r.logPath === "string" &&
@@ -595,6 +684,15 @@ function loadRecord(file: string): RecordLoad {
     (r.state === "running" || r.state === "stop-unconfirmed" || r.state === "stopped") &&
     r.identityPending === undefined; // an identity-pending record must never come from disk
   if (!valid) return { kind: "corrupt" };
+  // C-v2-3: a serialized null normalizes to absent, so a loaded record always
+  // matches the declared `string | undefined` (JSON.stringify drops undefined,
+  // so a first-party writer never emits null; a foreign null is inert anyway
+  // because exact command equality against null is impossible).
+  if (r.commandIdentityExec === null) delete (parsed as Record<string, unknown>).commandIdentityExec;
+  // F2 (Lane C v3): same normalization for the ledger field — a foreign null
+  // must not read as "SIGTERM already requested" (every consumer uses
+  // !== undefined), which would suppress termination and lie in stop notes.
+  if (r.termRequestedAt === null) delete (parsed as Record<string, unknown>).termRequestedAt;
   // SAFETY: every consumed field is individually validated above; the
   // assertion only restores the readonly narrowings TypeScript cannot infer.
   return { kind: "ok", record: parsed as unknown as TunnelRecord };
@@ -616,13 +714,32 @@ function mapStateName(name: TunnelStateName): BackgroundStatusName {
 export function createBackgroundTunnelManager(options: BackgroundManagerOptions): BackgroundTunnelManager {
   const env = options.env ?? {};
   const now = options.now ?? Date.now;
-  const timing = options.timing ?? DEFAULT_TUNNEL_TIMING;
+  const timing = options.timing ?? DEFAULT_BACKGROUND_TUNNEL_TIMING;
   const clientPath = options.clientPath ?? DEFAULT_CLIENT_PATH;
   const profilePath = options.profilePath
     ?? (typeof env.CE_TUNNEL_PROFILE === "string" && env.CE_TUNNEL_PROFILE.length > 0 ? env.CE_TUNNEL_PROFILE : DEFAULT_PROFILE_PATH);
   const stateFilePath = options.stateFilePath ?? `${dirname(profilePath)}/background-state.json`;
   const logPath = `${dirname(stateFilePath)}/background-tunnel.log`;
   const spawnSeam = options.spawn ?? defaultSpawnDaemon(logPath);
+  /** Exact command lines this manager's own spawn may show in ps (F2): the
+   *  direct argv, plus wrapper-evidence forms (shell prefix / exec target).
+   *  Recomputed at every start; used only for the never-persisted pending
+   *  re-acquisition path, which belongs to this process's own spawn. */
+  let pendingSpawnIdentities: readonly string[] = [`${clientPath} run --profile-file ${profilePath}`];
+  /** S-1 (Lane S) + F1 (Lane C v3): spawn-linked exit proof, archived PER RUN.
+   *  A child handle's exit event is FIRST-CLASS evidence that OUR spawn is
+   *  dead; once fired, any process at that pid is foreign (PID reuse) and the
+   *  run must never adopt or signal it. Evidence is keyed by runId (UUIDs,
+   *  never reused), so a later start can never sever or inherit another run's
+   *  binding — single-slot state provably cannot serve the dual-run stop path
+   *  (S5-7). The listener is armed BEFORE the identity-capture loop (the
+   *  dominant pending path is a child dying INSIDE that window). Handles are
+   *  strongly held defensively (S-2/F4: a listener does not retain its
+   *  emitter; no runtime-observable behavior depends on this in tests).
+   *  Entries are deleted when their run closes; consulted only for
+   *  identityPending records (same session). */
+  const exitedPendingRuns = new Set<string>();
+  const pendingChildren = new Map<string, DaemonChildHandle>();
   const inspect = options.inspectProcess ?? defaultInspectProcess;
   const listProcesses = options.listProcesses ?? defaultListProcesses;
   const probeHealth = options.probeHealth ?? defaultProbeHealth(clientPath);
@@ -917,11 +1034,20 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
     renameSync(tmp, stateFilePath);
     chmodSync(stateFilePath, 0o600);
     record = next;
-    if (pendingRecord?.runId === next.runId) pendingRecord = undefined;
+    if (pendingRecord?.runId === next.runId) {
+      exitedPendingRuns.delete(next.runId);
+      pendingChildren.delete(next.runId);
+      pendingRecord = undefined;
+    }
   };
 
+  // F2: the startedKey anchor is unchanged; the command must equal EITHER the
+  // identity captured at start OR the spawn-time wrapper exec evidence. Both
+  // are exact full-string matches — substring/basename matches never pass.
   const identityMatches = (current: TunnelRecord, actual: ProcessIdentity): boolean =>
-    actual.command === current.commandIdentity && actual.startedKey === current.processStartedKey;
+    actual.startedKey === current.processStartedKey &&
+    (actual.command === current.commandIdentity ||
+      (current.commandIdentityExec !== undefined && actual.command === current.commandIdentityExec));
 
   const machineStartedAt = (current: TunnelRecord): number => {
     let baseline = machineStart.get(current.runId);
@@ -964,9 +1090,16 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
     if (presence.kind === "unknown") return "unknown";
     if (current.identityPending === true) {
       // Spawned child whose identity was never confirmed: re-acquire now.
-      // S3-2: we spawned it, so the argv is KNOWN — require the exact command
-      // line; substring matching is refused (forged argv must never match).
-      if (presence.identity.command !== `${clientPath} run --profile-file ${current.profilePath}`) {
+      // S-1 FIRST: if the spawn-linked child already exited, OUR process is
+      // provably dead and any process at this pid is a foreign reuser — never
+      // adopt its startedKey, never signal it. The run's exit is proven.
+      if (exitedPendingRuns.has(current.runId)) return "stopped";
+      // S3-2 + F2: we spawned it, so the argv is KNOWN — require membership in
+      // the exact, evidence-derived spawn-identity set (direct argv plus any
+      // wrapper shell/exec forms). Substring matching is refused (forged argv
+      // must never match). A live child link (no exit event) pins the pid to
+      // our spawn, so the observed startedKey IS our child's start time.
+      if (!pendingSpawnIdentities.includes(presence.identity.command)) {
         identityMismatch = true;
         note = "spawned child identity unconfirmed; retained ownership, no signal sent";
         return "unknown";
@@ -1050,8 +1183,11 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
     const baseline = machineStartedAt(current);
     const runTiming = timingFor(current.runId);
     const presence = await inspect(current.pid);
-    if (presence.kind === "absent") {
-      // Verified absence is the only exit proof available cross-session.
+    // Exit proof: verified ps absence (the only cross-session proof), OR — for
+    // a never-persisted identity-pending run, same-session only — the spawn
+    // link's exit event (S-1: after it, the pid may be a foreign reuser and
+    // must never be adopted or signalled).
+    if (presence.kind === "absent" || (current.identityPending === true && exitedPendingRuns.has(current.runId))) {
       observeAbsence(current, runTiming, baseline);
       // R4/C-v2-3: persist ONLY under the lock, re-checking the run inside.
       let release: (() => void) | undefined;
@@ -1069,7 +1205,9 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
         // session's ledger fields (termRequestedAt, note) are not rolled back.
         const fresh = { ...record, identityPending: undefined };
         try {
-          persist(markStopped(fresh, fresh.termRequestedAt !== undefined ? "exit observed after SIGTERM" : "process absent (unexpected; no respawn)"));
+          persist(markStopped(fresh, fresh.termRequestedAt !== undefined ? "exit observed after SIGTERM"
+            : current.identityPending === true && exitedPendingRuns.has(current.runId) ? "spawn exit observed via child link; no respawn"
+            : "process absent (unexpected; no respawn)"));
         } catch { /* a persistence failure never fabricates a stop either */ }
       } finally {
         release();
@@ -1081,11 +1219,13 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
       return status();
     }
     if (current.identityPending === true) {
-      // Same re-acquisition rule as terminateOwned (S3-2: exact argv).
-      if (presence.identity.command === `${clientPath} run --profile-file ${current.profilePath}`) {
+      // Same re-acquisition rule as terminateOwned (S3-2 + F2: exact membership
+      // in the evidence-derived spawn-identity set, never substring).
+      if (pendingSpawnIdentities.includes(presence.identity.command)) {
         const upgraded = {
           commandIdentity: presence.identity.command,
           processStartedKey: presence.identity.startedKey,
+          commandIdentityExec: current.commandIdentityExec,
         };
         // F1/S8-1: the upgrade persist happens under the lock, MERGED onto the
         // record re-read INSIDE the lock — a concurrent stop may have persisted
@@ -1196,7 +1336,10 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
         if (presence.kind === "present") throw new TunnelRefusal("CE_TUNNEL_EXTERNAL_INSTANCE");
         if (presence.kind === "unknown") throw new TunnelRefusal("CE_TUNNEL_STOP_UNCONFIRMED");
         observeAbsence(existing);
-        persist(markStopped(existing, "superseded: previous process absent"));
+        // C-v4-1: strip identityPending before persisting — a never-confirmed
+        // run whose process is gone IS superseded (its exit is proven by ps
+        // absence), so persist must not reject it as STATE_CORRUPT.
+        persist(markStopped({ ...existing, identityPending: undefined }, "superseded: previous process absent"));
       }
       const listed = await listProcesses();
       if (listed.kind !== "ok") throw new TunnelRefusal("CE_TUNNEL_HEALTH_UNAVAILABLE");
@@ -1214,10 +1357,30 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
       machineStart.set(runId, startedAt);
       spawnedRuns.add(runId);
       identityMismatch = false;
+      // S-1/F1: exit evidence is per-run and runIds are fresh UUIDs, so a new
+      // start must NOT reset it — doing so would sever a surviving pending
+      // run's binding (dual-run stop path, S5-7).
       note = undefined;
+      // F2: establish the spawn's stable identity set BEFORE spawning. The
+      // direct argv is always acceptable (it is what we pass); the wrapper
+      // shell/exec forms are added only when the client file provides strict
+      // evidence (resolveWrapperIdentityEvidence). The exec form is also
+      // persisted on the record so LATER sessions recognize the post-exec argv.
+      const wrapperEvidence = resolveWrapperIdentityEvidence(clientPath);
+      const spawnArgs = ["run", "--profile-file", profilePath] as const;
+      const commandIdentityExec = wrapperEvidence?.execTarget !== undefined
+        ? [wrapperEvidence.execTarget, ...spawnArgs].join(" ")
+        : undefined;
+      pendingSpawnIdentities = [
+        [clientPath, ...spawnArgs].join(" "),
+        ...(wrapperEvidence?.shellPrefix !== undefined
+          ? [`${wrapperEvidence.shellPrefix} ${[clientPath, ...spawnArgs].join(" ")}`]
+          : []),
+        ...(commandIdentityExec !== undefined ? [commandIdentityExec] : []),
+      ];
 
       try {
-        child = spawnSeam(clientPath, ["run", "--profile-file", profilePath], {
+        child = spawnSeam(clientPath, spawnArgs, {
           env: childEnvironment(env), detached: true, logPath,
         });
       } catch {
@@ -1230,7 +1393,14 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
         throw new TunnelRefusal("CE_TUNNEL_SPAWN_FAILED");
       }
       child.unref();
-
+      // S-1: arm the spawn-linked exit proof BEFORE the capture loop. The
+      // dominant pending path is a child dying INSIDE the capture window — its
+      // exit event fires there, once, before any pending record exists. The
+      // entry is keyed by THIS run's id, so neither an early exit nor a later
+      // start can lose or misattribute it.
+      child.on("exit", () => {
+        exitedPendingRuns.add(runId);
+      });
       // Capture the process identity BEFORE persisting ownership.
       let identity: ProcessIdentity | undefined;
       const appearDeadline = now() + IDENTITY_APPEAR_MS;
@@ -1240,7 +1410,10 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
         if (presence.kind === "absent") break;
         await sleep(50);
       }
-      if (identity === undefined || !identity.command.includes("--profile-file") || !identity.command.includes(profilePath)) {
+      // S3-2 + F2: capture accepts ONLY the exact evidence-derived spawn
+      // identities (direct argv / wrapper shell prefix / wrapper exec target);
+      // a merely substring-similar command is never attributed to this spawn.
+      if (identity === undefined || !pendingSpawnIdentities.includes(identity.command)) {
         // Never signal a process we cannot attribute to THIS spawn — but do
         // NOT abandon it either: keep a pending, never-persisted record so
         // stop/refresh can re-acquire identity and terminate it later (R3).
@@ -1248,13 +1421,17 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
           version: 1, runId, pid, profilePath, profileSha256,
           tunnelId: facts.tunnelId, keyFile: facts.keyFile, urlFile: facts.urlFile,
           mcpCommand: facts.mcpCommand, logPath,
-          commandIdentity: "", processStartedKey: "",
+          commandIdentity: "", processStartedKey: "", commandIdentityExec,
           startedAt, termRequestedAt: undefined, state: "running",
           stoppedAt: undefined, note: "spawned child identity unconfirmed",
           identityPending: true,
         };
         record = pendingRecord;
         note = "spawned child identity unconfirmed; ownership retained in memory";
+        // S-1/S-2: the exit listener is already armed (above) and archives by
+        // runId; keep the handle strongly (defensive — a listener does not
+        // retain its emitter) until this pending run closes or dispose().
+        pendingChildren.set(runId, child);
         child = undefined;
         throw new TunnelRefusal("CE_TUNNEL_SPAWN_FAILED");
       }
@@ -1263,7 +1440,7 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
         version: 1, runId, pid, profilePath, profileSha256,
         tunnelId: facts.tunnelId, keyFile: facts.keyFile, urlFile: facts.urlFile,
         mcpCommand: facts.mcpCommand, logPath,
-        commandIdentity: identity.command, processStartedKey: identity.startedKey,
+        commandIdentity: identity.command, processStartedKey: identity.startedKey, commandIdentityExec,
         startedAt, termRequestedAt: undefined, state: "running",
         stoppedAt: undefined, note: undefined,
       };
@@ -1392,6 +1569,8 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
           try {
             persist(markStopped({ ...pendingRecord, identityPending: undefined }, "pending run exit confirmed"));
           } catch { /* exit is proven; the record is informational only */ }
+          exitedPendingRuns.delete(pendingRecord.runId);
+          pendingChildren.delete(pendingRecord.runId);
           pendingRecord = undefined;
           if (record?.runId !== current?.runId) record = current;
         } else {
@@ -1406,12 +1585,17 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
       const outcome = await terminateOwned(current, graceMs);
       if (outcome === "stopped") {
         // Verify the profile-declared MCP child is gone too; the child belongs
-        // to the client, so we NEVER signal it — only report.
-        let stopNote = "exit observed after SIGTERM";
+        // to the client, so we NEVER signal it — only report. The note must be
+        // honest about whether THIS run was ever signalled (S-1 child-link and
+        // ps-absence exits deliver no signal): the ledger or the once-set tells.
+        const signalled = current.termRequestedAt !== undefined || termIntentSent.has(current.runId);
+        let stopNote = signalled
+          ? "exit observed after SIGTERM"
+          : "exit observed (process already gone); no signal sent";
         if (current.mcpCommand !== undefined) {
           const listed = await listProcesses();
           if (listed.kind === "ok" && listed.processes.some((proc) => proc.command === current.mcpCommand)) {
-            stopNote = "exit observed after SIGTERM; MCP child still running (not signalled by this manager)";
+            stopNote = `${signalled ? "exit observed after SIGTERM" : "exit observed (process already gone); no signal sent"}; MCP child still running (not signalled by this manager)`;
             note = stopNote;
           }
         }
@@ -1477,7 +1661,21 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
     runId: () => (record !== undefined && record.state !== "stopped" ? record.runId : undefined),
     async dispose(): Promise<void> {
       // The daemon is deliberately NOT stopped: it is owned by the record and
-      // survives this Pi session. There is nothing session-local to release.
+      // survives this Pi session. Session-locals are released only.
+      // C-v5-1: settle an in-flight start first — its pending record and exit
+      // proof must be materialized before we decide whether to release the
+      // archives, so a start racing with dispose cannot lose its exit proof.
+      const inflight = activeStart;
+      if (inflight !== undefined) await inflight.catch(() => undefined);
+      // S-1/F1 (S4-1): dispose must NOT sever a surviving pending run's exit
+      // proof — stop/refresh remain callable after dispose and must still be
+      // able to distinguish our dead child from a pid reuser. Only release the
+      // archives when no pending ownership survives; otherwise the handle is
+      // kept strongly so its exit event can still be archived.
+      if (pendingRecord === undefined) {
+        exitedPendingRuns.clear();
+        pendingChildren.clear();
+      }
       disposed = true;
     },
   };
