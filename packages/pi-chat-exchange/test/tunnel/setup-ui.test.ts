@@ -37,13 +37,13 @@ async function enter(h: TuiHarness, text: string) { h.send("\x15"); h.type(text)
 function frame(h: TuiHarness) { return h.render().join("\n"); }
 async function start(s: ReturnType<typeof setup>) { const task = (await adapter()).runSetupWizard(s.ctx, s.options); await s.h.waitForOpen(); return { task }; }
 async function firstToCredential(s: ReturnType<typeof setup>) {
-  await choose(s.h); // Profile -> Tunnel
+  // The wizard opens directly at step 1 (Tunnel ID): no Profile/Continue step.
   await enter(s.h, "tunnel_12345678");
   await enter(s.h, "");
   await enter(s.h, "/fixtures/binding.json");
 }
 async function existingToCredential(s: ReturnType<typeof setup>) {
-  await choose(s.h); await enter(s.h, existing.tunnelId); await enter(s.h, existing.organizationId);
+  await enter(s.h, existing.tunnelId); await enter(s.h, existing.organizationId);
   await choose(s.h); // Keep binding
 }
 async function capture(s: ReturnType<typeof setup>, value = "test-only-canary-PRIVATE") {
@@ -72,16 +72,69 @@ describe("Kit setup interaction contract", () => {
     expect(invocationSignal).toBeInstanceOf(AbortSignal);
   });
 
+  it("opens directly at step 1 with progress, no redundant Profile/Continue screen", async () => {
+    const s = setup(); const { task } = await start(s);
+    const first = frame(s.h);
+    // Step 1 is the first real input, not a decision-free Profile page.
+    expect(first).toContain("Tunnel Setup · 1/4");
+    expect(first).toContain("Tunnel ID");
+    expect(first).not.toContain("Continue");
+    expect(first).not.toMatch(/Tunnel setup · Profile/i);
+    // Profile path stays as wizard context only.
+    expect(first).toContain(s.options.profilePath);
+    await press(s.h, "tui.select.cancel");
+    expect(await task).toEqual({ status: "cancelled" });
+    expect(s.save).not.toHaveBeenCalled();
+  });
+
+  it("numbers every step and keeps validation failures on the current step", async () => {
+    const s = setup(); const { task } = await start(s);
+    await enter(s.h, "not-a-tunnel-id");
+    // Invalid input must not advance the wizard.
+    expect(frame(s.h)).toContain("Tunnel Setup · 1/4");
+    expect(frame(s.h)).toContain("Invalid Tunnel ID");
+    await enter(s.h, "tunnel_12345678");
+    expect(frame(s.h)).toContain("Tunnel Setup · 2/4");
+    expect(frame(s.h)).toMatch(/optional/i);
+    await enter(s.h, "");
+    expect(frame(s.h)).toContain("Tunnel Setup · 3/4");
+    await enter(s.h, "/fixtures/binding.json");
+    expect(frame(s.h)).toContain("Tunnel Setup · 4/4");
+    expect(frame(s.h)).toMatch(/masked/i);
+    await press(s.h, "tui.select.cancel");
+    expect(await task).toEqual({ status: "cancelled" });
+    expect(s.save).not.toHaveBeenCalled();
+  });
+
+  it("Review shows the full profile and credential intent, never the secret", async () => {
+    const s = setup(); const { task } = await start(s);
+    await firstToCredential(s);
+    await capture(s);
+    await choose(s.h); // Review entry -> review document
+    const review = frame(s.h);
+    expect(review).toContain(s.options.profilePath);
+    expect(review).toContain("tunnel_12345678");
+    expect(review).toContain("Not configured");
+    expect(review).toContain("MCP Binding");
+    expect(review).toContain("Provided");
+    expect(review.includes("test-only-canary-PRIVATE")).toBe(false);
+    await press(s.h, "tui.select.cancel");
+    expect(await task).toEqual({ status: "cancelled" });
+    expect(s.save).not.toHaveBeenCalled();
+  });
+
   it("orders first-time steps, validates inline, captures only in CE custom, and saves only final explicit Save", async () => {
     const s = setup(); const { task } = await start(s);
     expect(frame(s.h)).toContain(s.options.profilePath);
-    await choose(s.h); expect(frame(s.h)).toContain("Tunnel ID");
+    // Opens directly at step 1; no redundant Profile/Continue screen.
+    expect(frame(s.h)).toContain("Tunnel Setup · 1/4");
+    expect(frame(s.h)).toContain("Tunnel ID");
     await enter(s.h, "bad"); expect(frame(s.h)).toContain("Tunnel ID"); expect(frame(s.h)).toContain("Invalid Tunnel ID");
     await enter(s.h, "tunnel_12345678"); expect(frame(s.h)).toContain("Organization ID");
     await enter(s.h, "bad"); expect(frame(s.h)).toContain("Organization ID"); expect(frame(s.h)).toContain("Invalid Organization ID");
-    await enter(s.h, ""); expect(frame(s.h)).toContain("MCP binding config");
+    await enter(s.h, ""); expect(frame(s.h)).toContain("MCP Binding");
     s.validateBinding.mockRejectedValueOnce(new Error("private parser diagnostic"));
-    await enter(s.h, "/fixtures/bad.json"); expect(frame(s.h)).toContain("MCP binding config"); expect(frame(s.h)).toContain("Invalid MCP binding config");
+    await enter(s.h, "/fixtures/bad.json"); expect(frame(s.h)).toContain("MCP Binding"); expect(frame(s.h)).toContain("Invalid MCP binding config");
     expect(frame(s.h)).not.toContain("private parser diagnostic");
     await enter(s.h, "/fixtures/binding.json");
     await capture(s);
@@ -101,8 +154,8 @@ describe("Kit setup interaction contract", () => {
 
   it("existing nonsecret values prefill, Keep binding and Keep credential never capture or validate", async () => {
     const s = setup({ existing }); const { task } = await start(s);
-    expect(frame(s.h)).toContain("Existing credential configured");
-    await choose(s.h); expect(frame(s.h)).toContain(existing.tunnelId);
+    expect(frame(s.h)).toContain("Tunnel Setup · 1/4");
+    expect(frame(s.h)).toContain(existing.tunnelId);
     await press(s.h, "tui.input.submit"); expect(frame(s.h)).toContain(existing.organizationId);
     await press(s.h, "tui.input.submit"); await choose(s.h); // keep binding
     expect(frame(s.h)).toContain("Keep existing credential");
@@ -117,14 +170,14 @@ describe("Kit setup interaction contract", () => {
     const s = setup({ existing }); const { task } = await start(s);
     await existingToCredential(s); await choose(s.h, 1);
     s.h.type("test-only-replacement-PRIVATE"); s.h.send("\r"); await tick();
-    await choose(s.h); expect(frame(s.h)).toContain("Replace existing"); expect(frame(s.h).includes("replacement-PRIVATE")).toBe(false);
+    await choose(s.h); expect(frame(s.h)).toContain("Replace"); expect(frame(s.h).includes("replacement-PRIVATE")).toBe(false);
     await press(s.h); await choose(s.h);
     expect((await task).status).toBe("saved"); expect(s.save.mock.calls[0]![0].credential.kind).toBe("replace");
   });
 
   it.each(["tunnel", "organization", "binding"])("%s changes require an additional identity/routing review", async (field) => {
     const s = setup({ existing }); const { task } = await start(s);
-    await choose(s.h); await enter(s.h, field === "tunnel" ? "tunnel_changed1" : existing.tunnelId);
+    await enter(s.h, field === "tunnel" ? "tunnel_changed1" : existing.tunnelId);
     await enter(s.h, field === "organization" ? "org-new" : existing.organizationId);
     if (field === "binding") { await choose(s.h, 1); await enter(s.h, "/fixtures/new.json"); }
     else await choose(s.h);
@@ -137,7 +190,7 @@ describe("Kit setup interaction contract", () => {
 
   it("Cancel at the extra identity confirmation never invokes save", async () => {
     const s = setup({ existing }); const { task } = await start(s);
-    await choose(s.h); await enter(s.h, "tunnel_changed1"); await enter(s.h, existing.organizationId);
+    await enter(s.h, "tunnel_changed1"); await enter(s.h, existing.organizationId);
     await choose(s.h); await choose(s.h); await choose(s.h); await press(s.h);
     expect(frame(s.h)).toContain("Existing Tunnel configuration will be changed");
     await press(s.h, "tui.select.cancel"); expect(await task).toEqual({ status: "cancelled" }); expect(s.save).not.toHaveBeenCalled();
@@ -156,7 +209,7 @@ describe("Kit setup interaction contract", () => {
 
   it("explicit Cancel action leaves no save and already-aborted entry opens no TUI", async () => {
     const s = setup(); const { task } = await start(s);
-    await choose(s.h, 1); expect(await task).toEqual({ status: "cancelled" }); expect(s.save).not.toHaveBeenCalled();
+    await press(s.h, "tui.select.cancel"); expect(await task).toEqual({ status: "cancelled" }); expect(s.save).not.toHaveBeenCalled();
     const controller = new AbortController(); controller.abort();
     const aborted = setup({ signal: controller.signal });
     expect(await (await adapter()).runSetupWizard(aborted.ctx, aborted.options)).toEqual({ status: "cancelled" });

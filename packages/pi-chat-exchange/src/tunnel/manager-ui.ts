@@ -9,7 +9,7 @@ import { isTunnelRefusalCode, type TunnelRefusalCode } from "./codes.js";
 export type TunnelManagerUiState =
   | "UNCONFIGURED" | "STOPPED" | "STARTING" | "CONNECTED" | "STOPPING"
   | "ERROR" | "UNKNOWN" | "DEGRADED";
-export type TunnelManagerUiAction = "setup" | "edit" | "start" | "stop" | "refresh" | "close";
+export type TunnelManagerUiAction = "setup" | "edit" | "start" | "stop" | "refresh" | "details" | "close";
 export type TunnelManagerUiEvidence = "none" | "process-identity" | "health-probe" | "offline-simulated" | "unavailable";
 
 /** Safe projection only: never pass a key value or credential reference here. */
@@ -62,11 +62,12 @@ export function tunnelManagerActions(projection: TunnelManagerUiProjection): rea
   // Start/Stop authority follows the measured runtime lifecycle only.
   const lifecycle: readonly TunnelManagerUiAction[] = state === "STOPPED" ? ["start"]
     : state === "CONNECTED" ? ["stop"] : [];
-  return [...(repair !== undefined ? [repair] : []), ...lifecycle, "refresh", "close"];
+  return [...(repair !== undefined ? [repair] : []), ...lifecycle, "refresh", "details", "close"];
 }
 
 const LABELS: Readonly<Record<TunnelManagerUiAction, string>> = Object.freeze({
-  setup: "Set Up Tunnel", edit: "Edit Configuration", start: "Start Tunnel", stop: "Stop Tunnel", refresh: "Refresh", close: "Close",
+  setup: "Set Up Tunnel", edit: "Edit Configuration", start: "Start Tunnel", stop: "Stop Tunnel",
+  refresh: "Refresh", details: "Details", close: "Close",
 });
 const STATES: readonly string[] = ["UNCONFIGURED", "STOPPED", "STARTING", "CONNECTED", "STOPPING", "ERROR", "UNKNOWN", "DEGRADED"];
 const EVIDENCE: readonly string[] = ["none", "process-identity", "health-probe", "offline-simulated", "unavailable"];
@@ -79,29 +80,81 @@ function closedCode(error: unknown): TunnelRefusalCode {
   return "CE_TUNNEL_HEALTH_UNAVAILABLE";
 }
 
-/** Shared safe rows for a manager or an independently wired status view. */
-export function tunnelManagerRows(projection: TunnelManagerUiProjection): readonly string[] {
+/** One canonical read of the safe projection. Presentation never invents a
+ * second state judgement: every derived label comes from these fields. */
+function readProjection(projection: TunnelManagerUiProjection) {
   const state = STATES.includes(projection.state) ? projection.state : "UNKNOWN";
   // A caller accidentally passing an unmasked ID cannot disclose it here.
   const tunnel = typeof projection.tunnelIdAlreadyMasked === "string" && /^tunnel_[A-Za-z0-9]{6}…$/.test(projection.tunnelIdAlreadyMasked)
-    ? projection.tunnelIdAlreadyMasked : "Not configured / unavailable";
+    ? projection.tunnelIdAlreadyMasked : "Not configured";
+  const binding = projection.binding === "configured" ? "Configured"
+    : projection.binding === "invalid" ? "Invalid" : "Not configured";
+  const credential = projection.credentialConfigured === true ? "Configured" : "Not configured";
+  const organization = projection.organizationConfigured === true ? "Configured" : "Not configured";
+  const evidence = EVIDENCE.includes(projection.evidence ?? "") ? projection.evidence! : "unavailable";
+  const errorCode = isTunnelRefusalCode(projection.errorCode) ? projection.errorCode : undefined;
+  const needsRepair = tunnel === "Not configured" || binding !== "Configured" || credential !== "Configured" || errorCode !== undefined;
+  const unconfigured = state === "UNCONFIGURED" || tunnel === "Not configured";
+  return { state, tunnel, binding, credential, organization, evidence, errorCode, needsRepair, unconfigured };
+}
+
+/** User-facing primary state. Derived from the same projection as the actions;
+ * it summarizes, and never overrides, the measured runtime state. */
+function primaryState(view: ReturnType<typeof readProjection>): string {
+  if (view.unconfigured) return "● Not configured";
+  if (view.needsRepair) return "● Configuration incomplete";
+  switch (view.state) {
+    case "CONNECTED": return "● Connected";
+    case "STARTING": return "● Starting";
+    case "STOPPING": return "● Stopping";
+    case "STOPPED": return "● Configured · not running";
+    case "DEGRADED": return "● Degraded";
+    case "ERROR": return "● Error";
+    default: return "● State unknown";
+  }
+}
+
+/** Manager landing page: primary state, Configuration, Runtime. Engineering
+ * diagnostics (full profile path, evidence, raw codes, transport caveats) live
+ * behind Details so they never dominate the operator's decision. */
+export function tunnelManagerRows(projection: TunnelManagerUiProjection): readonly string[] {
+  const view = readProjection(projection);
   return [
-    `Profile: ${sanitizeTerminalText(projection.profilePath)}`,
-    `Tunnel: ${tunnel}`,
-    `Organization: ${projection.organizationConfigured === true ? "configured" : "not configured"}`,
-    `MCP binding: ${projection.binding === "configured" ? "configured" : projection.binding === "invalid" ? "invalid" : "missing"}`,
-    `Credential: ${projection.credentialConfigured === true ? "configured" : "not configured"}`,
-    `Runtime State: ${state}`,
-    `Evidence: ${EVIDENCE.includes(projection.evidence ?? "") ? projection.evidence : "unavailable"}`,
-    ...(isTunnelRefusalCode(projection.errorCode) ? [`Error: ${projection.errorCode}`] : []),
-    // Configuration guidance is separate from (and never overrides) runtime. A
-    // missing/invalid/incomplete profile is the actionable problem even when the
-    // runtime is UNKNOWN; setup/edit is how it is repaired, never an auto-start.
-    ...(tunnel === "Not configured / unavailable" || projection.binding !== "configured" || !projection.credentialConfigured
-      ? [state === "UNCONFIGURED" || projection.tunnelIdAlreadyMasked === undefined
+    primaryState(view),
+    "",
+    "Configuration",
+    `  Tunnel:        ${view.tunnel}`,
+    `  Organization:  ${view.organization}`,
+    `  MCP Binding:   ${view.binding}`,
+    `  Credential:    ${view.credential}`,
+    "",
+    "Runtime",
+    `  State:         ${view.state}`,
+    ...(view.needsRepair
+      ? ["", view.unconfigured
           ? "Tunnel is not configured. Run setup to continue."
           : "Configuration is invalid or incomplete. Edit configuration to continue."]
       : []),
+  ];
+}
+
+/** Diagnostics view. Credential contents and any credential reference/path are
+ * never projection fields, so they cannot appear here either. */
+export function tunnelManagerDetailRows(projection: TunnelManagerUiProjection): readonly string[] {
+  const view = readProjection(projection);
+  return [
+    "Configuration",
+    `  Profile:       ${sanitizeTerminalText(projection.profilePath)}`,
+    `  Tunnel:        ${view.tunnel}`,
+    `  Organization:  ${view.organization}`,
+    `  MCP Binding:   ${view.binding}`,
+    `  Credential:    ${view.credential}`,
+    "",
+    "Runtime",
+    `  State:         ${view.state}`,
+    `  Evidence:      ${view.evidence}`,
+    ...(view.errorCode !== undefined ? [`  Error:         ${view.errorCode}`] : []),
+    "",
     "Configured != Connected",
     "Transport only; not delivery/ACK/completion evidence.",
   ];
@@ -133,15 +186,23 @@ export async function runTunnelManagerUi(
   const current = (): boolean => !controller.signal.aborted && (options.isCurrent?.() ?? true);
   const menuContext = { mode: "tui" as const, hasUI: true, ui: ctx.ui };
   type Context = typeof menuContext;
-  const menu = defineMenu<TunnelManagerUiProjection, "manager", Exclude<TunnelManagerUiAction, "close">, Context>({
+  const menu = defineMenu<TunnelManagerUiProjection, "manager" | "details", Exclude<TunnelManagerUiAction, "close" | "details">, Context>({
     start: "manager",
     screens: {
       manager: ({ state }) => ({
         kind: "actions", title: "Tunnel Manager", hint: "close",
-        lines: [...tunnelManagerRows(state), ...(operationError === undefined ? [] : [`Last operation: ${operationError}`])],
+        lines: [...tunnelManagerRows(state), ...(operationError === undefined ? [] : ["", `Last operation: ${operationError}`])],
         items: tunnelManagerActions(state).map((action) => action === "close"
           ? { id: action, label: LABELS[action], close: true as const }
-          : { id: action, label: LABELS[action], action }),
+          : action === "details"
+            ? { id: action, label: LABELS[action], to: "details" as const }
+            : { id: action, label: LABELS[action], action }),
+      }),
+      // Diagnostics only: navigation, never a domain operation.
+      details: ({ state }) => ({
+        kind: "actions", title: "Tunnel Details", hint: "close",
+        lines: [...tunnelManagerDetailRows(state), ...(operationError === undefined ? [] : ["", `Last operation: ${operationError}`])],
+        items: [{ id: "back", label: "Back", to: "manager" as const }, { id: "close", label: "Close", close: true as const }],
       }),
     },
     actions: {

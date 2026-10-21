@@ -45,7 +45,7 @@ export type SetupUiOutcome =
   | { readonly status: "cancelled" }
   | { readonly status: "refused"; readonly code: "CE_TUNNEL_INPUT_UNAVAILABLE" | "CE_TUNNEL_SETUP_FAILED" };
 
-type Screen = "profile" | "tunnel" | "organization" | "bindingChoice" | "binding" | "credential" | "reviewEntry" | "review" | "changes" | "save" | "edit";
+type Screen = "tunnel" | "organization" | "bindingChoice" | "binding" | "credential" | "reviewEntry" | "review" | "changes" | "save" | "edit";
 type Action = "tunnel" | "organization" | "binding" | "keepBinding" | "keepCredential" | "capture" | "review" | "save";
 interface Draft { tunnelId: string; organizationId: string; bindingPath: string; error: string; credential: "keep" | "replace" | "missing"; }
 const TUNNEL = /^tunnel_[A-Za-z0-9]{8,}$/;
@@ -105,7 +105,12 @@ export async function runSetupWizard(ctx: SetupUiContext, options: SetupWizardOp
   let outcome: SetupUiOutcome = cancelled();
   // Deliberately not a Kit state field: neither Kit renderers nor errors see it.
   let saved = false;
-  const lines = (): string[] => [`Profile: ${options.profilePath}`, ...(draft.error ? [draft.error] : [])];
+  // Profile path is wizard context (and is shown in full at Review), never a
+  // step of its own: it carries no user decision.
+  const STEPS = 4;
+  const context = `Profile: ${options.profilePath}`;
+  const lines = (): string[] => [context, ...(draft.error ? [draft.error] : [])];
+  const step = (n: number, name: string): string => `Tunnel Setup · ${n}/${STEPS} · ${name}`;
   const changes = (): string[] => {
     if (!existing) return [];
     const result: string[] = [];
@@ -119,21 +124,20 @@ export async function runSetupWizard(ctx: SetupUiContext, options: SetupWizardOp
   const summary = (): string => [
     `Profile\n${options.profilePath}`, `Tunnel\n${draft.tunnelId}`,
     `Organization\n${draft.organizationId || "Not configured"}`,
-    `MCP binding\n${draft.bindingPath}`,
-    `Credential\n${draft.credential === "keep" ? "Existing credential configured (Keep existing)" : existing?.credentialConfigured ? "Provided — Replace existing" : "Provided"}`,
+    `MCP Binding\n${draft.bindingPath}`,
+    `Credential\n${draft.credential === "keep" ? "Keep existing" : existing?.credentialConfigured ? "Replace" : "Provided"}`,
     ...changes(),
   ].join("\n\n");
   const input = (title: string, value: string, action: Action): MenuScreen<Screen, Action> => ({ kind: "input", title, lines: lines(), initialValue: value, action, hint: "close" });
   const cancelItem = { id: "cancel", label: "Cancel", close: true } as const;
   const definition = defineMenu<Draft, Screen, Action, SetupUiContext>({
-    start: "profile",
+    start: "tunnel",
     screens: {
-      profile: () => ({ kind: "actions", title: "Tunnel setup · Profile", hint: "close", lines: [...lines(), ...(existing ? [`Tunnel: ${existing.tunnelId}`, `Organization: ${existing.organizationId || "Not configured"}`, `MCP binding: ${existing.bindingPath}`, existing.credentialConfigured ? "Existing credential configured" : "Credential: Not configured"] : ["Create a real Tunnel profile. Configured != Connected."])], items: [{ id: "continue", label: "Continue", to: "tunnel" }, cancelItem] }),
-      tunnel: () => input("Tunnel ID", draft.tunnelId, "tunnel"),
-      organization: () => input("Organization ID (optional)", draft.organizationId, "organization"),
-      bindingChoice: () => ({ kind: "actions", title: "MCP binding config", lines: [...lines(), draft.bindingPath], hint: "close", items: [{ id: "keep", label: "Keep existing MCP binding", action: "keepBinding" }, { id: "change", label: "Change MCP binding", to: "binding" }, { id: "back", label: "Back", to: "organization" }, cancelItem] }),
-      binding: () => input("MCP binding config", draft.bindingPath, "binding"),
-      credential: () => ({ kind: "actions", title: "Credential · API key", lines: [...lines(), ...(existing?.credentialConfigured ? ["Existing credential configured"] : ["A masked API key is required."])], hint: "close", items: [
+      tunnel: () => input(step(1, "Tunnel ID"), draft.tunnelId, "tunnel"),
+      organization: () => input(step(2, "Organization ID — optional, may be left empty"), draft.organizationId, "organization"),
+      bindingChoice: () => ({ kind: "actions", title: step(3, "MCP Binding"), lines: [...lines(), draft.bindingPath], hint: "close", items: [{ id: "keep", label: "Keep existing MCP binding", action: "keepBinding" }, { id: "change", label: "Change MCP binding", to: "binding" }, { id: "back", label: "Back", to: "organization" }, cancelItem] }),
+      binding: () => input(step(3, "MCP Binding config path"), draft.bindingPath, "binding"),
+      credential: () => ({ kind: "actions", title: step(4, "Credential · API key"), lines: [...lines(), ...(existing?.credentialConfigured ? ["Existing credential configured"] : ["A masked API key is required."])], hint: "close", items: [
         ...(existing?.credentialConfigured ? [{ id: "keep", label: "Keep existing credential", action: "keepCredential" as const }] : []),
         { id: "replace", label: existing?.credentialConfigured ? "Replace credential" : "Provide API key (masked)", action: "capture" },
         { id: "back", label: "Back", to: existing ? "bindingChoice" : "binding" }, cancelItem,

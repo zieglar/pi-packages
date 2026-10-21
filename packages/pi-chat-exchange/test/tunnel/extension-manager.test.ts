@@ -56,8 +56,7 @@ describe("real tunnel manager extension routing", () => {
     const privateValue = ["fixture", "masked", "value"].join("-");
     try {
       await h.waitForOpen();
-      await activateUi(h); // Manager Setup -> Wizard Profile
-      await activateUi(h); // Continue -> Tunnel
+      await activateUi(h); // Manager Set Up Tunnel -> Wizard step 1
       await inputUi(h, "tunnel_12345678");
       await inputUi(h, "");
       await inputUi(h, binding);
@@ -70,7 +69,7 @@ describe("real tunnel manager extension routing", () => {
       await activateUi(h); // Continue -> Save
       expect(existsSync(join(f.directory, "profile.yaml"))).toBe(false);
       await activateUi(h); // Save -> fresh Manager
-      await vi.waitFor(() => expect(h.render().join("\n")).toContain("Runtime State: STOPPED"));
+      await vi.waitFor(() => expect(h.render().join("\n")).toMatch(/State: +STOPPED/));
       const text = readFileSync(join(f.directory, "profile.yaml"), "utf8");
       const { parseTunnelProfile } = await import("../../dist/tunnel/background-manager.js");
       const facts = parseTunnelProfile(text);
