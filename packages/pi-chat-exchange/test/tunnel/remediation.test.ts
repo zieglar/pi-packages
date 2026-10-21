@@ -22,6 +22,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { TEST_KEYS } from "./keys-stub.js";
 import {
   captureTunnelSecret,
   type SecureInputContextView,
@@ -84,7 +85,7 @@ describe("B1.1 remediation 1 — secure input dispose settles the capture", () =
     const store = vi.fn(async () => {
       throw new Error("must never store on dispose");
     });
-    const capture = captureTunnelSecret(port.ctx, { store }, { timeoutMs: 60_000 });
+    const capture = captureTunnelSecret(port.ctx, { store }, { timeoutMs: 60_000, keys: TEST_KEYS });
     port.component().dispose?.();
     const outcome = await settledWithin(capture, 50);
     expect(outcome).toMatchObject({ status: "cancelled" });
@@ -93,7 +94,7 @@ describe("B1.1 remediation 1 — secure input dispose settles the capture", () =
 
   it("finishes once when the runtime disposes re-entrantly from done", async () => {
     const port = tuiPort({ disposeOnDone: true });
-    const capture = captureTunnelSecret(port.ctx, { async store() {} }, { timeoutMs: 60_000 });
+    const capture = captureTunnelSecret(port.ctx, { async store() {} }, { timeoutMs: 60_000, keys: TEST_KEYS });
     port.component().dispose?.();
     await expect(settledWithin(capture, 50)).resolves.toMatchObject({ status: "cancelled" });
     port.component().dispose?.();
@@ -110,7 +111,7 @@ describe("B1.1 remediation 1 — secure input dispose settles the capture", () =
           stored.push(secret);
         },
       },
-      { timeoutMs: 60_000 },
+      { timeoutMs: 60_000, keys: TEST_KEYS },
     );
     port.component().handleInput?.("s3cret-value");
     port.component().handleInput?.("\r");

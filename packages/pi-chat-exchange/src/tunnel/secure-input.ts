@@ -1,5 +1,6 @@
 /**
- * HANDOFF-CE-HOST-09 B1.1 Task 1 — masked credential capture for the TUI.
+ * CE custom masked secret input hosted through Pi 1.3.0 `ctx.ui.custom()`.
+ * Pi 1.3.0 does not provide a native PasswordInput / SecretInput.
  *
  * Scope and non-goals (PHASE-A-DESIGN-v2 §3, B1.1 handoff):
  * - The secret is captured by a dedicated `ui.custom` component and handed to
@@ -22,9 +23,25 @@
  * is NOT memory erasure. JavaScript strings are immutable, so this module
  * cannot promise complete zeroization; it only drops its own references and
  * clears its buffer at finish/dispose. Terminal paste buffers, crash dumps,
- * and terminal recording remain independent exposure surfaces.
+ * and terminal recording remain independent exposure surfaces. Malicious
+ * same-process extensions and process-level observation are not isolated by it.
  */
 import { TunnelRefusal, type TunnelRefusalCode } from "./codes.js";
+
+/** Narrow key-decoding surface injected by the host. The contract gate forbids
+ * `src/` from importing `@earendil-works/*`; the Pi runtime supplies these
+ * primitives through `pi-extension/tui-keys.ts` so the domain stays decoupled.
+ * Keys are plain key tokens; matchers stay closed and ASCII. */
+export interface TunnelKeyProtocol {
+  readonly escape: string;
+  readonly ctrlC: string;
+  readonly ctrlU: string;
+  readonly enter: string;
+  readonly backspace: string;
+  matches(data: string, key: string): boolean;
+  decodePrintable(data: string): string | undefined;
+  isKeyRelease(data: string): boolean;
+}
 
 /** Narrow structural view of the pi-tui handle we actually use. */
 export interface SecureInputTuiView {
@@ -78,6 +95,8 @@ export interface SecureInputOptions {
   readonly timeoutMs?: number;
   /** Session teardown / shutdown abort. */
   readonly signal?: AbortSignal;
+  /** Host-injected key protocol. Required: there is no Pi import in `src/`. */
+  readonly keys: TunnelKeyProtocol;
 }
 
 /** Fixed policy. Not configurable from commands, profiles, or the model. */
@@ -90,8 +109,8 @@ export const SECURE_INPUT_LIMITS = Object.freeze({
   maxPasteChars: 4_096,
 });
 
-const LABEL = "Tunnel credential (masked; not echoed, not logged)";
-const HINT = "Enter submits · Esc/Ctrl-C cancels · paste validated as one unit";
+const LABEL = "API key (masked; not echoed, not logged)";
+const HINT = "Enter submits · Esc/Ctrl-C cancels · Backspace corrects · Ctrl-U resets";
 const REJECTED = "input rejected: 1-512 visible ASCII characters, no spaces";
 const MASK_CHAR = "•";
 const PROMPT = "> ";
@@ -129,14 +148,17 @@ class SecretPrompt implements SecureInputComponentView {
   private finished = false;
   private disposed = false;
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private deferredAbort: ReturnType<typeof setTimeout> | undefined;
   private abortListener: (() => void) | undefined;
   private readonly signal: AbortSignal | undefined;
+  private readonly keys: TunnelKeyProtocol;
 
   constructor(
     private readonly tui: SecureInputTuiView,
     private readonly done: (result: Finish) => void,
     options: SecureInputOptions,
   ) {
+    this.keys = options.keys;
     const timeoutMs = options.timeoutMs ?? SECURE_INPUT_LIMITS.defaultTimeoutMs;
     this.timer = setTimeout(() => this.finish({ kind: "cancelled", reason: "timeout" }), Math.max(0, timeoutMs));
     this.timer.unref?.();
@@ -146,8 +168,8 @@ class SecretPrompt implements SecureInputComponentView {
       if (this.signal.aborted) {
         // Never call `done` synchronously inside the factory: the runtime has
         // not installed (and therefore cannot dispose) this component yet.
-        const deferred = setTimeout(onAbort, 0);
-        deferred.unref?.();
+        this.deferredAbort = setTimeout(onAbort, 0);
+        this.deferredAbort.unref?.();
       } else {
         this.abortListener = onAbort;
         this.signal.addEventListener("abort", onAbort, { once: true });
@@ -186,31 +208,39 @@ class SecretPrompt implements SecureInputComponentView {
 
   handleInput(data: string): void {
     if (this.finished || this.disposed || data === "") return;
+    // A standalone cancel key remains an action even if a paste never closes.
+    // Control bytes inside a framed paste are content and fail atomic validation.
+    // The native helper uses a substring heuristic: scope it to terminal
+    // sequences outside paste so valid ASCII such as ":3u" is never dropped.
+    if (!this.inPaste && data.startsWith("\x1b") && this.keys.isKeyRelease(data)) return;
+    if (this.keys.matches(data, this.keys.escape) || this.keys.matches(data, this.keys.ctrlC)) {
+      this.finish(CANCELLED_USER);
+      return;
+    }
     if (this.inPaste || data.includes(PASTE_START)) {
       this.handlePasteChunk(data);
       return;
     }
-    if (data === "\x03") {
-      this.finish(CANCELLED_USER);
-      return;
-    }
-    if (data === "\x1b") {
-      this.finish(CANCELLED_USER);
-      return;
-    }
-    // Any other escape sequence (arrows, function keys, mouse) is ignored.
-    if (data.startsWith("\x1b")) return;
-    if (data === "\r" || data === "\n") {
+    if (this.keys.matches(data, this.keys.enter) || data === "\n") {
       this.submit();
       return;
     }
-    if (data === "\x7f" || data === "\b") {
+    if (this.keys.matches(data, this.keys.backspace) || data === "\b") {
       this.buffer = this.buffer.slice(0, -1);
       this.rejected = false;
       this.requestRender();
       return;
     }
-    this.append(data);
+    if (this.keys.matches(data, this.keys.ctrlU)) {
+      this.buffer = "";
+      this.rejected = false;
+      this.requestRender();
+      return;
+    }
+    const printable = this.keys.decodePrintable(data);
+    // Ignore navigation/modifier sequences, never insert their escape payload.
+    if (data.startsWith("\x1b") && printable === undefined) return;
+    this.append(printable ?? data);
   }
 
   private handlePasteChunk(data: string): void {
@@ -249,7 +279,7 @@ class SecretPrompt implements SecureInputComponentView {
   }
 
   private acceptPaste(content: string): boolean {
-    if (content === "" || !isAcceptable(content)) return false;
+    if (this.rejected || content === "" || !isAcceptable(content)) return false;
     if (this.buffer.length + content.length > SECURE_INPUT_LIMITS.maxLength) return false;
     this.buffer += content;
     this.rejected = false;
@@ -258,23 +288,18 @@ class SecretPrompt implements SecureInputComponentView {
   }
 
   private append(data: string): void {
-    let changed = false;
-    let refusedChar = false;
-    for (const char of data) {
-      if (!isAcceptable(char) || this.buffer.length >= SECURE_INPUT_LIMITS.maxLength) {
-        refusedChar = true;
-        continue;
-      }
-      this.buffer += char;
-      changed = true;
+    // Never silently strip invalid characters or truncate a credential. Reject
+    // the whole event and require an explicit correction/reset before submit.
+    if (this.rejected || !isAcceptable(data) || this.buffer.length + data.length > SECURE_INPUT_LIMITS.maxLength) {
+      this.rejected = true;
+    } else {
+      this.buffer += data;
     }
-    if (refusedChar) this.rejected = true;
-    else if (changed) this.rejected = false;
     this.requestRender();
   }
 
   private submit(): void {
-    if (this.buffer.length === 0) {
+    if (this.rejected || this.buffer.length === 0) {
       this.rejected = true;
       this.requestRender();
       return;
@@ -296,6 +321,10 @@ class SecretPrompt implements SecureInputComponentView {
     if (this.timer !== undefined) {
       clearTimeout(this.timer);
       this.timer = undefined;
+    }
+    if (this.deferredAbort !== undefined) {
+      clearTimeout(this.deferredAbort);
+      this.deferredAbort = undefined;
     }
     if (this.abortListener !== undefined) {
       this.signal?.removeEventListener("abort", this.abortListener);
@@ -323,7 +352,7 @@ function refused(code: TunnelRefusalCode): SecureInputOutcome {
 export async function captureTunnelSecret(
   ctx: SecureInputContextView,
   writer: SecretWriter,
-  options: SecureInputOptions = {},
+  options: SecureInputOptions,
 ): Promise<SecureInputOutcome> {
   if (ctx.mode !== "tui") return refused("CE_TUNNEL_INPUT_UNAVAILABLE");
   const custom = ctx.ui?.custom;

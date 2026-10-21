@@ -25,6 +25,11 @@
  * pi-chat-exchange build) because this extension imports the compiled host
  * seam from packages/pi-chat-exchange/dist.
  */
+import { runSetupWizard, presentTunnelStatus } from "../dist/tunnel/setup-ui.js";
+import { piTunnelKeyProtocol } from "./tui-keys.js";
+import { createTunnelProfileSetup } from "../dist/tunnel/setup.js";
+import { resolveTunnelProfilePath } from "../dist/tunnel/background-manager.js";
+import { runTunnelManagerUi, type TunnelManagerUiProjection } from "../dist/tunnel/manager-ui.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -308,6 +313,8 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   type BoundedTaskCleanup = { readonly task: Promise<void>; readonly wait: Promise<void> };
   let credentialCapture: AbortController | undefined;
   let setupTask: Promise<void> | undefined;
+  let managerUiCapture: AbortController | undefined;
+  let managerUiTask: Promise<void> | undefined;
   /** Shared bounded wait bound to one setup task, including writer/disposal completion. */
   let setupCleanup: BoundedTaskCleanup | undefined;
   // B1.1-INTEGRATION rework (Lane C C1): a pending /ce-tunnel authorize is a
@@ -318,6 +325,8 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   let authorizeTask: Promise<void> | undefined;
   /** Shared bounded wait bound to one aborted authorize task, including runner disposal. */
   let authorizeCleanup: BoundedTaskCleanup | undefined;
+  /** Shared bounded wait bound to one aborted Manager screen task, including disposal. */
+  let managerUiCleanup: BoundedTaskCleanup | undefined;
   /** In-flight transport release, so overlapping teardowns join one dispose. */
   let transportRelease: Promise<void> | undefined;
   /** Last closed transport-cleanup code, reported on the next /ce-tunnel call. */
@@ -364,18 +373,29 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   const publishTunnelStatus = (ctx: ExtensionContextView): void => {
     if (ctx.mode !== "tui") return;
     lastUiPort = ctx;
-    const manager = activeManager();
-    const status = manager.status();
-    ctx.ui.setStatus?.("ce", ceStatusText());
-    ctx.ui.setStatus?.("ce-tunnel", status.label);
-    ctx.ui.setStatus?.(
-      "ce-client",
-      "kind" in manager
-        ? "Client · not observed by this manager (real background mode)"
-        : (status as ReturnType<TunnelManager["status"]>).clientActivity.observed
-          ? "Client · simulated activity observed this run"
-          : "Client · no activity observed this run",
-    );
+    try {
+      const manager = activeManager();
+      const status = manager.status();
+      ctx.ui.setStatus?.("ce", ceStatusText());
+      ctx.ui.setStatus?.("ce-tunnel", status.label);
+      ctx.ui.setStatus?.(
+        "ce-client",
+        "kind" in manager
+          ? "Client · not observed by this manager (real background mode)"
+          : (status as ReturnType<TunnelManager["status"]>).clientActivity.observed
+            ? "Client · simulated activity observed this run"
+            : "Client · no activity observed this run",
+      );
+    } catch {
+      // R5 Lane B B-R5-1: a malformed CE_TUNNEL_PROFILE throws from
+      // activeManager(). The status bar must fail closed — never re-throw a
+      // refusal out of a command handler's own catch path.
+      try {
+        ctx.ui.setStatus?.("ce", ceStatusText());
+        ctx.ui.setStatus?.("ce-tunnel", "Tunnel · unavailable");
+        ctx.ui.setStatus?.("ce-client", "Client · unavailable");
+      } catch { /* the status surface itself is best-effort */ }
+    }
   };
 
   /**
@@ -397,6 +417,8 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
    * the next `/ce-tunnel` call. CE release/fencing is never altered by this.
    */
   const clearTunnelStatus = (): Promise<void> => {
+    managerUiCapture?.abort();
+    managerUiCapture = undefined;
     const capture = credentialCapture;
     credentialCapture = undefined;
     try {
@@ -423,6 +445,13 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       // Concurrent teardowns join one deadline rather than starting new caps;
       // the shared wait remains bound until that task itself finishes.
       authorizeCleanup = bindTaskCleanup(pendingAuthorize);
+    }
+    const pendingManagerUi = managerUiTask;
+    if (pendingManagerUi !== undefined && managerUiCleanup?.task !== pendingManagerUi) {
+      // The Manager screen is as long-lived and re-entrant as setup/authorize and
+      // can itself drive start/stop under the shared lock, so its cleanup must
+      // settle together with them instead of outliving a returned teardown wait.
+      managerUiCleanup = bindTaskCleanup(pendingManagerUi);
     }
     const port = lastUiPort;
     lastUiPort = undefined;
@@ -461,10 +490,11 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       transportRelease = attempt;
       return attempt;
     })();
-    const taskWaits = [setupCleanup?.wait, authorizeCleanup?.wait].filter((wait): wait is Promise<void> => wait !== undefined);
-    // Round 3 (Lane C R2-C2) / Closure remediation (SEC-CLOSE-01): manager,
-    // setup, and authorize cleanup settle TOGETHER. A timeout only caps the
-    // returned wait; task registration remains until its own finally releases it.
+    const taskWaits = [setupCleanup?.wait, authorizeCleanup?.wait, managerUiCleanup?.wait].filter((wait): wait is Promise<void> => wait !== undefined);
+    // Round 3 (Lane C R2-C2) / Closure remediation (SEC-CLOSE-01) and R5 Lane B:
+    // manager transport, setup, authorize, and Manager-UI cleanup settle TOGETHER.
+    // A timeout only caps the returned wait; task registration remains until its
+    // own finally releases it.
     return taskWaits.length === 0
       ? managerWait
       : Promise.allSettled([managerWait, ...taskWaits]).then(() => undefined);
@@ -1099,12 +1129,11 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       );
     },
   });
-  // HOST-09 B1.1: offline transport manager wiring. `setup` is the secure
-  // TUI + Keychain capture path; `start`/`stop` own ONLY the bundled offline
-  // simulator. There is no real-client start and no autostart code path.
+  // Real setup persists an operator-confirmed profile; synthetic Keychain
+  // capture remains reachable only through the explicit offline test harness.
   const SUBCOMMANDS: ReadonlyArray<{ value: string; description: string }> = [
-    { value: "setup", description: "capture the credential with masked TUI input into the macOS Keychain" },
-    { value: "authorize", description: "grant the locally built helper read access via the native macOS keychain prompt (one explicit user decision)" },
+    { value: "setup", description: "open the real profile Setup Wizard (masked API key; explicit Save only)" },
+    { value: "authorize", description: "synthetic Keychain authorization in the explicit offline harness only" },
     { value: "start", description: "start the real background tunnel client (or the offline simulator under CE_TUNNEL_OFFLINE_TEST=1)" },
     { value: "stop", description: "stop the tunnel instance this manager provably owns (one SIGTERM, verified exit)" },
     { value: "status", description: "show CE segment plus measured tunnel state (STOPPED/STARTING/CONNECTED/DEGRADED/UNKNOWN)" },
@@ -1132,11 +1161,47 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     const task = (async () => {
       let runner: ReturnType<typeof createNativeKeychainRunner> | undefined;
       try {
+        if (isRealBackground()) {
+          const manager = activeManager();
+          if (!("kind" in manager)) throw new TunnelRefusal("CE_TUNNEL_MANAGER_BUSY");
+          const setup = createTunnelProfileSetup({ env: process.env, manager });
+          const inspected = setup.inspect();
+          let durability: "synced" | "uncertain" = "synced";
+          const result = await runSetupWizard({ ...ctx, mode: "tui" }, {
+            profilePath: inspected.profilePath, signal: controller.signal, keys: piTunnelKeyProtocol,
+            ...(inspected.exists ? { existing: {
+              tunnelId: inspected.tunnelId!,
+              ...(inspected.organizationId ? { organizationId: inspected.organizationId } : {}),
+              bindingPath: inspected.bindingPath!, credentialConfigured: inspected.credentialConfigured,
+            } } : {}),
+            validateBinding: async (path) => { setup.validateBinding(path); },
+            save: async (proposal, signal) => {
+              const saved = await setup.save({ ...proposal, expectedRevision: inspected.revision, signal });
+              if (saved.kind === "cancelled") return saved;
+              durability = saved.durability;
+            },
+          });
+          // R5 Lane A F4: a commit that landed is reported even when teardown
+          // aborted afterwards, so a real write is never silently invisible.
+          // Only non-saved outcomes are suppressed for a dead context.
+          if (controller.signal.aborted && result.status !== "saved") return;
+          if (result.status === "saved") {
+            notify(ctx, durability === "synced"
+              ? "ce-tunnel: configuration saved; Configured != Connected. Start remains a separate explicit action."
+              : "ce-tunnel: configuration saved, durability uncertain; inspect configuration before a separate explicit start",
+              durability === "synced" ? "info" : "warning");
+          } else if (result.status === "cancelled") {
+            notify(ctx, "ce-tunnel: CANCELLED", "info");
+          } else {
+            notify(ctx, `ce-tunnel: setup refused ${result.code}`, "warning");
+          }
+          return;
+        }
         runner = createNativeKeychainRunner({ signal: controller.signal });
         const store = createKeychainCredentialStore({ runner, scope: OFFLINE_SYNTHETIC_SCOPE });
         // B1.1 uses an explicitly SYNTHETIC offline scope: no production profile
         // or existing key is inspected. The secret goes only to `store`.
-        const outcome = await captureTunnelSecret(ctx, store, { signal: controller.signal });
+        const outcome = await captureTunnelSecret(ctx, store, { signal: controller.signal, keys: piTunnelKeyProtocol });
         if (controller.signal.aborted) return;
         if (outcome.status === "stored") {
           notify(ctx, "ce-tunnel: credential stored in the Keychain for the synthetic offline scope (no client hand-off)");
@@ -1170,6 +1235,10 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
    * it exists only because authorization is granted BY reading.
    */
   const runAuthorize = async (ctx: ExtensionContextView): Promise<void> => {
+    if (isRealBackground()) {
+      notify(ctx, "ce-tunnel: authorize is available only in the explicit offline test harness; real profiles use credential files configured by setup", "info");
+      return;
+    }
     if (ctx.mode !== "tui") {
       notify(
         ctx,
@@ -1248,37 +1317,115 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       if (authorizeCleanup?.task === task) authorizeCleanup = undefined;
     }
   };
-  const registerTunnelCommand = (): void => {
-    pi.registerCommand("ce-tunnel", {
-      description:
-        "Tunnel transport manager: setup/authorize (offline scope) plus start/stop/status for the real background client (or offline simulator under explicit opt-in). Transport only; never delivery/ACK evidence",
-      getArgumentCompletions: (prefix: string) =>
-        SUBCOMMANDS.filter((sub) => sub.value.startsWith(prefix)).map((sub) => ({
-          value: sub.value,
-          label: sub.value,
-          description: sub.description,
-        })),
-      async handler(args, ctx) {
+  /** Fresh configuration projection; never reads credential contents. */
+  const readTunnelUi = async (ctx: ExtensionContextView): Promise<{ view: TunnelManagerUiProjection; runtimeState: string; evidence: string }> => {
+    let profilePath = "Unavailable";
+    try {
+      const manager = activeManager();
+      profilePath = resolveTunnelProfilePath({ env: process.env });
+      if (!("kind" in manager)) {
+        const runtime = manager.status();
+        return { view: { state: "UNKNOWN", profilePath, organizationConfigured: false, binding: "missing", credentialConfigured: false, evidence: "offline-simulated" }, runtimeState: runtime.state, evidence: "offline-simulated" };
+      }
+      const runtime = await manager.refresh();
+      publishTunnelStatus(ctx);
+      try {
+        const setup = createTunnelProfileSetup({ env: process.env, manager });
+        const inspection = setup.inspect();
+        let binding: TunnelManagerUiProjection["binding"] = "missing";
+        if (inspection.bindingPath !== undefined) {
+          try { setup.validateBinding(inspection.bindingPath); binding = "configured"; } catch { binding = "invalid"; }
+        }
+        const state = runtime.state !== "STOPPED" ? runtime.state : !inspection.exists ? "UNCONFIGURED"
+          : binding === "configured" && inspection.credentialConfigured ? "STOPPED" : "ERROR";
+        return { view: { state, profilePath: inspection.profilePath,
+          ...(inspection.tunnelId ? { tunnelIdAlreadyMasked: `${inspection.tunnelId.slice(0, 13)}…` } : {}),
+          organizationConfigured: Boolean(inspection.organizationId), binding, credentialConfigured: inspection.credentialConfigured,
+          evidence: runtime.evidence === "health-probe" ? "health-probe" : "none",
+        }, runtimeState: runtime.state, evidence: runtime.evidence };
+      } catch (error) {
+        return { view: { state: "UNKNOWN", profilePath, organizationConfigured: false, binding: "invalid", credentialConfigured: false,
+          evidence: "unavailable", errorCode: error instanceof TunnelRefusal ? error.code : "CE_TUNNEL_PROFILE_INVALID",
+        }, runtimeState: runtime.state, evidence: runtime.evidence };
+      }
+    } catch (error) {
+      return { view: { state: "UNKNOWN", profilePath, organizationConfigured: false, binding: "invalid", credentialConfigured: false,
+        evidence: "unavailable", errorCode: error instanceof TunnelRefusal ? error.code : "CE_TUNNEL_PROFILE_INVALID",
+      }, runtimeState: "UNKNOWN", evidence: "unavailable" };
+    }
+  };
+
+  const runStatus = async (ctx: ExtensionContextView): Promise<void> => {
+    const interactive = ctx.mode === "tui" && typeof ctx.ui.custom === "function";
+    if (interactive && managerUiTask !== undefined) {
+      notify(ctx, "ce-tunnel: transport UI already open (CE_TUNNEL_MANAGER_BUSY)", "warning"); return;
+    }
+    const controller = new AbortController();
+    if (interactive) managerUiCapture = controller;
+    const liveCtx: ExtensionContextView = { ...ctx, get mode() { return controller.signal.aborted ? "print" : ctx.mode; } };
+    const task = (async () => {
+      const { view, runtimeState, evidence } = await readTunnelUi(liveCtx);
+      if (controller.signal.aborted) return;
+      const presented = await presentTunnelStatus({ ...liveCtx, mode: interactive ? "tui" : "print" }, {
+        profilePath: view.profilePath,
+        ...(view.tunnelIdAlreadyMasked ? { maskedTunnel: view.tunnelIdAlreadyMasked } : {}),
+        organization: view.organizationConfigured ? "configured" : "not configured",
+        binding: view.binding, credential: view.credentialConfigured ? "configured" : "not configured",
+        configurationState: view.state, errorCode: view.errorCode, runtimeState, evidence,
+      }, { signal: controller.signal });
+      if (!interactive && !controller.signal.aborted) notify(ctx, `ce-tunnel: ce=${ceStatusText()} | tunnel(real background): ${presented.lines.join(" | ")}`);
+    })();
+    if (interactive) managerUiTask = task;
+    try { await task; } finally {
+      if (managerUiTask === task) managerUiTask = undefined;
+      if (managerUiCapture === controller) managerUiCapture = undefined;
+    }
+  };
+
+  const runManager = async (ctx: ExtensionContextView): Promise<void> => {
+    if (ctx.mode !== "tui" || typeof ctx.ui.custom !== "function") {
+      notify(ctx, "ce-tunnel: Manager requires interactive TUI (CE_TUNNEL_INPUT_UNAVAILABLE)", "warning");
+      return;
+    }
+    if (managerUiTask !== undefined) {
+      notify(ctx, "ce-tunnel: Manager already open (CE_TUNNEL_MANAGER_BUSY)", "warning");
+      return;
+    }
+    const controller = new AbortController();
+    managerUiCapture = controller;
+    const liveCtx: ExtensionContextView = { ...ctx,
+      get mode() { return controller.signal.aborted ? "print" : ctx.mode; },
+      ui: { ...ctx.ui, notify: (text, level) => { if (!controller.signal.aborted) ctx.ui.notify(text, level); },
+        setStatus: (key, text) => { if (!controller.signal.aborted) ctx.ui.setStatus?.(key, text); } },
+    };
+    const task = (async () => {
+      const result = await runTunnelManagerUi(liveCtx, {
+        read: async () => (await readTunnelUi(liveCtx)).view,
+        setup: async () => { await runTunnelCommand("setup", liveCtx); },
+        start: async () => { await runTunnelCommand("start", liveCtx); },
+        stop: async () => { await runTunnelCommand("stop", liveCtx); },
+      }, { signal: controller.signal });
+      if (!controller.signal.aborted && result.status === "refused") notify(ctx, `ce-tunnel: Manager refused ${result.code}`, "warning");
+    })();
+    managerUiTask = task;
+    try { await task; } finally {
+      if (managerUiTask === task) managerUiTask = undefined;
+      if (managerUiCapture === controller) managerUiCapture = undefined;
+    }
+  };
+
+  /** Direct shortcuts and the Manager invoke this same operation path. */
+  const runTunnelCommand = async (args: string, ctx: ExtensionContextView): Promise<void> => {
         const sub = args.trim().split(/\s+/)[0] ?? "";
+        if (sub === "" && isRealBackground()) { await runManager(ctx); return; }
         if (sub === "" || sub === "status") {
+          // Real status owns manager creation inside its closed-error projection, so
+          // a malformed profile path cannot escape as a command rejection or reach UI.
+          if (isRealBackground()) { await runStatus(ctx); return; }
           const manager = activeManager();
-          if ("kind" in manager) {
-            // Real background: one actual measurement (identity + health probe)
-            // before displaying; a bare PID is never reported as CONNECTED.
-            const view = await manager.refresh();
-            publishTunnelStatus(ctx);
-            notify(
-              ctx,
-              `ce-tunnel: ce=${ceStatusText()} | tunnel(real background)=${view.state} evidence=${view.evidence}` +
-                (view.pid !== undefined ? ` pid=${view.pid}` : "") +
-                (view.runId !== undefined ? ` run=${view.runId}` : "") +
-                (view.tunnelId !== undefined ? ` tunnel=${view.tunnelId}` : "") +
-                (view.startedAt !== undefined ? ` started=${view.startedAt}` : "") +
-                (view.note !== undefined ? ` | note=${view.note}` : "") +
-                " — transport only; not delivery/ACK/completion evidence. MCP reachable does not imply any message was delivered.",
-            );
-            return;
-          }
+          // Type narrowing only: the real branch already returned above, so this
+          // keeps the offline manager's status fields statically reachable.
+          if ("kind" in manager) { await runStatus(ctx); return; }
           const status = manager.status();
           publishTunnelStatus(ctx);
           notify(
@@ -1298,13 +1445,13 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           notify(
             ctx,
             `ce-tunnel subcommands: ${SUBCOMMANDS.map((s) => s.value).join(", ")}. ` +
-              `setup = masked TUI capture into the Keychain (synthetic offline scope); ` +
-              `authorize = ONE user-triggered native macOS keychain authorization for the locally built helper (you choose Allow / Always Allow); ` +
+              `setup = Kit TUI Wizard for a real YAML profile and separate 0600 credential; bare command = persistent Manager; ` +
+              `authorize = synthetic Keychain fixture only with CE_TUNNEL_OFFLINE_TEST=1; ` +
               `start/stop = with CE_TUNNEL_OFFLINE_TEST=1 the bundled OFFLINE simulator; otherwise the REAL background client ` +
                 `(detached, survives this session; ownership record + process-identity verified; manual only — no autostart/reconnect); ` +
-              `status = separate CE, offline tunnel and observed client-activity segments. ` +
+              `status = separate CE segment plus the measured tunnel state (real background or offline simulator). ` +
               `Transport only: never delivery, ACK, reconciliation or completion evidence. ` +
-              `Every plaintext credential hand-off stays blocked: the client reads the operator's own key file via the profile's file: reference; this manager never touches the value.`,
+              `The client reads its key file via the profile's file: reference; lifecycle/status never read existing key contents. Configured != Connected.`,
           );
           return;
         }
@@ -1317,9 +1464,11 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           return;
         }
         if (sub === "start") {
-          const manager = activeManager();
-          if ("kind" in manager) {
-            try {
+          // Resolve inside the try: a malformed CE_TUNNEL_PROFILE must refuse
+          // closed here rather than reject out of the handler (R5 Lane B B2).
+          try {
+            const manager = activeManager();
+            if ("kind" in manager) {
               const started = await manager.start();
               publishTunnelStatus(ctx);
               notify(
@@ -1329,57 +1478,58 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
                   : `ce-tunnel: real background tunnel started (run ${started.runId}, pid ${started.pid}, tunnel ${started.tunnelId}, health=${started.health}, started ${started.startedAt}); ` +
                     "detached from this Pi session; transport readiness is not delivery/ACK evidence",
               );
-            } catch (error) {
+            } else {
+              const started = await manager.start();
               publishTunnelStatus(ctx);
-              notify(ctx, `ce-tunnel: start refused ${refusalText(error)}`, "warning");
+              notify(
+                ctx,
+                `ce-tunnel: started the bundled OFFLINE simulator (run ${started.runId}); ` +
+                  `simulated transport only, no real client and no credential hand-off`,
+              );
             }
-            return;
-          }
-          try {
-            const started = await manager.start();
-            publishTunnelStatus(ctx);
-            notify(
-              ctx,
-              `ce-tunnel: started the bundled OFFLINE simulator (run ${started.runId}); ` +
-                `simulated transport only, no real client and no credential hand-off`,
-            );
           } catch (error) {
+            publishTunnelStatus(ctx);
             notify(ctx, `ce-tunnel: start refused ${refusalText(error)}`, "warning");
           }
           return;
         }
         if (sub === "stop") {
-          const manager = activeManager();
-          if ("kind" in manager) {
-            const ownedRun = manager.runId();
+          // Same closed-refusal containment as start (R5 Lane B B2).
+          try {
+            const manager = activeManager();
+            if ("kind" in manager) {
+              const ownedRun = manager.runId();
+              try {
+                await manager.stop();
+                publishTunnelStatus(ctx);
+                const noteAfter = manager.status().note;
+                notify(
+                  ctx,
+                  ownedRun === undefined
+                    ? "ce-tunnel: no owned real background tunnel record; nothing was stopped"
+                    : `ce-tunnel: stopped the owned real background tunnel (run ${ownedRun}); exit verified, ownership record closed` +
+                      (noteAfter !== undefined ? `; note=${noteAfter}` : ""),
+                );
+              } catch (error) {
+                publishTunnelStatus(ctx);
+                notify(ctx, `ce-tunnel: stop refused ${refusalText(error)}; ownership retained; run status again to confirm nothing else remains`, "warning");
+              }
+              return;
+            }
+            if (!manager.status().running) {
+              notify(ctx, "ce-tunnel: no owned offline simulator is running; nothing was stopped");
+              publishTunnelStatus(ctx);
+              return;
+            }
             try {
               await manager.stop();
               publishTunnelStatus(ctx);
-              const noteAfter = manager.status().note;
-              notify(
-                ctx,
-                ownedRun === undefined
-                  ? "ce-tunnel: no owned real background tunnel record; nothing was stopped"
-                  : `ce-tunnel: stopped the owned real background tunnel (run ${ownedRun}); exit verified, ownership record closed` +
-                    (noteAfter !== undefined ? `; note=${noteAfter}` : ""),
-              );
+              notify(ctx, "ce-tunnel: stopped the owned offline simulator (exit observed)");
             } catch (error) {
-              publishTunnelStatus(ctx);
-              notify(ctx, `ce-tunnel: stop refused ${refusalText(error)}; ownership retained; run status again to confirm nothing else remains`, "warning");
+              notify(ctx, `ce-tunnel: stop refused ${refusalText(error)}`, "warning");
             }
-            return;
-          }
-          if (!manager.status().running) {
-            notify(ctx, "ce-tunnel: no owned offline simulator is running; nothing was stopped");
-            publishTunnelStatus(ctx);
-            return;
-          }
-          try {
-            await manager.stop();
-            publishTunnelStatus(ctx);
-            notify(ctx, "ce-tunnel: stopped the owned offline simulator (exit observed)");
           } catch (error) {
-            notify(ctx, `ce-tunnel: stop refused ${refusalText(error)}`, "warning");
+            notify(ctx, `ce-tunnel: stop refused ${refusalText(error)}; ownership retained`, "warning");
           }
           return;
         }
@@ -1397,8 +1547,13 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         // r2 (Lane A finding 6): NEVER echo the unknown input — it could be a
         // pasted secret. Fixed text only.
         notify(ctx, `ce-tunnel: unknown subcommand; try: ${SUBCOMMANDS.map((s) => s.value).join(", ")}`, "warning");
-      },
-    });
   };
-  registerTunnelCommand();
+  pi.registerCommand("ce-tunnel", {
+    description: "Tunnel Manager and real profile setup wizard; manual transport lifecycle only, never delivery/ACK evidence",
+    getArgumentCompletions: (prefix: string) =>
+      SUBCOMMANDS.filter((sub) => sub.value.startsWith(prefix)).map((sub) => ({
+        value: sub.value, label: sub.value, description: sub.description,
+      })),
+    handler: runTunnelCommand,
+  });
 }

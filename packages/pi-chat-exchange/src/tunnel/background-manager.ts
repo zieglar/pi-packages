@@ -165,7 +165,8 @@ import {
   chmodSync, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync,
   readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, normalize } from "node:path";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, normalize } from "node:path";
 import { TunnelRefusal } from "./codes.js";
 import { createHealthCompletionRecorder, type HealthProbeInput } from "./health.js";
 import { checkKeyFileRequirements, childEnvironment } from "./profile.js";
@@ -252,9 +253,19 @@ export interface BackgroundManagerStatus {
   readonly note: string | undefined;
 }
 
+export interface ProfileConfigurationGuard {
+  readonly profilePath: string;
+  /** Must be checked immediately before the synchronous profile commit. */
+  assertIntact(): void;
+}
+
 export interface BackgroundTunnelManager {
   readonly kind: "real-background";
   start(): Promise<BackgroundStartResult>;
+  /** Setup only: holds the SAME lifecycle/ownership lock as start/stop. The
+   * callback must be synchronous and must not invoke lifecycle methods. No
+   * running, pending, corrupt or uncertain ownership may be reconfigured. */
+  withProfileConfigurationLock<T>(operation: (guard: ProfileConfigurationGuard) => T): Promise<T>;
   stop(options?: { readonly graceMs?: number }): Promise<void>;
   /** One real measurement cycle: fresh record read + identity + health probe. */
   refresh(): Promise<BackgroundManagerStatus>;
@@ -293,8 +304,9 @@ interface TunnelRecord {
   readonly identityPending?: boolean | undefined;
 }
 
-interface ProfileFacts {
+export interface TunnelProfileFacts {
   readonly tunnelId: string;
+  readonly organizationId: string | undefined;
   readonly keyFile: string;
   readonly urlFile: string;
   readonly mcpCommand: string | undefined;
@@ -314,7 +326,8 @@ const DEFAULT_BACKGROUND_TUNNEL_TIMING: TunnelTiming = Object.freeze({
 });
 
 const DEFAULT_CLIENT_PATH = "/opt/homebrew/bin/tunnel-client";
-const DEFAULT_PROFILE_PATH = "/Users/zieglar/.config/pi-chat-exchange/tunnel/tunnel.yaml";
+/** Derived from the invoking account rather than a hardcoded operator home. */
+const defaultProfilePath = (): string => join(homedir(), ".config", "pi-chat-exchange", "tunnel", "tunnel.yaml");
 const PS_PATH = "/bin/ps";
 const PROBE_TIMEOUT_MS = 10_000;
 const IDENTITY_APPEAR_MS = 2_000;
@@ -337,7 +350,7 @@ const maskTunnelId = (id: string): string => `${id.slice(0, 13)}…`;
 // checks the same value the client will read. Anything else refuses.
 // ---------------------------------------------------------------------------
 
-function parseProfileFacts(text: string): ProfileFacts {
+export function parseTunnelProfile(text: string): TunnelProfileFacts {
   // Exhaustive grammar over the canonical profile shape (R8). Every non-blank,
   // non-comment line MUST match one production below; anything else refuses.
   if (/[\t\u0000\r\u0085\u2028\u2029]/.test(text)) {
@@ -368,7 +381,7 @@ function parseProfileFacts(text: string): ProfileFacts {
   let inCommands = false;
   let itemOpen = false;
   const seen = new Set<string>();
-  const found: { tunnelId?: string; apiKey?: string; urlFile?: string; mcpCommand?: string } = {};
+  const found: { tunnelId?: string; organizationId?: string; apiKey?: string; urlFile?: string; mcpCommand?: string } = {};
   for (const rawLine of text.split("\n")) {
     if (rawLine.trim() === "" || rawLine.trimStart().startsWith("#")) continue;
     const indent = rawLine.length - rawLine.trimStart().length;
@@ -425,7 +438,7 @@ function parseProfileFacts(text: string): ProfileFacts {
         // BG05: optional, profile-only organization context. The client reads
         // this same file; no argv/header injection or parent-env override.
         // This is a bounded local grammar, not remote binding validation.
-        bare(quoted(rawValue!, tag), tag, /^org-[A-Za-z0-9]{1,128}$/);
+        found.organizationId = bare(quoted(rawValue!, tag), tag, /^org-[A-Za-z0-9]{1,128}$/);
         break;
       case "health.listen_addr":
         bare(quoted(rawValue!, tag), tag, /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{1,5}$/);
@@ -459,10 +472,10 @@ function parseProfileFacts(text: string): ProfileFacts {
   if (found.urlFile === undefined || !isAbsolute(found.urlFile) || normalize(found.urlFile) !== found.urlFile) {
     throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "health.url_file");
   }
-  return { tunnelId: found.tunnelId, keyFile, urlFile: found.urlFile, mcpCommand: found.mcpCommand };
+  return { tunnelId: found.tunnelId, organizationId: found.organizationId, keyFile, urlFile: found.urlFile, mcpCommand: found.mcpCommand };
 }
 
-function checkKeyFileMetadata(path: string): void {
+export function checkKeyFileMetadata(path: string): void {
   let stat;
   try {
     stat = lstatSync(path);
@@ -711,13 +724,24 @@ function mapStateName(name: TunnelStateName): BackgroundStatusName {
   }
 }
 
+/** Single path-selection authority for manager, setup and configuration status.
+ * Reject control bytes before a path can reach any visible TUI/status surface. */
+export function resolveTunnelProfilePath(options: Pick<BackgroundManagerOptions, "env" | "profilePath">): string {
+  const path = options.profilePath ??
+    (typeof options.env.CE_TUNNEL_PROFILE === "string" && options.env.CE_TUNNEL_PROFILE.length > 0
+      ? options.env.CE_TUNNEL_PROFILE : defaultProfilePath());
+  if (!isAbsolute(path) || normalize(path) !== path || !/^[\x20\x21\x23-\x5B\x5D-\x7E]+$/.test(path)) {
+    throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "profile.path");
+  }
+  return path;
+}
+
 export function createBackgroundTunnelManager(options: BackgroundManagerOptions): BackgroundTunnelManager {
   const env = options.env ?? {};
   const now = options.now ?? Date.now;
   const timing = options.timing ?? DEFAULT_BACKGROUND_TUNNEL_TIMING;
   const clientPath = options.clientPath ?? DEFAULT_CLIENT_PATH;
-  const profilePath = options.profilePath
-    ?? (typeof env.CE_TUNNEL_PROFILE === "string" && env.CE_TUNNEL_PROFILE.length > 0 ? env.CE_TUNNEL_PROFILE : DEFAULT_PROFILE_PATH);
+  const profilePath = resolveTunnelProfilePath(options);
   const stateFilePath = options.stateFilePath ?? `${dirname(profilePath)}/background-state.json`;
   const logPath = `${dirname(stateFilePath)}/background-tunnel.log`;
   const spawnSeam = options.spawn ?? defaultSpawnDaemon(logPath);
@@ -1304,7 +1328,7 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
     } catch {
       throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "profile");
     }
-    const facts = parseProfileFacts(profileText);
+    const facts = parseTunnelProfile(profileText);
     checkKeyFileMetadata(facts.keyFile);
     const profileSha256 = createHash("sha256").update(profileText, "utf8").digest("hex");
     // S6/C4: prove the record location is writable BEFORE spawning.
@@ -1351,6 +1375,14 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
 
       if (fenceAtCall !== startFence) throw new TunnelRefusal("CE_TUNNEL_READY_TIMEOUT");
       assertLockIntact(); // S3-1(b): the lock must still be ours before spawn
+      // Setup commits under this same lock. Recheck after ALL asynchronous
+      // identity/list operations: never spawn against a different generation
+      // than the facts and credential metadata validated above.
+      let currentProfileText: string;
+      try { currentProfileText = readFileSync(profilePath, "utf8"); }
+      catch { throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "profile"); }
+      if (currentProfileText !== profileText) throw new TunnelRefusal("CE_TUNNEL_CONFIG_CONFLICT", "profile");
+      checkKeyFileMetadata(facts.keyFile);
       const runId = `bg-${randomUUID()}`;
       const startedAt = now();
       state = initialTunnelState(startedAt);
@@ -1655,6 +1687,28 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
   return {
     kind: "real-background" as const,
     start,
+    withProfileConfigurationLock: <T>(operation: (guard: ProfileConfigurationGuard) => T): Promise<T> => enqueue(async () => {
+      if (disposed) throw new TunnelRefusal("CE_TUNNEL_MANAGER_BUSY");
+      const release = await acquireLock();
+      try {
+        reloadRecord();
+        if (recordCorrupt) throw new TunnelRefusal("CE_TUNNEL_STATE_CORRUPT");
+        // Do not turn a setup action into recovery, a stop or an adoption.
+        // Even a stale running ledger requires explicit lifecycle resolution.
+        if (record !== undefined && record.state !== "stopped") throw new TunnelRefusal("CE_TUNNEL_MANAGER_BUSY");
+        const listed = await listProcesses();
+        if (listed.kind !== "ok") throw new TunnelRefusal("CE_TUNNEL_MANAGER_BUSY");
+        if (listed.processes.some((proc) => proc.command.includes(`--profile-file ${profilePath}`))) {
+          throw new TunnelRefusal("CE_TUNNEL_EXTERNAL_INSTANCE");
+        }
+        assertLockIntact();
+        const token = heldLockToken;
+        return operation({ profilePath, assertIntact: () => {
+          if (token === undefined || heldLockToken !== token) throw new TunnelRefusal("CE_TUNNEL_MANAGER_BUSY");
+          assertLockIntact();
+        } });
+      } finally { release(); }
+    }),
     stop,
     refresh,
     status,

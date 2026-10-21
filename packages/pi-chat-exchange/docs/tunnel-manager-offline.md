@@ -1,9 +1,10 @@
 # Tunnel manager — offline scope (HOST-09 B1.1)
 
-This document describes **only** what B1.1 implements: masked credential
-capture, scoped Keychain CRUD, and an owned **offline simulator** lifecycle.
-It does not describe a working tunnel. For operator setup of the real client,
-see `tunnel-local.md` (HOST-07), which B1.1 does not change.
+This document covers the **explicit offline harness** retained from HOST-09 B1.1:
+masked capture, scoped Keychain CRUD, and an owned offline simulator lifecycle.
+It is not the current real-profile setup guide. For the Kit Setup Wizard and
+persistent Manager, see [`tunnel-setup.md`](tunnel-setup.md). Synthetic setup and
+Keychain authorization are reachable only with `CE_TUNNEL_OFFLINE_TEST=1`.
 
 ## What is implemented
 
@@ -17,13 +18,14 @@ see `tunnel-local.md` (HOST-07), which B1.1 does not change.
 
 ## Hard limits
 
-- **A real tunnel client start is blocked.** There is no code path that passes a
-  credential to a child process. `resolveCredentialPlan`'s `temp-file` branch
-  and `allowPlaintextTempFile` cannot enable one; neither can an existing key
-  file. R11 stays blocked.
+- **This simulator cannot start a real client.** Its credential hand-off remains
+  blocked. The separate real-background Manager's **real start** requires the
+  exact `CE_TUNNEL_BACKGROUND_ALLOW=1` gate and a validated real profile
+  (status/setup/stop create no connection and run gate-free); see the real setup
+  guide. No plaintext key is placed in child argv or environment.
 - **The simulator needs an explicit opt-in**: `CE_TUNNEL_OFFLINE_TEST=1`
-  (exact string). Without it, `start` refuses `CE_TUNNEL_CREDENTIAL_HANDOFF_BLOCKED`
-  *before* any credential interaction.
+  (exact string). Without it, the extension selects the separate real-background
+  Manager; it does not silently enable simulator credential behavior.
 - **No autostart, no restart, no auto-respawn.** An unexpected exit — including
   exit code 0 — becomes `Error` and requires an explicit `start`.
 - **Only the owned child is ever signalled.** No PID is adopted from disk, a

@@ -49,6 +49,8 @@ vi.mock("../../../../packages/pi-chat-exchange/dist/tunnel/secure-input.js", () 
 
 beforeEach(() => {
   vi.stubEnv("CE_ALLOWLIST", "/dev/null");
+  // Synthetic Keychain authorization is an explicit offline harness only.
+  vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", "1");
   requestAuthorization.mockReset();
   plainRead.mockReset();
   store.mockReset().mockResolvedValue(undefined);
@@ -99,6 +101,19 @@ async function ceTunnel(): Promise<CommandHandler & { events: Map<string, (event
 const SECRET = "sk-authorize-canary-0007";
 
 describe("B1.1-INTEGRATION /ce-tunnel authorize", () => {
+  it("real profile mode never authorizes or reads the synthetic Keychain scope", async () => {
+    vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", "");
+    requestAuthorization.mockResolvedValue(SECRET);
+    plainRead.mockResolvedValue(SECRET);
+    const handler = await ceTunnel();
+    const { ctx, notifications } = context();
+    await handler("authorize", ctx);
+    expect(createdRunner).not.toHaveBeenCalled();
+    expect(requestAuthorization).not.toHaveBeenCalled();
+    expect(plainRead).not.toHaveBeenCalled();
+    expect(notifications.join("\n")).not.toContain(SECRET);
+  });
+
   it("lists authorize in the completions and the help text", async () => {
     const handler = await ceTunnel();
     const { ctx, notifications } = context();

@@ -107,6 +107,31 @@ cpSync(resolve(deployRoot, "node_modules"), resolve(stagedServer, "node_modules"
   dereference: true,
 });
 rmSync(resolve(stagedServer, "node_modules/.bin"), { recursive: true, force: true });
+// Never ship development-only host SDK/type packages in the plugin server. The
+// R5 Lane B fix moved the Pi key-protocol seam into `pi-extension/` (loaded by
+// the host, not bundled), so `src/` no longer imports `@earendil-works/*`; these
+// pruned packages were previously dragged in only to satisfy type-check peers.
+const PRUNED_DEV_PACKAGES = new Set(["@earendil-works/pi-coding-agent", "@types/node"]);
+const nm = resolve(stagedServer, "node_modules");
+for (const scopeOrName of readdirSync(nm)) {
+  const scopeDir = resolve(nm, scopeOrName);
+  if (scopeOrName.startsWith("@")) {
+    for (const name of readdirSync(scopeDir)) {
+      if (PRUNED_DEV_PACKAGES.has(`${scopeOrName}/${name}`)) rmSync(resolve(scopeDir, name), { recursive: true, force: true });
+    }
+  } else if (PRUNED_DEV_PACKAGES.has(scopeOrName)) {
+    rmSync(scopeDir, { recursive: true, force: true });
+  }
+}
+// pnpm keeps a private `.pnpm` mirror (scoped `name/version/hash`) and a
+// `.modules.yaml`/lock that record the ephemeral deploy tmpdir — an absolute
+// host path. Prune both so the packaged server never embeds operator layout.
+const pnpmMirror = resolve(nm, ".pnpm");
+for (const pkg of PRUNED_DEV_PACKAGES) {
+  rmSync(resolve(pnpmMirror, pkg), { recursive: true, force: true });
+}
+rmSync(resolve(nm, ".modules.yaml"), { force: true });
+rmSync(resolve(pnpmMirror, "lock.yaml"), { force: true });
 
 writeFileSync(
   resolve(stagedServer, "package.json"),

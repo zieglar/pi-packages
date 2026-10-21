@@ -27,6 +27,7 @@ export class TunnelConfigError extends TunnelRefusal {
 
 export interface TunnelProfileInput {
   readonly tunnelId: string;
+  readonly organizationId?: string;
   /** Absolute path to the credential file referenced as `file:` (never a value). */
   readonly keyFile: string;
   /** Absolute command line launching the CE MCP stdio server. */
@@ -37,7 +38,7 @@ export interface TunnelProfileInput {
 
 export interface TunnelProfile {
   readonly config_version: 1;
-  readonly control_plane: { readonly base_url: string; readonly tunnel_id: string; readonly api_key: string };
+  readonly control_plane: { readonly base_url: string; readonly tunnel_id: string; readonly organization_id?: string; readonly api_key: string };
   readonly health: { readonly listen_addr: string; readonly url_file: string };
   readonly admin_ui: { readonly open_browser: false; readonly allow_remote_ui: false; readonly log_buffer_events: 0 };
   readonly harpoon: { readonly capture_payloads: false };
@@ -53,24 +54,71 @@ export interface TunnelProfile {
 const TUNNEL_ID_PATTERN = /^tunnel_[A-Za-z0-9]{8,}$/;
 const CREDENTIAL_SHAPED = /(sk-[A-Za-z0-9_-]{8,})|(cap_[0-9a-f]{16,})|(BEGIN [A-Z ]*PRIVATE KEY)/i;
 
-// Legacy serialization is NOT a shell language. Only exact CE stdio argv,
-// single-space separators and narrow ASCII paths: no expansions or quoting.
-const COMMAND_PATH = /^\/[A-Za-z0-9_./-]+$/;
-function validateMcpCommand(command: string): void {
+// Exact CE stdio argv, single-space separators, narrow ASCII paths. Space-
+// bearing paths use single quotes; expansions, metacharacters and escapes are
+// never accepted. This encoding is safe for a shell and for quote-aware argv
+// splitters. R5 Lane A F1: a space-bearing path may not contain a segment that
+// starts with '-', so even a naive whitespace split cannot forge an option.
+const COMMAND_PATH = /^\/[A-Za-z0-9_./ -]+$/;
+function isCommandPath(path: string): boolean {
+  if (!COMMAND_PATH.test(path)) return false;
+  return !path.includes(" ") || !path.split(" ").some((segment) => segment.startsWith("-"));
+}
+export function parseTunnelMcpCommand(command: string): { readonly nodePath: string; readonly scriptPath: string; readonly bindingPath: string } {
   const field = "mcp.commands.0.command";
   if (typeof command !== "string" || CREDENTIAL_SHAPED.test(command)) throw new TunnelConfigError(field);
-  const argv = command.split(" ");
+  const tokens = command.match(/'[^']*'|[^ ']+/g) ?? [];
+  if (tokens.join(" ") !== command) throw new TunnelConfigError(field);
+  // Quoting is permitted only where required to encode a space-bearing path.
+  // Keep the pre-existing canonical grammar for flags and ordinary paths.
+  if (tokens.some((token, index) => token.startsWith("'") &&
+      (![0, 1, 3].includes(index) || !token.includes(" ")))) throw new TunnelConfigError(field);
+  const argv = tokens.map((token) => token.startsWith("'") ? token.slice(1, -1) : token);
   if (argv.length !== 4 && argv.length !== 6) throw new TunnelConfigError(field);
   const [executable, script, configFlag, configPath, channelFlag, channel] = argv;
   for (const path of [executable, script, configPath]) {
-    if (path === undefined || !COMMAND_PATH.test(path)) throw new TunnelConfigError(field);
+    if (path === undefined || !isCommandPath(path)) throw new TunnelConfigError(field);
     absolutePath(path, field);
   }
   if (!executable?.endsWith("/node") || !script?.endsWith("/mcp-stdio.js") || configFlag !== "--config") {
     throw new TunnelConfigError(field);
   }
   if (argv.length === 6 && (channelFlag !== "--channel" || channel !== "main")) throw new TunnelConfigError(field);
+  return { nodePath: executable!, scriptPath: script!, bindingPath: configPath! };
 }
+
+export function buildTunnelMcpCommand(input: { readonly nodePath: string; readonly scriptPath: string; readonly bindingPath: string }): string {
+  const quote = (path: string): string => {
+    if (!isCommandPath(path)) throw new TunnelConfigError("mcp.commands.0.command");
+    absolutePath(path, "mcp.commands.0.command");
+    return path.includes(" ") ? `'${path}'` : path;
+  };
+  const command = `${quote(input.nodePath)} ${quote(input.scriptPath)} --config ${quote(input.bindingPath)}`;
+  parseTunnelMcpCommand(command);
+  return command;
+}
+
+/** Change only argv's config-path token. Existing executable/script quoting,
+ * config flag and optional --channel main tokens remain byte-identical. */
+export function replaceTunnelMcpBindingPath(command: string, bindingPath: string): string {
+  const existing = parseTunnelMcpCommand(command);
+  const encoded = buildTunnelMcpCommand({ nodePath: existing.nodePath, scriptPath: existing.scriptPath, bindingPath });
+  const tokens = command.match(/'[^']*'|[^ ']+/g)!;
+  tokens[3] = encoded.match(/'[^']*'|[^ ']+/g)![3]!;
+  const next = tokens.join(" ");
+  parseTunnelMcpCommand(next);
+  return next;
+}
+
+/** Pure validation, shared by the wizard adapter and the persistence layer. */
+export function validateTunnelIdentity(tunnelId: string, organizationId?: string): void {
+  if (typeof tunnelId !== "string" || !TUNNEL_ID_PATTERN.test(tunnelId)) throw new TunnelConfigError("control_plane.tunnel_id");
+  if (organizationId !== undefined && organizationId !== "" &&
+      (typeof organizationId !== "string" || !/^org-[A-Za-z0-9]{1,128}$/.test(organizationId))) {
+    throw new TunnelConfigError("control_plane.organization_id");
+  }
+}
+
 /** Only canonical, credential-free HTTPS may be serialized into the profile. */
 function validateControlPlaneUrl(value: string): void {
   const field = "control_plane.base_url";
@@ -96,21 +144,20 @@ function absolutePath(value: unknown, field: string): string {
 
 /** Build the profile. Every exposure switch is explicit; the key stays a reference. */
 export function buildTunnelProfile(input: TunnelProfileInput): TunnelProfile {
-  if (typeof input.tunnelId !== "string" || !TUNNEL_ID_PATTERN.test(input.tunnelId)) {
-    throw new TunnelConfigError("control_plane.tunnel_id");
-  }
+  validateTunnelIdentity(input.tunnelId, input.organizationId);
   const keyFile = absolutePath(input.keyFile, "control_plane.api_key");
   const healthUrlFile = absolutePath(input.healthUrlFile, "health.url_file");
 
   const command = input.mcpCommand;
-  validateMcpCommand(command);
+  parseTunnelMcpCommand(command);
 
   const baseUrl = input.controlPlaneBaseUrl ?? "https://api.openai.com";
   validateControlPlaneUrl(baseUrl);
 
   return Object.freeze({
     config_version: 1,
-    control_plane: Object.freeze({ base_url: baseUrl, tunnel_id: input.tunnelId, api_key: `file:${keyFile}` }),
+    control_plane: Object.freeze({ base_url: baseUrl, tunnel_id: input.tunnelId,
+      ...(input.organizationId ? { organization_id: input.organizationId } : {}), api_key: `file:${keyFile}` }),
     health: Object.freeze({ listen_addr: "127.0.0.1:0", url_file: healthUrlFile }),
     admin_ui: Object.freeze({ open_browser: false as const, allow_remote_ui: false as const, log_buffer_events: 0 as const }),
     harpoon: Object.freeze({ capture_payloads: false as const }),
@@ -118,6 +165,26 @@ export function buildTunnelProfile(input: TunnelProfileInput): TunnelProfile {
     mcp: Object.freeze({ commands: Object.freeze([Object.freeze({ channel: "main" as const, command })]) }),
     localUiExposureAcknowledged: true as const,
   });
+}
+
+/** Serialize exactly the strict YAML subset accepted by the manager/client.
+ * The acknowledgement is CE metadata, not a tunnel-client configuration key. */
+export function serializeTunnelProfile(profile: TunnelProfile): string {
+  const scalar = (value: string): string => {
+    if (!/^[\x20\x21\x23-\x5B\x5D-\x7E]*$/.test(value)) throw new TunnelConfigError("profile.scalar");
+    return `"${value}"`;
+  };
+  return [
+    "config_version: 1", "control_plane:",
+    `  base_url: ${scalar(profile.control_plane.base_url)}`,
+    `  tunnel_id: ${scalar(profile.control_plane.tunnel_id)}`,
+    ...(profile.control_plane.organization_id ? [`  organization_id: ${scalar(profile.control_plane.organization_id)}`] : []),
+    `  api_key: ${scalar(profile.control_plane.api_key)}`,
+    "health:", `  listen_addr: ${scalar(profile.health.listen_addr)}`, `  url_file: ${scalar(profile.health.url_file)}`,
+    "admin_ui:", "  open_browser: false", "  allow_remote_ui: false", "  log_buffer_events: 0",
+    "harpoon:", "  capture_payloads: false", "log:", "  level: info", "  format: json", "  http_raw_unsafe: false",
+    "mcp:", "  commands:", "    - channel: main", `      command: ${scalar(profile.mcp.commands[0]!.command)}`, "",
+  ].join("\n");
 }
 
 /**

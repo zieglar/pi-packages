@@ -28,6 +28,7 @@ interface ComponentView {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SecureInputModule = any;
 
+import { TEST_KEYS } from "./keys-stub.js";
 const MODULE_SPECIFIER = "../../src/tunnel/secure-input.js";
 
 async function load(): Promise<SecureInputModule | undefined> {
@@ -112,7 +113,7 @@ describe("B1.1 secure input — availability gates", () => {
     const api = await mod();
     const h = harness({ mode });
     const w = writer();
-    const outcome = await api.captureTunnelSecret(h.ctx, w);
+    const outcome = await api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS });
     expect(outcome).toEqual({ status: "refused", code: "CE_TUNNEL_INPUT_UNAVAILABLE" });
     expect(w.store).not.toHaveBeenCalled();
     expect(h.ctx.ui.notify).not.toHaveBeenCalled();
@@ -122,7 +123,7 @@ describe("B1.1 secure input — availability gates", () => {
     const api = await mod();
     const h = harness({ withCustom: false });
     const w = writer();
-    expect(await api.captureTunnelSecret(h.ctx, w)).toEqual({
+    expect(await api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS })).toEqual({
       status: "refused",
       code: "CE_TUNNEL_INPUT_UNAVAILABLE",
     });
@@ -135,7 +136,7 @@ describe("B1.1 secure input — capture and hand-off", () => {
     const api = await mod();
     const h = harness();
     const w = writer();
-    const pending = api.captureTunnelSecret(h.ctx, w);
+    const pending = api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS });
     await h.installed;
     for (const ch of SENTINEL) h.type(ch);
     const rendered = h.render();
@@ -157,7 +158,7 @@ describe("B1.1 secure input — capture and hand-off", () => {
   it("renders fixed labels, a mask only, and never exceeds the requested width", async () => {
     const api = await mod();
     const h = harness();
-    void api.captureTunnelSecret(h.ctx, writer());
+    void api.captureTunnelSecret(h.ctx, writer(), { keys: TEST_KEYS });
     await h.installed;
     for (const ch of "abcdefghij") h.type(ch);
     const lines = h.component().render(24);
@@ -176,7 +177,7 @@ describe("B1.1 secure input — capture and hand-off", () => {
     const api = await mod();
     const h = harness();
     const w = writer();
-    const pending = api.captureTunnelSecret(h.ctx, w);
+    const pending = api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS });
     await h.installed;
     for (const ch of SENTINEL) h.type(ch);
     h.type(key);
@@ -188,7 +189,7 @@ describe("B1.1 secure input — capture and hand-off", () => {
     const api = await mod();
     const h = harness();
     const w = writer();
-    const pending = api.captureTunnelSecret(h.ctx, w);
+    const pending = api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS });
     await h.installed;
     h.type("a");
     h.type("\r");
@@ -205,7 +206,7 @@ describe("B1.1 secure input — capture and hand-off", () => {
     const api = await mod();
     const h = harness();
     const w = writer();
-    void api.captureTunnelSecret(h.ctx, w);
+    void api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS });
     await h.installed;
     h.type("\r");
     expect(h.doneCalls()).toBe(0);
@@ -217,17 +218,21 @@ describe("B1.1 secure input — capture and hand-off", () => {
     const api = await mod();
     const h = harness();
     const w = writer();
-    const pending = api.captureTunnelSecret(h.ctx, w);
+    const pending = api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS });
     await h.installed;
     h.type("ab");
     h.type("\x7f");
     const max = api.SECURE_INPUT_LIMITS.maxLength as number;
     for (let i = 0; i < max + 10; i += 1) h.type("x");
     h.type("\r");
-    const outcome = await pending;
-    expect(outcome).toEqual({ status: "stored" });
-    expect(w.stored[0]?.length).toBe(max);
-    expect(w.stored[0]?.startsWith("ax")).toBe(true);
+    expect(h.doneCalls()).toBe(0);
+    expect(w.store).not.toHaveBeenCalled();
+    // An explicit reset is required; never persist a truncated credential.
+    h.type("\x15");
+    h.type("corrected");
+    h.type("\r");
+    expect(await pending).toEqual({ status: "stored" });
+    expect(w.stored).toEqual(["corrected"]);
   });
 });
 
@@ -236,7 +241,7 @@ describe("B1.1 secure input — paste policy", () => {
     const api = await mod();
     const h = harness();
     const w = writer();
-    const pending = api.captureTunnelSecret(h.ctx, w);
+    const pending = api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS });
     await h.installed;
     h.type("\x1b[200~sk-b11-");
     h.type("synthetic-canary-0001");
@@ -256,7 +261,7 @@ describe("B1.1 secure input — paste policy", () => {
     const api = await mod();
     const h = harness();
     const w = writer();
-    void api.captureTunnelSecret(h.ctx, w);
+    void api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS });
     await h.installed;
     h.type(data);
     expect(h.doneCalls()).toBe(0);
@@ -271,9 +276,14 @@ describe("B1.1 secure input — paste policy", () => {
     const api = await mod();
     const h = harness();
     const w = writer();
-    const pending = api.captureTunnelSecret(h.ctx, w);
+    const pending = api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS });
     await h.installed;
     h.type(`\x1b[200~${"y".repeat((api.SECURE_INPUT_LIMITS.maxLength as number) + 1)}\x1b[201~`);
+    h.type("z");
+    h.type("\r");
+    expect(h.doneCalls()).toBe(0);
+    expect(w.store).not.toHaveBeenCalled();
+    h.type("\x15");
     h.type("z");
     h.type("\r");
     expect(await pending).toEqual({ status: "stored" });
@@ -284,7 +294,7 @@ describe("B1.1 secure input — paste policy", () => {
     const api = await mod();
     const h = harness();
     const w = writer();
-    void api.captureTunnelSecret(h.ctx, w);
+    void api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS });
     await h.installed;
     h.type("\x1b[200~abc\n");
     expect(h.doneCalls()).toBe(0);
@@ -300,7 +310,7 @@ describe("B1.1 secure input — timeout, abort, writer failure", () => {
     const api = await mod();
     const h = harness();
     const w = writer();
-    const pending = api.captureTunnelSecret(h.ctx, w, { timeoutMs: 20 });
+    const pending = api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS, timeoutMs: 20 });
     await h.installed;
     h.type("abc");
     expect(await pending).toEqual({ status: "cancelled", reason: "timeout" });
@@ -312,7 +322,7 @@ describe("B1.1 secure input — timeout, abort, writer failure", () => {
     const h = harness();
     const w = writer();
     const controller = new AbortController();
-    const pending = api.captureTunnelSecret(h.ctx, w, { signal: controller.signal });
+    const pending = api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS, signal: controller.signal });
     await h.installed;
     h.type("abc");
     controller.abort();
@@ -326,7 +336,7 @@ describe("B1.1 secure input — timeout, abort, writer failure", () => {
     const h = harness();
     const w = writer();
     const controller = new AbortController();
-    const pending = api.captureTunnelSecret(h.ctx, w, { signal: controller.signal });
+    const pending = api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS, signal: controller.signal });
     await h.installed;
     for (const ch of SENTINEL) h.type(ch);
     h.type("\r");
@@ -345,7 +355,7 @@ describe("B1.1 secure input — timeout, abort, writer failure", () => {
     const started = new Promise<void>((resolve) => { storeStarted = resolve; });
     const completion = new Promise<void>((resolve) => { finishStore = resolve; });
     const w = { store: vi.fn(async (_secret: string) => { storeStarted(); await completion; }) };
-    const pending = api.captureTunnelSecret(h.ctx, w, { signal: controller.signal });
+    const pending = api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS, signal: controller.signal });
     await h.installed;
     for (const ch of SENTINEL) h.type(ch);
     h.type("\r");
@@ -366,7 +376,7 @@ describe("B1.1 secure input — timeout, abort, writer failure", () => {
     const w = writer();
     const controller = new AbortController();
     controller.abort();
-    const outcome = await api.captureTunnelSecret(h.ctx, w, { signal: controller.signal });
+    const outcome = await api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS, signal: controller.signal });
     expect(outcome).toEqual({ status: "cancelled", reason: "aborted" });
     expect(w.store).not.toHaveBeenCalled();
   });
@@ -379,7 +389,7 @@ describe("B1.1 secure input — timeout, abort, writer failure", () => {
         throw new Error(`keychain exploded while storing ${secret}`);
       }),
     };
-    const pending = api.captureTunnelSecret(h.ctx, failing);
+    const pending = api.captureTunnelSecret(h.ctx, failing, { keys: TEST_KEYS });
     await h.installed;
     for (const ch of SENTINEL) h.type(ch);
     h.type("\r");
@@ -394,7 +404,7 @@ describe("B1.1 secure input — timeout, abort, writer failure", () => {
     const api = await mod();
     const h = harness();
     const w = writer();
-    void api.captureTunnelSecret(h.ctx, w);
+    void api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS });
     await h.installed;
     for (const ch of SENTINEL) h.type(ch);
     h.component().dispose?.();
@@ -402,5 +412,185 @@ describe("B1.1 secure input — timeout, abort, writer failure", () => {
     expect(w.store).not.toHaveBeenCalled();
     expect(h.render()).not.toContain(SENTINEL);
     h.component().dispose?.();
+  });
+});
+
+describe("real-profile masked input — protocol and rejection regressions", () => {
+  it("accepts Kitty printable keys, ignores releases, and handles encoded backspace/enter", async () => {
+    const api = await mod();
+    const h = harness();
+    const w = writer();
+    const pending = api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS });
+    await h.installed;
+    h.type("\x1b[97u");
+    h.type("\x1b[97;1:3u"); // key release must not duplicate input
+    h.type("\x1b[98u");
+    h.type("\x1b[127u");
+    h.type("\x1b[99u");
+    h.type("\x1b[13u");
+    expect(h.doneCalls()).toBe(1);
+    if (h.doneCalls() === 0) h.type("\x1b");
+    expect(await pending).toEqual({ status: "stored" });
+    expect(w.stored.length === 1 && w.stored[0] === "ac").toBe(true);
+    expect(h.component().render(80)[1]).toBe("> ");
+  });
+
+  it("preserves a printable xterm modifyOtherKeys character", async () => {
+    const api = await mod();
+    const h = harness();
+    const w = writer();
+    const pending = api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS });
+    await h.installed;
+    h.type("prefix");
+    h.type("\x1b[27;2;65~"); // xterm modifyOtherKeys Shift-A
+    h.type("\r");
+    expect(await pending).toEqual({ status: "stored" });
+    expect(w.stored.length === 1 && w.stored[0] === "prefixA").toBe(true);
+  });
+
+  it.each(["\x1b[27u", "\x1b[99;5u", "\x1b", "\x03"])("cancels exactly once with legacy or encoded key %j", async (key) => {
+    const api = await mod();
+    const h = harness();
+    const w = writer();
+    const pending = api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS });
+    await h.installed;
+    h.type("abc");
+    h.type(key);
+    expect(h.doneCalls()).toBe(1);
+    if (h.doneCalls() === 0) h.component().dispose?.();
+    expect(await pending).toEqual({ status: "cancelled", reason: "user" });
+    h.type(key);
+    h.component().dispose?.();
+    expect(h.doneCalls()).toBe(1);
+    expect(w.store).not.toHaveBeenCalled();
+  });
+
+  it.each(["\x1b", "\x03", "\x1b[27u", "\x1b[99;5u"])("cancels an unfinished paste with standalone cancel key %j", async (key) => {
+    const api = await mod();
+    const h = harness();
+    const w = writer();
+    const pending = api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS });
+    await h.installed;
+    h.type("\x1b[200~unfinished");
+    h.type(key);
+    expect(h.doneCalls()).toBe(1);
+    if (h.doneCalls() === 0) h.component().dispose?.();
+    expect(await pending).toEqual({ status: "cancelled", reason: "user" });
+    expect(w.store).not.toHaveBeenCalled();
+  });
+
+  it.each(["mixedévalue", "has space", "abc\n", "abc\x03", "x".repeat(513), "\x1b[233u"])("rejects an invalid unframed event atomically (case %#)", async (invalid) => {
+    const api = await mod();
+    const h = harness();
+    const w = writer();
+    const pending = api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS });
+    await h.installed;
+    h.type("ab");
+    h.type(invalid);
+    expect(h.render()).toContain("input rejected");
+    h.type("\r");
+    expect(h.doneCalls()).toBe(0);
+    expect(w.stored.length).toBe(0);
+    // Correct explicitly; no partial characters from the invalid event remain.
+    h.type("\x7f");
+    h.type("c");
+    h.type("\r");
+    expect(await pending).toEqual({ status: "stored" });
+    expect(w.stored.length === 1 && w.stored[0] === "ac").toBe(true);
+  });
+
+  it.each([false, true])("does not misclassify printable :3u text as a key release (paste=%s)", async (paste) => {
+    const api = await mod();
+    const h = harness();
+    const w = writer();
+    const pending = api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS });
+    await h.installed;
+    if (paste) h.type("\x1b[200~");
+    h.type("abc:3u");
+    if (paste) h.type("\x1b[201~");
+    h.type("\r");
+    const completed = h.doneCalls() === 1;
+    if (!completed) h.type("\x1b");
+    expect(completed).toBe(true);
+    expect(await pending).toEqual({ status: "stored" });
+    expect(w.stored.length === 1 && w.stored[0] === "abc:3u").toBe(true);
+  });
+
+  it("keeps rejection sticky through subsequent printable input until an explicit reset", async () => {
+    const api = await mod();
+    const h = harness();
+    const w = writer();
+    const pending = api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS });
+    await h.installed;
+    h.type("ab");
+    h.type("bad input");
+    h.type("more");
+    h.type("\r");
+    expect(h.doneCalls()).toBe(0);
+    expect(w.stored.length).toBe(0);
+    h.type("\x1b[117;5u"); // Kitty Ctrl-U reset
+    h.type("replacement");
+    h.type("\r");
+    expect(await pending).toEqual({ status: "stored" });
+    expect(w.stored.length === 1 && w.stored[0] === "replacement").toBe(true);
+  });
+
+  it("never submits a paste containing control keys, including an appended enter", async () => {
+    const api = await mod();
+    const h = harness();
+    const w = writer();
+    const pending = api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS });
+    await h.installed;
+    h.type("previous");
+    h.type("\x1b[200~bad\x03\x1b[13u\x1b[201~\r");
+    expect(h.doneCalls()).toBe(0);
+    expect(w.stored.length).toBe(0);
+    h.type("\x1b");
+    await pending;
+  });
+
+  it("disposes every timer including the deferred already-aborted callback", async () => {
+    const api = await mod();
+    vi.useFakeTimers();
+    try {
+      const h = harness();
+      const w = writer();
+      const controller = new AbortController();
+      controller.abort();
+      const pending = api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS, signal: controller.signal });
+      await h.installed;
+      h.component().dispose?.();
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.runAllTimersAsync();
+      expect(await pending).toEqual({ status: "cancelled", reason: "aborted" });
+      expect(h.doneCalls()).toBe(1);
+      expect(w.store).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["escape", "timeout", "dispose", "abort"])("releases timeout and abort listener after %s", async (action) => {
+    const api = await mod();
+    vi.useFakeTimers();
+    try {
+      const h = harness();
+      const w = writer();
+      const controller = new AbortController();
+      const remove = vi.spyOn(controller.signal, "removeEventListener");
+      const pending = api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS, signal: controller.signal, timeoutMs: 10 });
+      await h.installed;
+      if (action === "escape") h.type("\x1b");
+      if (action === "timeout") await vi.advanceTimersByTimeAsync(10);
+      if (action === "dispose") h.component().dispose?.();
+      if (action === "abort") controller.abort();
+      await pending;
+      expect(vi.getTimerCount()).toBe(0);
+      expect(remove).toHaveBeenCalledTimes(1);
+      expect(h.doneCalls()).toBe(1);
+      expect(w.store).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

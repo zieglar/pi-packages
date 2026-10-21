@@ -1914,3 +1914,64 @@ describe("LOCAL-BACKGROUND-05 — profile-only organization context", () => {
     expect(h.spawnCalls).toHaveLength(1);
   });
 });
+
+describe("real setup shares background coordination", () => {
+  it("start refuses a profile changed while obtaining the shared lock", async () => {
+    const h = makeHarness(); h.probes.push(healthyProbe());
+    let changed = false;
+    h.onInspect = (pid) => {
+      if (pid === process.pid && !changed) {
+        changed = true;
+        writeFileSync(h.profilePath, readFileSync(h.profilePath, "utf8") + "# changed during lock acquisition\n");
+      }
+    };
+    await expect(createBackgroundTunnelManager(h.options).start()).rejects.toMatchObject({ code: "CE_TUNNEL_CONFIG_CONFLICT" });
+    expect(h.spawnCalls).toHaveLength(0);
+  });
+  it("start rechecks after asynchronous process enumeration inside the lock", async () => {
+    const h = makeHarness(); h.probes.push(healthyProbe());
+    const manager = createBackgroundTunnelManager({ ...h.options, listProcesses: async () => {
+      writeFileSync(h.profilePath, readFileSync(h.profilePath, "utf8") + "# changed during enumeration\n");
+      return { kind: "ok", processes: [] };
+    } });
+    await expect(manager.start()).rejects.toMatchObject({ code: "CE_TUNNEL_CONFIG_CONFLICT" });
+    expect(h.spawnCalls).toHaveLength(0);
+  });
+  it("setup guard cannot be reused after release or during a successor lock", async () => {
+    const h = makeHarness(); const manager = createBackgroundTunnelManager(h.options);
+    let retained!: { assertIntact(): void };
+    await manager.withProfileConfigurationLock((guard) => { retained = guard; });
+    expect(() => retained.assertIntact()).toThrow();
+    await manager.withProfileConfigurationLock(() => { expect(() => retained.assertIntact()).toThrow(); });
+  });
+  it("setup callback executes only with the actual ownership lock and no record writes", async () => {
+    const h = makeHarness(); const manager = createBackgroundTunnelManager(h.options);
+    const value = await manager.withProfileConfigurationLock((guard) => {
+      guard.assertIntact(); expect(readFileSync(`${h.statePath}.lock.d/holder.json`, "utf8")).toContain("token");
+      return "saved-fixture";
+    });
+    expect(value).toBe("saved-fixture"); expect(recordStateOrAbsent(h)).toBe(true);
+    expect(readdirSync(h.dir)).not.toContain("background-state.json.lock.d"); expect(h.spawnCalls).toHaveLength(0);
+  });
+  it.each(["running", "stop-unconfirmed"])("setup refuses %s ownership even when no health is known", async (state) => {
+    const h = makeHarness(); writeFileSync(h.statePath, JSON.stringify(diskRecord(h, "existing", 1234, { state })));
+    let called = false;
+    await expect(createBackgroundTunnelManager(h.options).withProfileConfigurationLock(() => { called = true; }))
+      .rejects.toMatchObject({ code: "CE_TUNNEL_MANAGER_BUSY" });
+    expect(called).toBe(false); expect(h.signals).toHaveLength(0); expect(h.spawnCalls).toHaveLength(0);
+  });
+  it("setup refuses corrupt ownership and uncertain process enumeration", async () => {
+    const h = makeHarness(); writeFileSync(h.statePath, "corrupt");
+    await expect(createBackgroundTunnelManager(h.options).withProfileConfigurationLock(() => undefined))
+      .rejects.toMatchObject({ code: "CE_TUNNEL_STATE_CORRUPT" });
+    rmSync(h.statePath);
+    await expect(createBackgroundTunnelManager({ ...h.options, listProcesses: async () => ({ kind: "unknown" }) })
+      .withProfileConfigurationLock(() => undefined)).rejects.toMatchObject({ code: "CE_TUNNEL_MANAGER_BUSY" });
+  });
+  it("setup refuses an external profile reader without stopping or adopting it", async () => {
+    const h = makeHarness(); h.procs.set(555, { pid: 555, command: `${h.client} run --profile-file ${h.profilePath}`, startedKey: "external" });
+    await expect(createBackgroundTunnelManager(h.options).withProfileConfigurationLock(() => undefined))
+      .rejects.toMatchObject({ code: "CE_TUNNEL_EXTERNAL_INSTANCE" });
+    expect(h.signals).toHaveLength(0); expect(recordStateOrAbsent(h)).toBe(true);
+  });
+});
