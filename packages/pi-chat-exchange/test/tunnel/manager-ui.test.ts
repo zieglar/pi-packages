@@ -7,7 +7,7 @@ interface ManagerApi {
   runTunnelManagerUi(ctx: { mode: string; hasUI: boolean; ui: object }, ports: {
     read(): Promise<unknown>; setup(): Promise<unknown>; start(): Promise<unknown>; stop(): Promise<unknown>;
   }, options?: Record<string, unknown>): Promise<unknown>;
-  tunnelManagerActions(state: string): readonly string[];
+  tunnelManagerActions(projection: unknown): readonly string[];
 }
 async function api() {
   const loaded = await import(MODULE).catch(() => undefined);
@@ -17,10 +17,12 @@ async function api() {
 }
 
 function projection(state = "STOPPED") {
+  // A STOPPED profile with one missing field is the repairable (Edit) case.
+  const stoppedRepairable = state === "STOPPED";
   return {
     state, profilePath: "/synthetic/tunnel.yaml", tunnelIdAlreadyMasked: "tunnel_ABCDEF…",
-    organizationConfigured: true, binding: "configured", credentialConfigured: true,
-    evidence: "none",
+    organizationConfigured: true, binding: stoppedRepairable ? "invalid" : "configured",
+    credentialConfigured: !stoppedRepairable, evidence: "none",
   };
 }
 function fixture(state = "STOPPED") {
@@ -32,7 +34,7 @@ function fixture(state = "STOPPED") {
   };
   const notify = vi.fn();
   const ctx = { mode: "tui", hasUI: true, ui: { custom: tui.custom, notify } };
-  return { tui, ports, ctx, notify, set: (next: ReturnType<typeof projection>) => { view = next; } };
+  return { tui, ports, ctx, notify, set: (next: ReturnType<typeof projection>) => { view = next; }, current: () => view };
 }
 async function open(state = "STOPPED", options: Record<string, unknown> = {}) {
   const mod = await api();
@@ -44,14 +46,14 @@ async function open(state = "STOPPED", options: Record<string, unknown> = {}) {
 async function activate(f: Awaited<ReturnType<typeof open>>, label: string) {
   // Navigate actual Kit bindings, not a mocked action callback.
   const frame = f.tui.render();
-  const rows = frame.filter((line) => /(?:Setup|Start|Edit configuration|Stop|Refresh|Close)/.test(line));
+  const rows = frame.filter((line) => /(?:Set Up Tunnel|Start Tunnel|Edit Configuration|Stop Tunnel|Refresh|Close)/.test(line));
   expect(rows.length).toBeGreaterThan(0);
   f.tui.press("home");
   const mod = await api();
   const state = (await f.ports.read.mock.results.at(-1)?.value)?.state ?? "UNKNOWN";
-  const names: Record<string, string> = { setup: "Setup", start: "Start", edit: "Edit configuration", stop: "Stop", refresh: "Refresh", close: "Close" };
-  const index = mod.tunnelManagerActions(state).findIndex((id: string) => names[id] === label);
-  expect(index).toBeGreaterThanOrEqual(0);
+  const labels = rows.map((line) => line.replace(/^[^A-Za-z]*/, "").trim());
+  const index = labels.findIndex((line) => line.startsWith(label));
+  expect(index, `rendered actions include ${label}`).toBeGreaterThanOrEqual(0);
   for (let i = 0; i < index; i++) f.tui.press("tui.select.down");
   f.tui.press("tui.select.confirm");
   await f.tui.waitForPending();
@@ -79,21 +81,51 @@ describe("Tunnel Manager Kit interaction", () => {
   });
 
   it.each([
-    ["UNCONFIGURED", ["setup", "refresh", "close"]],
-    ["STOPPED", ["start", "edit", "refresh", "close"]],
-    ["CONNECTED", ["stop", "refresh", "close"]],
-    ["STARTING", ["refresh", "close"]],
-    ["STOPPING", ["refresh", "close"]],
-    ["ERROR", ["refresh", "close"]],
-    ["UNKNOWN", ["refresh", "close"]],
-    ["DEGRADED", ["refresh", "close"]],
-  ])("limits %s to its contextual actions", async (state, expected) => {
+    // [projection, expected actions]
+    [projection("UNCONFIGURED"), ["setup", "refresh", "close"]],
+    [projection("STOPPED"), ["edit", "start", "refresh", "close"]],
+    [projection("CONNECTED"), ["stop", "refresh", "close"]],
+    [projection("STARTING"), ["refresh", "close"]],
+    [projection("STOPPING"), ["refresh", "close"]],
+    // Valid config + ERROR runtime: no start, no repair needed.
+    [{ ...projection("ERROR") }, ["refresh", "close"]],
+    [projection("DEGRADED"), ["refresh", "close"]],
+    // UNKNOWN + fully valid config: no repair, no start (UNKNOWN != STOPPED).
+    [projection("UNKNOWN"), ["refresh", "close"]],
+  ])("limits contextual actions to the projection", async (proj, expected) => {
     const mod = await api();
-    expect(mod.tunnelManagerActions(state as string)).toEqual(expected);
-    const f = await open(state as string);
-    expect(f.tui.render().join("\n")).toContain(state);
+    expect(mod.tunnelManagerActions(proj)).toEqual(expected);
+    const f = await open((proj as ReturnType<typeof projection>).state);
+    expect(f.tui.render().join("\n")).toContain((proj as ReturnType<typeof projection>).state);
     await close(f);
   });
+
+  it.each([
+    // invalid/unconfigured profile + runtime UNKNOWN -> setup/edit offered, no start/stop.
+    [{ ...projection("UNKNOWN"), tunnelIdAlreadyMasked: undefined, organizationConfigured: false, binding: "missing", credentialConfigured: false, errorCode: "CE_TUNNEL_PROFILE_INVALID" }, "setup", "Set Up Tunnel"],
+    [{ ...projection("UNKNOWN"), binding: "invalid", errorCode: "CE_TUNNEL_PROFILE_INVALID" }, "edit", "Edit Configuration"],
+    [{ ...projection("UNKNOWN"), binding: "missing", credentialConfigured: false }, "edit", "Edit Configuration"],
+  ])("UNKNOWN runtime with a repairable configuration offers %s as primary", async (proj, action, label) => {
+    const mod = await api();
+    const actions = mod.tunnelManagerActions(proj);
+    expect(actions[0]).toBe(action);
+    expect(actions).not.toContain("start");
+    expect(actions).not.toContain("stop");
+    expect(actions).toContain("refresh");
+    expect(actions).toContain("close");
+    const f = await open("UNKNOWN");
+    f.set(proj as ReturnType<typeof projection>);
+    await activate(f, "Refresh");
+    const frame = f.tui.render().join("\n");
+    expect(frame).toContain("Runtime State: UNKNOWN");
+    expect(frame).not.toContain("Runtime State: STOPPED");
+    expect(frame).toContain(label);
+    expect(frame).not.toContain("Start Tunnel");
+    expect(frame).not.toContain("Stop Tunnel");
+    await close(f);
+  });
+
+
 
   it("does not convert UNKNOWN into STOPPED when configuration is missing", async () => {
     const f = await open("UNKNOWN");
@@ -102,15 +134,15 @@ describe("Tunnel Manager Kit interaction", () => {
     expect(f.tui.render().join("\n")).toContain("Runtime State: UNKNOWN");
     expect(f.tui.render().join("\n")).toContain("Credential: not configured");
     expect(f.tui.render().join("\n")).not.toContain("STOPPED");
-    expect((await api()).tunnelManagerActions("not-a-state")).toEqual(["refresh", "close"]);
+    expect((await api()).tunnelManagerActions(projection("UNKNOWN"))).toEqual(["refresh", "close"]);
     await close(f);
   });
 
   it.each([
-    ["UNCONFIGURED", "Setup", "setup", "STOPPED"],
-    ["STOPPED", "Edit configuration", "setup", "STOPPED"],
-    ["STOPPED", "Start", "start", "CONNECTED"],
-    ["CONNECTED", "Stop", "stop", "STOPPED"],
+    ["UNCONFIGURED", "Set Up Tunnel", "setup", "STOPPED"],
+    ["STOPPED", "Edit Configuration", "setup", "STOPPED"],
+    ["STOPPED", "Start Tunnel", "start", "CONNECTED"],
+    ["CONNECTED", "Stop Tunnel", "stop", "STOPPED"],
   ])("%s %s calls shared port once, then rereads without leaving manager", async (state, label, port, next) => {
     const f = await open(state);
     f.ports[port as "setup" | "start" | "stop"].mockImplementation(async () => { f.set(projection(next)); });
@@ -124,9 +156,9 @@ describe("Tunnel Manager Kit interaction", () => {
   });
 
   it.each([
-    ["UNCONFIGURED", "Setup", "setup"],
-    ["STOPPED", "Edit configuration", "setup"],
-    ["CONNECTED", "Stop", "stop"],
+    ["UNCONFIGURED", "Set Up Tunnel", "setup"],
+    ["STOPPED", "Edit Configuration", "setup"],
+    ["CONNECTED", "Stop Tunnel", "stop"],
   ])("refreshes after %s %s failure without automatic follow-up operations", async (state, label, port) => {
     const f = await open(state);
     f.ports[port as "setup" | "stop"].mockRejectedValue(new Error("private operation failure"));
@@ -163,9 +195,7 @@ describe("Tunnel Manager Kit interaction", () => {
   it("Refresh performs a new projection read", async () => {
     const f = await open("STOPPED");
     f.set(projection("UNKNOWN"));
-    // Selection uses current displayed STOPPED policy, not the next read.
-    f.tui.press("tui.select.down"); f.tui.press("tui.select.down");
-    f.tui.press("tui.select.confirm");
+    await activate(f, "Refresh");
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(f.ports.read).toHaveBeenCalledTimes(2);
     expect(f.tui.render().join("\n")).toContain("UNKNOWN");
@@ -205,7 +235,7 @@ describe("Tunnel Manager Kit interaction", () => {
     await activate(f, "Refresh");
     expect(f.tui.render().join("\n")).toContain("UNKNOWN");
     expect(f.tui.render().join("\n")).not.toContain("private read failure");
-    expect(f.tui.render().join("\n")).not.toMatch(/Edit configuration|Start\s*$/m);
+    expect(f.tui.render().join("\n")).not.toMatch(/Edit Configuration|Start Tunnel\s*$/m);
     await close(f);
   });
 
@@ -241,6 +271,11 @@ describe("Tunnel Manager Kit interaction", () => {
     const f = await open("STOPPED", { signal: controller.signal });
     let finish!: () => void;
     f.ports.start.mockImplementation(() => new Promise<undefined>((resolve) => { finish = () => resolve(undefined); }));
+    const rows = f.tui.render().filter((line) => /(?:Set Up Tunnel|Start Tunnel|Edit Configuration|Stop Tunnel|Refresh|Close)/.test(line));
+    const labels = rows.map((line) => line.replace(/^[^A-Za-z]*/, "").trim());
+    const idx = labels.findIndex((line) => line.startsWith("Start Tunnel"));
+    expect(idx).toBeGreaterThanOrEqual(0);
+    for (let i = 0; i < idx; i++) f.tui.press("tui.select.down");
     f.tui.press("tui.select.confirm");
     await new Promise<void>((resolve) => setImmediate(resolve));
     controller.abort();

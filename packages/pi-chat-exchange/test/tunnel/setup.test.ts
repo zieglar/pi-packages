@@ -344,6 +344,42 @@ describe("real profile setup domain", () => {
     const h = harness(); const real = join(h.dir, "real.yaml"); fs.renameSync(h.profilePath, real); fs.symlinkSync(real, h.profilePath);
     expect(() => h.setup.inspect()).toThrow();
   });
+
+  describe("configuration-mutation authority is independent of runtime health", () => {
+    // Dogfood reproduction: a not-yet-configured environment has no healthy
+    // runtime, so health is unavailable by definition. Mutation safety is
+    // decided by ownership/lock evidence, never by health. A missing client
+    // binary must not turn first setup into CE_TUNNEL_HEALTH_UNAVAILABLE.
+    it.each([true, false])("health unavailable (missing client) + confirmed no owner allows setup (existing=%s)", async (existing) => {
+      const h = harness(existing);
+      const manager = createBackgroundTunnelManager({ ...h.opts, clientPath: join(h.dir, "NO-SUCH-CLIENT") });
+      const setup = createTunnelProfileSetup({ env: {}, profilePath: h.profilePath, manager, nodePath: "/abs/node", mcpScriptPath: "/abs/mcp-stdio.js" });
+      await expect(setup.save({ ...proposal(h), bindingPath: h.bindingPath })).resolves.toMatchObject({ kind: "saved" });
+    });
+    it.each(["running", "stop-unconfirmed"] as const)("health unavailable + %s owner refuses setup", async (state) => {
+      const h = harness(true);
+      const record = { version: 1, runId: "r1", pid: 4242, profilePath: h.profilePath, profileSha256: "x", tunnelId: ID,
+        keyFile: h.key, urlFile: join(h.dir, "health.url"), mcpCommand: undefined, logPath: join(h.dir, "log"),
+        commandIdentity: "c", processStartedKey: "k", startedAt: 1, termRequestedAt: state === "stop-unconfirmed" ? 2 : undefined,
+        state, stoppedAt: undefined, note: undefined };
+      fs.writeFileSync(join(h.dir, "background-state.json"), JSON.stringify(record));
+      const manager = createBackgroundTunnelManager({ ...h.opts, clientPath: join(h.dir, "NO-SUCH-CLIENT") });
+      const setup = createTunnelProfileSetup({ env: {}, profilePath: h.profilePath, manager });
+      await expect(setup.save(proposal(h))).rejects.toMatchObject({ code: "CE_TUNNEL_MANAGER_BUSY" });
+    });
+    it("ownership inspection failure refuses setup even with health unavailable", async () => {
+      const h = harness(true);
+      const manager = createBackgroundTunnelManager({ ...h.opts, clientPath: join(h.dir, "NO-SUCH-CLIENT"),
+        listProcesses: async () => ({ kind: "unknown" }) });
+      const setup = createTunnelProfileSetup({ env: {}, profilePath: h.profilePath, manager });
+      await expect(setup.save(proposal(h))).rejects.toMatchObject({ code: "CE_TUNNEL_MANAGER_BUSY" });
+    });
+    it("setup allowance never grants Start: the real-start gate stays exact and separate", async () => {
+      const h = harness(true);
+      const manager = createBackgroundTunnelManager({ ...h.opts, clientPath: join(h.dir, "NO-SUCH-CLIENT") });
+      await expect(manager.start()).rejects.toMatchObject({ code: "CE_TUNNEL_BACKGROUND_UNAUTHORIZED" });
+    });
+  });
 });
 
 describe("explicit existing binding changes", () => {

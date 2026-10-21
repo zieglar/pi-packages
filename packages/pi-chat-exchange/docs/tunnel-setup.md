@@ -69,6 +69,18 @@ gate remains `CE_TUNNEL_BACKGROUND_ALLOW=1`; no setup, refresh, or session start
 implicitly grants it or starts a client. The 45-second background startup budget
 and recovery/ownership authority remain unchanged.
 
+**Runtime health is not configuration authority.** An unavailable runtime
+(UNKNOWN state, no healthy daemon, missing client binary) never blocks repairing
+a missing/invalid/incomplete profile: the Manager offers **Set Up Tunnel** (no
+usable configuration) or **Edit Configuration** (partial/invalid) whenever the
+configuration projection says repair is needed, regardless of runtime state.
+Setup safety is decided solely by ownership/lock evidence — an ACTIVE or
+STARTING/STOPPING owner, a held configuration lock, a foreign profile reader,
+or an ownership inspection that cannot prove safety all still refuse closed.
+`UNKNOWN → Start Tunnel` remains impossible; `UNKNOWN` is never mapped to
+`STOPPED`. Setup cancel returns to the Manager with zero side effects; a saved
+setup rereads a fresh projection and never auto-starts.
+
 ## Status and limits
 
 Manager and direct status read the same profile projection and measured runtime

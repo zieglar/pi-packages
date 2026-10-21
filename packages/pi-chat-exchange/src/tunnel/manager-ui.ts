@@ -45,18 +45,28 @@ export type TunnelManagerUiOutcome =
   | { readonly status: "closed" | "cancelled" | "unsupported" }
   | { readonly status: "refused"; readonly code: TunnelRefusalCode };
 
-/** Presentation is conservative; authorization remains in the injected ports. */
-export function tunnelManagerActions(state: string): readonly TunnelManagerUiAction[] {
-  switch (state) {
-    case "UNCONFIGURED": return ["setup", "refresh", "close"];
-    case "STOPPED": return ["start", "edit", "refresh", "close"];
-    case "CONNECTED": return ["stop", "refresh", "close"];
-    default: return ["refresh", "close"];
-  }
+/** Presentation is conservative; authorization remains in the injected ports.
+ * Runtime UNKNOWN/ERROR must never be conflated with STOPPED, but they also
+ * must not block repairing a configuration that is missing, invalid, or
+ * incomplete: setup/edit is a configuration mutation, not a Start, and its
+ * safety is governed by ownership/lock authority inside the setup port. */
+export function tunnelManagerActions(projection: TunnelManagerUiProjection): readonly TunnelManagerUiAction[] {
+  const state = projection.state;
+  // Configuration-repair availability follows the configuration projection. A
+  // STOPPED lifecycle still edits rather than re-setting-up a valid profile.
+  const unconfigured = state === "UNCONFIGURED" ||
+    (projection.tunnelIdAlreadyMasked === undefined && !projection.credentialConfigured && projection.binding !== "configured");
+  const invalidOrIncomplete = projection.errorCode !== undefined || projection.binding === "invalid"
+    || projection.binding === "missing" || !projection.credentialConfigured;
+  const repair: TunnelManagerUiAction | undefined = unconfigured ? "setup" : invalidOrIncomplete ? "edit" : undefined;
+  // Start/Stop authority follows the measured runtime lifecycle only.
+  const lifecycle: readonly TunnelManagerUiAction[] = state === "STOPPED" ? ["start"]
+    : state === "CONNECTED" ? ["stop"] : [];
+  return [...(repair !== undefined ? [repair] : []), ...lifecycle, "refresh", "close"];
 }
 
 const LABELS: Readonly<Record<TunnelManagerUiAction, string>> = Object.freeze({
-  setup: "Setup", edit: "Edit configuration", start: "Start", stop: "Stop", refresh: "Refresh", close: "Close",
+  setup: "Set Up Tunnel", edit: "Edit Configuration", start: "Start Tunnel", stop: "Stop Tunnel", refresh: "Refresh", close: "Close",
 });
 const STATES: readonly string[] = ["UNCONFIGURED", "STOPPED", "STARTING", "CONNECTED", "STOPPING", "ERROR", "UNKNOWN", "DEGRADED"];
 const EVIDENCE: readonly string[] = ["none", "process-identity", "health-probe", "offline-simulated", "unavailable"];
@@ -84,6 +94,14 @@ export function tunnelManagerRows(projection: TunnelManagerUiProjection): readon
     `Runtime State: ${state}`,
     `Evidence: ${EVIDENCE.includes(projection.evidence ?? "") ? projection.evidence : "unavailable"}`,
     ...(isTunnelRefusalCode(projection.errorCode) ? [`Error: ${projection.errorCode}`] : []),
+    // Configuration guidance is separate from (and never overrides) runtime. A
+    // missing/invalid/incomplete profile is the actionable problem even when the
+    // runtime is UNKNOWN; setup/edit is how it is repaired, never an auto-start.
+    ...(tunnel === "Not configured / unavailable" || projection.binding !== "configured" || !projection.credentialConfigured
+      ? [state === "UNCONFIGURED" || projection.tunnelIdAlreadyMasked === undefined
+          ? "Tunnel is not configured. Run setup to continue."
+          : "Configuration is invalid or incomplete. Edit configuration to continue."]
+      : []),
     "Configured != Connected",
     "Transport only; not delivery/ACK/completion evidence.",
   ];
@@ -121,7 +139,7 @@ export async function runTunnelManagerUi(
       manager: ({ state }) => ({
         kind: "actions", title: "Tunnel Manager", hint: "close",
         lines: [...tunnelManagerRows(state), ...(operationError === undefined ? [] : [`Last operation: ${operationError}`])],
-        items: tunnelManagerActions(state.state).map((action) => action === "close"
+        items: tunnelManagerActions(state).map((action) => action === "close"
           ? { id: action, label: LABELS[action], close: true as const }
           : { id: action, label: LABELS[action], action }),
       }),
