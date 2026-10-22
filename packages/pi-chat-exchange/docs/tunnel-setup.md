@@ -129,6 +129,70 @@ and recipients byte-for-byte. It runs atomically (temp + rename) under the same
 ownership lock as setup/start, refuses when the daemon is running or ownership
 is uncertain, and never reads, outputs, or copies the API key.
 
+
+## ChatGPT ↔ Pi messaging integration (MESSAGING-INTEGRATION-01)
+
+Setup's **Advanced · Messaging (ChatGPT ↔ Pi)** authorizes one explicit
+bidirectional messaging relationship for the **current Pi session only**:
+
+- The Tunnel MCP binding models the **ChatGPT-side endpoint** (`chatgpt/main`),
+  never a `pi` adapter identity, with exactly one authorized recipient — the Pi
+  endpoint (`pi/main`). Payload read and ACK are enabled on both sides; every
+  other recipient stays refused (fail closed).
+- Pi configuration is an immutable sidecar of the selected binding generation:
+  `.ce-bindings/messaging-<digest>.yaml.pi-allowlist.json`. Its current Pi
+  session id comes from the trusted runtime API, never paths/logs or a guessed
+  value. The binding and sidecar select exactly the **same Store directory and
+  filename, Exchange namespace and idempotency key**. No SQLite/history copying
+  or cross-Exchange router is involved.
+- Both immutable files are published with no-overwrite links under the existing
+  ownership lock; changing the pair/session selects a new generation. Only the
+  existing guarded profile rename activates a complete pair. A precommit failure
+  leaves the old profile selecting the old pair. Unreferenced generations and
+  staging files are deliberately retained rather than risking deletion of a
+  foreign replacement. This is not a crash-atomic multi-file transaction. The
+  loader validates the digest and complete pair before loading it; unrelated
+  user allowlists and old Store history are never replaced.
+- Existing profiles migrate through **Keep credential** plus explicit messaging
+  authorization; no key is re-entered, read or copied. A changed authorized
+  session needs explicit replacement consent; identity/recipient changes require
+  reauthorization rather than silently reducing the pair to a generic binding.
+- **Configured != Pi-bound != Connected != real Gate evidence.** After saving:
+  1. If an old Pi binding is held by this instance and the policy changed, use
+     **Activate current session** (Advanced Messaging or `/ce-tunnel activate`)
+     to explicitly release it for policy reload. UNKNOWN release stops here.
+     A verified end appends only the old runtime/mapping identifiers as
+     `ce-messaging-released`; it carries no capability and cannot grant target
+     authority. If release was skipped before reload, the old mapping remains
+     an activation denial until its exact released+detached proof is available.
+     Reload, an expired lease, a different endpoint or a changed Exchange cannot
+     manufacture that proof. Missing/mismatched proof and persistence failures
+     refuse; no automatic cleanup/recovery is attempted.
+  2. Reload this Pi session/extension to load the selected policy. Ordinary
+     reload remains **resume-only**: missing or old-Exchange mapping cannot
+     silently provision a new session.
+  3. With the Tunnel stopped, select **Activate current session** and confirm the
+     actual endpoints, runtime session, full Store/Exchange and permissions.
+     This uses the existing Host `beginSession(..., {requireUnowned:true})`,
+     appends identifiers only, and never takes over an existing owner, even if
+     expired. A valid matching binding is a no-op. Mapping persistence failure
+     or uncertain lifecycle outcome stays latched, not blindly retried.
+  4. Explicitly restart the Tunnel (Stop then Start) to load its selected MCP
+     binding. No activation step starts/stops the Tunnel automatically.
+  Actual C2/C3 still require the current ChatGPT session's real tools. The
+  Manager Details and Advanced/Review show configuration separately from runtime.
+- Pi must run the approved **Node v24.21.0** for Store activation. A different
+  Pi process runtime is refused by the existing Store contract; no global Node
+  setting or runtime guard is changed by Setup.
+- The Pi extension registers `ce_ack` only on exact `ack.enabled: true`; it
+  delegates to the existing CE Host receipt operation (reception, not completion).
+  Explicit `CE_ALLOWLIST` is preserved. For explicit/generated Store policy,
+  `CE_STORE_DIR`/`CE_STORE_FILE` may only exactly match it; skew refuses before
+  any Store/session work. Conflicting operator configuration is not overwritten
+  or silently ignored. Reload never substitutes a different policy in place.
+- ACK only proves reception. `DELIVERY_UNKNOWN != CANCELLED`; delivery is not
+  assumed exactly-once; UNKNOWN results are never blindly retried.
+
 ## Status and limits
 
 Manager and direct status read the same profile projection and measured runtime

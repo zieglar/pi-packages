@@ -31,6 +31,21 @@ export interface TunnelManagerUiProjection {
   readonly credentialConfigured: boolean;
   readonly evidence?: TunnelManagerUiEvidence;
   readonly errorCode?: TunnelRefusalCode;
+  /** MESSAGING-INTEGRATION-01: configuration-only messaging facts for the
+   *  Details view. Undefined means not determinable (renders Not configured).
+   *  Never implies live messaging; runtime state is separate. */
+  readonly messaging?: {
+    readonly chatgptEndpointId?: string;
+    readonly piEndpointId?: string;
+    readonly piSessionId?: string;
+    readonly storeDirectory?: string;
+    readonly storeFile?: string;
+    readonly exchangeNamespace?: string;
+    readonly exchangeIdempotencyKey?: string;
+    readonly configured: boolean;
+    readonly payloadRead: boolean;
+    readonly ack: boolean;
+  };
 }
 
 export interface TunnelManagerUiPorts {

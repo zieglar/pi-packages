@@ -106,7 +106,7 @@ describe("B1.1 /ce-tunnel — subcommand surface", () => {
   it("offers exactly setup, start, stop, status and help as completions", async () => {
     const command = await tunnel();
     const values = (command.getArgumentCompletions?.("") ?? []).map((item) => item.value);
-    expect([...values].sort()).toEqual(["authorize", "help", "migrate", "setup", "start", "status", "stop"]);
+    expect([...values].sort()).toEqual(["activate", "authorize", "help", "migrate", "setup", "start", "status", "stop"]);
     expect((command.getArgumentCompletions?.("sta") ?? []).map((i) => i.value).sort()).toEqual(["start", "status"]);
     for (const item of command.getArgumentCompletions?.("") ?? []) expect(typeof item.value).toBe("string");
   });

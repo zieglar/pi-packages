@@ -26,6 +26,20 @@ export interface ExistingSetupValues {
   readonly recipients?: readonly CeRecipientRef[];
   readonly credentialConfigured: boolean;
 }
+/** MESSAGING-INTEGRATION-01: current messaging facts for prefill/Review.
+ * Configuration only; runtime state is shown separately. */
+export interface ExistingMessagingValues {
+  readonly chatgptEndpointId: string;
+  readonly piEndpointId: string | undefined;
+  readonly piSessionId: string | undefined;
+  readonly payloadRead: boolean;
+  readonly ack: boolean;
+  readonly configured: boolean;
+  readonly storeDirectory?: string;
+  readonly storeFile?: string;
+  readonly exchangeNamespace?: string;
+  readonly exchangeIdempotencyKey?: string;
+}
 export interface SetupProposal {
   readonly tunnelId: string;
   readonly organizationId?: string;
@@ -34,12 +48,28 @@ export interface SetupProposal {
    * default (no recipients). Never a file path. */
   readonly recipients?: readonly CeRecipientRef[];
   readonly credential: { readonly kind: "keep" } | { readonly kind: "replace"; readonly secret: string };
+  /** MESSAGING-INTEGRATION-01: present only when the operator explicitly
+   * authorized messaging for THIS session in Advanced. Absent leaves any
+   * existing messaging configuration untouched. */
+  readonly messaging?: {
+    readonly chatgptEndpointId: string;
+    readonly piEndpointId: string;
+    readonly piSessionId: string;
+    readonly replaceExisting: boolean;
+  };
 }
 export interface SetupWizardOptions {
   readonly profilePath: string;
   /** Host-injected key protocol (no Pi import in `src/`). */
   readonly keys: TunnelKeyProtocol;
   readonly existing?: ExistingSetupValues;
+  /** MESSAGING-INTEGRATION-01: current Pi session id from the trusted Pi
+   * runtime API (injected by the extension). Absent = messaging authorization
+   * unavailable; the wizard must never guess it. */
+  readonly piSessionId?: string;
+  readonly existingMessaging?: ExistingMessagingValues;
+  /** Parent-validated current-session activation eligibility; not authority. */
+  readonly canActivateMessaging?: boolean;
   /** Borrowed secret: do not retain the proposal after the transaction settles. */
   readonly save: (proposal: SetupProposal, signal: AbortSignal) => Promise<void | { readonly kind: "cancelled" }>;
   readonly signal?: AbortSignal;
@@ -48,12 +78,20 @@ export interface SetupWizardOptions {
 }
 export type SetupUiOutcome =
   | { readonly status: "saved" }
+  | { readonly status: "activation-requested" }
   | { readonly status: "cancelled" }
   | { readonly status: "refused"; readonly code: "CE_TUNNEL_INPUT_UNAVAILABLE" | "CE_TUNNEL_SETUP_FAILED" };
 
-type Screen = "tunnel" | "organization" | "recipients" | "credential" | "reviewEntry" | "review" | "changes" | "save" | "edit";
-type Action = "tunnel" | "organization" | "recipients" | "keepCredential" | "capture" | "review" | "save";
-interface Draft { tunnelId: string; organizationId: string; recipientsText: string; error: string; credential: "keep" | "replace" | "missing"; }
+type Screen = "tunnel" | "organization" | "recipients" | "credential" | "reviewEntry" | "review" | "changes" | "save" | "edit" | "messaging";
+type Action = "tunnel" | "organization" | "recipients" | "keepCredential" | "capture" | "review" | "save" | "authorizeMessaging" | "activateMessaging";
+interface Draft { tunnelId: string; organizationId: string; recipientsText: string; error: string; credential: "keep" | "replace" | "missing"; messaging: "keep" | "authorize"; }
+/** MESSAGING-INTEGRATION-01: the single explicitly-confirmed endpoint pair.
+ * Displayed for operator confirmation; never guessed from configuration. */
+const CHATGPT_ENDPOINT_ID = "chatgpt/main";
+const PI_ENDPOINT_ID = "pi/main";
+/** Render untrusted identity/storage text as one terminal line. This projection
+ * never normalizes the raw values later passed to the authorized transaction. */
+const terminalLine = (value: string): string => sanitizeTerminalText(value).replace(/[\r\n\x00-\x1F\x7F]/g, " ");
 const TUNNEL = /^tunnel_[A-Za-z0-9]{8,}$/;
 const ORGANIZATION = /^org-[A-Za-z0-9]{1,128}$/;
 const cancelled = (): SetupUiOutcome => ({ status: "cancelled" });
@@ -107,7 +145,7 @@ export async function runSetupWizard(ctx: SetupUiContext, options: SetupWizardOp
   }, customOptions) } };
   const existing = options.existing;
   const existingRecipientsText = existing?.recipients === undefined ? undefined : formatRecipientList(existing.recipients);
-  const draft: Draft = { tunnelId: existing?.tunnelId ?? "", organizationId: existing?.organizationId ?? "", recipientsText: existingRecipientsText ?? "", error: "", credential: existing?.credentialConfigured ? "keep" : "missing" };
+  const draft: Draft = { tunnelId: existing?.tunnelId ?? "", organizationId: existing?.organizationId ?? "", recipientsText: existingRecipientsText ?? "", error: "", credential: existing?.credentialConfigured ? "keep" : "missing", messaging: "keep" };
   let secret: string | undefined;
   let outcome: SetupUiOutcome = cancelled();
   // Deliberately not a Kit state field: neither Kit renderers nor errors see it.
@@ -124,14 +162,28 @@ export async function runSetupWizard(ctx: SetupUiContext, options: SetupWizardOp
   });
   const lines = (help: string): string[] => [help, ...(draft.error ? [draft.error] : [])];
   const step = (n: number, name: string): string => `Tunnel Setup · ${n}/${STEPS} · ${name}`;
+  const existingMessaging = options.existingMessaging;
+  /** Messaging authorization change: only an explicit Advanced authorize sets
+   * it. Re-authorizing an already-configured identical mapping is no change. */
+  const messagingChanged = (): boolean => {
+    if (draft.messaging !== "authorize") return false;
+    return !(existingMessaging?.configured === true && existingMessaging.piSessionId === options.piSessionId &&
+      existingMessaging.chatgptEndpointId === CHATGPT_ENDPOINT_ID && existingMessaging.piEndpointId === PI_ENDPOINT_ID);
+  };
   const changes = (): string[] => {
-    if (!existing) return [];
+    if (!existing) return messagingChanged() ? [`Messaging: Not configured → Authorized ${CHATGPT_ENDPOINT_ID} ↔ ${PI_ENDPOINT_ID} (this session)`] : [];
     const result: string[] = [];
     for (const [label, oldValue, newValue] of [
       ["Tunnel ID", existing.tunnelId, draft.tunnelId],
       ["Organization", existing.organizationId || "Not configured", draft.organizationId || "Not configured"],
-      ...(recipientsChanged() ? [["Recipients", existingRecipientsText ?? "Keep existing binding", draft.recipientsText || "None"] as const] : []),
-    ]) if (oldValue !== newValue) result.push(`${label}: ${oldValue} → ${newValue}`);
+      ...(draft.messaging !== "authorize" && recipientsChanged() ? [["Recipients", existingRecipientsText ?? "Keep existing binding", draft.recipientsText || "None"] as const] : []),
+    ]) if (oldValue !== newValue) result.push(`${label}: ${terminalLine(oldValue)} → ${terminalLine(newValue)}`);
+    if (messagingChanged()) {
+      const before = existingMessaging?.configured === true
+        ? `${terminalLine(existingMessaging.chatgptEndpointId)} ↔ ${terminalLine(existingMessaging.piEndpointId ?? "?")} (session ${terminalLine(existingMessaging.piSessionId ?? "?")})`
+        : "Not configured";
+      result.push(`Messaging: ${before} → Authorized ${CHATGPT_ENDPOINT_ID} ↔ ${PI_ENDPOINT_ID} (session ${terminalLine(options.piSessionId ?? "?")})`);
+    }
     return result;
   };
   // Recipients change detection: a known (managed) list compares by text; a
@@ -152,23 +204,49 @@ export async function runSetupWizard(ctx: SetupUiContext, options: SetupWizardOp
   const identityChanged = (): boolean => existing !== undefined &&
     (draft.tunnelId !== existing.tunnelId ||
       (draft.organizationId || undefined) !== (existing.organizationId || undefined));
+  const messagingRequiresReauthorization = (): boolean => existingMessaging?.configured === true &&
+    draft.messaging !== "authorize" && (identityChanged() || recipientsChanged());
+  const reauthorizationNotice = "Requires reauthorization: Tunnel / Organization / Recipients changed. Use Advanced · Messaging or revert the edits before Save.";
   const bindingSummary = (): string => {
+    if (draft.messaging === "authorize") return "MCP Binding\nNew ChatGPT-side binding (single Pi recipient; read/ACK authorized)";
     if (existing !== undefined && !recipientsChanged()) {
       // D-R3: identity change + known CE-managed binding regenerates it for the
       // new identity (carrying existing recipients) — never "Keep existing".
       if (identityChanged() && existingRecipientsText !== undefined) {
         return `MCP Binding\nRegenerate for new identity (recipients kept)`;
       }
-      return `MCP Binding\nKeep existing (${existing.bindingPath})`;
+      return `MCP Binding\nKeep existing (${terminalLine(existing.bindingPath)})`;
     }
     return `MCP Binding\nCE-managed (generated automatically)`;
   };
+  /** Messaging section: configuration facts only. "Configured" here never
+   *  means live messaging — the wizard's save notice states the restart requirement. */
+  const configuredStorage = (): string[] => [
+    `Store directory: ${terminalLine(existingMessaging?.storeDirectory ?? "Not determined")}`,
+    `Store file: ${terminalLine(existingMessaging?.storeFile ?? "Not determined")}`,
+    `Exchange namespace: ${terminalLine(existingMessaging?.exchangeNamespace ?? "Not determined")}`,
+    `Exchange idempotency key: ${terminalLine(existingMessaging?.exchangeIdempotencyKey ?? "Not determined")}`,
+  ];
+  const canActivate = (): boolean => options.canActivateMessaging === true && existingMessaging?.configured === true &&
+    typeof options.piSessionId === "string" && options.piSessionId.length > 0 && draft.messaging === "keep" && !identityChanged() && !recipientsChanged();
+  const messagingSummary = (): string => {
+    if (draft.messaging === "authorize") {
+      return [`Messaging (ChatGPT ↔ Pi)`,`ChatGPT endpoint\n${CHATGPT_ENDPOINT_ID} (Tunnel side)`,`Pi endpoint\n${PI_ENDPOINT_ID} (session ${terminalLine(options.piSessionId ?? "?")})`,`Send\nBoth directions — only these two endpoints`,`Payload read\nEnabled · ACK\nEnabled (reception only, not completion)`,`Store / Exchange (proposed)\nShared with the proposed Tunnel binding; final values determined at Save. No future paths are assumed.\nCurrent configured values (not the proposal):\n${configuredStorage().join("\n")}`].join("\n\n");
+    }
+    if (messagingRequiresReauthorization()) return `Messaging (ChatGPT ↔ Pi)\n${reauthorizationNotice}\nCurrent configured values (pending reauthorization):\n${configuredStorage().join("\n")}`;
+    if (existingMessaging?.configured === true) {
+      return `Messaging (ChatGPT ↔ Pi)\nConfigured: ${terminalLine(existingMessaging.chatgptEndpointId)} ↔ ${terminalLine(existingMessaging.piEndpointId ?? "?")} (session ${terminalLine(existingMessaging.piSessionId ?? "?")}) · unchanged\n${configuredStorage().join("\n")}`;
+    }
+    return "Messaging (ChatGPT ↔ Pi)\nNot configured (Advanced · Messaging to authorize)";
+  };
   const summary = (): string => [
-    `Profile\n${options.profilePath}`, `Tunnel\n${draft.tunnelId}`,
-    `Organization\n${draft.organizationId || "Not configured"}`,
-    `Recipients\n${existing !== undefined && !recipientsChanged() && existingRecipientsText === undefined
-      ? "Unchanged (existing binding kept)" : draft.recipientsText || "None (default)"}`,
+    `Profile\n${terminalLine(options.profilePath)}`, `Tunnel\n${terminalLine(draft.tunnelId)}`,
+    `Organization\n${terminalLine(draft.organizationId || "Not configured")}`,
+    `Recipients\n${draft.messaging === "authorize" ? `pi:${PI_ENDPOINT_ID} (derived from Messaging)`
+      : existing !== undefined && !recipientsChanged() && existingRecipientsText === undefined
+        ? "Unchanged (existing binding kept)" : terminalLine(draft.recipientsText || "None (default)")}`,
     bindingSummary(),
+    messagingSummary(),
     `Credential\n${draft.credential === "keep" ? "Keep existing" : existing?.credentialConfigured ? "Replace" : "Provided"}`,
     ...changes(),
   ].join("\n\n");
@@ -186,7 +264,32 @@ export async function runSetupWizard(ctx: SetupUiContext, options: SetupWizardOp
     organization: () => input(step(2, "Organization ID"), draft.organizationId, "organization", HELP.organization),
     // Advanced: reachable from Edit configuration only. CE has no trusted
     // endpoint discovery, so recipients are never a linear setup step.
-    recipients: () => input("Tunnel Setup · Advanced · Recipients", draft.recipientsText, "recipients", HELP.recipients),
+    recipients: () => draft.messaging === "authorize"
+      ? { kind: "actions", title: "Tunnel Setup · Advanced · Recipients",
+          lines: ["Recipients are derived from Messaging", `pi:${PI_ENDPOINT_ID}`, "Only the explicitly confirmed ChatGPT ↔ Pi relationship is authorized.", "Cancel this wizard to discard that authorization before choosing different routing."],
+          hint: "close", items: [{ id: "back", label: "Back · Edit configuration", to: "edit" }, cancelItem] }
+      : input("Tunnel Setup · Advanced · Recipients", draft.recipientsText, "recipients", HELP.recipients),
+    // MESSAGING-INTEGRATION-01: explicit messaging authorization. Shows the
+    // exact endpoint pair, the current session, and the capability set before
+    // the operator confirms. Hidden authorize when the session id is unknown.
+    messaging: () => {
+      const available = typeof options.piSessionId === "string" && options.piSessionId.length > 0;
+      const current = existingMessaging?.configured === true
+        ? `Current: ${terminalLine(existingMessaging.chatgptEndpointId)} ↔ ${terminalLine(existingMessaging.piEndpointId ?? "?")} (session ${terminalLine(existingMessaging.piSessionId ?? "?")})`
+        : "Current: not configured";
+      const body = available
+        ? [current, ...configuredStorage(), `ChatGPT endpoint: ${CHATGPT_ENDPOINT_ID} (Tunnel side)`, `Pi endpoint: ${PI_ENDPOINT_ID} (session ${terminalLine(options.piSessionId)})`,
+           "Send: both directions — only these two endpoints; every other recipient stays refused",
+           "Payload read: enabled · ACK: enabled (reception only, not completion)",
+           "Proposed Store / Exchange: shared with the proposed Tunnel binding; final values determined at Save.",
+           "Authorizing replaces any Advanced recipient list with the Pi endpoint.",
+           "After Save: restart the Tunnel, reload policy, then explicitly activate the current Pi session. Configured != Pi-bound != Connected != real Gate."]
+        : [current, ...configuredStorage(), "Unavailable: the current Pi session identity could not be determined.", "Messaging authorization is refused — it is never guessed from logs or paths."];
+      const items = available
+        ? [...(canActivate() ? [{ id: "activate", label: "Activate current session", action: "activateMessaging" as const }] : []), { id: "authorize", label: existingMessaging?.configured === true ? "Re-authorize messaging for this session" : "Authorize messaging for this session", action: "authorizeMessaging" as const }, { id: "back", label: "Back · Edit configuration", to: "edit" as const }, cancelItem]
+        : [{ id: "back", label: "Back · Edit configuration", to: "edit" as const }, cancelItem];
+      return { kind: "actions", title: "Tunnel Setup · Advanced · Messaging (ChatGPT ↔ Pi)", lines: body, hint: "close", items };
+    },
     // Only an already-configured credential needs a decision; otherwise the
     // capture component is opened directly instead of this screen.
     credential: () => ({ kind: "actions", title: step(3, "Credential"), lines: lines(HELP.credential), hint: "close", items: [
@@ -197,8 +300,8 @@ export async function runSetupWizard(ctx: SetupUiContext, options: SetupWizardOp
     reviewEntry: () => ({ kind: "actions", title: step(4, "Review"), lines: lines("Nothing is written until you confirm Save configuration."), hint: "close", items: [{ id: "review", label: "Review", to: "review" }, { id: "edit", label: "Back · Edit configuration", to: "edit" }, cancelItem] }),
     review: () => ({ kind: "review", title: "Review · Tunnel configuration", content: summary(), format: { kind: "text" }, hint: "close", confirm: { id: "continue", label: "Continue", action: "review" } }),
     changes: () => ({ kind: "review", title: "Existing Tunnel configuration will be changed", content: changes().join("\n\n"), format: { kind: "text" }, hint: "close", confirm: { id: "confirm-change", label: "Confirm identity / routing changes", action: "review" } }),
-    save: () => ({ kind: "actions", title: "Save confirmation", lines: ["Only Save configuration writes the proposed configuration.", `Profile: ${sanitizeTerminalText(options.profilePath)}`, ...(draft.error ? [draft.error] : [])], hint: "close", items: [{ id: "save", label: "Save configuration", action: "save" }, { id: "back", label: "Back · Edit configuration", to: "edit" }, cancelItem] }),
-    edit: () => ({ kind: "actions", title: "Edit configuration", lines: lines(`Profile: ${sanitizeTerminalText(options.profilePath)}`), hint: "close", items: [{ id: "tunnel", label: "Tunnel ID", to: "tunnel" }, { id: "organization", label: "Organization ID", to: "organization" }, credentialItem, { id: "recipients", label: "Advanced · Recipients", to: "recipients" }, { id: "back", label: "Back · Review", to: "reviewEntry" }, cancelItem] }),
+    save: () => ({ kind: "actions", title: "Save confirmation", lines: ["Only Save configuration writes the proposed configuration.", `Profile: ${terminalLine(options.profilePath)}`, ...(draft.error ? [draft.error] : [])], hint: "close", items: [{ id: "save", label: "Save configuration", action: "save" }, { id: "back", label: "Back · Edit configuration", to: "edit" }, cancelItem] }),
+    edit: () => ({ kind: "actions", title: "Edit configuration", lines: lines(`Profile: ${terminalLine(options.profilePath)}`), hint: "close", items: [{ id: "tunnel", label: "Tunnel ID", to: "tunnel" }, { id: "organization", label: "Organization ID", to: "organization" }, credentialItem, { id: "messaging", label: "Advanced · Messaging (ChatGPT ↔ Pi)", to: "messaging" }, { id: "recipients", label: "Advanced · Recipients", to: "recipients" }, { id: "back", label: "Back · Review", to: "reviewEntry" }, cancelItem] }),
   };
   const actions = {
     tunnel: ({ value = "" }: { value?: string }) => {
@@ -230,16 +333,44 @@ export async function runSetupWizard(ctx: SetupUiContext, options: SetupWizardOp
     // Defer the masked capture: an action cannot open a second custom component
     // while the Kit screen it was invoked from still owns the terminal.
     capture: () => { secret = undefined; pendingCapture = true; return close; },
-    review: ({ itemId }: { itemId?: string }) => to(itemId === "confirm-change" || changes().length === 0 ? "save" : "changes"),
+    // MESSAGING-INTEGRATION-01: explicit authorization for THIS session. It
+    // replaces any Advanced recipient list with the derived Pi endpoint.
+    activateMessaging: () => {
+      if (!signal.aborted && canActivate()) outcome = { status: "activation-requested" };
+      return close;
+    },
+    authorizeMessaging: () => {
+      if (typeof options.piSessionId !== "string" || options.piSessionId.length === 0) { draft.error = "Messaging unavailable: session identity unknown"; return to("messaging"); }
+      draft.messaging = "authorize"; draft.recipientsText = ""; draft.error = "";
+      return to("edit");
+    },
+    review: ({ itemId }: { itemId?: string }) => {
+      if (messagingRequiresReauthorization()) { draft.error = reauthorizationNotice; return to("edit"); }
+      return to(itemId === "confirm-change" || changes().length === 0 ? "save" : "changes");
+    },
     save: async () => {
       if (signal.aborted) return close;
+      if (messagingRequiresReauthorization()) { draft.error = reauthorizationNotice; return to("edit"); }
       if (!TUNNEL.test(draft.tunnelId) || (draft.organizationId !== "" && !ORGANIZATION.test(draft.organizationId)) || (draft.credential === "keep" && !existing?.credentialConfigured) || (draft.credential !== "keep" && !secret)) {
+        outcome = failed(); return close;
+      }
+      if (draft.messaging === "authorize" && (typeof options.piSessionId !== "string" || options.piSessionId.length === 0)) {
         outcome = failed(); return close;
       }
       try {
         const credential = draft.credential === "keep" ? { kind: "keep" as const } : { kind: "replace" as const, secret: secret! };
-        const recipients = recipientsChanged() ? parseRecipientList(draft.recipientsText, { adapter: "pi", endpointId: "ce-self" }) : undefined;
-        const result = await options.save({ tunnelId: draft.tunnelId, ...(draft.organizationId ? { organizationId: draft.organizationId } : {}), ...(recipients === undefined ? {} : { recipients }), credential }, signal);
+        const recipients = draft.messaging === "authorize" ? undefined : recipientsChanged() ? parseRecipientList(draft.recipientsText, { adapter: "pi", endpointId: "ce-self" }) : undefined;
+        const messaging = draft.messaging === "authorize" ? {
+          chatgptEndpointId: CHATGPT_ENDPOINT_ID,
+          piEndpointId: PI_ENDPOINT_ID,
+          piSessionId: options.piSessionId!,
+          // Replace is authorized only when an existing mapping differs — the
+          // operator saw the old→new change in the confirmation review.
+          replaceExisting: existingMessaging !== undefined &&
+            (existingMessaging.piSessionId !== options.piSessionId || !existingMessaging.configured ||
+             existingMessaging.chatgptEndpointId !== CHATGPT_ENDPOINT_ID || existingMessaging.piEndpointId !== PI_ENDPOINT_ID),
+        } : undefined;
+        const result = await options.save({ tunnelId: draft.tunnelId, ...(draft.organizationId ? { organizationId: draft.organizationId } : {}), ...(recipients === undefined ? {} : { recipients }), ...(messaging === undefined ? {} : { messaging }), credential }, signal);
         if (result?.kind === "cancelled") { outcome = cancelled(); return close; }
         saved = true;
         outcome = { status: "saved" };

@@ -12,7 +12,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join, normalize } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { MCP_BINDING_CONFIG_MAX_BYTES, parseMcpBindingConfig } from "../host/mcp-binding-config.js";
+import { MCP_BINDING_CONFIG_MAX_BYTES, parseMcpBindingConfig, type McpBindingConfig } from "../host/mcp-binding-config.js";
 import { TunnelRefusal } from "./codes.js";
 import {
   checkKeyFileMetadata, createBackgroundTunnelManager, parseTunnelProfile, resolveTunnelProfilePath,
@@ -20,6 +20,7 @@ import {
 } from "./background-manager.js";
 import { buildTunnelMcpCommand, buildTunnelProfile, migrateTunnelProfileText, parseTunnelMcpCommand, replaceTunnelMcpBindingPath, resolveMcpNodePath, REQUIRED_MCP_NODE_VERSION, serializeTunnelProfile, validateTunnelIdentity } from "./profile.js";
 import { ensureManagedBinding } from "./managed-binding.js";
+import { isMessagingBinding, isManagedPiAllowlist, piAllowlistPath, publishMessagingPair, readMessagingPair } from "./messaging-config.js";
 
 const MAX_PROFILE_BYTES = 65_536;
 const invalid = (field: string): TunnelRefusal => new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", field);
@@ -116,14 +117,58 @@ export interface TunnelSetupInspection {
    * of any credential. */
   readonly bindingRecipients: readonly import("../host/endpoint-host.js").CeRecipientRef[] | undefined;
   readonly credentialConfigured: boolean;
+  /** MESSAGING-INTEGRATION-01: current messaging configuration facts (both
+   *  sides), when determinable. Configuration only — never runtime state. */
+  readonly messaging: TunnelMessagingInspection | undefined;
+}
+export interface TunnelMessagingInspection {
+  /** Tunnel-side (ChatGPT) endpoint identity from the managed binding. */
+  readonly chatgptEndpoint: import("../host/endpoint-host.js").CeRecipientRef | undefined;
+  /** Binding recipients (send eligibility from the ChatGPT side). */
+  readonly recipients: readonly import("../host/endpoint-host.js").CeRecipientRef[];
+  readonly payloadRead: boolean;
+  readonly ack: boolean;
+  readonly piAllowlistPath: string;
+  /** Pi-side session mapping from the generated allowlist, when present. */
+  readonly piSessionId: string | undefined;
+  readonly piEndpointId: string | undefined;
+  /** Shared Store/Exchange both sides are configured with. */
+  readonly storeDirectory: string | undefined;
+  readonly exchangeNamespace: string | undefined;
+  readonly storeFile: string | undefined;
+  readonly exchangeIdempotencyKey: string | undefined;
+  /** True only when the binding and the Pi allowlist agree on a complete
+   *  bidirectional ChatGPT↔Pi configuration. Never implies live processes. */
+  readonly configured: boolean;
 }
 export type TunnelSetupCredential = { readonly kind: "keep" } | { readonly kind: "replace"; readonly secret: string };
 /** Binding selection. `managed` derives a CE-owned binding from identity; `path`
  * references an operator-selected existing config; `keep` (undefined) reuses the
  * profile's current binding. Managed never widens message permissions. */
 export type TunnelSetupBinding =
-  | { readonly kind: "managed"; readonly recipients?: readonly import("../host/endpoint-host.js").CeRecipientRef[] }
+  | {
+      readonly kind: "managed";
+      readonly recipients?: readonly import("../host/endpoint-host.js").CeRecipientRef[];
+      /** MESSAGING-INTEGRATION-01: explicit endpoint identity + read/ACK opt-ins.
+       *  Absent keeps the identity-digest endpoint with all permissions disabled. */
+      readonly endpointId?: string;
+      readonly capabilities?: { readonly payloadRead?: boolean; readonly ack?: boolean };
+    }
   | { readonly kind: "path"; readonly path: string };
+/** MESSAGING-INTEGRATION-01: explicit ChatGPT↔Pi messaging authorization for
+ * the CURRENT Pi session. The tunnel-side binding models the ChatGPT endpoint;
+ * the Pi-side allowlist maps this session to the Pi endpoint. */
+export interface TunnelSetupMessaging {
+  readonly chatgptEndpointId: string;
+  readonly piEndpointId: string;
+  /** Current session id from the trusted Pi runtime API — never guessed. */
+  readonly piSessionId: string;
+  readonly payloadRead: boolean;
+  readonly ack: boolean;
+  /** Explicit authorization to replace a different existing pi-allowlist.
+   *  The wizard surfaces the old→new change before setting this. */
+  readonly replaceExisting: boolean;
+}
 export interface TunnelSetupSaveInput {
   readonly expectedRevision: string | null;
   readonly tunnelId: string;
@@ -137,6 +182,11 @@ export interface TunnelSetupSaveInput {
    * (first setup) managed is the default and never requires a typed path.
    * Executable/script/channel and unrelated YAML are always preserved. */
   readonly binding?: TunnelSetupBinding;
+  /** Explicit messaging authorization. Requires the managed binding selection
+   *  above to carry the same endpoint/recipients/capabilities (the domain
+   *  refuses a skewed request). Publishes the Pi-side allowlist atomically
+   *  under the same ownership lock, with rollback on precommit failure. */
+  readonly messaging?: TunnelSetupMessaging;
   readonly signal?: AbortSignal;
 }
 export type TunnelSetupSaveResult =
@@ -147,7 +197,7 @@ export type TunnelProfileMigrationResult =
   | { readonly kind: "unchanged" };
 /** Small filesystem fault-injection boundary; production defaults are Node fs.
  * No read-credential operation exists in the transaction interface. */
-export type SetupFileOperations = Pick<typeof fs, "openSync" | "closeSync" | "writeFileSync" | "fsyncSync" | "renameSync" | "unlinkSync">;
+export type SetupFileOperations = Pick<typeof fs, "openSync" | "closeSync" | "writeFileSync" | "fsyncSync" | "renameSync" | "unlinkSync" | "linkSync">;
 export interface TunnelProfileSetupOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly profilePath?: string;
@@ -229,6 +279,102 @@ function syncCommittedProfileDirectories(profileDirectory: string, missing: read
   } catch { return false; }
 }
 
+/** MESSAGING-INTEGRATION-01: strict, advisory read of the generated Pi-side
+ * allowlist. Any malformed shape degrades to "not configured" (fail closed
+ * display) — it never throws and never grants anything. */
+function readPiAllowlistFacts(profilePath: string, credentialFile: string | undefined, bindingPath?: string): {
+  readonly document: Record<string, unknown>;
+  readonly piSessionId: string;
+  readonly piEndpointId: string;
+  readonly chatgptEndpointId: string;
+  readonly exchangeNamespace: string;
+  readonly exchangeIdempotencyKey: string;
+  readonly recipientAdapter: string;
+  readonly storeFile: string;
+  readonly storeDirectory: string;
+  readonly payloadRead: boolean;
+  readonly ack: boolean;
+} | undefined {
+  try {
+    if (bindingPath === undefined) return undefined;
+    const pair = readMessagingPair(profilePath, bindingPath, credentialFile);
+    if (pair === undefined) return undefined;
+    const doc = pair.document;
+    if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return undefined;
+    if (!isManagedPiAllowlist(profilePath, doc)) return undefined;
+    const sessions = doc.sessions;
+    if (typeof sessions !== "object" || sessions === null || Array.isArray(sessions)) return undefined;
+    const entries = Object.entries(sessions as Record<string, unknown>);
+    if (entries.length !== 1) return undefined;
+    const [piSessionId, mapping] = entries[0]!;
+    if (typeof piSessionId !== "string" || piSessionId.length === 0) return undefined;
+    if (typeof mapping !== "object" || mapping === null) return undefined;
+    const piEndpointId = (mapping as Record<string, unknown>).endpointId;
+    if (typeof piEndpointId !== "string" || piEndpointId.length === 0) return undefined;
+    const recipients = doc.recipients;
+    if (!Array.isArray(recipients) || recipients.length !== 1) return undefined;
+    const recipient = recipients[0] as Record<string, unknown>;
+    if (typeof recipient !== "object" || recipient === null || typeof recipient.endpointId !== "string" || typeof recipient.adapter !== "string") return undefined;
+    const exchangeNamespace = doc.exchangeNamespace;
+    const exchangeIdempotencyKey = doc.exchangeIdempotencyKey;
+    if (typeof exchangeNamespace !== "string" || typeof exchangeIdempotencyKey !== "string") return undefined;
+    const store = doc.store as Record<string, unknown> | undefined;
+    if (typeof store !== "object" || store === null || typeof store.directory !== "string" || typeof store.file !== "string") return undefined;
+    const enabled = (section: unknown): boolean =>
+      typeof section === "object" && section !== null &&
+      (section as Record<string, unknown>).enabled === true;
+    return {
+      piSessionId, piEndpointId,
+      document: doc,
+      chatgptEndpointId: recipient.endpointId,
+      exchangeNamespace,
+      exchangeIdempotencyKey, recipientAdapter: recipient.adapter, storeFile: store.file,
+      storeDirectory: store.directory,
+      payloadRead: enabled(doc.payloadRead),
+      ack: enabled(doc.ack),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function messagingPairMatches(config: McpBindingConfig | undefined, pi: ReturnType<typeof readPiAllowlistFacts>): boolean {
+  return config?.endpoint.adapter === "chatgpt" && pi !== undefined &&
+    pi.recipientAdapter === config.endpoint.adapter && pi.chatgptEndpointId === config.endpoint.endpointId &&
+    pi.exchangeNamespace === config.exchange.namespace && pi.exchangeIdempotencyKey === config.exchange.idempotencyKey &&
+    pi.storeDirectory === config.store.directory && pi.storeFile === config.store.file &&
+    config.recipients.length === 1 && config.recipients[0]!.adapter === "pi" && config.recipients[0]!.endpointId === pi.piEndpointId &&
+    pi.payloadRead === config.payloadRead.enabled && pi.ack === config.ack.enabled;
+}
+
+/** MESSAGING-INTEGRATION-01: cross-check the Tunnel-managed binding and the
+ * Pi-side allowlist into one configuration-only projection. `configured` is
+ * true only when BOTH sides agree on a complete bidirectional setup — it says
+ * nothing about running processes (runtime state is reported separately). */
+function inspectMessaging(profilePath: string, managedConfig: McpBindingConfig | undefined, credentialFile: string | undefined, bindingPath?: string): TunnelMessagingInspection {
+  const allowlistPath = piAllowlistPath(profilePath, bindingPath !== undefined && isMessagingBinding(bindingPath) ? bindingPath : undefined);
+  const pi = readPiAllowlistFacts(profilePath, credentialFile, bindingPath);
+  const chatgptEndpoint = managedConfig?.endpoint.adapter === "chatgpt" ? managedConfig.endpoint : undefined;
+  const recipients = managedConfig?.recipients ?? Object.freeze([]);
+  const payloadRead = managedConfig?.payloadRead.enabled ?? false;
+  const ack = managedConfig?.ack.enabled ?? false;
+  const piSideMatches = messagingPairMatches(managedConfig, pi);
+  return Object.freeze({
+    chatgptEndpoint,
+    recipients,
+    payloadRead,
+    ack,
+    piAllowlistPath: allowlistPath,
+    piSessionId: pi?.piSessionId,
+    piEndpointId: pi?.piEndpointId,
+    storeDirectory: managedConfig?.store.directory,
+    exchangeNamespace: managedConfig?.exchange.namespace,
+    storeFile: managedConfig?.store.file,
+    exchangeIdempotencyKey: managedConfig?.exchange.idempotencyKey,
+    configured: piSideMatches && payloadRead && ack,
+  });
+}
+
 const revisionOf = (text: string | undefined): string | null => text === undefined ? null : createHash("sha256").update(text, "utf8").digest("hex");
 /** Preserve every unrelated byte, notably MCP command/channel/comments. */
 function updateProfile(text: string, input: TunnelSetupSaveInput, keyFile: string, mcpCommand?: string): string {
@@ -243,13 +389,37 @@ function updateProfile(text: string, input: TunnelSetupSaveInput, keyFile: strin
   return next;
 }
 
+/** Read the generated Pi configuration without ever opening its credential
+ * alias. Used by the extension's generated-default loader, not operator paths. */
+export function readGeneratedPiAllowlist(profilePath: string): Record<string, unknown> | undefined {
+  try {
+    const profile = readConfiguration(profilePath, MAX_PROFILE_BYTES, "profile", true);
+    if (profile === undefined) return undefined;
+    const facts = parseTunnelProfile(profile);
+    const path = facts.mcpCommand === undefined ? undefined : parseTunnelMcpCommand(facts.mcpCommand).bindingPath;
+    if (path === undefined || !isMessagingBinding(path)) return undefined;
+    if (path === facts.keyFile) throw invalid("messaging.binding");
+    const excluded = credentialExclusion(facts.keyFile);
+    const selected = fs.lstatSync(path);
+    if (excluded?.some((identity) => sameFile(identity, selected))) throw invalid("messaging.binding");
+    const binding = parseMcpBindingConfig(JSON.parse(readConfiguration(path, MCP_BINDING_CONFIG_MAX_BYTES, "binding", false, excluded)!));
+    if (binding.managed?.tunnelId !== facts.tunnelId || (binding.managed?.organizationId ?? undefined) !== (facts.organizationId ?? undefined)) throw invalid("messaging.binding");
+    const pi = readPiAllowlistFacts(profilePath, facts.keyFile, path);
+    if (!messagingPairMatches(binding, pi)) throw invalid("messaging.configuration");
+    return pi!.document;
+  } catch (error) {
+    if (error instanceof TunnelRefusal) throw error;
+    throw invalid("messaging.configuration"); // no raw filesystem/parser cause escapes
+  }
+}
+
 export function createTunnelProfileSetup(options: TunnelProfileSetupOptions): TunnelProfileSetup {
   const profilePath = resolveTunnelProfilePath(options);
   absolute(profilePath, "profile");
   const manager = options.manager ?? createBackgroundTunnelManager({ env: options.env, profilePath });
   const io: SetupFileOperations = {
     openSync: fs.openSync, closeSync: fs.closeSync, writeFileSync: fs.writeFileSync,
-    fsyncSync: fs.fsyncSync, renameSync: fs.renameSync, unlinkSync: fs.unlinkSync, ...options.io,
+    fsyncSync: fs.fsyncSync, renameSync: fs.renameSync, unlinkSync: fs.unlinkSync, linkSync: fs.linkSync, ...options.io,
   };
   const credentialDirectoryGuard = options.credentialDirectoryGuard ?? ensurePrivateCredentialDirectory;
   const read = (): { text: string | undefined; facts: TunnelProfileFacts | undefined } => {
@@ -267,6 +437,7 @@ export function createTunnelProfileSetup(options: TunnelProfileSetupOptions): Tu
     // and expose recipients only for a CE-managed document whose provenance matches
     // this profile's identity. Any failure degrades to an unknown (kept) binding.
     let bindingRecipients: TunnelSetupInspection["bindingRecipients"];
+    let managedConfig: McpBindingConfig | undefined;
     if (facts !== undefined && bindingPath !== undefined) {
       try {
         // Same exclusion boundary as validateTunnelBindingFile: a binding path
@@ -279,12 +450,14 @@ export function createTunnelProfileSetup(options: TunnelProfileSetupOptions): Tu
         if (parsed.managed !== undefined && parsed.managed.tunnelId === facts.tunnelId
             && (parsed.managed.organizationId ?? undefined) === (facts.organizationId ?? undefined)) {
           bindingRecipients = parsed.recipients;
+          managedConfig = parsed;
         }
       } catch { /* An unreadable/foreign binding stays untouched: keep. */ }
     }
+    const messaging = inspectMessaging(profilePath, managedConfig, facts?.keyFile, bindingPath);
     return Object.freeze({ profilePath, exists: text !== undefined, revision: revisionOf(text),
       tunnelId: facts?.tunnelId, organizationId: facts?.organizationId, mcpCommand: facts?.mcpCommand,
-      bindingPath, bindingRecipients, credentialConfigured });
+      bindingPath, bindingRecipients, credentialConfigured, messaging });
   };
   const save = async (input: TunnelSetupSaveInput): Promise<TunnelSetupSaveResult> => {
     if (input.signal?.aborted) return { kind: "cancelled" };
@@ -317,6 +490,8 @@ export function createTunnelProfileSetup(options: TunnelProfileSetupOptions): Tu
       let committed = false;
       let directoryFd: number | undefined;
       let cleanupCredentialDirectory: CredentialDirectoryCleanup;
+      // Immutable messaging candidates are retained if profile commit refuses.
+      // They carry no active pointer/authority; no final config is deleted.
       const create = (path: string, data: string): void => {
         const fd = io.openSync(path, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
         try {
@@ -329,21 +504,63 @@ export function createTunnelProfileSetup(options: TunnelProfileSetupOptions): Tu
       };
       let bindingPath: string;
       try {
+      // MESSAGING-INTEGRATION-01: refuse a skewed messaging request BEFORE any
+      // write. The managed binding selection must carry exactly the authorized
+      // ChatGPT endpoint, the single Pi recipient, and the same capabilities.
+      const messaging = input.messaging;
+      if (messaging === undefined && existingBinding !== undefined && isMessagingBinding(existingBinding) &&
+          (input.tunnelId !== facts?.tunnelId || (input.organizationId || undefined) !== (facts?.organizationId || undefined) ||
+           input.binding?.kind === "managed" || (input.binding?.kind === "path" && input.binding.path !== existingBinding))) {
+        throw invalid("messaging.reauthorization");
+      }
+      if (messaging !== undefined) {
+        if (input.binding?.kind !== "managed") throw invalid("messaging");
+        if (input.binding.endpointId !== messaging.chatgptEndpointId) throw invalid("messaging.endpoint");
+        const authorized = input.binding.recipients ?? [];
+        if (authorized.length !== 1 || authorized[0]!.adapter !== "pi" || authorized[0]!.endpointId !== messaging.piEndpointId) {
+          throw invalid("messaging.recipients");
+        }
+        if ((input.binding.capabilities?.payloadRead === true) !== messaging.payloadRead) throw invalid("messaging.payloadRead");
+        if ((input.binding.capabilities?.ack === true) !== messaging.ack) throw invalid("messaging.ack");
+        const previous = existingBinding === undefined ? undefined : readPiAllowlistFacts(profilePath, facts?.keyFile, existingBinding);
+        if (previous !== undefined && previous.piSessionId !== messaging.piSessionId && !messaging.replaceExisting) {
+          throw new TunnelRefusal("CE_TUNNEL_CONFIG_CONFLICT", "messaging.session");
+        }
+      }
       if (input.binding?.kind === "path") {
         bindingPath = input.binding.path;
         validateTunnelBindingFile(bindingPath, facts?.keyFile);
       } else if (input.binding?.kind === "managed" || existingBinding === undefined) {
         // Managed binding: identity-derived, operator-owned, minimal permissions.
         // First setup (no existing binding) defaults here; the wizard never asks
-        // for a binding file path.
+        // for a binding file path. With messaging authorized, the endpoint is
+        // modelled as the ChatGPT-side identity (adapter "chatgpt"), never `pi`.
         const managedInput: Parameters<typeof ensureManagedBinding>[1] = {
-          tunnelId: input.tunnelId, organizationId: input.organizationId || undefined, adapter: "pi",
+          tunnelId: input.tunnelId, organizationId: input.organizationId || undefined,
+          adapter: messaging === undefined ? "pi" : "chatgpt",
           ...(facts?.keyFile !== undefined ? { credentialFile: facts.keyFile } : {}),
+          ...(input.binding?.kind === "managed" && input.binding.endpointId !== undefined ? { endpointId: input.binding.endpointId } : {}),
+          ...(input.binding?.kind === "managed" && input.binding.capabilities !== undefined ? { capabilities: input.binding.capabilities } : {}),
           ...(input.binding?.kind === "managed" && input.binding.recipients !== undefined
             ? { recipients: input.binding.recipients } : {}),
         };
         const managed = ensureManagedBinding(profilePath, managedInput);
         bindingPath = managed.path;
+        if (messaging !== undefined) {
+          // Both immutable files are selected only by the final profile rename.
+          const pair = publishMessagingPair(profilePath, managed.config, {
+            chatgptEndpoint: { adapter: "chatgpt", endpointId: messaging.chatgptEndpointId },
+            piEndpoint: { adapter: "pi", endpointId: messaging.piEndpointId },
+            piSessionId: messaging.piSessionId,
+            exchangeNamespace: managed.config.exchange.namespace,
+            exchangeIdempotencyKey: managed.config.exchange.idempotencyKey,
+            store: managed.config.store,
+            payloadRead: messaging.payloadRead,
+            ack: messaging.ack,
+          }, { io, ...(facts?.keyFile === undefined ? {} : { credentialFile: facts.keyFile }) });
+          if (pair.durability !== "synced") throw invalid("messaging.generation.durability");
+          bindingPath = pair.bindingPath;
+        }
         // C-R1: register a NEWLY created managed generation immediately so any
         // later precommit refusal (e.g. profile.size) removes it; a reused/
         // historical file is never owned by this transaction.
@@ -442,6 +659,8 @@ export function createTunnelProfileSetup(options: TunnelProfileSetupOptions): Tu
           if (cleanupCredentialDirectory !== undefined) {
             try { cleanupCredentialDirectory(); } catch { cleanupFailed = true; }
           }
+          // Completed immutable config generations are intentionally retained.
+          // The unchanged profile still selects its original complete pair.
         }
         if (cleanupFailed) throw invalid("setup.cleanup");
       }

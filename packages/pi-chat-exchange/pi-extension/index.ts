@@ -26,12 +26,14 @@
  * seam from packages/pi-chat-exchange/dist.
  */
 import { runSetupWizard, presentTunnelStatus } from "../dist/tunnel/setup-ui.js";
+import { confirmMessagingActivation } from "../dist/tunnel/messaging-activation-ui.js";
 import { piTunnelKeyProtocol } from "./tui-keys.js";
-import { createTunnelProfileSetup } from "../dist/tunnel/setup.js";
+import { createTunnelProfileSetup, readGeneratedPiAllowlist } from "../dist/tunnel/setup.js";
 import { resolveTunnelProfilePath } from "../dist/tunnel/background-manager.js";
+import { validMessagingStore } from "../dist/tunnel/messaging-config.js";
 import { runTunnelManagerUi, type TunnelManagerUiProjection } from "../dist/tunnel/manager-ui.js";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   CeHostRefusal,
@@ -148,6 +150,14 @@ interface AllowlistFile {
   /** CE-0002-B3-P4D opt-in: only the exact boolean `true` registers the
    * ce_read_payload tool. Missing, false, or malformed fails closed. */
   readonly payloadRead?: { readonly enabled?: boolean };
+  /** MESSAGING-INTEGRATION-01 opt-in: only the exact boolean `true` registers
+   * the ce_ack tool and forwards the ACK capability policy. Receipt semantics
+   * only — never completion authority. Missing/false/malformed fails closed. */
+  readonly ack?: { readonly enabled?: boolean };
+  /** MESSAGING-INTEGRATION-01: generated Store location shared with the
+   * Tunnel-managed binding. Valid only as a complete, safe shape; malformed is
+   * refused before Store/session activation, never guessed. */
+  readonly store?: { readonly directory?: string; readonly file?: string };
   /** Extension-local advisory visibility. This never grants CE authority. */
   readonly inboxNotification?: {
     readonly enabled?: boolean;
@@ -176,10 +186,21 @@ function envOr(name: string, fallback: string): string {
   return typeof value === "string" && value.length > 0 ? value : fallback;
 }
 
+function allowlistPath(): string {
+  const explicit = process.env.CE_ALLOWLIST;
+  if (typeof explicit === "string" && explicit.length > 0) return explicit;
+  return join(EXTENSION_DIR, "allowlist.json");
+}
+
 function loadAllowlist(): AllowlistFile {
-  const path = envOr("CE_ALLOWLIST", join(EXTENSION_DIR, "allowlist.json"));
+  const path = allowlistPath();
   try {
-    return JSON.parse(readFileSync(path, "utf8")) as AllowlistFile;
+    // Only the profile-selected immutable generation is a generated default.
+    // A malformed selected pair refuses; it never redirects to a legacy Store.
+    const explicit = typeof process.env.CE_ALLOWLIST === "string" && process.env.CE_ALLOWLIST.length > 0;
+    const generated = explicit ? undefined : readGeneratedPiAllowlist(resolveTunnelProfilePath({ env: process.env }));
+    const document: unknown = generated === undefined ? JSON.parse(readFileSync(path, "utf8")) : generated;
+    return typeof document === "object" && document !== null && !Array.isArray(document) ? document as AllowlistFile : {};
   } catch {
     return {};
   }
@@ -203,6 +224,47 @@ function payloadReadEnabled(allowlist: AllowlistFile): boolean {
     return enabled?.enumerable === true && "value" in enabled && enabled.value === true;
   } catch {
     return false;
+  }
+}
+
+/** MESSAGING-INTEGRATION-01: the ACK opt-in uses the identical exact-`true`
+ * rule as payloadRead — missing, false, or malformed fails closed and the
+ * ce_ack tool is never registered. */
+function ackEnabled(allowlist: AllowlistFile): boolean {
+  try {
+    const setting: unknown = allowlist.ack;
+    if (typeof setting !== "object" || setting === null || Array.isArray(setting)) return false;
+    const prototype = Object.getPrototypeOf(setting);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+    const enabled = Object.getOwnPropertyDescriptor(setting, "enabled");
+    return enabled?.enumerable === true && "value" in enabled && enabled.value === true;
+  } catch {
+    return false;
+  }
+}
+
+/** MESSAGING-INTEGRATION-01: strict validation of the generated Store
+ * location. Only a complete, safe shape is honored — an absolute normalized
+ * directory (not root, no trailing slash) and a safe file name. Anything
+ * malformed explicit configuration is refused before Store/session activation. */
+function allowlistStore(allowlist: AllowlistFile): { readonly directory: string; readonly file: string } | undefined {
+  try {
+    const setting: unknown = allowlist.store;
+    if (typeof setting !== "object" || setting === null || Array.isArray(setting)) return undefined;
+    const prototype = Object.getPrototypeOf(setting);
+    if (prototype !== Object.prototype && prototype !== null) return undefined;
+    const keys = Reflect.ownKeys(setting);
+    if (keys.length !== 2 || !keys.includes("directory") || !keys.includes("file")) return undefined;
+    const directoryField = Object.getOwnPropertyDescriptor(setting, "directory");
+    const fileField = Object.getOwnPropertyDescriptor(setting, "file");
+    if (directoryField === undefined || !("value" in directoryField) || fileField === undefined || !("value" in fileField)) return undefined;
+    const directory = directoryField.value;
+    const file = fileField.value;
+    if (typeof directory !== "string" || directory.length === 0 || directory.length > 4096 || directory.includes("\u0000")) return undefined;
+    if (!validMessagingStore(directory, file)) return undefined;
+    return Object.freeze({ directory, file });
+  } catch {
+    return undefined;
   }
 }
 
@@ -289,9 +351,23 @@ function inboxNotificationConfig(allowlist: AllowlistFile): InboxNotificationCon
   }
 }
 
-function openHostStore() {
-  const directory = envOr("CE_STORE_DIR", join(EXTENSION_DIR, "store"));
-  const filename = envOr("CE_STORE_FILE", "ce-store.sqlite");
+function openHostStore(allowlist: AllowlistFile) {
+  // An explicit allowlist Store is authoritative (shared with the MCP binding).
+  // Nonempty env values may only confirm that exact location, never redirect it.
+  // Legacy allowlists without a Store retain env/default routing.
+  const generated = allowlistStore(allowlist);
+  // An absent Store is a legacy configuration; an explicit malformed Store
+  // is NOT legacy. Never grant session/ACK authority on a guessed fallback.
+  if (Object.hasOwn(allowlist, "store") && generated === undefined) throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
+  const envDir = process.env.CE_STORE_DIR;
+  const envFile = process.env.CE_STORE_FILE;
+  if (generated !== undefined &&
+      ((envDir !== undefined && envDir !== "" && envDir !== generated.directory) ||
+       (envFile !== undefined && envFile !== "" && envFile !== generated.file))) {
+    throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
+  }
+  const directory = typeof envDir === "string" && envDir.length > 0 ? envDir : generated?.directory ?? join(EXTENSION_DIR, "store");
+  const filename = typeof envFile === "string" && envFile.length > 0 ? envFile : generated?.file ?? "ce-store.sqlite";
   const options = { directory, filename, busyTimeoutMs: 5_000 };
   return existsSync(join(directory, filename)) ? openStore(options) : initializeStore(options);
 }
@@ -313,6 +389,8 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   type BoundedTaskCleanup = { readonly task: Promise<void>; readonly wait: Promise<void> };
   let credentialCapture: AbortController | undefined;
   let setupTask: Promise<void> | undefined;
+  let activationTask: Promise<void> | undefined;
+  let activationCapture: AbortController | undefined;
   let managerUiCapture: AbortController | undefined;
   let managerUiTask: Promise<void> | undefined;
   /** REAL-START-FIX-01: guard for a non-blocking background start's deferred
@@ -422,6 +500,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
    * the next `/ce-tunnel` call. CE release/fencing is never altered by this.
    */
   const clearTunnelStatus = (): Promise<void> => {
+    activationCapture?.abort();
     managerUiCapture?.abort();
     managerUiCapture = undefined;
     startCapture?.abort();
@@ -497,7 +576,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       transportRelease = attempt;
       return attempt;
     })();
-    const taskWaits = [setupCleanup?.wait, authorizeCleanup?.wait, managerUiCleanup?.wait].filter((wait): wait is Promise<void> => wait !== undefined);
+    const taskWaits = [setupCleanup?.wait, authorizeCleanup?.wait, managerUiCleanup?.wait, activationTask].filter((wait): wait is Promise<void> => wait !== undefined);
     // Round 3 (Lane C R2-C2) / Closure remediation (SEC-CLOSE-01) and R5 Lane B:
     // manager transport, setup, authorize, and Manager-UI cleanup settle TOGETHER.
     // A timeout only caps the returned wait; task registration remains until its
@@ -554,7 +633,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
 
   const getHost = (): CeSessionHost => {
     if (host === undefined) {
-      const store = openHostStore();
+      const store = openHostStore(allowlist);
       const sessions = Object.entries(allowlist.sessions ?? {}).map(([piSessionId, entry]) => ({
         piSessionId,
         endpointId: typeof entry.endpointId === "string" ? entry.endpointId : "",
@@ -571,6 +650,10 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         // the exact boolean here — a malformed allowlist setting never reaches
         // the host as a truthy non-boolean.
         ...(payloadReadEnabled(allowlist) ? { payloadRead: { enabled: true } } : {}),
+        // MESSAGING-INTEGRATION-01: the ACK opt-in is forwarded with the same
+        // exact-true normalization so the host issues a Session-bound ack
+        // capability only under operator authorization.
+        ...(ackEnabled(allowlist) ? { ack: { enabled: true } } : {}),
         // CE-0002 B3-P3B reply path: forward the strictly validated
         // cross-adapter recipients; absent or malformed stays disabled so
         // Pi sends exactly as before.
@@ -777,10 +860,19 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       if (state.renewal !== undefined) await state.renewal;
       try {
         if (reason !== "reload" && state.failure === undefined) {
+          const previous = getHost().status(state.endpointId);
           const result = getHost().end(state.endpointId);
           if (result.released !== true || result.detached !== true) {
             throw new CeHostRefusal("CE_HOST_UNCERTAIN");
           }
+          if (!previous.registered || previous.participantId === undefined || previous.sessionId === undefined || previous.exchangeId === undefined) {
+            throw new CeHostRefusal("CE_HOST_UNCERTAIN");
+          }
+          // Identifier-only proof of this handle's verified end. It can remove
+          // a stale-mapping denial, never grant target capabilities/ownership.
+          pi.appendEntry("ce-messaging-released", { piSessionId: state.piSessionId,
+            endpointId: state.endpointId, participantId: previous.participantId,
+            sessionId: previous.sessionId, exchangeId: previous.exchangeId });
         }
       } catch (error) {
         failLifecycle(state, error);
@@ -1110,6 +1202,95 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       },
     });
   }
+
+  // MESSAGING-INTEGRATION-01: registered only when the operator opted in with
+  // the exact `ack.enabled === true`. A disabled deployment registers no ACK
+  // tool at all. The tool records a reception receipt ONLY — never delivery,
+  // read, processing, or task-completion evidence.
+  const ACK_MESSAGE_ID = /^msg_[0-9A-HJKMNP-TV-Z]{26}$/;
+  const ACK_DIGEST = /^[0-9a-f]{64}$/;
+  if (ackEnabled(allowlist)) {
+    pi.registerTool({
+      name: "ce_ack",
+      label: "Chat Exchange Acknowledge",
+      description:
+        "Record one immutable reception receipt for a message addressed to this endpoint, by explicit id. " +
+        "Copy payloadDigest, payloadLength, and messageCreatedAuditSequence exactly from an authorized read " +
+        "(ce_read_payload); never compute or guess them. Idempotent per message. Reception only: this is " +
+        "not proof of delivery, read, processing, or task completion.",
+      promptSnippet: "Record a reception receipt for one durable chat-exchange message by explicit id",
+      parameters: {
+        type: "object",
+        properties: {
+          messageId: { type: "string", description: "Explicit message id from ce_inbox_list or an authorized read" },
+          payloadDigest: { type: "string", description: "SHA-256 hex digest copied exactly from the authorized read" },
+          payloadLength: { type: "integer", description: "Byte length copied exactly from the authorized read" },
+          messageCreatedAuditSequence: { type: "integer", description: "auditSequence of the authorized read result" },
+        },
+        required: ["messageId", "payloadDigest", "payloadLength", "messageCreatedAuditSequence"],
+        additionalProperties: false,
+      },
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<ToolResultView> {
+        try {
+          const endpointId = guardedEndpoint(ctx);
+          // Closed four-field schema, enforced even for direct runtime calls:
+          // no sender, session, exchange, or capability field is ever accepted.
+          if (typeof params !== "object" || params === null || Array.isArray(params)) {
+            throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
+          }
+          const prototype = Object.getPrototypeOf(params);
+          const keys = Reflect.ownKeys(params);
+          const REQUIRED = ["messageId", "payloadDigest", "payloadLength", "messageCreatedAuditSequence"];
+          if ((prototype !== Object.prototype && prototype !== null) ||
+              keys.length !== REQUIRED.length || !REQUIRED.every((key) => keys.includes(key))) {
+            throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
+          }
+          const value = (key: string): string | number => {
+            const field = Object.getOwnPropertyDescriptor(params, key);
+            if (field === undefined || field.enumerable !== true || !("value" in field)) {
+              throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
+            }
+            if (typeof field.value !== "string" && typeof field.value !== "number") throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
+            return field.value;
+          };
+          const messageId = value("messageId");
+          const payloadDigest = value("payloadDigest");
+          const payloadLength = value("payloadLength");
+          const messageCreatedAuditSequence = value("messageCreatedAuditSequence");
+          if (typeof messageId !== "string" || !ACK_MESSAGE_ID.test(messageId) ||
+              typeof payloadDigest !== "string" || !ACK_DIGEST.test(payloadDigest) ||
+              typeof payloadLength !== "number" || !Number.isSafeInteger(payloadLength) || payloadLength < 0 ||
+              typeof messageCreatedAuditSequence !== "number" || !Number.isSafeInteger(messageCreatedAuditSequence) || messageCreatedAuditSequence < 1) {
+            throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
+          }
+          const result = getHost().acknowledge(endpointId, { messageId, payloadDigest, payloadLength, messageCreatedAuditSequence });
+          return {
+            content: [{
+              type: "text",
+              text:
+                `chat-exchange ${result.disposition.toLowerCase()}: reception receipt ${result.receipt.receiptId} ` +
+                `for message ${result.receipt.messageId} (audit #${result.receiptAuditSequence}). Reception only: ` +
+                "not proof of delivery, read, processing, or task completion.",
+            }],
+            details: {
+              disposition: result.disposition,
+              receipt: {
+                receiptId: result.receipt.receiptId,
+                exchangeId: result.receipt.exchangeId,
+                messageId: result.receipt.messageId,
+                endpoint: { adapter: result.receipt.endpoint.adapter, endpointId: result.receipt.endpoint.endpointId },
+                kind: result.receipt.kind,
+                createdAt: result.receipt.createdAt,
+              },
+              receiptAuditSequence: result.receiptAuditSequence,
+            },
+          };
+        } catch (error) {
+          return refusalResult(error);
+        }
+      },
+    });
+  }
   pi.registerCommand("ce-status", {
     description: "Show this session's chat-exchange endpoint, ownership lease, and fencing status",
     async handler(_args, ctx) {
@@ -1144,6 +1325,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     { value: "start", description: "start the real background tunnel client (or the offline simulator under CE_TUNNEL_OFFLINE_TEST=1)" },
     { value: "stop", description: "stop the tunnel instance this manager provably owns (one SIGTERM, verified exit)" },
     { value: "migrate", description: "repair a saved real profile in place (drop rejected admin_ui keys + repoint the mcp node) without re-entering the credential" },
+    { value: "activate", description: "explicitly confirm and bind the configured current Pi messaging session; never takeover or a real Gate claim" },
     { value: "status", description: "show CE segment plus measured tunnel state (STOPPED/STARTING/CONNECTED/DEGRADED/UNKNOWN)" },
     { value: "help", description: "list the subcommands and their limits" },
   ];
@@ -1151,6 +1333,144 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   /** Only closed codes reach the operator; no value, path, or cause string. */
   const refusalText = (error: unknown): string =>
     error instanceof TunnelRefusal ? error.code : "CE_TUNNEL_HEALTH_UNAVAILABLE";
+
+  /** Explicit operator activation, not a reload fallback. Only the selected
+   * immutable pair may provision; an old instance can release its known handle
+   * but cannot switch its captured tool policy in place. */
+  const runMessagingActivation = async (ctx: ExtensionContextView, fromSetup = false): Promise<void> => {
+    if (ctx.mode !== "tui" || typeof ctx.ui.custom !== "function" || !isRealBackground()) {
+      notify(ctx, "ce-tunnel: activation refused CE_TUNNEL_INPUT_UNAVAILABLE", "warning"); return;
+    }
+    if (activationTask !== undefined || setupTask !== undefined || (managerUiTask !== undefined && !fromSetup)) {
+      notify(ctx, "ce-tunnel: activation refused CE_TUNNEL_MANAGER_BUSY", "warning"); return;
+    }
+    const controller = new AbortController();
+    activationCapture = controller;
+    const task = (async () => {
+      let targetState: Generation | undefined;
+      try {
+        const manager = activeManager();
+        if (!("kind" in manager)) throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID");
+        const setup = createTunnelProfileSetup({ env: process.env, manager });
+        const selected = setup.inspect();
+        const facts = selected.messaging;
+        const piSessionId = ctx.sessionManager.getSessionId();
+        if (!piSessionId || !facts?.configured || facts.piSessionId !== piSessionId ||
+            !facts.piEndpointId || !facts.chatgptEndpoint || !facts.storeDirectory || !facts.storeFile ||
+            !facts.exchangeNamespace || !facts.exchangeIdempotencyKey) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+        const endpointId = facts.piEndpointId;
+        const document = readGeneratedPiAllowlist(selected.profilePath);
+        if (document === undefined) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+        const policy = JSON.stringify(document);
+        const policyLoaded = policy === JSON.stringify(allowlist);
+        const environment = (): string => JSON.stringify([process.env.CE_ALLOWLIST, process.env.CE_STORE_DIR,
+          process.env.CE_STORE_FILE, process.env.CE_LEASE_TTL_SECONDS, process.env.CE_TUNNEL_PROFILE]);
+        const capturedEnvironment = environment();
+        const priorActivationFailure = (): CeHostRefusal | undefined => {
+          // A new endpoint/config cannot launder this runtime session's unknown
+          // old release or failed mapping persistence. Diagnostics only deny.
+          for (const entry of ctx.sessionManager.getBranch()) {
+            if (entry.type !== "custom" || entry.customType !== "ce-lifecycle-blocked") continue;
+            const data = entry.data as Record<string, unknown> | undefined;
+            if (data?.piSessionId === piSessionId && typeof data.endpointId === "string") {
+              const failure = persistedFailure(ctx, piSessionId, data.endpointId);
+              if (failure !== undefined) return failure;
+            }
+          }
+          for (const [key, code] of processFailureCodes) {
+            try {
+              const fields = JSON.parse(key) as unknown[];
+              const current = JSON.parse(failureKey(piSessionId, endpointId)) as unknown[];
+              if (fields[0] === current[0] && fields[1] === current[1] && fields[2] === piSessionId) return new CeHostRefusal(code);
+            } catch { /* cache is deny-only */ }
+          }
+          return undefined;
+        };
+        const assertCurrent = (): void => {
+          if (controller.signal.aborted || ctx.sessionManager.getSessionId() !== piSessionId ||
+              environment() !== capturedEnvironment || setup.inspect().revision !== selected.revision ||
+              JSON.stringify(readGeneratedPiAllowlist(selected.profilePath)) !== policy) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+          const oldFailure = priorActivationFailure();
+          if (oldFailure !== undefined) throw oldFailure;
+          const blocked = persistedFailure(ctx, piSessionId, endpointId);
+          if (blocked !== undefined) throw blocked;
+          if (generation?.failure !== undefined) throw generation.failure;
+          if (startupFailure !== undefined && startupFailure.code !== "CE_HOST_MAPPING_INVALID") throw startupFailure;
+          if (generation !== undefined && generation.piSessionId !== piSessionId) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+        };
+        assertCurrent();
+        const priorMapping = lastMappingEntry(ctx) as Record<string, unknown> | undefined;
+        const priorEndpointId = generation?.endpointId ?? (typeof priorMapping?.endpointId === "string" ? priorMapping.endpointId : undefined);
+        const confirmed = await confirmMessagingActivation({ ...ctx, mode: "tui" }, {
+          view: { piSessionId, piEndpointId: endpointId, chatgptEndpointId: facts.chatgptEndpoint.endpointId,
+            storeDirectory: facts.storeDirectory, storeFile: facts.storeFile, exchangeNamespace: facts.exchangeNamespace,
+            exchangeIdempotencyKey: facts.exchangeIdempotencyKey, payloadRead: facts.payloadRead, ack: facts.ack, policyLoaded,
+            ...(priorEndpointId === undefined ? {} : { oldEndpointId: priorEndpointId }) },
+          keys: piTunnelKeyProtocol, signal: controller.signal,
+        });
+        if (!confirmed || controller.signal.aborted) return;
+        assertCurrent();
+        if (!policyLoaded) {
+          const old = generation;
+          if (old !== undefined) {
+            await shutdownCe("messaging-activation");
+            if (old.failure !== undefined) throw old.failure;
+            assertCurrent();
+          }
+          notify(ctx, "ce-tunnel: previous Pi binding released (if locally held); reload the extension to load the selected policy, then explicitly Activate current session; no target binding created", "warning");
+          return;
+        }
+        await manager.withProfileConfigurationLock(() => {
+          assertCurrent(); // no await between final policy fence and Host writes
+          if (generation !== undefined) {
+            if (generation.stopping || generation.endpointId !== endpointId) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+            targetState = generation;
+            const existing = getHost().status(endpointId);
+            if (!existing.registered || existing.lease !== "ACTIVE") throw new CeHostRefusal("CE_HOST_AUTHORITY_ABSENT");
+            notify(ctx, "ce-tunnel: Pi messaging already bound; transport and real Gate evidence are separate");
+            return;
+          }
+          const inherited = lastMappingEntry(ctx);
+          if (inherited !== undefined) {
+            if (typeof inherited !== "object" || inherited === null || Array.isArray(inherited)) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+            const old = inherited as Record<string, unknown>;
+            const identifiers = ["endpointId", "participantId", "sessionId", "exchangeId"] as const;
+            const releaseProven = identifiers.every((key) => typeof old[key] === "string" && old[key] !== "") &&
+              ctx.sessionManager.getBranch().some((entry) => {
+                if (entry.type !== "custom" || entry.customType !== "ce-messaging-released") return false;
+                const proof = entry.data as Record<string, unknown> | undefined;
+                return proof?.piSessionId === piSessionId && identifiers.every((key) => proof[key] === old[key]);
+              });
+            if (!releaseProven) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+          }
+          targetState = { piSessionId, endpointId, ctx, timer: undefined, renewal: undefined, stopping: false, failure: undefined };
+          const mapping = getHost().beginSession(endpointId, { requireUnowned: true });
+          generation = targetState;
+          pi.appendEntry("ce-mapping", mapping); // identifiers only; history retained
+          currentEndpoint = endpointId;
+          inboxBinding = Object.freeze({ piSessionId, endpointId });
+          startupFailure = undefined;
+          startHeartbeat(targetState);
+          advisoryState = notificationConfig === undefined ? undefined :
+            { generation: Object.freeze({}), watermark: 0, inFlight: false, failureLatched: false };
+          notify(ctx, "ce-tunnel: Pi messaging bound; restart the Tunnel separately (Stop then Start); not real Gate evidence; ACK is reception only");
+        });
+      } catch (error) {
+        if (targetState !== undefined) {
+          failLifecycle(targetState, error); // uncertain provisioning/persistence is latched
+        }
+        if (!controller.signal.aborted) {
+          const code = error instanceof CeHostRefusal || error instanceof TunnelRefusal ? error.code : "CE_HOST_UNAVAILABLE";
+          notify(ctx, `ce-tunnel: activation refused ${code}; no automatic retry or takeover`, "warning");
+        }
+      }
+    })();
+    activationTask = task;
+    try { await task; } finally {
+      if (activationTask === task) activationTask = undefined;
+      if (activationCapture === controller) activationCapture = undefined;
+    }
+  };
 
   const runSetup = async (ctx: ExtensionContextView): Promise<void> => {
     // mode must be "tui": hasUI is also true for RPC, which cannot host a
@@ -1160,11 +1480,12 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       return;
     }
     // Keep the single setup task registered until writer/disposal completes.
-    if (setupTask !== undefined) {
+    if (setupTask !== undefined || activationTask !== undefined) {
       notify(ctx, "ce-tunnel: setup refused — another setup is still in flight; wait for its cleanup before starting a new one", "warning");
       return;
     }
     const controller = new AbortController();
+    let activateAfterSetup = false;
     credentialCapture = controller;
     const task = (async () => {
       let runner: ReturnType<typeof createNativeKeychainRunner> | undefined;
@@ -1175,8 +1496,32 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           const setup = createTunnelProfileSetup({ env: process.env, manager });
           const inspected = setup.inspect();
           let durability: "synced" | "uncertain" = "synced";
+          // MESSAGING-INTEGRATION-01: the current session id comes from the
+          // trusted Pi runtime API only; when unavailable the wizard refuses
+          // messaging authorization (never guessed).
+          let piSessionId: string | undefined;
+          try { const candidate = ctx.sessionManager.getSessionId(); if (typeof candidate === "string" && candidate.length > 0) piSessionId = candidate; } catch { /* unavailable */ }
+          const inspectedMessaging = inspected.messaging;
+          const existingMessaging = inspectedMessaging === undefined ||
+            (inspectedMessaging.chatgptEndpoint === undefined && inspectedMessaging.piSessionId === undefined)
+            ? undefined : {
+              chatgptEndpointId: inspectedMessaging.chatgptEndpoint?.endpointId ?? "",
+              piEndpointId: inspectedMessaging.piEndpointId,
+              piSessionId: inspectedMessaging.piSessionId,
+              payloadRead: inspectedMessaging.payloadRead,
+              ack: inspectedMessaging.ack,
+              configured: inspectedMessaging.configured,
+              ...(inspectedMessaging.storeDirectory === undefined ? {} : { storeDirectory: inspectedMessaging.storeDirectory }),
+              ...(inspectedMessaging.storeFile === undefined ? {} : { storeFile: inspectedMessaging.storeFile }),
+              ...(inspectedMessaging.exchangeNamespace === undefined ? {} : { exchangeNamespace: inspectedMessaging.exchangeNamespace }),
+              ...(inspectedMessaging.exchangeIdempotencyKey === undefined ? {} : { exchangeIdempotencyKey: inspectedMessaging.exchangeIdempotencyKey }),
+            };
+          let messagingSaved = false;
           const result = await runSetupWizard({ ...ctx, mode: "tui" }, {
             profilePath: inspected.profilePath, signal: controller.signal, keys: piTunnelKeyProtocol,
+            ...(piSessionId === undefined ? {} : { piSessionId }),
+            canActivateMessaging: inspectedMessaging?.configured === true && piSessionId !== undefined && inspectedMessaging.piSessionId === piSessionId,
+            ...(existingMessaging === undefined ? {} : { existingMessaging }),
             ...(inspected.exists ? { existing: {
               tunnelId: inspected.tunnelId!,
               ...(inspected.organizationId ? { organizationId: inspected.organizationId } : {}),
@@ -1188,15 +1533,36 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
               // Changed recipients regenerate the CE-managed binding; absent
               // recipients keep the profile's current binding unchanged; a first
               // setup defaults to the CE-managed minimal-permission binding.
+              // MESSAGING-INTEGRATION-01: an explicit messaging authorization
+              // derives the whole binding (ChatGPT endpoint, single Pi
+              // recipient, read/ACK opt-ins) and publishes the Pi-side allowlist
+              // atomically under the same ownership lock.
               const saved = await setup.save({
                 expectedRevision: inspected.revision, tunnelId: proposal.tunnelId,
                 ...(proposal.organizationId ? { organizationId: proposal.organizationId } : {}),
                 credential: proposal.credential,
-                ...(proposal.recipients === undefined ? {} : { binding: { kind: "managed", recipients: proposal.recipients } }),
+                ...(proposal.messaging === undefined
+                  ? (proposal.recipients === undefined ? {} : { binding: { kind: "managed" as const, recipients: proposal.recipients } })
+                  : {
+                      binding: {
+                        kind: "managed" as const,
+                        endpointId: proposal.messaging.chatgptEndpointId,
+                        recipients: [{ adapter: "pi", endpointId: proposal.messaging.piEndpointId }],
+                        capabilities: { payloadRead: true, ack: true },
+                      },
+                      messaging: {
+                        chatgptEndpointId: proposal.messaging.chatgptEndpointId,
+                        piEndpointId: proposal.messaging.piEndpointId,
+                        piSessionId: proposal.messaging.piSessionId,
+                        payloadRead: true, ack: true,
+                        replaceExisting: proposal.messaging.replaceExisting,
+                      },
+                    }),
                 signal,
               });
               if (saved.kind === "cancelled") return saved;
               durability = saved.durability;
+              messagingSaved = proposal.messaging !== undefined;
             },
           });
           // R5 Lane A F4: a commit that landed is reported even when teardown
@@ -1204,10 +1570,19 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           // Only non-saved outcomes are suppressed for a dead context.
           if (controller.signal.aborted && result.status !== "saved") return;
           if (result.status === "saved") {
+            // MESSAGING-INTEGRATION-01: a messaging save takes effect only
+            // after an explicit Tunnel restart (the MCP child reloads its
+            // binding) AND a Pi extension reload (the allowlist is read once
+            // per process). Configured is never reported as Connected or live.
+            const messagingNote = messagingSaved
+              ? " Messaging configured: if an old Pi binding is held, use /ce-tunnel activate to release it for policy reload; reload this Pi session/extension, then explicitly Activate current session. With the Tunnel stopped, activation verifies the selected pair; restart the Tunnel (Stop then Start) separately. Configured != Connected != live messaging."
+              : "";
             notify(ctx, durability === "synced"
-              ? "ce-tunnel: configuration saved; Configured != Connected. Start remains a separate explicit action."
-              : "ce-tunnel: configuration saved, durability uncertain; inspect configuration before a separate explicit start",
+              ? `ce-tunnel: configuration saved; Configured != Connected. Start remains a separate explicit action.${messagingNote}`
+              : `ce-tunnel: configuration saved, durability uncertain; inspect configuration before a separate explicit start${messagingNote}`,
               durability === "synced" ? "info" : "warning");
+          } else if (result.status === "activation-requested") {
+            activateAfterSetup = true; // caller opens confirmation only after wizard/task cleanup
           } else if (result.status === "cancelled") {
             notify(ctx, "ce-tunnel: CANCELLED", "info");
           } else {
@@ -1243,6 +1618,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       if (setupTask === task) setupTask = undefined;
       if (setupCleanup?.task === task) setupCleanup = undefined;
     }
+    if (activateAfterSetup && !controller.signal.aborted) await runMessagingActivation(ctx, true);
   };
 
 
@@ -1356,10 +1732,26 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         }
         const state = runtime.state !== "STOPPED" ? runtime.state : !inspection.exists ? "UNCONFIGURED"
           : binding === "configured" && inspection.credentialConfigured ? "STOPPED" : "ERROR";
+        // MESSAGING-INTEGRATION-01: configuration-only messaging projection
+        // (Details view). Never derived from runtime state; a read failure of
+        // either side degrades to absent fields, never a fabricated config.
+        const messaging = inspection.messaging === undefined ? undefined : {
+          ...(inspection.messaging.chatgptEndpoint === undefined ? {} : { chatgptEndpointId: inspection.messaging.chatgptEndpoint.endpointId }),
+          ...(inspection.messaging.piEndpointId === undefined ? {} : { piEndpointId: inspection.messaging.piEndpointId }),
+          ...(inspection.messaging.piSessionId === undefined ? {} : { piSessionId: inspection.messaging.piSessionId }),
+          configured: inspection.messaging.configured,
+          payloadRead: inspection.messaging.payloadRead,
+          ack: inspection.messaging.ack,
+          ...(inspection.messaging.storeDirectory === undefined ? {} : { storeDirectory: inspection.messaging.storeDirectory }),
+          ...(inspection.messaging.storeFile === undefined ? {} : { storeFile: inspection.messaging.storeFile }),
+          ...(inspection.messaging.exchangeNamespace === undefined ? {} : { exchangeNamespace: inspection.messaging.exchangeNamespace }),
+          ...(inspection.messaging.exchangeIdempotencyKey === undefined ? {} : { exchangeIdempotencyKey: inspection.messaging.exchangeIdempotencyKey }),
+        };
         return { view: { state, profilePath: inspection.profilePath,
           ...(inspection.tunnelId ? { tunnelIdAlreadyMasked: `${inspection.tunnelId.slice(0, 13)}…` } : {}),
           organizationConfigured: Boolean(inspection.organizationId), binding, credentialConfigured: inspection.credentialConfigured,
           evidence: runtime.evidence === "health-probe" ? "health-probe" : "none",
+          ...(messaging === undefined ? {} : { messaging }),
         }, runtimeState: runtime.state, evidence: runtime.evidence };
       } catch (error) {
         return { view: { state: "UNKNOWN", profilePath, organizationConfigured: false, binding: "invalid", credentialConfigured: false,
@@ -1380,7 +1772,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     // component — the operator still sees the real state (STARTING/CONNECTED/)
     // without an overlapping Manager. The /ce-status command is no longer
     // blocked by the extension's own Manager guard.
-    const presentInteractive = interactive && managerUiTask === undefined;
+    const presentInteractive = interactive && managerUiTask === undefined && activationTask === undefined;
     const controller = new AbortController();
     if (presentInteractive) managerUiCapture = controller;
     const liveCtx: ExtensionContextView = { ...ctx, get mode() { return controller.signal.aborted ? "print" : ctx.mode; } };
@@ -1408,7 +1800,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       notify(ctx, "ce-tunnel: Manager requires interactive TUI (CE_TUNNEL_INPUT_UNAVAILABLE)", "warning");
       return;
     }
-    if (managerUiTask !== undefined) {
+    if (managerUiTask !== undefined || activationTask !== undefined) {
       notify(ctx, "ce-tunnel: Manager already open (CE_TUNNEL_MANAGER_BUSY)", "warning");
       return;
     }
@@ -1477,6 +1869,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           );
           return;
         }
+        if (sub === "activate") { await runMessagingActivation(ctx); return; }
         if (sub === "setup") {
           await runSetup(ctx);
           return;

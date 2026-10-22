@@ -37,12 +37,23 @@ export interface ManagedBindingIdentity {
   readonly adapter: string;
 }
 
+export interface ManagedBindingCapabilities {
+  /** Explicit messaging opt-ins; absent means disabled (fail closed). */
+  readonly payloadRead?: boolean;
+  readonly ack?: boolean;
+}
+
 export interface ManagedBindingInput extends ManagedBindingIdentity {
+  /** Explicit endpoint identity for this tunnel-side MCP host. Absent keeps the
+   *  identity-digest default (ce-<digest>) for backward compatibility. */
+  readonly endpointId?: string;
+  /** Explicit read/ACK opt-ins for this endpoint; default disabled. */
+  readonly capabilities?: ManagedBindingCapabilities;
   /** Operator-authorized cross-adapter recipients. Default `[]` grants none. */
   readonly recipients?: readonly CeRecipientRef[];
   /** Current credential file (if any). A managed candidate resolving to it, its
-   * hardlink, or its symlink target is never opened — the boundary that
-   * validateTunnelBindingFile and inspect already enforce. */
+   *  hardlink, or its symlink target is never opened — the boundary that
+   *  validateTunnelBindingFile and inspect already enforce. */
   readonly credentialFile?: string;
 }
 
@@ -120,10 +131,19 @@ function identityDigest(identity: ManagedBindingIdentity): string {
     .digest("hex").slice(0, 16);
 }
 
+const ENDPOINT_ID_MAX = 256;
+const CREDENTIAL_SHAPED_LABEL = /cap_[0-9a-f]{16,}/i;
+function endpointIdLabel(value: string): string {
+  if (value.length === 0 || value.length > ENDPOINT_ID_MAX || value.includes("\u0000") || CREDENTIAL_SHAPED_LABEL.test(value)) {
+    throw invalid("binding.endpointId");
+  }
+  return value;
+}
+
 function buildDocument(dir: string, input: ManagedBindingInput): ManagedBindingDocument {
   if (!ADAPTER.test(input.adapter)) throw invalid("binding.adapter");
   const namespace = `ce-${identityDigest(input)}`;
-  const endpointId = namespace;
+  const endpointId = input.endpointId === undefined ? namespace : endpointIdLabel(input.endpointId);
   return Object.freeze({
     version: MCP_BINDING_CONFIG_VERSION,
     managed: Object.freeze({ tunnelId: input.tunnelId, organizationId: input.organizationId, adapter: input.adapter }),
@@ -132,8 +152,8 @@ function buildDocument(dir: string, input: ManagedBindingInput): ManagedBindingD
     endpoint: Object.freeze({ adapter: input.adapter, endpointId }),
     recipients: Object.freeze([...(input.recipients ?? [])]),
     lease: Object.freeze({ ttlSeconds: 120, renewIntervalSeconds: 30 }),
-    payloadRead: Object.freeze({ enabled: false }),
-    ack: Object.freeze({ enabled: false }),
+    payloadRead: Object.freeze({ enabled: input.capabilities?.payloadRead === true }),
+    ack: Object.freeze({ enabled: input.capabilities?.ack === true }),
     debugExecutionGuard: Object.freeze({ enabled: false }),
   });
 }

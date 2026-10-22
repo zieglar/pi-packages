@@ -27,6 +27,10 @@ vi.mock("../../../dist/endpoints/pi/session-host.js", () => ({
     drop = fake.drop;
     renew = fake.renew;
     end = fake.end;
+    // The real Host exposes status used to capture identifier-only release
+    // proof. Model its registered mapping rather than latching an artificial
+    // missing-method lifecycle failure across otherwise unrelated Inbox cases.
+    status = (endpointId: string) => ({ registered: true, endpointId, participantId: "prt_test", sessionId: "ses_test", exchangeId: "ho_test" });
     listInbox = fake.list;
   },
 }));
@@ -91,6 +95,7 @@ async function harness() {
 }
 
 beforeEach(() => {
+  vi.stubEnv("CE_ALLOWLIST", "/fixtures/operator-allowlist.json");
   vi.useFakeTimers();
   fake.renew.mockReturnValue({ fencingToken: 1, expiresAt: "2026-10-10T00:02:00.000Z" });
   fake.end.mockReturnValue({ released: true, detached: true });
@@ -100,7 +105,7 @@ beforeEach(() => {
   fake.list.mockReturnValue({ messages: [{ messageId: "msg_test", auditSequence: 9 }], continuationAuditSequence: 9, scanBudgetExhausted: false });
 });
 
-afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
+afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllEnvs(); });
 describe("explicit Pi Inbox tool", () => {
   it("registers once with the exact bounded input schema", async () => {
     const h = await harness();

@@ -80,6 +80,7 @@ async function start() {
 }
 
 beforeEach(() => {
+  vi.stubEnv("CE_ALLOWLIST", "/fixtures/operator-allowlist.json");
   vi.useFakeTimers();
   fake.renew.mockReturnValue({ fencingToken: 1, expiresAt: "2026-10-10T00:02:00.000Z" });
   fake.end.mockReturnValue({ released: true, detached: true });
@@ -88,7 +89,7 @@ beforeEach(() => {
   fake.begin.mockImplementation((endpointId: string) => ({ endpointId, participantId: "prt_test", sessionId: "ses_test", exchangeId: "ho_test" }));
 });
 
-afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
+afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllEnvs(); });
 const BASE = {
   sessions: { piA: { endpointId: "local/A" }, piB: { endpointId: "local/B" } },
 };

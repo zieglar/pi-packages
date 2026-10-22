@@ -113,6 +113,7 @@ async function harness() {
 }
 
 beforeEach(() => {
+  vi.stubEnv("CE_ALLOWLIST", "/fixtures/operator-allowlist.json");
   vi.useFakeTimers();
   fake.renew.mockReturnValue({ fencingToken: 1, expiresAt: "2026-10-10T00:02:00.000Z" });
   fake.end.mockReturnValue({ released: true, detached: true });
@@ -134,7 +135,7 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
+afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllEnvs(); });
 describe("explicit Pi payload tool registration", () => {
   it.each([
     ["absent", undefined],

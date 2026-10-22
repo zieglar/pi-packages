@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   renderTunnelPanel, tunnelPanelCells, tunnelPanelModel, type TunnelPanelTheme,
-} from "../../dist/tunnel/manager-panel.js";
-import type { TunnelManagerUiProjection } from "../../dist/tunnel/manager-ui.js";
+} from "../../src/tunnel/manager-panel.js";
+import type { TunnelManagerUiProjection } from "../../src/tunnel/manager-ui.js";
 
 /** Identity theme: asserts layout without ANSI noise. */
 const PLAIN: TunnelPanelTheme = { fg: (_role, text) => text, bold: (text) => text };
@@ -29,6 +29,29 @@ function render(projection: TunnelManagerUiProjection, width: number, theme = PL
 }
 
 describe("tunnel manager visual panel", () => {
+  it("projects complete Store and Exchange facts separately from runtime", () => {
+    const messaging = { configured: true, payloadRead: true, ack: true, storeDirectory: "/actual/store", storeFile: "/actual/store/ce.sqlite", exchangeNamespace: "namespace", exchangeIdempotencyKey: "idem-key" };
+    const model = tunnelPanelModel({ ...CONNECTED, messaging }, "details");
+    const fields = model.sections.find((s) => s.title === "Messaging (configuration)")!.fields;
+    for (const value of [messaging.storeDirectory, messaging.storeFile, messaging.exchangeNamespace, messaging.exchangeIdempotencyKey]) expect(fields.some((f) => f.value === value)).toBe(true);
+    expect(model.sections.find((s) => s.title === "Runtime")!.fields.some((f) => f.value === messaging.storeFile)).toBe(false);
+  });
+  it.each(["\n", "\r", "\t", "\x00", "\x07", "\x1b[31m", "\x7f", "\x85"])("sanitizes endpoint controls %j before measuring rows", (control) => {
+    const projection: TunnelManagerUiProjection = { ...CONNECTED, messaging: {
+      configured: true, chatgptEndpointId: `chat${control}gpt/main`, piEndpointId: `pi${control}/main`,
+      piSessionId: "session", payloadRead: true, ack: true,
+    } };
+    const model = tunnelPanelModel(projection, "details");
+    const fields = model.sections.flatMap((section) => section.fields).filter((field) => field.label.endsWith("endpoint"));
+    expect(fields).toHaveLength(2);
+    for (const field of fields) expect(field.value).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
+    for (const width of [1, 8, 28, 72, 120]) {
+      for (const row of renderTunnelPanel(model, width, PLAIN)) {
+        expect(row).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
+        expect(tunnelPanelCells(row)).toBe(width);
+      }
+    }
+  });
   it("draws a closed box whose every row is exactly the requested width", () => {
     for (const width of [72, 60, 48, 44, 36, 28]) {
       const lines = render(CONNECTED, width);
@@ -104,6 +127,37 @@ describe("tunnel manager visual panel", () => {
     const unknown = render({ ...STOPPED, state: "UNKNOWN", evidence: "unavailable" }, 72).join("\n");
     expect(unknown).toContain("State unknown");
     expect(unknown).not.toMatch(/Connected|not running/);
+  });
+
+  it("MESSAGING-INTEGRATION-01: Details shows messaging configuration facts only — manager view and runtime stay untouched", () => {
+    const withMessaging: TunnelManagerUiProjection = { ...CONNECTED, messaging: {
+      chatgptEndpointId: "chatgpt/main", piEndpointId: "pi/main", piSessionId: "session-1",
+      configured: true, payloadRead: true, ack: true,
+    } };
+    const details = render(withMessaging, 78, PLAIN, "details").join("\n");
+    expect(details).toContain("Messaging (configuration)");
+    expect(details).toContain("chatgpt:chatgpt/main");
+    expect(details).toContain("pi:pi/main");
+    expect(details).toContain("session-1");
+    expect(details).toContain("Bidirectional authorized (configuration)");
+    expect(details).toContain("Enabled (reception only)");
+    // Manager view never carries the messaging section.
+    const manager = render(withMessaging, 78, PLAIN, "manager").join("\n");
+    expect(manager).not.toContain("Messaging (configuration)");
+    // Without messaging facts: explicit Not configured, never fabricated.
+    const bare = render(CONNECTED, 78, PLAIN, "details").join("\n");
+    expect(bare).toContain("Not configured");
+    expect(bare).not.toContain("Bidirectional authorized");
+  });
+
+  it("MESSAGING-INTEGRATION-01: messaging rows stay inside the frame at every width", () => {
+    const withMessaging: TunnelManagerUiProjection = { ...STOPPED, messaging: {
+      chatgptEndpointId: "chatgpt/main", piEndpointId: "pi/main", piSessionId: "session-1",
+      configured: true, payloadRead: true, ack: true,
+    } };
+    for (const width of [78, 48, 28]) {
+      for (const line of render(withMessaging, width, PLAIN, "details")) expect(tunnelPanelCells(line)).toBe(width);
+    }
   });
 
   it("degrades to a usable panel at very small widths without throwing", () => {

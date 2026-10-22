@@ -105,6 +105,9 @@ cpSync(resolve(packageRoot, "dist"), resolve(stagedServer, "dist"), {
 cpSync(resolve(deployRoot, "node_modules"), resolve(stagedServer, "node_modules"), {
   recursive: true,
   dereference: true,
+  // Hoisted deploys contain the actual runtime packages outside this private
+  // mirror. Skip it before dereferencing/copying to avoid shipping them twice.
+  filter: (source) => source !== resolve(deployRoot, "node_modules/.pnpm"),
 });
 rmSync(resolve(stagedServer, "node_modules/.bin"), { recursive: true, force: true });
 // Never ship development-only host SDK/type packages in the plugin server. The
@@ -123,15 +126,9 @@ for (const scopeOrName of readdirSync(nm)) {
     rmSync(scopeDir, { recursive: true, force: true });
   }
 }
-// pnpm keeps a private `.pnpm` mirror (scoped `name/version/hash`) and a
-// `.modules.yaml`/lock that record the ephemeral deploy tmpdir — an absolute
-// host path. Prune both so the packaged server never embeds operator layout.
-const pnpmMirror = resolve(nm, ".pnpm");
-for (const pkg of PRUNED_DEV_PACKAGES) {
-  rmSync(resolve(pnpmMirror, pkg), { recursive: true, force: true });
-}
+// Deployment metadata records the ephemeral deploy tmpdir — an absolute host
+// path. The private mirror (including its lockfile) was excluded at copy time.
 rmSync(resolve(nm, ".modules.yaml"), { force: true });
-rmSync(resolve(pnpmMirror, "lock.yaml"), { force: true });
 
 writeFileSync(
   resolve(stagedServer, "package.json"),

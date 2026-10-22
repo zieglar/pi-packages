@@ -166,6 +166,12 @@ describe("ChatGPT Desktop local plugin source package", () => {
     expect(packagedMcp.mcpServers["pi-chat-exchange"].command).toBe(pinnedNodeCommand);
   }, 60_000);
 
+  it.runIf(packageVerificationEnabled)("omits the redundant pnpm private deployment mirror from packaged servers", () => {
+    for (const root of [stagedRoot, resolve(marketplaceRoot, "plugins/pi-chat-exchange")]) {
+      expect(existsSync(resolve(root, "server/node_modules/.pnpm"))).toBe(false);
+    }
+  });
+
   it.runIf(packageVerificationEnabled)("starts the packaged launcher, discovers four tools, and answers ping", async () => {
     const root = mkdtempSync(join(realpathSync(tmpdir()), "ce-plugin-it-"));
     const configDirectory = resolve(root, ".config/pi-chat-exchange");

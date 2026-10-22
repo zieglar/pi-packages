@@ -93,6 +93,29 @@ const configuredTone = (value: string): TunnelPanelTone =>
  * diagnostics (full profile path, evidence, raw codes, transport caveats) live
  * only in the details view so they never dominate the operator's decision.
  */
+
+/** MESSAGING-INTEGRATION-01: Details-only messaging configuration fields.
+ * Advisory: unknown/absent values render as "Not configured" and never
+ * affect the action matrix or runtime section. */
+function messagingFields(messaging: TunnelManagerUiProjection["messaging"]): TunnelPanelField[] {
+  if (messaging === undefined) {
+    return [{ label: "Messaging", value: "Not configured", tone: "neutral" }];
+  }
+  const endpoint = (adapter: string, id: string | undefined): string =>
+    typeof id === "string" && id.length > 0 ? `${adapter}:${sanitizeTerminalText(id)}` : "Not configured";
+  return [
+    { label: "ChatGPT endpoint", value: endpoint("chatgpt", messaging.chatgptEndpointId), tone: messaging.chatgptEndpointId ? "ok" : "warn" },
+    { label: "Pi endpoint", value: messaging.piEndpointId === undefined ? "Not configured" : endpoint("pi", messaging.piEndpointId), tone: messaging.piEndpointId ? "ok" : "warn" },
+    { label: "Pi session", value: typeof messaging.piSessionId === "string" && messaging.piSessionId.length > 0 ? sanitizeTerminalText(messaging.piSessionId) : "Not mapped", tone: "neutral" },
+    ...([
+      ["Store directory", messaging.storeDirectory], ["Store file", messaging.storeFile],
+      ["Exchange namespace", messaging.exchangeNamespace], ["Idempotency key", messaging.exchangeIdempotencyKey],
+    ] as const).map(([label, value]) => ({ label, value: value === undefined ? "Not determined" : sanitizeTerminalText(value), tone: "neutral" as const })),
+    { label: "Routing", value: messaging.configured ? "Bidirectional authorized (configuration)" : "Not configured", tone: messaging.configured ? "ok" : "warn" },
+    { label: "Payload read", value: messaging.payloadRead ? "Enabled" : "Disabled", tone: messaging.payloadRead ? "ok" : "neutral" },
+    { label: "ACK", value: messaging.ack ? "Enabled (reception only)" : "Disabled", tone: messaging.ack ? "ok" : "neutral" },
+  ];
+}
 export function tunnelPanelModel(
   projection: TunnelManagerUiProjection,
   view: "manager" | "details" = "manager",
@@ -113,8 +136,11 @@ export function tunnelPanelModel(
     ...(view === "details" && read.errorCode !== undefined
       ? [{ label: "Error", value: read.errorCode, tone: "bad" as const }] : []),
   ];
+  // MESSAGING-INTEGRATION-01: configuration-only messaging facts, Details view
+  // only. Never implies live messaging; runtime state stays in its own section.
+  const messaging: TunnelPanelField[] = view === "details" ? messagingFields(projection.messaging) : [];
   const notices = view === "details"
-    ? ["Configured ≠ Connected", "Transport only; not delivery/ACK/completion evidence."]
+    ? ["Configured ≠ Connected", "Messaging Configured ≠ Pi-bound ≠ Connected ≠ real Gate. Explicit activation required.", "Transport only; not delivery/ACK/completion evidence."]
     : read.needsRepair
       ? [read.unconfigured
           ? "Tunnel is not configured. Run setup to continue."
@@ -125,6 +151,7 @@ export function tunnelPanelModel(
     primary: primaryState(read),
     sections: Object.freeze([
       Object.freeze({ title: "Configuration", fields: Object.freeze(identity) }),
+      ...(view === "details" && messaging.length > 0 ? [Object.freeze({ title: "Messaging (configuration)", fields: Object.freeze(messaging) })] : []),
       Object.freeze({ title: "Runtime", fields: Object.freeze(runtime) }),
     ]),
     notices: Object.freeze(notices),
