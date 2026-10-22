@@ -1,269 +1,120 @@
-# ce-chat-exchange — CE-0002 B3-P6B explicit tools and Inbox advisory
+# Pi Chat Exchange 扩展指南
 
-Local, Session-authorized messaging with explicit bounded Inbox discovery,
-opt-in authorized payload reading, and an optional lifecycle-triggered count-only
-Inbox advisory. The runtime slice is verified against Pi 0.86.1; Extension
-behavior has an isolated harness. Real two-process dogfood is a separate
-acceptance phase and is not claimed by these instructions.
-## What it does
+当前运行基线：**Pi 1.3.0 / Node.js 24.21.0**。本页说明 Pi 适配器与工具契约；从零开始请先走[用户指南](../docs/tunnel-setup.md)。历史 B3 文档中的 Pi 0.86.1 / NOT_RUN 是当时切片记录，不代表当前基线。
 
-- On `session_start`, resolves this Pi session's endpoint from the operator
-  allowlist, then validates a persisted mapping through `resume()` (reasons
-  `startup` / `reload` / `resume`) or provisions an initial CE Session. Reload
-  without a mapping refuses; it never provisions a replacement automatically.
-- Registers `ce_send`, `ce_read`, `ce_inbox_list`, `/ce-status`, and — only when
-  the operator sets `payloadRead.enabled` to the exact boolean `true` — the
-  `ce_read_payload` tool.
-- When `inboxNotification.enabled` is the exact boolean `true`, performs one
-  bounded authorized Inbox check after a successful Session binding and after
-  `agent_settled`, then emits count-only advisory UI text when appropriate.
-- Persists the mapping (identifiers only) as a `ce-mapping` custom session
-  entry via `pi.appendEntry`.
-- After successful binding, starts one unref'd Ownership Heartbeat: default
-  30 seconds with TTL 120 seconds; configured TTL is retained and the interval
-  is one quarter of that term. Renewal advances revision, not fencing.
-- On reload, stops Heartbeat, waits for an in-flight synchronous renew, and drops
-  the old in-memory capability without ending valid durable Ownership/Session.
-  The new generation must revalidate with `resume()` before starting its timer.
-- On quit or Session replacement (`new` / `resume` / `fork`), stops Heartbeat,
-  waits for renew, then calls `host.end()` once to release Ownership and detach.
-  A failed or unconfirmed renew/end stops tools and automatic renewal; cleanup
-  is never retried blindly. Identifier-only `ce-lifecycle-blocked` session entries
-  deny subsequent adoption. A process-local refusal-code cache also survives
-  reload if diagnostic persistence fails; it can only deny, never grant authority.
-  If both persistence fails and the process exits, this volatile fallback is lost:
-  operator inspection is required before restart. No automatic recovery is added.
+## 加载与两种配置方式
 
-## What it deliberately does NOT do
+在仓库根目录先 build，再显式加载一次：
 
-- No ACK, delivery cursor mutation, automatic consumption, Inbox polling,
-  automatic page draining, external idle wake, or cross-process signalling.
-  The Ownership Heartbeat never reads or sends Messages.
-- No external delivery: writing to SQLite never makes a message visible in
-  another Pi conversation. `ce_read` returns metadata only. Payload text
-  leaves the storage plane solely through an operator-opted-in
-  `ce_read_payload` invocation that Storage fully authorizes first.
-- No automatic takeover recovery. An expired lease fails closed with
-  `CE_HOST_AUTHORITY_ABSENT`; the separate operator-only recovery CLI is not
-  registered as a Pi command or model tool.
-- A forked or newly created Pi session never inherits the previous mapping:
-  fork/new reasons ignore inherited `ce-mapping` entries entirely.
-
-## Trust boundary
-
-- The **allowlist is the only registration authority**. Pi session ids are
-  untrusted lookup labels; they select an endpoint label and authorize
-  nothing. Model/tool arguments can never register Participants, issue
-  capabilities, or change ownership — they only pick a recipient label,
-  message text, an idempotency key, and the explicit message ids (and Inbox
-  scan budgets) whose Storage-authorized reads they request.
-- Capability plaintext exists only in the host adapter's process memory.
-  It is never logged, never persisted in Pi session entries, and never
-  present in tool results or model-visible context beyond the fixed refusal
-  codes.
-- The host trust-root secret is only ever read by the storage plane inside
-  its own owned transactions; this extension never touches it.
-
-## Configuration
-
-Copy `allowlist.example.json` to `allowlist.json` (or point `CE_ALLOWLIST`
-at a file):
-
-| Field | Meaning |
-|---|---|
-| `sessions` | map of `pi --session-id` value → operator endpoint label |
-| `exchangeNamespace` / `exchangeIdempotencyKey` | deterministic exchange bootstrap |
-| `leaseTtlSeconds` | ownership lease (30–3600; default 120) |
-| `payloadRead.enabled` | exact boolean `true` registers `ce_read_payload`; missing/false/malformed stays disabled |
-| `inboxNotification.enabled` | exact boolean `true` enables lifecycle-triggered advisory checks; missing/false/malformed stays disabled |
-| `inboxNotification.pageSize` | integer 1..50; default 10 |
-| `inboxNotification.rawScanLimit` | integer `pageSize`..2000; default 100 |
-| `recipients` | optional array of `{ adapter, endpointId }` cross-adapter endpoints this Pi host may send to (the reply path, e.g. a ChatGPT-side MCP endpoint). Any malformed entry, a `pi` adapter entry, a duplicate, or a label colliding with a session endpoint disables the whole list; absent means same-adapter allowlisted recipients only |
-
-Environment: `CE_STORE_DIR` (default `./store` next to this file),
-`CE_STORE_FILE` (default `ce-store.sqlite`), `CE_ALLOWLIST`, and
-`CE_LEASE_TTL_SECONDS` are honored.
-
-The CE store and its host-secret file are created on first use with the
-artifact policy enforced by the storage plane (dedicated directory, mode
-checks, no symlinks). The default location is inside this extension
-directory, which is covered by the nested `.gitignore` (`store/`,
-`allowlist.json`) so the database and the host-secret file can never be
-staged; use a dedicated directory per deployment in production.
-
-## Shared-store alignment with the ChatGPT Desktop MCP endpoint
-
-ChatGPT Desktop and Pi are two independent Endpoint Authorities that must agree
-on one Store and one Exchange. They must never share an `endpointId`.
-
-| Side | Adapter | Endpoint | Authority |
-|---|---|---|---|
-| ChatGPT Desktop MCP | `mcp` | `chatgpt-desktop` | its own ownership lease |
-| Pi runtime | `pi` | `pi-main` | its own ownership lease |
-
-To align Pi with the MCP binding without touching the MCP side, copy
-`allowlist.example.json` to `allowlist.json` (git-ignored) and launch Pi with the
-shared store:
-
-```sh
-CE_STORE_DIR="$HOME/.local/share/pi-chat-exchange" \
-CE_ALLOWLIST="$PWD/.pi/extensions/ce-chat-exchange/allowlist.json" \
-  pi --session-id pi-main
+```bash
+mise exec node@24.21.0 -- pnpm --dir packages/pi-chat-exchange run build
+mise exec node@24.21.0 -- pi -e ./packages/pi-chat-exchange/pi-extension/index.ts
 ```
 
-`exchangeNamespace` and `exchangeIdempotencyKey` must match the MCP binding
-exactly, otherwise each side bootstraps a different Exchange and neither can see
-the other's Messages. The example ships the matching `local` / `chatgpt-pi`
-pair and the single cross-adapter recipient `mcp/chatgpt-desktop`.
+已安装本地包时不再 `-e` 第二份。支持的配置路径：
 
-Alignment grants delivery eligibility only. It never shares capabilities, never
-merges ownership, and never lets one side renew, release, or take over the
-other's lease.
+1. **推荐：Tunnel Advanced Messaging 生成配对。** 从 profile 选中的 immutable binding 读取配套 sidecar，双方 Store/Exchange 一致，绑定当前可信 Pi Session。
+2. **高级/独立 stdio：操作者维护 allowlist。** 非空 `CE_ALLOWLIST` 优先于生成配置，否则无生成配对时读取扩展目录的 `allowlist.json`。自带 `allowlist.example.json` 是旧式 `mcp/chatgpt-desktop` 与 `pi-main` 标签示例，不是当前 Tunnel `chatgpt/main` ↔ `pi/main` 的通用模板；不要直接复制后假定完成配对。
 
-## Prerequisite
-
-Build the package once so this extension can import the compiled host seam:
-
-```sh
-pnpm --dir packages/pi-chat-exchange run build
-```
-
-## Smoke (two terminals, one shared store)
-
-Terminal A and B must share `CE_STORE_DIR` (or both use the default and run
-in the same installation). The shipped example allowlist defines the single
-`pi-main` session used for ChatGPT alignment, so a two-Pi smoke needs two
-session entries added to your own `allowlist.json` first, for example:
+下面是**完整、虚构、非生成** allowlist，用于理解与独立部署。实际 `sessions` key 必须由可信运行时取得并由操作者核实，不能从日志或文件名猜测：
 
 ```json
-"sessions": {
-  "ceA": { "endpointId": "local/sessionA" },
-  "ceB": { "endpointId": "local/sessionB" }
+{
+  "exchangeNamespace": "example-local",
+  "exchangeIdempotencyKey": "example-chatgpt-pi",
+  "leaseTtlSeconds": 120,
+  "store": { "directory": "/srv/example-ce-store", "file": "ce-store.sqlite" },
+  "payloadRead": { "enabled": true },
+  "ack": { "enabled": true },
+  "inboxNotification": { "enabled": false, "pageSize": 10, "rawScanLimit": 100 },
+  "recipients": [{ "adapter": "chatgpt", "endpointId": "chatgpt/main" }],
+  "sessions": {
+    "example-runtime-session-replace-me": { "endpointId": "pi/main" }
+  }
 }
 ```
 
-```sh
-# terminal A
-CE_ALLOWLIST=$PWD/allowlist.json pi --session-id ceA
-# terminal B
-CE_ALLOWLIST=$PWD/allowlist.json pi --session-id ceB
+`payloadRead` / `ack` 在示例中为 true 只是展示独立开关，写入实际配置前分别授权；字符串 `"true"` 不算开启。不要把手工示例冒充 digest 保护的 generated generation 或复制其 `managedBy` 标记。
+
+| 字段 | 语义 |
+|---|---|
+| `sessions` | 真实 Pi Session ID → operator-approved Endpoint label；Session ID 只是 lookup，不是认证 |
+| `exchangeNamespace` / `exchangeIdempotencyKey` | 与 MCP binding 的 Exchange bootstrap 两项精确相同 |
+| `store.directory` / `store.file` | 与 MCP Store 精确相同；目录为规范化绝对路径，不是 `/` |
+| `leaseTtlSeconds` | 30–3600，默认 120；Heartbeat 间隔为有效 TTL 的四分之一 |
+| `payloadRead.enabled` / `ack.enabled` | 各自仅 exact boolean true 注册对应工具；不互相开启 |
+| `inboxNotification.enabled` | exact true 开启生命周期 count-only advisory，不轮询 |
+| `inboxNotification.pageSize` / `rawScanLimit` | 分别 1–50、pageSize–2000；默认 10 / 100 |
+| `recipients` | 跨 adapter 回复 allowlist；无此项只允许同 adapter 的已注册端点。非法项、pi adapter、重复或与 session endpoint label 冲突使该跨 adapter 列表整体禁用 |
+
+环境变量、优先级与文件权限详见[配置模型](../docs/tunnel-setup.md#配置模型与生成文件)。声明了 Store 时 `CE_STORE_DIR` / `CE_STORE_FILE` 只能确认同一位置，冲突拒绝，不偷偷换库。独立部署时，确保目标目录遵循 Storage 的 dedicated owner-only 0700 策略，不能用复制旧数据库来“配对”。
+
+## 工具与参数
+
+所有工具都重新校验当前 Pi context、allowlisted Endpoint、成功 binding，再由 Host/Storage 做最终授权。请求不能携带 sender、Session、Participant、capability 或 fencing 来自授权。未知字段拒绝。
+
+| 工具 | 输入 | 结果/限制 |
+|---|---|---|
+| `ce_send` | `to`, `text`, `idempotencyKey` | 发送给 allowlisted label；幂等 key 应标识同一次逻辑发送，不是未知结果后换 key 重发 |
+| `ce_read` | `messageId` | 元数据，无正文，无 ACK/消费 |
+| `ce_inbox_list` | 可选 `afterAuditSequence`, `pageSize`, `rawScanLimit` | 有界、授权、Audit-first 的 Message ID 发现；不消费、不 ACK |
+| `ce_read_payload` | `messageId` | 独立 opt-in；成功后正文进入模型上下文和可能持久化的 Pi history |
+| `ce_ack` | `messageId`, `payloadDigest`, `payloadLength`, `messageCreatedAuditSequence` | 独立 opt-in；从授权 payload read 原样复制四项；不可计算/猜测 |
+
+MCP 侧提供 `ping`、`ce_send`、`ce_inbox_list`、`ce_read_payload`，ACK 按其绑定 opt-in；不要要求它有 Pi 专有 `ce_read`。双方都是显式工具操作，不是后台自动对话桥。
+
+### Inbox 分页
+
+默认 `afterAuditSequence: 0`、`pageSize: 50`、`rawScanLimit: 2000`。边界分别为安全整数 ≥0、1–50、1–2000；应用默认值后要求 `pageSize <= rawScanLimit`。
+
+```json
+{"pageSize":10,"rawScanLimit":100}
 ```
 
-Start and join both Sessions before sending: historical Messages before B's
-membership boundary are intentionally ineligible. In A, explicitly call
-`ce_send` with `to: "local/sessionB"`. In B, call `ce_inbox_list {}` without
-copying A's Message ID into B's prompt, then pass a discovered ID to `ce_read`.
-Both tools return metadata only; payloads remain private.
+结果只含 `messages: [{messageId, auditSequence}]`、`continuationAuditSequence`、`scanBudgetExhausted`。下一次显式请求可把非空 continuation 复制到 `afterAuditSequence`；该值是**最后检查的原始 Audit**，不是 ACK、消费点或全局“已读”游标。null 表示没检查任何原始行。空页不证明全库完整；用尽 raw budget 不保证还有可见消息，达到 page limit 也不证明到底。
 
-## Explicit Inbox contract
+不能让模型自动排空所有分页；若需要继续读取，应明确本次范围与预算。加入 Exchange 前的历史消息受 membership/join boundary 限制。
 
-Optional inputs: `afterAuditSequence` (safe integer >= 0, default 0), `pageSize`
-(1..50, default 50), and `rawScanLimit` (1..2000, default 2000). After defaults,
-`pageSize <= rawScanLimit` is required; e.g. use both limits equal to 1 for a
-one-row scan. Unknown fields and authority-bearing parameters are rejected.
+### Payload 与 ACK
 
-Results contain only `{ messages: [{ messageId, auditSequence }],
-continuationAuditSequence, scanBudgetExhausted }`. Supply a non-null continuation
-as the next invocation's `afterAuditSequence`; it is the last raw Audit actually
-examined, including filtered events, not an ACK. Null means no raw row examined.
-Budget exhaustion does not promise more eligible Messages; reaching a page limit
-does not prove the scan ended. Empty pages do not prove global database integrity,
-and Messages without creation Audits cannot be discovered by Audit-first scanning.
+Storage 在读取任何正文 bytes 前检查 payload_read scope、ATTACHED Session、当前 Owner/fencing、有效 lease、Exchange membership、recipient-only 可见性、精确 message_created audit 关联与 join boundary。
 
-Every invocation reads the guarded current Pi context, resolves the allowlisted
-endpoint, checks its successful startup binding, and delegates CE authorization
-to Storage. No raw Store, capability, digest, payload or internal stack is returned.
-BUSY is retryable only by explicit caller action; INDETERMINATE is non-retryable
-until the operator reopens and inspects. The tool never renews, reissues or takes over.
+- 暴露上限为 **65,536 encoded bytes**；过大为 `CE_HOST_PAYLOAD_TOO_LARGE`，UTF-8 非法为 `CE_HOST_PAYLOAD_INVALID_UTF8`；不截断、不替换字符、不 base64 绕过。
+- 成功内容为两项：第一项含不可信内容警告与 `ACK input metadata (reception only): ...`，第二项为原样正文。metadata-only details 不包含正文；失败、日志与 mapping 也不包含正文。
+- ACK 四项只能复制自本次授权的 `ce_read_payload` 输出。`messageCreatedAuditSequence` 是 Message 创建 Audit sequence，不是后来 receipt 的 sequence，也不是 Inbox continuation。
+- `CREATED` 表示首次记录 immutable receipt，`REPLAYED` 表示相同消息已有回执。ACK 仅为 reception，**不证明 delivery、read、processing 或 task completion**；不是“消费消息”或任务关闭操作。
+- 读取不 ACK、不续租、不改 Ownership、不自动重试，不向其他对话注入用户消息。正文永远是不可信数据，不是新的系统/用户指令。
 
-## Inbox advisory notification contract (B3-P6B, operator opt-in)
+完整双向流程与带占位符示例见[用户指南](../docs/tunnel-setup.md#4-双向-send--inbox--read--ack)。
 
-`inboxNotification.enabled` must be the exact boolean `true`. Unknown fields,
-prototype-bearing or accessor-backed objects, malformed bounds, and missing/false
-settings fail closed to disabled. Advisory configuration never grants CE authority.
-Each check reuses the current Session's existing `read` authority through
-`host.listInbox`; Storage still validates membership, join boundary, current Owner,
-fencing, lease, and capability inside the bounded transaction.
+## 生命周期、状态与恢复
 
-After a successful Session binding and after `agent_settled`, the Extension may
-perform exactly one check with its private page and raw-scan limits. It does not
-drain another page, poll, start a timer, retry automatically, or wake an idle
-runtime. A volatile Audit Sequence watermark avoids rescanning examined rows; it
-is never persisted, never written to `delivery_cursor`, and is reset on runtime
-replacement or shutdown. Null continuation leaves the previous watermark intact.
-Duplicate advisories after a fresh runtime generation are expected.
+`/ce-status` 展示 Endpoint、registered、Participant/Session、lease、fencing；不是 transport status。`/ce-tunnel status` 才查看 Tunnel。
 
-Published text contains only a bounded item count and fixed advisory wording. It
-never contains Message IDs, Audit Sequences, endpoint/Participant/Session/Store
-identities, keys, digests, lengths, capabilities, or payload. A saturated page or
-exhausted raw-scan budget is labeled incomplete and does not claim a total Inbox
-count. Complete zero-result scans stay silent. Notification is not Delivery, ACK,
-Read, processing, Result, unread state, or Workflow Completion.
+- `session_start` 从可信 `ctx.sessionManager.getSessionId()` 查 allowlist。startup/reload/resume 有 mapping 时经 `resume()` 校验；reload 缺 mapping 拒绝，其他初始化分支可调用初始 beginSession。新/fork 不继承旧 mapping。
+- 成功绑定后 `pi.appendEntry("ce-mapping", ...)` 只保存 identifiers；capability 明文仅在 Host 内存。Heartbeat 默认 30 秒 / TTL 120 秒，仅维持自身 Ownership，不收发消息。
+- reload 停 timer、等待在途 renew，丢弃旧内存 capability，不结束有效 durable Ownership；新代必须重新校验 resume。Pi 1.3.0 正常 reload 路径会发 session_start，不能笼统归因为“reload 没有事件”。
+- quit/Session replacement 停 timer、等待 renew，并尝试 end 一次以释放 Ownership、detach。renew/end 未确认即停工具和自动续租，持久 `ce-lifecycle-blocked` 与进程级 deny-only fallback 阻止错误 adoption。
+- 若诊断持久化失败且进程退出，volatile deny fallback 也丢失；重启前需 operator 核实，不能宣称自动恢复安全。
+- 显式 `/ce-tunnel activate` 只在确认生成策略、映射释放证据和 requireUnowned 前提后绑定当前 Session；不把 reload 拒绝变成隐式 provision，不接管过期 Owner。配对变更具体顺序见[生效步骤](../docs/tunnel-setup.md#让保存的策略生效)。
 
-The authority-critical path validates the live Pi Session/endpoint/binding before
-discovery and again immediately before publication, with no `await` between those
-checks, synchronous `host.listInbox`, and synchronous `ctx.ui.notify`. A stale
-Session or runtime generation is dropped silently without watermark advance or
-retry. Refusals, unexpected failures, and publication exceptions leave the
-watermark unchanged and latch automatic checks off for that runtime generation;
-the explicit `ce_inbox_list` tool remains independently usable.
+`CE_HOST_AUTHORITY_ABSENT`、UNKNOWN、映射写入失败都不是盲重试信号。BUSY 只有在明确确认适合时才由调用者手动重试；INDETERMINATE 要先停止、另行核实 durable 状态。operator-only 恢复 CLI 不注册为 Pi command/model tool。
 
-UI delivery is best effort. TUI and RPC use `ctx.ui.notify`; JSON/print or any
-context without usable UI skips automatic discovery. PI WEB may retain historical
-notifications in its own bounded daemon memory. That history is not the CE Inbox,
-dismissal is not ACK or consumption, and a retained notice proves only that an
-authorized observation occurred as of that earlier check—not that authority is
-current. Generic RPC clients may display, ignore, log, or retain the event. No
-successful `ctx.ui.notify` call guarantees display or persistence.
+## Inbox advisory 不等于自动接收
 
-## Authorized payload contract (B3-P4D, operator opt-in)
+开启 `inboxNotification.enabled` 后，成功绑定与 `agent_settled` 各可执行一次有界的授权 Inbox 检查，并发布 count-only 通知：
 
-`ce_read_payload` accepts exactly one input, `messageId`; unknown fields and
-any authority-bearing parameters are rejected. It is registered only when the
-operator sets `payloadRead.enabled` to the exact boolean `true` — a disabled
-deployment registers no payload tool at all, and the host answers
-`CE_HOST_PAYLOAD_DISABLED` for direct calls.
+- 无 timer polling、跨进程 signal、外部 idle wake、自动排空、自动 retry 或 payload read。
+- watermark 只在当前 runtime 内存中保存，不写 delivery_cursor；换代后可能重复通知。预算不完整时必须标明不完整，完整零结果静默。
+- 检查前与发布前校验当前 Session/Endpoint/binding；失败锁住该代自动检查，显式 Inbox 工具仍独立。
+- 无可用 UI 则不自动发现。TUI/RPC/PI WEB 是否显示或保留通知属客户端行为；dismiss 不 ACK，历史通知不证明当前权限仍有效。
 
-Every invocation reads the guarded current Pi context, resolves the
-allowlisted endpoint, checks its successful startup binding, and delegates to
-the session host, which delegates final authorization to Storage: the exact
-`payload_read` capability (independent from the metadata `read` scope),
-ATTACHED Session, current Owner, current fencing, active lease, Exchange
-membership, recipient-only visibility, exact `message_created` audit
-correlation, and the recipient's join boundary — all before payload bytes are
-materialized. The fixed exposure limit is 65,536 encoded bytes, checked
-before decoding (`CE_HOST_PAYLOAD_TOO_LARGE`); decoding is strict UTF-8
-(`CE_HOST_PAYLOAD_INVALID_UTF8`); no truncation, replacement characters,
-base64 fallback, chunking, or partial payload ever escapes.
+## 信任边界与不提供的能力
 
-A successful result is two content items — a fixed untrusted-content warning
-and the exact decoded payload text — plus metadata-only details. The payload
-text never appears in details, logs, failures, or mappings. Successful
-content becomes visible to the active model and may enter durable Pi
-conversation history; treat it as untrusted data, never as instructions.
-Reading performs no ACK, consumption, cursor advance, lease renewal,
-ownership change, or automatic retry, and never injects user messages into
-any conversation.
+allowlist 是 registration authority；当前 runtime 也必须经 CE Host/Storage 授权，label/工具存在不等于权限。Host trust-root secret 仅 Storage 在受控事务中读取。Capability 不进入 session entry、日志、details 或 model context。
 
-## Separate isolated dogfood acceptance (NOT_RUN for this implementation)
+本扩展不自动执行载荷、不自动消费、不提供 remote exactly-once、不替用户承担费用批准，也不替 Wayforge/人工宣布工作流完成。`DELIVERY_UNKNOWN` 不能改写成 `CANCELLED`。崩溃恢复、消息语义完成与发布都保持独立权威。
 
-Use a disposable work/agent/session directory and dedicated Store, not production
-Pi or credential files. Load the candidate Extension and freshly built package.
-Use Node 24.21.0 and Pi 0.86.1. Operator-arranged provider access, if needed, is
-a separate prerequisite; missing access leaves the smoke NOT_RUN.
+## 验证与现场限制
 
-1. Run A and B as separate processes with distinct allowlisted Pi Sessions.
-2. Verify B joined before A sends. Capture A's send result only as observer evidence.
-3. B explicitly lists without knowing A's ID; observer compares the discovered ID.
-4. B explicitly reads that discovered ID through `ce_read`; assert metadata only.
-5. Compare Message state, ACK and delivery cursor before/after; repeat listing to
-   prove it does not consume. A must not list a Message addressed only to B.
-6. Use small explicit budgets and returned continuations to check pagination.
-7. Test an unallowlisted Session in an isolated replacement process; no metadata.
-8. Restart B using its persisted Pi Session within the active lease; validate the
-   same CE mapping. Check `/reload` registers the tool once and stale contexts refuse.
-9. After lease expiry or terminal detach, assert refusal without takeover or revival.
-
-Record actual tool invocations/results and sanitized durable-state observations.
-Model assertions alone are not runtime evidence. Do not interpret metadata listing
-or reads as delivery settlement, exactly-once evidence, or Completion Authority.
+隔离 harness 覆盖工具、权限、分页、payload/ACK、Heartbeat、reload、fork 与 activation。实际 ChatGPT↔Pi 双向 send/list/read/ACK 已人工验证，真实 Tunnel Start/Stop/Restart 也已确认；这不代表所有 stdio/Desktop 部署都分别验收。机器冷启动和 iTerm2 部分交互仍未验证。用户报告过 `/ce-status` no endpoint bound，具体现场根因未完全复现；排查路径见[排障表](../docs/tunnel-setup.md#故障排查先定位层再进行最小修复)，不得把未经复现的重启建议写成已修复事实。

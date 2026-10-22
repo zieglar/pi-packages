@@ -1,134 +1,149 @@
-# pi-chat-exchange Architecture — PH-0003 convergence
+# pi-chat-exchange 开发者架构指南
 
-Approved model C: **ControlSurface + capability-oriented Endpoint integration**.
-This supersedes PH-0002's client/agent naming, not its data or safety invariants.
-Original PH-0002 architecture remains in commit `5a84cb1`; its evidence/report
-is preserved in `ph0002-validation.md`. The separately authorized quarantine
-correction is documented in `quarantine-hotfix-ph0003.md` (commit `8f44553`).
+本文描述当前源码，不将早期 PH-0003 的 ping-only / contract-only 切片状态当成今天的实现范围。历史纠偏证据见 [PH-0002](ph0002-validation.md)、[PH-0003](ph0003-validation.md) 与 [quarantine hotfix](quarantine-hotfix-ph0003.md)；冻结协议与 authority 仍以对应契约为准。
+
+## 分层与依赖方向
 
 ```text
-Control surfaces (MCP today; CLI/HTTP/native possible, NOT implemented)
+ChatGPT (Tunnel MCP / Desktop stdio)          Pi runtime
+              |                                  |
+        src/bin + src/control/mcp          pi-extension/index.ts
+              |                                  |
+              |                          src/endpoints/pi
+              +---------- src/host ---------------+
                               |
-                       Exchange Core
+                         src/storage
                               |
-Endpoint integrations (Pi contract only; no ChatGPT implementation)
+                           src/core
+                              |
+                         src/protocol
+
+src/tunnel: transport/profile/setup/Manager；不替代 CE Host authority
 ```
 
-One private package, no inheritance or multi-package framework:
+| 层 | 职责 | 不应做什么 |
+|---|---|---|
+| `src/protocol/` | 中立实体、lifecycle、action grants、support declarations | 不依赖 Pi、MCP、网络或数据库 |
+| `src/core/` | 纯证据/授权规则，reference in-memory 行为 | 不读 env、文件或真实调用 endpoint |
+| `src/storage/` | 私有 SQLite、事务、schema/migrations、Ownership/fencing、最终数据授权 | 不把 private SQL/migration/evidence 类型暴露到 public barrel |
+| `src/host/` | adapter-neutral durable Endpoint Host，可信 binding、Session、幂等消息与 receipt 操作 | 不从 tool 参数接受 sender/capability，不替代外层工作流完成权威 |
+| `src/control/mcp/` | MCP schema/输出；默认 ping，注入 bound port 后提供 messaging | 不读任意 env、不直接 import Pi integration，不凭工具调用识别 ChatGPT 对话身份 |
+| `src/endpoints/pi/` | Pi Session host 的薄适配 | 不 import MCP SDK 或其他 endpoint integration |
+| `src/bin/` | stdio 组合根、可信绝对路径 `--config`、进程生命周期 | 不另造消息 broker 或平行 authority |
+| `pi-extension/` | 运行时 Session lookup、工具/命令、生命周期、UI、mapping identifiers | 不持久化 capability，不代替 Storage 决定可见性 |
+| `src/tunnel/` | client 生命周期、健康测量、私有配置事务、masked 输入与显式激活 UI | 不把 CONNECTED 当消息 Gate，不隐式读取/ACK/重试消息 |
 
-```text
-src/protocol/       neutral entities, identity, lifecycle, action grants/support
-src/core/           pure evidence/authorization rules + in-memory reference
-src/storage/        private Node 24.21.0 SQLite foundation (not publicly exported)
-src/control/mcp/    unchanged ping-only API transport
-src/endpoints/pi/   declaration/documentation only
-src/bin/           composition-only stdio entrypoint
+核心依赖向内：`bin → control/endpoints/host → storage → core → protocol`，具体许可由 `scripts/check-contract.mjs` 的 TypeScript AST gates 决定。protocol/core 不可 reach 外层；control 与 endpoints 不互相 import；禁止借 barrel、dynamic import 或 require 绕开。tunnel 属外层组合，不提升协议权威。共享行为优先下沉已有 Host/Storage seam，不让 ChatGPT/Pi 各实现第二套 Message 系统。
+
+## 身份模型与注册权威
+
+- **Exchange**：关联聚合，不是一个对话或 transport 连接；namespace/idempotencyKey 只负责确定性 bootstrap。
+- **EndpointRef**：`{adapter, endpointId}` 是非秘密身份。当前配对为 `chatgpt/main` 与 `pi/main`，adapter 分别 `chatgpt`、`pi`。它们是独立 Authority，不共享 Owner。
+- **Participant**：Store/Exchange 中注册的参与者；与当前具体 Session/incarnation 分开。
+- **CE Session / Ownership / fencing**：活跃执行权威与 incarnation，需 membership、lease、current owner、fencing 和精确作用域 capability 一起校验。
+- **Pi runtime Session ID**：从可信 Pi API 取得，作为 operator allowlist lookup。不是 CE Session ID，也不是凭自身能发消息的凭据。
+- **Recipient label**：工具 `to` 使用精确 endpointId，不是认证。labels、support declarations、工具存在和 UI 选择都不直接发 authority。
+- **Capability**：Host 内存中的 scoped authority；不写 mapping/日志/配置，不让模型自选。
+
+MCP 身份固定于 operator-owned `--config`，不是由一次 MCP invocation 或 ChatGPT 当前文字声明认证。Pi 身份固定于可信 allowlist 与当前 context。两边共享 Store directory/file 与 Exchange namespace/key；任一不同都没有自动路由补偿。`managed`/`managedBy` 是 provenance，不是替代 recipients 或 Storage 检查的许可。
+
+## Message、DeliveryAttempt、Receipt、Result 的分离
+
+1. `ce_send` 将一次逻辑发送持久化为独立 Message；反向回复/后续追问也是新 Message，不是 Result 的变形。
+2. Inbox 按 creation Audit 有界扫描并应用 recipient/membership/join boundary，不 ACK、不消费、不推进 delivery cursor。
+3. metadata read 与 payload read 是不同权限；后者在 materialize bytes 前完成 Storage 授权。
+4. ACK 追加 immutable reception receipt，第一次 CREATED、已有则 REPLAYED。Message 创建 Audit sequence 与 receipt Audit sequence 是不同证据。
+5. Result 是 immutable processing evidence，发布不自动回复、关闭 Exchange 或赋予 Wayforge completion authority。
+
+纯 core 的完整 delivery lifecycle 仍约束 claim、dispatch intent、attempt、runtime evidence、settlement、quarantine。不能因为当前工具提供持久消息/ACK，就宣称所有远端 delivery/execution/result 流程均已落地。
+
+**冻结安全语义：** intent 先于 effect；需相关 Message/Attempt/Endpoint/incarnation/lease/fencing 证据。模糊 delivery 进入 `DELIVERY_UNKNOWN`，不 retry/requeue，不将它改成 `CANCELLED`。已知送达但执行未知也不能合成 acceptance/settlement/Result。普通 close 需所有 Message 完结；独立授权的 `ABANDONED_UNRESOLVED` 保留未知事实，不代表 cancellation/normal close/success。
+
+CE Receipt、Pi UI 通知、Tunnel health、runtime 执行事实和 Wayforge 工作流裁决是不同平面。任何外部完成动作仍须其本身的显式授权和证据，不能从 ACK 或模型断言推导。
+
+## 生命周期、并发与恢复边界
+
+- MCP startup bind 使用 `requireUnowned`；独立 heartbeat 续租。SIGINT/SIGTERM/stdio-close 走一次 release/end，不自动接管 crashed Owner。
+- Pi `session_start` 按可信 runtime lookup 选择 Endpoint；有 mapping 的 startup/reload/resume 校验恢复。reload 缺 mapping 拒绝，新/fork 不继承旧 authority。
+- Pi reload 结束旧内存 generation/timer，不结束有效 durable Ownership；正常退出/Session replacement 尝试 end/release/detach。renew/end 未知或 diagnostic persistence 失败锁住后续路径。
+- `ce-mapping`、`ce-messaging-released`、`ce-lifecycle-blocked` 仅存 identifiers/拒绝证据，不携带 capability。释放标记不能独立授予新权威，需验证旧 mapping 的 exact released+detached proof。
+- 显式 activation 在 profile lock 下核实当前配置/环境/runtime，只有 requireUnowned 可绑定。匹配已有有效 binding 为 no-op；未知释放、映射写入失败或旧 Exchange 证据不符拒绝，不自动 takeover。
+- Tunnel 管理的是 detached client 的进程所有权，不是 CE Owner。跨进程 directory lock、PID+exact command+start key、write-ahead termination ledger 共同避免误杀/双启动；UNKNOWN 不等于进程消失。
+- 每个 record-backed run 最多一次 SIGTERM，不 SIGKILL、不 name-based bulk kill。intent 持久后信号丢失允许零次实际 signal；不能删除 ledger 以便重发。client MCP child 属 client，不由 Manager 擅自终止。
+
+恢复 CLI 是另行授权的 operator-only 路径，既不注册为 MCP tool 也不由模型自动调用。进程恢复、CE Owner 恢复、消息未知结果调查是三个不同问题。
+
+## 配置 generation 与原子迁移
+
+源码定位：`src/tunnel/{profile,managed-binding,messaging-config,setup}.ts`，UI 在 `setup-ui.ts` / `secure-input.ts`，加载/激活在 `pi-extension/index.ts`。
+
+- Profile 是唯一 activation pointer。普通 binding 由完整 Tunnel/Organization/adapter 身份生成，文件名短尾只显示，不承担完整 identity 比较。
+- Advanced Messaging 发布完整 binding 与 Pi allowlist sidecar，名称 `messaging-<full SHA-256>.yaml` 及其 `.pi-allowlist.json`。digest 同时覆盖两份 bytes；generation 使用 no-overwrite link，loader 拒绝不完整/不符 pair。
+- 两个文件发布不是跨文件 crash-atomic；最终 profile temp+rename 才是逻辑提交点。失败可能保留未选中的私有 staging/generation，不回滚或删除不确定属于谁的文件。
+- Credential 替换先创建 0700 目录与 0600 exclusive generation，同步目录/内容，再提交引用；macOS 先清 inherited ACL。Keep 不读取内容，旧代保留，无自动 GC。
+- postcommit sync 失败只能报 durability uncertain，不能说 rollback。ACTIVE/UNKNOWN 不能被 UI 文字绕过为可编辑。
+- `/ce-tunnel migrate` 仅修 canonical generated YAML：移除 client 0.0.16 拒绝的 admin_ui 项并修批准 Node command，保留 identity/credential reference/binding/Store/recipient bytes；不是任意 YAML formatter。
+
+## Storage 运行契约
+
+精确批准 Node **24.21.0**，SQLite **3.53.4** 及 source identity，平台 macOS arm64 / Linux x64；还需 approved detectable local filesystem、当前用户 ownership、目录 0700、DB/WAL/SHM 0600、非 symlink final artifacts。writers 使用 defensive mode、WAL、synchronous FULL、foreign keys、trusted-schema OFF、有界 busy wait；macOS 另有 fullfsync/checkpoint_fullfsync。
+
+migration ledger/checksum、application/store identity、integrity 与 restore hold 会拒绝 foreign/newer/corrupt Store，不自动 reset。Node 25 即使能执行 Pi UI，也不代表可以打开 CE Store。精确 gate 以 `src/storage/runtime.ts` 与 [Storage contract](storage-contract.md) 为准；受限文件权限并不能消除所有 TOCTOU、mount substitution、OS crash/power loss 风险。
+
+## 验证层次
+
+从包目录、批准 Node 运行：
+
+```bash
+pnpm run check
+pnpm run typecheck
+pnpm run build
+pnpm test
+pnpm run test:plugin-package
+# 完整串行门禁（build 在 test 前）
+pnpm run verify
 ```
 
-Dependencies point inward: bin -> control/endpoints/private host seams -> core ->
-protocol. Private storage may depend on protocol/core concepts but protocol/core
-cannot reach storage, filesystem APIs, or `node:sqlite`. The package public barrel
-cannot expose storage, SQL-driver, transaction, migration, or private evidence
-types. Control and endpoints may use protocol directly. Neither plane imports the
-other; endpoint integrations do not import each other or the MCP SDK.
-TypeScript-AST gates include import/export, dynamic import, require and transitive
-barrels. Virtual negative fixture imports resolve from their declared `@role`,
-not their actual `scripts/fixtures` directory; they are not runtime programs.
+| 层次 | 证据范围 | 不能替代 |
+|---|---|---|
+| AST/type/compile-negative | 依赖方向、封闭 schema、类型拒绝 | 真实 runtime/客户端行为 |
+| core/protocol unit | 纯状态转移、scope、quarantine/authority | 文件事务/远端结果 |
+| Storage 事务/故障/多进程 | identity、lease/fencing、crash、并发、read/ACK privacy | ChatGPT UI 或云端连接 |
+| Host/MCP/Pi isolated harness | 参数、工具发现、mapping、activation、payload/ACK、生命周期 | 实体终端和端到端用户 Gate |
+| Tunnel offline / TUI harness | 合成 health、取消/在途/通知/屏幕契约 | 真实 client schema、认证、计费连接、终端物理表现 |
+| `test/tunnel/real-client-compat.test.ts` | 真实 client doctor 与本地 schema 兼容（受可用性门槛控制） | 真实网络 readiness 或双向消息 |
+| packaged plugin tests | 可移植包内容、stdio 启动、tool discovery | Desktop 安装菜单/资格/对话更新 |
+| 人工 real Gate | 当前 ChatGPT 对话与 Pi 的实际 send/list/read/ACK、Tunnel 启停 | 冷启动、所有平台、所有客户端或正式发布资格 |
 
-## Peers, operations and authority
+近期集成阶段以有界 worker 完成扩展验证（默认并行曾暴露时序/fixture 问题，不能隐去）；ACK 字段可见性修复另有定向测试，不等于该修复后重跑全仓验证。本 docs-only 变更只做文档/source/link/privacy 检查，不把历史测试数当新鲜执行证据。实际验收范围见[README](../README.md)。
 
-A conversation and a runtime are addressable peers **when an integration
-actually provides that capability**. Their support is not assumed identical.
-MCP invocation does not by itself identify the caller's conversation or create
-a delivery endpoint. Audit evidence is in `chat-bridge-audit-ph0003.md`.
+### 高价值回归入口
 
-`ControlSurfaceDeclaration` advertises request/read/optional administrative
-operations. `EndpointDeclaration` advertises independent tri-state delivery,
-observation, cancellation, follow-up and result-production support. Missing
-support is unknown. Neither declaration nor a method grants permission or
-creates execution evidence. No concrete support is advertised as implemented
-by the Pi contract; no ChatGPT integration is present.
+- `test/tunnel/{setup-messaging,messaging-config,messaging-config-security,messaging-binding}.test.ts`：配对、immutable publication、权限/文件与失败路径。
+- `test/endpoints/pi/extension-messaging-activation.test.ts`：旧映射释放、reload、显式 activation、deny paths。
+- `test/endpoints/pi/extension-ack.test.ts` 与 `test/control/mcp/messaging-ack-tool.test.ts`：独立 opt-in、四字段与模型可见 metadata。
+- `test/tunnel/{background-manager,extension-deferred-start,real-client-compat}.test.ts`：进程证据、异步启动和真实 schema。
+- `test/storage/delivery-ack*.test.ts`、`inbox-*.test.ts`：receipt、privacy、事务/进程边界与分页。
 
-`AuthorizationContext` is **trusted host input**, not a bearer credential or
-self-issued token. Closed action grants bind principal + exact scope:
+## 扩展点与已知债务
 
-| Action | Scope |
-| --- | --- |
-| send/get/result | Exchange |
-| list | collection (host must filter authorized records) |
-| cancel request | Exchange + Message |
-| claim | Exchange + Message + destination EndpointRef |
-| dispatch/delivery/progress/settlement/publication/release/reconcile/confirm | Exchange + Message + Attempt + recipient incarnation |
-| close/archive | Exchange + owner principal; separate grants |
+- 新 ControlSurface 必须使用既有 Host port、封闭请求 schema 与 adapter-neutral 规则；不能从不可信 label 自授权。
+- 新 endpoint integration 声明独立 support，不假设 peer capabilities 对称；unsupported/unknown 保持明确，需真实 evidence 才能声称实现。
+- 新 client 版本要真实 schema/doctor 回归，不能仅用 offline fixture；新 Node/SQLite/平台先独立资格验证，不能放松 runtime guard。
+- UI/异步任务要保留 draft/commit 边界、Session generation、在途合并、取消/teardown 的权限分离；不以通知成功当显示/送达成功。
+- 仍待后续：credential/generation 的显式安全 GC、机器冷启动、iTerm2 部分实体交互、Desktop Node command 的跨机配置化。用户 no endpoint bound 现场尚未完全复现，不能写成已修复 reload bug。
+- 不在当前范围：自动 Inbox draining/idle wake、自动业务重试/Owner takeover、自动远端执行、任意 Store 合并或跨 Exchange router、以 ACK 代替任务完成。
 
-Core matches exact scope and principal; different message/attempt/instance
-cannot reuse a grant. Transport report authority alone cannot prove runtime
-acceptance; reconciliation also needs independently authorized acceptance.
-Started runtime cancellation needs cancellation-confirmation AND settlement
-reporting authority; never-attempted cancellation does not manufacture a
-runtime fact. Runtime permission does not imply owner permission.
+## 文档事实溯源与维护
 
-## Preserved entities and evidence
+| 事实 | 首要源码/证据 |
+|---|---|
+| 版本与 scripts | `../package.json`、仓库根 `package.json`、`src/storage/runtime.ts` |
+| Pi 加载与 session_start/reload | Pi 1.3.0 CLI help / extensions 文档与运行时 `AgentSession.reload`；本包 `pi-extension/index.ts` |
+| Tunnel 字段/格式/child env | `src/tunnel/profile.ts`、`setup-ui.ts`、`background-manager.ts` |
+| binding closed schema / opt-in | `src/host/mcp-binding-config.ts`、`src/control/mcp/` |
+| generation/Store/Exchange 一致性 | `src/tunnel/{managed-binding,messaging-config,setup}.ts` |
+| 工具参数/ACK metadata/状态 | `pi-extension/index.ts`、Host port、对应 extension-ack / messaging-ack tests |
+| 当前人工验收 | HANDOFF-CE-TUNNEL-MESSAGING-INTEGRATION-01 的独立验收记录及操作者后续启停确认；公共文档不复制原始消息/Session/日志 |
 
-Exchange remains the OPEN/CLOSED correlation aggregate. Message already has
-`from`/`to` EndpointRefs; reverse-direction communication and follow-ups are
-new independent Messages in the same Exchange, not role-specific operations.
-Result remains immutable processing evidence/output for one Message/Attempt.
-Publishing it does not enqueue a reply, create another Message or close the
-Exchange. Reads remain repeatable, deeply immutable and non-semantic.
-
-Dispatch intent precedes effects; live mutations require the current fenced
-claim. Proven not-attempted release cannot contradict transport facts.
-Potential delivery ambiguity is quarantined with no retry/requeue. Correlated
-RuntimeEvidence is independent of transport receipts. Known delivery plus
-unknown execution is **not** delivery ambiguity and cannot synthesize acceptance,
-settlement or a Result. Unsupported workflows may be rejected before effects
-by future admission policy; that policy is not implemented here.
-
-Cancellation cannot erase ambiguity. Normal close requires every message to
-be finished. Separately, `ABANDONED_UNRESOLVED` administrative disposition
-preserves unknown execution/ambiguous attempts, disables further protocol
-activity and never implies cancellation, normal close or success.
-
-## Private durable storage foundation
-
-`src/storage/` now provides the B1-only file-backed foundation for a future host:
-an exact runtime/SQLite/source-id eligibility gate, an initialized `node:sqlite`
-writer connection, `BEGIN IMMEDIATE` transactions, a version-1 private schema,
-store UUID/application identity, a checksummed migration ledger, integrity and
-restore-hold validation, and restrictive local-filesystem checks. It is deliberately
-absent from `src/index.ts`; there is no public storage or business-operation API.
-
-Writable storage fails closed unless Node is exactly 24.21.0, SQLite is exactly
-3.53.4 with the approved source identity, and the target is macOS arm64 or Linux
-x64. Every writer uses defensive mode, WAL, synchronous FULL, foreign keys,
-trusted-schema OFF, bounded busy waiting, and an explicit auto-checkpoint policy.
-macOS writers additionally require fullfsync and checkpoint_fullfsync.
-
-Callers must supply an explicit non-Pi database directory. The foundation requires
-an approved detectable local filesystem, current-user ownership, directory mode
-0700, DB/WAL/SHM mode 0600, non-symlink final artifacts, and a restrictive umask
-during creation. These checks reduce ordinary deployment mistakes; they do not
-eliminate every TOCTOU race, mount substitution, OS-crash, or power-loss risk.
-Linux x64 remains subject to native CI qualification.
-
-The schema contains only private persistence structures for accepted entities and
-invariants. It does not dispatch messages, invoke endpoints, publish Results, run
-reconciliation, retry remotely, or make an exactly-once remote-delivery claim.
-Unknown migrations, foreign/newer stores, checksum mismatches, failed integrity
-checks, and restore-held stores are rejected; stores are never reset automatically.
-
-## Future host responsibilities and scope limit
-
-The host must authenticate the actual adapter/runtime/principal, load current
-grants/owner binding/Message/active Attempt/latest claim/disposition/full message
-set/published Result, and check-and-commit atomically. It must enforce admission
-and evidence provenance. Caller-supplied contexts, current leases or proof
-snapshots are never authoritative. Publication's immutable/scoped helper and
-the transition to RESULT_AVAILABLE must be checked together against authoritative
-settlement facts; readResult is a pure snapshot helper, not an ACL service.
-
-No business mutation API, claim/fencing allocator, authentication, broker, API
-operation, Pi/ChatGPT delivery, listener, daemon, tunnel, CDP/browser extension or
-production installation is implemented. MCP remains ping-only; actual
-desktop-product invocation acceptance remains NOT_RUN.
+历史 plans/audits/validation 报告保留其时间截面，不应机械改写为“今日已全部完成”。发现代码/配置与文档目标冲突时记录限制、另开实现任务；文档提交不偷偷改 runtime 或冻结契约。

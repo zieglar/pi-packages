@@ -1,133 +1,62 @@
 # pi-chat-exchange
 
-Generic chat-exchange protocol: an **Exchange aggregate** with independently
-tracked **Messages**, **DeliveryAttempts**, and immutable **Results**.
-Renamed from `pi-handoff` by PH-0002 (the approved architecture correction);
-package history is preserved via git moves. Private package, not for
-publication.
+让 ChatGPT 与 Pi 通过显式工具交换持久化消息：发送、发现收件箱、按 ID 读取，以及独立授权的接收回执（ACK）。适合人工监督的分析交接、执行反馈和后续追问；它不是自动任务调度器，也不把对话回复当作任务完成。
 
-Status (this package):
+这是 **private / Local Dogfood** 包，当前版本 `0.1.1`，不是正式产品发布。历史名称 `pi-handoff` 已迁移，旧阶段文档保留作溯源。
 
-- **Frozen v2 protocol contracts** — identity (legacy `ho_` for Exchange,
-  `hr_` for Result, additive `msg_/att_/rcpt_/evt_`), the evidence-gated
-  message lifecycle with fail-closed `DELIVERY_UNKNOWN` quarantine, generic
-  EndpointRef / Lease / Receipt / Consumer / Event schemas, neutral
-  action-scoped authorization and independent endpoint capability support. See
-  [docs/protocol-v2.md](docs/protocol-v2.md).
-- **Pure core rules** — transition legality with correlated evidence
-  (message/attempt/endpoint/lease fencing), explicit exchange close,
-  non-mutating immutable result reads, publish-once results, plus the
-  in-memory idempotency REFERENCE store. See [docs/architecture.md](docs/architecture.md).
-- **Separate planes** — MCP control surface: the `ping` smoke by default, plus
-  CE-0002 B3-P3B messaging tools (`ce_send`, `ce_inbox_list`, `ce_read_payload`)
-  exposed only when the stdio entrypoint is launched with a trusted
-  `--config` binding that fixes one operator-owned Endpoint; the durable host
-  authority lives in `src/host/` and is shared with the Pi endpoint wrapper.
-  See [docs/adapter-contracts.md](docs/adapter-contracts.md),
-  [docs/chat-bridge-audit-ph0003.md](docs/chat-bridge-audit-ph0003.md) and
-  [docs/source-reuse-audit.md](docs/source-reuse-audit.md) for pinned source evidence.
-- **Landed since** — CE-0002 B3-P3B: the shared durable host (`src/host/`),
-  the endpoint-bound MCP messaging tools over `--config` launch binding, and
-  the Pi extension reply path. A portable ChatGPT Desktop local plugin package
-  now builds and passes packaged stdio/tool-discovery tests. Still deferred:
-  real Desktop installation and bidirectional UI acceptance (NOT_RUN).
+## 当前支持什么
 
-## Architecture
+- Pi 1.3.0 扩展；Node.js **24.21.0** 的私有 SQLite Store。
+- ChatGPT 侧可使用 Secure MCP Tunnel（`tunnel-client 0.0.16`），或独立的 Desktop 本地 stdio 插件路径。两种部署不要同时占用同一个 Endpoint。
+- `/ce-tunnel` 提供设置向导、状态、显式后台 Start/Stop；Advanced Messaging 为当前 Pi Session 生成互补配置。
+- 双方共享同一个 Store 和 Exchange，但各自持有独立 Endpoint / Session / Ownership。收件人是显式 allowlist，不自动发现。
+- `ce_send`、`ce_inbox_list`、Pi 的元数据工具 `ce_read`，以及分别 opt-in 的 `ce_read_payload`、`ce_ack`。
 
-```text
-src/host        adapter-neutral durable host authority (shared by all endpoints)
-src/bin          composition only (stdio MCP entrypoint + --config binding)
-src/control/mcp  ping smoke by default; messaging tools only via injected port
-src/endpoints/pi endpoint integration contract only (thin wrapper over src/host)
-src/core         pure evidence/authorization rules + in-memory reference
-src/protocol     neutral entities/lifecycle/action grants/support declarations
+**验证边界：** 已实际验证 ChatGPT→Pi、Pi→ChatGPT 的 send/list/read/ACK，以及真实 Tunnel Start/Stop/Restart；这是本地人工验收，不是所有客户端或平台认证。本次文档更新没有重做真实消息验证。机器冷启动、iTerm2 部分交互体验尚未验证；历史页面中的 NOT_RUN 描述对应当时的阶段，不能当作当前总体状态，也不能将后来的验收外推到未测部署。
 
-Dependency direction (gate-enforced from the TypeScript AST, with negative
-fixtures proving rejection): `bin → control/endpoints/host → storage → core →
-protocol`.
-Protocol/core cannot reach outer layers; control and endpoints cannot reach
-each other; endpoints cannot depend on peer integrations or the MCP SDK.
-Protocol/core stay product/transport neutral.
+## 安装与开始
 
-Ownership boundaries (frozen):
-
-- Conversations and runtimes can be peer endpoints without equal capabilities.
-  MCP invocation is not delivery to the invoking conversation.
-- Request, delivery, runtime reporting, result publication, owner close and
-  owner archive require separate principal-bound, exact-scope host grants.
-  Caller labels, interfaces and capability advertisements are NOT authentication.
-- Correlated evidence, latest claims/fencing and disposition remain independent
-  preconditions. Dispatch intent precedes effects; ambiguous delivery never retries.
-- Result is immutable processing evidence; a reply/follow-up is another Message.
-  Reads never consume/close. Normal close requires every Message to be finished.
-- The authorized `ABANDONED_UNRESOLVED` disposition preserves unknown facts while
-  disabling protocol activity; it is not cancellation or normal close.
-- Persistence, authentication, admission policy and real endpoint integration
-  remain unimplemented.
-
-## Usage
+在仓库根目录安装依赖、构建，再从同一项目目录启动 Pi：
 
 ```bash
-pnpm install
-pnpm run check        # AST architecture gates + negative fixtures
-pnpm run typecheck    # includes compile-negative @ts-expect-error tests
-pnpm run build        # emits dist/ (required before the stdio smoke test)
-pnpm test             # vitest; the stdio smoke FAILS if dist/ is missing
-node dist/bin/mcp-stdio.js            # ping smoke only, no durable state
-node dist/bin/mcp-stdio.js --config /abs/path/binding.json   # bind one Endpoint
-pnpm run verify       # check → typecheck → build → test (build before test)
-pnpm run package:desktop-plugin  # validated ZIP + local marketplace
+mise exec node@24.21.0 -- pnpm install
+mise exec node@24.21.0 -- pnpm --dir packages/pi-chat-exchange run build
+mise exec node@24.21.0 -- pi -e ./packages/pi-chat-exchange/pi-extension/index.ts
 ```
 
-The Desktop package command emits `.plugin-build/pi-chat-exchange-0.1.1.zip`
-and a registerable `.plugin-build/marketplace/`. It vendors the compiled MCP
-server and production dependencies without live operator configuration. Follow
-[docs/chatgpt-installation.md](docs/chatgpt-installation.md) to create the
-external binding and install it in ChatGPT Desktop.
+若未使用 mise，请用已安装的 Node 24.21.0 运行同样命令；不要切换全局 Node。已经安装此扩展时不要再用 `-e` 加载第二份。
 
-The `--config` file is operator-controlled launch configuration (absolute
-path, JSON, ≤64 KiB). It fixes the Endpoint identity — store location, exchange
-bootstrap, the bound endpoint, explicit cross-adapter recipients, lease policy,
-and the payload-read opt-in — so MCP tool arguments never select a sender,
-endpoint, session, or capability:
+1. 执行 `/ce-tunnel setup`，在 masked 输入中提供凭据，不要发到聊天里。
+2. 在 Review → Back · Edit configuration → Advanced · Messaging 显式授权当前 Session，最后 Save。
+3. 按[用户指南](docs/tunnel-setup.md)加载所选策略并显式激活 Pi，另行授权真实后台启动。
+4. 依次检查 Pi-bound、Tunnel CONNECTED，再执行经授权的双向消息流程。
 
-```json
-{
-  "version": 1,
-  "store": { "directory": "/var/lib/chat-exchange", "file": "ce-store.sqlite" },
-  "exchange": { "namespace": "ce-mcp", "idempotencyKey": "exchange-1" },
-  "endpoint": { "adapter": "chatgpt", "endpointId": "chatgpt/main" },
-  "recipients": [{ "adapter": "pi", "endpointId": "pi/main" }],
-  "lease": { "ttlSeconds": 120, "renewIntervalSeconds": 30 },
-  "payloadRead": { "enabled": false }
-}
-```
+只想使用 Desktop 本地插件、不使用 Tunnel？走[本地插件安装](docs/chatgpt-installation.md)，不要混用两套配置位置。
 
-Lifecycle: startup binds with `requireUnowned` (a crashed previous instance
-refuses startup — no takeover), a heartbeat renews the lease, and SIGTERM/
-SIGINT/stdio-close releases ownership exactly once. `renewIntervalSeconds`
-must be ≤ half the term. Diagnostics go to stderr as status codes only.
+## 阅读导航
 
-## Security notes
+| 你要做什么 | 文档 |
+|---|---|
+| 首次设置、Start/Refresh/Details/Stop/Close、双向消息、重启恢复 | [Tunnel 用户指南](docs/tunnel-setup.md) |
+| Profile、managedBinding、Session Mapping、Store/Exchange、环境变量、排障 | [Tunnel 配置与排障](docs/tunnel-setup.md#配置模型与生成文件) |
+| Pi 工具参数、Inbox/读取/ACK、生命周期与安全边界 | [Pi 扩展指南](pi-extension/README.md) |
+| Desktop 本地 stdio 插件部署 | [ChatGPT 安装](docs/chatgpt-installation.md) |
+| 分层、身份、授权、测试与扩展点 | [开发者架构指南](docs/architecture.md) |
+| 后台进程、锁、健康证据和停止语义的详细约束 | [后台 Manager](docs/tunnel-manager-background.md) |
+| 协议、Ownership、存储、ACK 的精确定义 | [协议 v2](docs/protocol-v2.md) · [Ownership](docs/ownership-contract.md) · [Storage](docs/storage-contract.md) · [ACK](docs/delivery-ack-contract.md) |
+| 诊断隐私与隔离模拟器 | [Debug logging](docs/debug-logging.md) · [Offline Manager](docs/tunnel-manager-offline.md) |
 
-- Never persist or expose credentials, API keys, auth files, environment
-  secrets, or hidden model reasoning. Payload/result bodies are sensitive
-  data: correlated by digest in diagnostics, never copied into logs or
-  events (events carry IDs, digests, lengths, typed outcomes only).
-- Endpoint identity is opaque, non-secret routing identity; credentials stay
-  adapter-local.
-- In `--config` mode the MCP server's Endpoint identity comes only from the
-  operator-controlled launch configuration; tool arguments never carry a
-  sender, endpoint, session, or capability field (closed input schemas), and
-  refusals surface fixed codes only. Payload text appears solely in the
-  explicit successful output of `ce_read_payload` behind an untrusted-content
-  warning, and only when `payloadRead.enabled` is exactly `true` in the
-  binding configuration.
-- The MCP surface performs no `process.env` access; `scripts/check-contract.mjs`
-  enforces this along with the layering gates.
+## 必须理解的限制
 
-## License
+- **Configured ≠ Pi-bound ≠ Connected ≠ 消息实证。** `CONNECTED` 只证明测得的传输健康。
+- Inbox/list/read 不消费消息；ACK **仅为 reception receipt**，不是 delivery、read、processing 或 task completion 的证明。
+- `DELIVERY_UNKNOWN != CANCELLED`；不保证远端 exactly-once，不盲目重试未知结果。
+- 不自动启动、接管过期 Owner、清空 Store、轮询排空 Inbox，或将载荷当指令注入其他对话。
+- CE 的 Message/Result/Receipt 不替代 Wayforge 工作流、Pi 运行时或人工批准的完成权威。
+- 凭据存于私有文件而非加密保险箱；屏蔽输入不防恶意同进程扩展、录屏、剪贴板或内存观测。
 
-Private package during bootstrap. Preferred license: Apache-2.0, pending the
-same provenance review policy as the rest of this workspace. Not for
-publication until that review completes.
+## 开发检查
+
+从包目录运行 `pnpm run check`、`pnpm run typecheck`、`pnpm run build`、`pnpm test`；`pnpm run verify` 还包括打包插件测试。测试前必须 build。详见[开发者指南](docs/architecture.md#验证层次)。
+
+许可证：bootstrap 期间保持 private；首选 Apache-2.0，仍待仓库同等来源审查，不授权发布。
