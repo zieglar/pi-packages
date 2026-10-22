@@ -240,6 +240,26 @@ export interface BackgroundStartResult {
   readonly alreadyRunning: boolean;
 }
 
+/** Spawn+persist acknowledgement, resolved BEFORE the readiness poll runs.
+ *  Lets the caller show STARTING immediately without holding its command
+ *  handler for the full readiness budget. */
+export interface BackgroundStartAck {
+  readonly runId: string;
+  readonly pid: number;
+  /** Masked `tunnel_xxxxxxxx…`. */
+  readonly tunnelId: string;
+  readonly startedAt: string;
+}
+
+/** A supervised, non-blocking start: `ack` resolves once the daemon is
+ *  spawned and its ownership record persisted (state STARTING); `settled`
+ *  resolves/rejects when readiness converges (connected) or times out — the
+ *  same terminal contract as `start()`. Both are joined by stop/dispose. */
+export interface BackgroundStartDeferred {
+  readonly ack: Promise<BackgroundStartAck>;
+  readonly settled: Promise<BackgroundStartResult>;
+}
+
 export interface BackgroundManagerStatus {
   readonly mode: "real-background";
   readonly state: BackgroundStatusName;
@@ -262,6 +282,8 @@ export interface ProfileConfigurationGuard {
 export interface BackgroundTunnelManager {
   readonly kind: "real-background";
   start(): Promise<BackgroundStartResult>;
+  /** REAL-START-FIX-01: non-blocking supervised start (see BackgroundStartDeferred). */
+  startDeferred(): BackgroundStartDeferred;
   /** Setup only: holds the SAME lifecycle/ownership lock as start/stop. The
    * callback must be synchronous and must not invoke lifecycle methods. No
    * running, pending, corrupt or uncertain ownership may be reconfigured. */
@@ -360,7 +382,7 @@ export function parseTunnelProfile(text: string): TunnelProfileFacts {
   const SECTION_KEYS: Record<Section, ReadonlySet<string>> = {
     control_plane: new Set(["base_url", "tunnel_id", "api_key", "organization_id"]),
     health: new Set(["listen_addr", "url_file"]),
-    admin_ui: new Set(["open_browser", "allow_remote_ui", "log_buffer_events"]),
+    admin_ui: new Set(["open_browser"]),
     harpoon: new Set(["capture_payloads"]),
     log: new Set(["level", "format", "http_raw_unsafe"]),
     mcp: new Set(["commands"]),
@@ -445,10 +467,8 @@ export function parseTunnelProfile(text: string): TunnelProfileFacts {
         break;
       case "health.url_file": found.urlFile = quoted(rawValue!, tag); break;
       case "admin_ui.open_browser":
-      case "admin_ui.allow_remote_ui":
       case "harpoon.capture_payloads":
       case "log.http_raw_unsafe": bare(rawValue!, tag, /^(true|false)$/); break;
-      case "admin_ui.log_buffer_events": bare(rawValue!, tag, /^\d{1,6}$/); break;
       case "log.level": bare(rawValue!, tag, /^(debug|info|warn|error)$/); break;
       case "log.format": bare(rawValue!, tag, /^(json|text)$/); break;
       default: throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", tag);
@@ -1314,7 +1334,24 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
     );
     return settled;
   };
-  const startImpl = async (fenceAtCall: number): Promise<BackgroundStartResult> => {
+
+  /** REAL-START-FIX-01: spawn + persist (ack) separately from readiness
+   *  (settled). Both stay joined by activeStart so stop/dispose settle the
+   *  full start before proceeding; nothing becomes an unsupervised promise. */
+  const startDeferred = (): BackgroundStartDeferred => {
+    const fenceAtCall = startFence;
+    let resolveAck: ((ack: BackgroundStartAck) => void) | undefined;
+    let rejectAck: ((error: unknown) => void) | undefined;
+    const ack = new Promise<BackgroundStartAck>((resolve, reject) => { resolveAck = resolve; rejectAck = reject; });
+    const op = enqueue(() => startImpl(fenceAtCall, (spawned) => resolveAck?.(spawned)));
+    activeStart = op;
+    const settled = op.then(
+      (result) => { if (activeStart === op) activeStart = undefined; return result; },
+      (error: unknown) => { if (activeStart === op) activeStart = undefined; rejectAck?.(error); throw error; },
+    );
+    return { ack, settled };
+  };
+  const startImpl = async (fenceAtCall: number, onSpawned?: (ack: BackgroundStartAck) => void): Promise<BackgroundStartResult> => {
     if (fenceAtCall !== startFence) throw new TunnelRefusal("CE_TUNNEL_READY_TIMEOUT");
     if (disposed) throw new TunnelRefusal("CE_TUNNEL_SPAWN_FAILED");
     // S1: the real start gate is exact and independent of the offline flag.
@@ -1352,6 +1389,7 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
         const presence = await inspect(existing.pid);
         if (presence.kind === "present" && identityMatches(existing, presence.identity)) {
           // Identity verified but health NOT re-measured here: report unknown.
+          onSpawned?.({ runId: existing.runId, pid: existing.pid, tunnelId: maskTunnelId(existing.tunnelId), startedAt: new Date(existing.startedAt).toISOString() });
           return {
             runId: existing.runId, pid: existing.pid, tunnelId: maskTunnelId(existing.tunnelId),
             health: "unknown" as const, startedAt: new Date(existing.startedAt).toISOString(), alreadyRunning: true,
@@ -1478,6 +1516,7 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
       };
       try {
         persist(base);
+        onSpawned?.({ runId, pid, tunnelId: maskTunnelId(facts.tunnelId), startedAt: new Date(startedAt).toISOString() });
       } catch (error) {
         // S6/C4 + R3: the daemon exists but the record does not. Ownership
         // becomes PENDING: disk ENOENT must never discard it, and a later
@@ -1687,6 +1726,7 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
   return {
     kind: "real-background" as const,
     start,
+    startDeferred,
     withProfileConfigurationLock: <T>(operation: (guard: ProfileConfigurationGuard) => T): Promise<T> => enqueue(async () => {
       if (disposed) throw new TunnelRefusal("CE_TUNNEL_MANAGER_BUSY");
       const release = await acquireLock();

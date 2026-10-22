@@ -1,7 +1,7 @@
 # Local Tunnel setup and Manager
 
 `/ce-tunnel` is the interactive entry point. Direct `setup`, `status`, `start`,
-`stop`, and `help` subcommands remain shortcuts. Configuration is not connectivity:
+`stop`, `migrate`, and `help` subcommands remain shortcuts. Configuration is not connectivity:
 **Configured != Connected**. Transport health is never message delivery, ACK,
 reconciliation, or completion evidence.
 
@@ -86,6 +86,12 @@ Start rereads/revalidates the profile under that boundary. The exact real-start
 gate remains `CE_TUNNEL_BACKGROUND_ALLOW=1`; no setup, refresh, or session startup
 implicitly grants it or starts a client. The 45-second background startup budget
 and recovery/ownership authority remain unchanged.
+Real Start returns to the command loop without waiting for readiness. A spawn
+acknowledgement shows STARTING; repeated Start requests in the same session are
+merged until the terminal result. `/ce-status` uses a plain notification when the
+Manager already owns the custom screen. Close ends only that screen, not the
+background start; session teardown suppresses deferred notifications without
+replacing the manager's ownership or cleanup authority.
 
 **Runtime health is not configuration authority.** An unavailable runtime
 (UNKNOWN state, no healthy daemon, missing client binary) never blocks repairing
@@ -98,6 +104,30 @@ or an ownership inspection that cannot prove safety all still refuse closed.
 `UNKNOWN → Start Tunnel` remains impossible; `UNKNOWN` is never mapped to
 `STOPPED`. Setup cancel returns to the Manager with zero side effects; a saved
 setup rereads a fresh projection and never auto-starts.
+
+## Profile schema compatibility and in-place repair
+
+The real `tunnel-client` 0.0.16 rejects two `admin_ui` keys the generator once
+emitted: `allow_remote_ui` (a top-level client flag, not an `admin_ui` member)
+and `log_buffer_events: 0` (must be > 0). The profile generator and the start
+decoder now emit/accept only the canonical `admin_ui.open_browser: false`;
+`tunnel-client doctor` validates the generated profile as a regression guard so
+the offline simulator cannot mask a schema mismatch again.
+
+The MCP child's `node` executable must resolve to the Store-approved `v24.21.0`
+(see `storage/runtime.ts` `APPROVED_NODE_VERSION`) — a Node 25 runtime is refused
+by the durable Store's exact-version check. Setup resolves that Node without
+hardcoding a machine path (preferring the running runtime when it matches, then
+the `MISE_DATA_DIR` install layout) and refuses closed when no approved Node is
+found.
+
+`/ce-tunnel migrate` repairs an already-saved, canonical CE-generated profile in
+place (not arbitrarily reformatted YAML): it drops the two rejected `admin_ui`
+keys and repoints the MCP child node to the approved Node,
+preserving the credential reference, Tunnel ID, Organization ID, binding, Store,
+and recipients byte-for-byte. It runs atomically (temp + rename) under the same
+ownership lock as setup/start, refuses when the daemon is running or ownership
+is uncertain, and never reads, outputs, or copies the API key.
 
 ## Status and limits
 

@@ -110,15 +110,18 @@ describe("/ce-tunnel — B1 offline wiring (T18)", () => {
     vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", undefined as unknown as string);
     const start = makeCtx("tui");
     await (await ceTunnel()).handler("start", start.ctx);
-    expect(start.notifications[0]?.level).toBe("warning");
-    expect(start.notifications[0]?.message).toContain("CE_TUNNEL_BACKGROUND_UNAUTHORIZED");
+    // REAL-START-FIX-01: the handler acknowledges the request immediately;
+    // only a positive spawn acknowledgement may claim STARTING.
+    expect(start.notifications[0]?.level).toBe("info");
+    expect(start.notifications[0]?.message).toContain("real background start requested; awaiting spawn acknowledgement");
+    await vi.waitFor(() => expect(start.notifications.some((n) => n.message.includes("CE_TUNNEL_BACKGROUND_UNAUTHORIZED"))).toBe(true));
 
     // With the gate open but no operator profile, the refusal is still clean.
     vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");
     const start2 = makeCtx("tui");
     await (await ceTunnel()).handler("start", start2.ctx);
-    expect(start2.notifications[0]?.message).toContain("CE_TUNNEL_PROFILE_INVALID");
-    expect(start2.notifications[0]?.message).not.toContain("ce-ext-nonexistent");
+    await vi.waitFor(() => expect(start2.notifications.some((n) => n.message.includes("CE_TUNNEL_PROFILE_INVALID"))).toBe(true));
+    expect(start2.notifications.map((n) => n.message).join(" ")).not.toContain("ce-ext-nonexistent");
 
     // This mock UI port exposes no `ui.custom`, so masked capture is absent.
     const setup = makeCtx("tui");

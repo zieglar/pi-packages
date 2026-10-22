@@ -539,4 +539,58 @@ describe("command/profile encoding", () => {
     expect(fs.readdirSync(bindingDir).filter((n) => n.startsWith("ce-")).length).toBe(1);
     expect(fs.readFileSync(h.profilePath, "utf8")).toBe(padded); // old profile untouched
   });
+
+describe("REAL-START-FIX-01 — profile migration", () => {
+  function staleProfile(h: ReturnType<typeof harness>, nodePath = "/old/node") {
+    return [
+      "config_version: 1", "control_plane:",
+      '  base_url: "https://api.openai.com"',
+      `  tunnel_id: "${ID}"`,
+      '  organization_id: "org-old"',
+      `  api_key: "file:${h.key}"`,
+      "health:", '  listen_addr: "127.0.0.1:0"', `  url_file: "${join(h.dir, "health.url")}"`,
+      "admin_ui:", "  open_browser: false", "  allow_remote_ui: false", "  log_buffer_events: 0",
+      "harpoon:", "  capture_payloads: false",
+      "log:", "  level: info", "  format: json", "  http_raw_unsafe: false",
+      "mcp:", "  commands:", "    - channel: main",
+      `      command: "${nodePath} /abs/mcp-stdio.js --config ${h.bindingPath} --channel main"`, "",
+    ].join("\n");
+  }
+
+  it("repairs a stale profile in place, preserving identity/credential/binding", async () => {
+    const h = harness();
+    const credentialBefore = fs.readFileSync(h.key, "utf8");
+    fs.writeFileSync(h.profilePath, staleProfile(h));
+    const result = await h.setup.migrate();
+    expect(result).toMatchObject({ kind: "migrated", profilePath: h.profilePath, durability: "synced" });
+    const text = fs.readFileSync(h.profilePath, "utf8");
+    expect(text).not.toContain("allow_remote_ui");
+    expect(text).not.toContain("log_buffer_events");
+    expect(text).toContain(`tunnel_id: "${ID}"`);
+    expect(text).toContain('organization_id: "org-old"');
+    expect(text).toContain(`api_key: "file:${h.key}"`);
+    expect(text).toContain(`--config ${h.bindingPath} --channel main`);
+    expect(text).toContain("/abs/node /abs/mcp-stdio.js"); // node repointed to the approved path
+    expect(text).not.toContain("/old/node");
+    expect(fs.readFileSync(h.key, "utf8")).toBe(credentialBefore);
+    expect(names(h).some((n) => n.endsWith(".tmp") || n.includes("lock.d"))).toBe(false);
+    expect(parseTunnelProfile(text).mcpCommand).toContain(h.bindingPath);
+  });
+
+  it("is unchanged when the profile is already canonical", async () => {
+    const h = harness();
+    const before = fs.readFileSync(h.profilePath, "utf8");
+    await expect(h.setup.migrate()).resolves.toEqual({ kind: "unchanged" });
+    expect(fs.readFileSync(h.profilePath, "utf8")).toBe(before);
+  });
+
+  it("leaves the original profile untouched when the commit fails (rollback)", async () => {
+    const h = harness(true, { renameSync: () => { throw new Error("boom"); } });
+    fs.writeFileSync(h.profilePath, staleProfile(h));
+    const before = fs.readFileSync(h.profilePath, "utf8");
+    await expect(h.setup.migrate()).rejects.toMatchObject({ code: "CE_TUNNEL_PROFILE_INVALID", field: "setup.transaction" });
+    expect(fs.readFileSync(h.profilePath, "utf8")).toBe(before);
+    expect(names(h).some((n) => n.endsWith(".tmp"))).toBe(false);
+  });
+});
 });

@@ -17,6 +17,13 @@ import {
   detectConfigDrift,
   childEnvironment,
   resolveCredentialPlan,
+  serializeTunnelProfile,
+  migrateTunnelProfileText,
+  needsTunnelProfileMigration,
+  replaceTunnelMcpNodePath,
+  resolveMcpNodePath,
+  REQUIRED_MCP_NODE_VERSION,
+  buildTunnelMcpCommand,
   TunnelConfigError,
 } from "../../src/tunnel/profile.js";
 
@@ -32,8 +39,8 @@ describe("buildTunnelProfile", () => {
     const profile = buildTunnelProfile(base);
     expect(profile.health.listen_addr.startsWith("127.0.0.1")).toBe(true);
     expect(profile.admin_ui.open_browser).toBe(false);
-    expect(profile.admin_ui.allow_remote_ui).toBe(false);
-    expect(profile.admin_ui.log_buffer_events).toBe(0);
+    expect("allow_remote_ui" in profile.admin_ui).toBe(false);
+    expect("log_buffer_events" in profile.admin_ui).toBe(false);
     expect(profile.harpoon.capture_payloads).toBe(false);
     expect(profile.log.http_raw_unsafe).toBe(false);
   });
@@ -193,5 +200,99 @@ describe("resolveCredentialPlan", () => {
     const plan = resolveCredentialPlan({ keychainAvailable: false, keyFileExists: false, allowPlaintextTempFile: false });
     expect(plan.source).toBe("none");
     expect(plan.blockedCode).toBe("CE_TUNNEL_KEY_MISSING");
+  });
+});
+
+describe("REAL-START-FIX-01 — schema compatibility and migration", () => {
+  it("serializes the canonical minimal admin_ui subset only", () => {
+    const text = serializeTunnelProfile(buildTunnelProfile(base));
+    expect(text).toContain("admin_ui:");
+    expect(text).toContain("  open_browser: false");
+    expect(text).not.toContain("allow_remote_ui");
+    expect(text).not.toContain("log_buffer_events");
+  });
+
+  const stale = [
+    "config_version: 1", "control_plane:",
+    '  base_url: "https://api.openai.com"',
+    '  tunnel_id: "tunnel_6ad49fce3df081919fa181980b494729"',
+    '  organization_id: "org-J9Mg0ZApcakcou48jDZ9wjwc"',
+    '  api_key: "file:/Users/x/.config/pi-chat-exchange/tunnel/.credentials/credential-abc"',
+    "health:", '  listen_addr: "127.0.0.1:0"', '  url_file: "/Users/x/.config/pi-chat-exchange/tunnel/health.url"',
+    "admin_ui:", "  open_browser: false", "  allow_remote_ui: false", "  log_buffer_events: 0",
+    "harpoon:", "  capture_payloads: false",
+    "log:", "  level: info", "  format: json", "  http_raw_unsafe: false",
+    "mcp:", "  commands:", "    - channel: main",
+    '      command: "/Users/old/node /abs/mcp-stdio.js --config /abs/binding.yaml"', "",
+  ].join("\n");
+
+  it("detects a saved profile that needs migration", () => {
+    expect(needsTunnelProfileMigration(stale)).toBe(true);
+    expect(needsTunnelProfileMigration(serializeTunnelProfile(buildTunnelProfile(base)))).toBe(false);
+  });
+
+  it("drops the rejected keys and preserves every other line", () => {
+    const result = migrateTunnelProfileText(stale);
+    expect(result.changed).toBe(true);
+    expect(result.text).not.toContain("allow_remote_ui");
+    expect(result.text).not.toContain("log_buffer_events");
+    expect(result.text).toContain("  open_browser: false");
+    expect(result.text).toContain('tunnel_id: "tunnel_6ad49fce3df081919fa181980b494729"');
+    expect(result.text).toContain('organization_id: "org-J9Mg0ZApcakcou48jDZ9wjwc"');
+    expect(result.text).toContain('api_key: "file:/Users/x/.config/pi-chat-exchange/tunnel/.credentials/credential-abc"');
+    expect(result.text).toContain("--config /abs/binding.yaml");
+  });
+
+  it("repoints the mcp node path while preserving script/binding/channel", () => {
+    const result = migrateTunnelProfileText(stale, { nodePath: "/Users/new/node" });
+    expect(result.changed).toBe(true);
+    expect(result.text).toContain('command: "/Users/new/node /abs/mcp-stdio.js --config /abs/binding.yaml"');
+    expect(result.text).not.toContain("/Users/old/node");
+  });
+
+  it("reports unchanged when a clean profile is migrated", () => {
+    const clean = serializeTunnelProfile(buildTunnelProfile(base));
+    expect(migrateTunnelProfileText(clean).changed).toBe(false);
+  });
+});
+
+describe("replaceTunnelMcpNodePath", () => {
+  it("swaps only the node executable token", () => {
+    const cmd = "/old/node /abs/mcp-stdio.js --config /abs/binding.json";
+    expect(replaceTunnelMcpNodePath(cmd, "/new/node")).toBe("/new/node /abs/mcp-stdio.js --config /abs/binding.json");
+  });
+  it("preserves --channel main", () => {
+    const cmd = "/old/node /abs/mcp-stdio.js --config /abs/binding.json --channel main";
+    expect(replaceTunnelMcpNodePath(cmd, "/new/node")).toBe("/new/node /abs/mcp-stdio.js --config /abs/binding.json --channel main");
+  });
+  it("round-trips through buildTunnelMcpCommand", () => {
+    const built = buildTunnelMcpCommand({ nodePath: "/a/node", scriptPath: "/b/mcp-stdio.js", bindingPath: "/c/binding.yaml" });
+    expect(replaceTunnelMcpNodePath(built, "/d/node")).toBe("/d/node /b/mcp-stdio.js --config /c/binding.yaml");
+  });
+});
+
+describe("resolveMcpNodePath", () => {
+  const opts = { requiredVersion: REQUIRED_MCP_NODE_VERSION, homeDir: "/Users/x" };
+  it("reuses the running runtime when its version matches", () => {
+    expect(resolveMcpNodePath({ ...opts, env: {}, execPath: "/usr/bin/node", execVersion: `v${REQUIRED_MCP_NODE_VERSION}`, exists: () => false }))
+      .toBe("/usr/bin/node");
+  });
+  it("falls back to the mise install layout when the running runtime differs", () => {
+    const resolved = resolveMcpNodePath({
+      ...opts, env: { MISE_DATA_DIR: "/data/mise" }, execPath: "/usr/bin/node", execVersion: "v25.2.1",
+      exists: (p) => p === `/data/mise/installs/node/${REQUIRED_MCP_NODE_VERSION}/bin/node`,
+    });
+    expect(resolved).toBe(`/data/mise/installs/node/${REQUIRED_MCP_NODE_VERSION}/bin/node`);
+  });
+  it("derives the mise dir from homedir when MISE_DATA_DIR is unset", () => {
+    const resolved = resolveMcpNodePath({
+      ...opts, env: {}, execPath: "/usr/bin/node", execVersion: "v25.2.1",
+      exists: (p) => p === `/Users/x/.local/share/mise/installs/node/${REQUIRED_MCP_NODE_VERSION}/bin/node`,
+    });
+    expect(resolved).toBe(`/Users/x/.local/share/mise/installs/node/${REQUIRED_MCP_NODE_VERSION}/bin/node`);
+  });
+  it("returns undefined when no approved Node exists", () => {
+    expect(resolveMcpNodePath({ ...opts, env: {}, execPath: "/usr/bin/node", execVersion: "v25.2.1", exists: () => false }))
+      .toBeUndefined();
   });
 });

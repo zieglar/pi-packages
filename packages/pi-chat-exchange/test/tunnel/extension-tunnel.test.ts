@@ -106,7 +106,7 @@ describe("B1.1 /ce-tunnel — subcommand surface", () => {
   it("offers exactly setup, start, stop, status and help as completions", async () => {
     const command = await tunnel();
     const values = (command.getArgumentCompletions?.("") ?? []).map((item) => item.value);
-    expect([...values].sort()).toEqual(["authorize", "help", "setup", "start", "status", "stop"]);
+    expect([...values].sort()).toEqual(["authorize", "help", "migrate", "setup", "start", "status", "stop"]);
     expect((command.getArgumentCompletions?.("sta") ?? []).map((i) => i.value).sort()).toEqual(["start", "status"]);
     for (const item of command.getArgumentCompletions?.("") ?? []) expect(typeof item.value).toBe("string");
   });
@@ -167,13 +167,15 @@ describe("B1.1 /ce-tunnel — start and stop stay offline", () => {
     vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", undefined as unknown as string);
     const ctx = context();
     await (await tunnel()).handler("start", ctx);
-    expect(messages(ctx)).toContain("CE_TUNNEL_BACKGROUND_UNAUTHORIZED");
-    expect(ctx.ui.notify.mock.calls[0]?.[1]).toBe("warning");
+    // REAL-START-FIX-01: acknowledge the request, not a spawn, before the
+    // gate refusal surfaces asynchronously on the supervised start.
+    expect(messages(ctx)).toContain("real background start requested; awaiting spawn acknowledgement");
+    await vi.waitFor(() => expect(messages(ctx)).toContain("CE_TUNNEL_BACKGROUND_UNAUTHORIZED"));
     // Even with the gate open, a missing operator profile refuses cleanly.
     vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");
     const ctx2 = context();
     await (await tunnel()).handler("start", ctx2);
-    expect(messages(ctx2)).toContain("CE_TUNNEL_PROFILE_INVALID");
+    await vi.waitFor(() => expect(messages(ctx2)).toContain("CE_TUNNEL_PROFILE_INVALID"));
   });
 
   it("stop with nothing running is a safe no-op, not a false success claim", async () => {

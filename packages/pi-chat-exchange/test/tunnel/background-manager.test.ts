@@ -252,6 +252,38 @@ describe("BACKGROUND-05 default background startup budget", () => {
     expect(h.signals).toEqual([{ pid: 40_001, signal: "SIGTERM" }]);
     expect(recordState(h).state).toBe("stopped");
   });
+  it("REAL-START-FIX-01 startDeferred: ack resolves at spawn, settled converges to connected", async () => {
+    const h = makeHarness();
+    const m = createBackgroundTunnelManager({ ...defaultOptions(h), probeHealth: async () => {
+      h.clock = Number(recordState(h).startedAt) + 35_001;
+      return healthyProbe();
+    } });
+    const deferred = m.startDeferred();
+    const ack = await deferred.ack;
+    expect(ack).toMatchObject({ runId: expect.stringMatching(/^bg-/), pid: 40_001, tunnelId: expect.stringMatching(/^tunnel_/) });
+    const result = await deferred.settled;
+    expect(result.health).toBe("connected");
+    expect(m.status().state).toBe("CONNECTED");
+    await m.stop();
+  });
+
+  it("REAL-START-FIX-01 startDeferred: reports STARTING after the ack, then times out with cleanup", async () => {
+    const h = makeHarness();
+    let calls = 0;
+    const m = createBackgroundTunnelManager({ ...defaultOptions(h), probeHealth: async () => {
+      const offsets = [31_000, 44_999, 45_000];
+      h.clock = Number(recordState(h).startedAt) + offsets[calls++]!;
+      return noPoll;
+    } });
+    const deferred = m.startDeferred();
+    const ack = await deferred.ack;
+    expect(ack.pid).toBe(40_001);
+    expect(m.status().state).toBe("STARTING");
+    await expect(deferred.settled).rejects.toMatchObject({ code: "CE_TUNNEL_READY_TIMEOUT" });
+    expect(recordState(h).state).toBe("stopped");
+    expect(recordState(h).note).toBe("startup not confirmed; verified stop");
+    await m.stop();
+  });
 });
 
 describe("background manager v2 — baseline acceptance", () => {
@@ -283,6 +315,21 @@ describe("background manager v2 — baseline acceptance", () => {
     expect(second.runId).toBe(first.runId);
     expect(second.alreadyRunning).toBe(true);
     expect(second.health).toBe("unknown"); // identity verified, health not re-measured
+    expect(h.spawnCalls).toHaveLength(1);
+  });
+
+  it("REAL-START-FIX-01 startDeferred: alreadyRunning also resolves the ack", async () => {
+    const h = makeHarness();
+    h.probes.push(healthyProbe());
+    const m = createBackgroundTunnelManager(h.options);
+    const first = await m.start();
+    const deferred = m.startDeferred();
+    const ack = await deferred.ack; // must resolve (not hang) on the alreadyRunning path
+    expect(ack.runId).toBe(first.runId);
+    expect(ack.pid).toBe(40_001);
+    const second = await deferred.settled;
+    expect(second.alreadyRunning).toBe(true);
+    expect(second.health).toBe("unknown");
     expect(h.spawnCalls).toHaveLength(1);
   });
 
@@ -412,6 +459,22 @@ describe("background manager v2 — review regression coverage", () => {
     writeFileSync(h3.profilePath, readFileSync(h3.profilePath, "utf8") + `control_plane_extra: false\n` +
       `health:\n  url_file: "/tmp/decoy.url"\n`);
     await expect(createBackgroundTunnelManager(h3.options).start()).rejects.toMatchObject({ code: "CE_TUNNEL_PROFILE_INVALID" });
+  });
+
+  it("REAL-START-FIX-01: rejects the admin_ui keys the real 0.0.16 client rejects", async () => {
+    // `allow_remote_ui` is a top-level client flag, not an admin_ui member;
+    // `log_buffer_events: 0` is below the client's minimum of 1. Both must
+    // refuse BEFORE spawn so the manager never hands the client a profile it
+    // will parse-fail on and then time out for 45s.
+    const h = makeHarness();
+    writeFileSync(h.profilePath, readFileSync(h.profilePath, "utf8").replace("admin_ui:\n  open_browser: false", "admin_ui:\n  open_browser: false\n  allow_remote_ui: false"));
+    await expect(createBackgroundTunnelManager(h.options).start()).rejects.toMatchObject({ code: "CE_TUNNEL_PROFILE_INVALID" });
+    expect(h.spawnCalls).toHaveLength(0);
+
+    const h2 = makeHarness();
+    writeFileSync(h2.profilePath, readFileSync(h2.profilePath, "utf8").replace("admin_ui:\n  open_browser: false", "admin_ui:\n  open_browser: false\n  log_buffer_events: 0"));
+    await expect(createBackgroundTunnelManager(h2.options).start()).rejects.toMatchObject({ code: "CE_TUNNEL_PROFILE_INVALID" });
+    expect(h2.spawnCalls).toHaveLength(0);
   });
 
   it("S3/C5: inspection UNKNOWN retains ownership everywhere", async () => {

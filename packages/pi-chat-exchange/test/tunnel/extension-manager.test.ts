@@ -248,7 +248,9 @@ describe("real tunnel manager extension routing", () => {
   it("direct start still enforces the exact background authorization gate", async () => {
     const f = await fixture();
     await f.command.handler("start", f.ctx);
-    expect(f.notify.mock.calls.some(([text]) => String(text).includes("CE_TUNNEL_BACKGROUND_UNAUTHORIZED"))).toBe(true);
+    // REAL-START-FIX-01: non-blocking start acknowledges first; the gate refusal
+    // then surfaces asynchronously on the supervised start promise.
+    await vi.waitFor(() => expect(f.notify.mock.calls.some(([text]) => String(text).includes("CE_TUNNEL_BACKGROUND_UNAUTHORIZED"))).toBe(true));
     expect(f.custom).not.toHaveBeenCalled();
   });
   it("TUI start with a malformed CE_TUNNEL_PROFILE refuses closed and never rejects the handler", async () => {

@@ -10,6 +10,7 @@ import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join, normalize } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { MCP_BINDING_CONFIG_MAX_BYTES, parseMcpBindingConfig } from "../host/mcp-binding-config.js";
 import { TunnelRefusal } from "./codes.js";
@@ -17,11 +18,26 @@ import {
   checkKeyFileMetadata, createBackgroundTunnelManager, parseTunnelProfile, resolveTunnelProfilePath,
   type BackgroundTunnelManager, type TunnelProfileFacts,
 } from "./background-manager.js";
-import { buildTunnelMcpCommand, buildTunnelProfile, parseTunnelMcpCommand, replaceTunnelMcpBindingPath, serializeTunnelProfile, validateTunnelIdentity } from "./profile.js";
+import { buildTunnelMcpCommand, buildTunnelProfile, migrateTunnelProfileText, parseTunnelMcpCommand, replaceTunnelMcpBindingPath, resolveMcpNodePath, REQUIRED_MCP_NODE_VERSION, serializeTunnelProfile, validateTunnelIdentity } from "./profile.js";
 import { ensureManagedBinding } from "./managed-binding.js";
 
 const MAX_PROFILE_BYTES = 65_536;
 const invalid = (field: string): TunnelRefusal => new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", field);
+
+/** Resolve the mcp child's node executable to the Store-approved version
+ *  (REAL-START-FIX-01). An explicit `nodePath` option wins; otherwise the
+ *  resolver prefers the running runtime when it already matches and falls back
+ *  to the mise install layout. No approved Node means a hard refusal — never a
+ *  profile whose durable Store the child cannot open. */
+function resolveSetupNodePath(options: TunnelProfileSetupOptions): string {
+  if (options.nodePath !== undefined) return options.nodePath;
+  const resolved = resolveMcpNodePath({
+    env: options.env, execPath: process.execPath, execVersion: process.version,
+    homeDir: homedir(), requiredVersion: REQUIRED_MCP_NODE_VERSION, exists: fs.existsSync,
+  });
+  if (resolved === undefined) throw invalid("mcp.commands.0.command");
+  return resolved;
+}
 function absolute(path: string, field: string): void {
   if (typeof path !== "string" || !isAbsolute(path) || normalize(path) !== path ||
       !/^[\x20\x21\x23-\x5B\x5D-\x7E]+$/.test(path)) throw invalid(field);
@@ -126,6 +142,9 @@ export interface TunnelSetupSaveInput {
 export type TunnelSetupSaveResult =
   | { readonly kind: "cancelled" }
   | { readonly kind: "saved"; readonly profilePath: string; readonly durability: "synced" | "uncertain" };
+export type TunnelProfileMigrationResult =
+  | { readonly kind: "migrated"; readonly profilePath: string; readonly durability: "synced" | "uncertain" }
+  | { readonly kind: "unchanged" };
 /** Small filesystem fault-injection boundary; production defaults are Node fs.
  * No read-credential operation exists in the transaction interface. */
 export type SetupFileOperations = Pick<typeof fs, "openSync" | "closeSync" | "writeFileSync" | "fsyncSync" | "renameSync" | "unlinkSync">;
@@ -144,6 +163,12 @@ export interface TunnelProfileSetup {
   /** Static UI preflight with the current credential excluded internally. */
   validateBinding(path: string): { readonly path: string };
   save(input: TunnelSetupSaveInput): Promise<TunnelSetupSaveResult>;
+  /** REAL-START-FIX-01: repair a saved profile in place (drop the rejected
+   *  admin_ui keys and repoint the mcp child node) without touching the
+   *  credential reference, tunnel/org identity, binding, store, or recipients.
+   *  Atomic (temp + rename) under the SAME ownership lock; refuses when the
+   *  daemon is running or its ownership is uncertain. */
+  migrate(): Promise<TunnelProfileMigrationResult>;
 }
 
 /** Removes a credential directory this transaction created, or undefined when the
@@ -370,7 +395,7 @@ export function createTunnelProfileSetup(options: TunnelProfileSetupOptions): Tu
       const nextText = text === undefined ? serializeTunnelProfile(buildTunnelProfile({
         tunnelId: input.tunnelId, ...(input.organizationId ? { organizationId: input.organizationId } : {}), keyFile,
         healthUrlFile: join(dirname(profilePath), "health.url"),
-        mcpCommand: buildTunnelMcpCommand({ nodePath: options.nodePath ?? process.execPath,
+        mcpCommand: buildTunnelMcpCommand({ nodePath: resolveSetupNodePath(options),
           scriptPath: options.mcpScriptPath ?? fileURLToPath(new URL("../bin/mcp-stdio.js", import.meta.url)), bindingPath }),
       })) : updateProfile(text, input, keyFile, changedCommand);
       parseTunnelProfile(nextText); // Same decoder as real start, before any write.
@@ -422,5 +447,59 @@ export function createTunnelProfileSetup(options: TunnelProfileSetupOptions): Tu
       }
     });
   };
-  return { inspect, validateBinding: (path) => validateTunnelBindingFile(path, read().facts?.keyFile), save };
+  const migrate = async (): Promise<TunnelProfileMigrationResult> => {
+    const missingProfileDirectories = missingDirectoryLineage(dirname(profilePath));
+    return manager.withProfileConfigurationLock((guard): TunnelProfileMigrationResult => {
+      if (guard.profilePath !== profilePath) throw invalid("setup.lock-profile");
+      // Read the RAW text directly: a stale profile still carries the rejected
+      // admin_ui keys, so the strict decoder (read().facts) would refuse it
+      // before migration could run. Migration is exactly for that shape.
+      const text = readConfiguration(profilePath, MAX_PROFILE_BYTES, "profile", true);
+      if (text === undefined) return { kind: "unchanged" };
+      const nodePath = resolveSetupNodePath(options);
+      const { text: nextText, changed } = migrateTunnelProfileText(text, { nodePath });
+      if (!changed) return { kind: "unchanged" };
+      parseTunnelProfile(nextText); // Same decoder as real start, before any write.
+      if (Buffer.byteLength(nextText, "utf8") > MAX_PROFILE_BYTES) throw invalid("profile.size");
+      const temporaryProfile = `${profilePath}.${randomUUID()}.tmp`;
+      guard.assertIntact();
+      let directoryFd: number | undefined;
+      let committed = false;
+      let tempIno = 0;
+      let tempDev = 0;
+      try {
+        directoryFd = io.openSync(dirname(profilePath), fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+        const fd = io.openSync(temporaryProfile, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+        try {
+          const stat = fs.fstatSync(fd);
+          if (stat.mode !== 0o100600 || stat.uid !== process.geteuid?.()) throw invalid("setup.permissions");
+          tempIno = stat.ino;
+          tempDev = stat.dev;
+          io.writeFileSync(fd, nextText, "utf8");
+          io.fsyncSync(fd);
+        } finally { io.closeSync(fd); }
+        io.fsyncSync(directoryFd);
+        guard.assertIntact();
+        // No credential is involved, but the profile must still be the same
+        // generation we read — a concurrent save would be clobbered otherwise.
+        if (revisionOf(readConfiguration(profilePath, MAX_PROFILE_BYTES, "profile", true)) !== revisionOf(text)) throw new TunnelRefusal("CE_TUNNEL_CONFIG_CONFLICT", "profile");
+        io.renameSync(temporaryProfile, profilePath); // SOLE COMMIT POINT
+        committed = true;
+        const durability = syncCommittedProfileDirectories(dirname(profilePath), missingProfileDirectories, io) ? "synced" as const : "uncertain" as const;
+        return { kind: "migrated", profilePath, durability };
+      } catch (error) {
+        if (error instanceof TunnelRefusal) throw error;
+        throw invalid("setup.transaction"); // Never forward fs messages/causes.
+      } finally {
+        if (directoryFd !== undefined) { try { io.closeSync(directoryFd); } catch { /* no postcommit rollback */ } }
+        if (!committed) {
+          try {
+            const stat = fs.lstatSync(temporaryProfile);
+            if (stat.ino === tempIno && stat.dev === tempDev) io.unlinkSync(temporaryProfile);
+          } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") { /* best effort */ } }
+        }
+      }
+    });
+  };
+  return { inspect, validateBinding: (path) => validateTunnelBindingFile(path, read().facts?.keyFile), save, migrate };
 }

@@ -8,14 +8,17 @@
  * top-level `tunnel` field, so the two configurations stay in separate files
  * by construction.
  *
- * Mandatory client-exposure switches (design S1–S4) are emitted
- * unconditionally. Disabling them does not prove the local admin UI is
- * unreachable: the client serves `/ui` on loopback by default (measured), so
+ * The admin UI section is emitted as the canonical minimal subset the real
+ * `tunnel-client` 0.0.16 accepts: `open_browser` only. The client rejects the
+ * nested `allow_remote_ui` key (it is a top-level flag, not an `admin_ui`
+ * member) and rejects `log_buffer_events: 0` (it must be > 0); both were
+ * removed to match the real schema. Remote UI stays disabled by default, and
  * the profile carries an explicit acknowledgement flag for the operator
  * documentation rather than an unfounded safety claim.
  */
-import { isAbsolute, normalize } from "node:path";
+import { isAbsolute, join, normalize } from "node:path";
 import { TunnelRefusal } from "./codes.js";
+import { APPROVED_NODE_VERSION } from "../storage/runtime.js";
 
 /** Configuration-shaped refusal for profile construction. */
 export class TunnelConfigError extends TunnelRefusal {
@@ -40,7 +43,7 @@ export interface TunnelProfile {
   readonly config_version: 1;
   readonly control_plane: { readonly base_url: string; readonly tunnel_id: string; readonly organization_id?: string; readonly api_key: string };
   readonly health: { readonly listen_addr: string; readonly url_file: string };
-  readonly admin_ui: { readonly open_browser: false; readonly allow_remote_ui: false; readonly log_buffer_events: 0 };
+  readonly admin_ui: { readonly open_browser: false };
   readonly harpoon: { readonly capture_payloads: false };
   readonly log: { readonly level: "info"; readonly format: "json"; readonly http_raw_unsafe: false };
   readonly mcp: { readonly commands: readonly { readonly channel: "main"; readonly command: string }[] };
@@ -110,6 +113,18 @@ export function replaceTunnelMcpBindingPath(command: string, bindingPath: string
   return next;
 }
 
+/** Change only argv's node-executable token. Script path, binding path, and
+ * the optional --channel main token remain byte-identical. */
+export function replaceTunnelMcpNodePath(command: string, nodePath: string): string {
+  const existing = parseTunnelMcpCommand(command);
+  const rebuilt = buildTunnelMcpCommand({ nodePath, scriptPath: existing.scriptPath, bindingPath: existing.bindingPath });
+  const tokens = command.match(/'[^']*'|[^ ']+/g)!;
+  tokens[0] = rebuilt.match(/'[^']*'|[^ ']+/g)![0]!;
+  const next = tokens.join(" ");
+  parseTunnelMcpCommand(next);
+  return next;
+}
+
 /** Pure validation, shared by the wizard adapter and the persistence layer. */
 export function validateTunnelIdentity(tunnelId: string, organizationId?: string): void {
   if (typeof tunnelId !== "string" || !TUNNEL_ID_PATTERN.test(tunnelId)) throw new TunnelConfigError("control_plane.tunnel_id");
@@ -159,7 +174,7 @@ export function buildTunnelProfile(input: TunnelProfileInput): TunnelProfile {
     control_plane: Object.freeze({ base_url: baseUrl, tunnel_id: input.tunnelId,
       ...(input.organizationId ? { organization_id: input.organizationId } : {}), api_key: `file:${keyFile}` }),
     health: Object.freeze({ listen_addr: "127.0.0.1:0", url_file: healthUrlFile }),
-    admin_ui: Object.freeze({ open_browser: false as const, allow_remote_ui: false as const, log_buffer_events: 0 as const }),
+    admin_ui: Object.freeze({ open_browser: false as const }),
     harpoon: Object.freeze({ capture_payloads: false as const }),
     log: Object.freeze({ level: "info" as const, format: "json" as const, http_raw_unsafe: false as const }),
     mcp: Object.freeze({ commands: Object.freeze([Object.freeze({ channel: "main" as const, command })]) }),
@@ -181,7 +196,7 @@ export function serializeTunnelProfile(profile: TunnelProfile): string {
     ...(profile.control_plane.organization_id ? [`  organization_id: ${scalar(profile.control_plane.organization_id)}`] : []),
     `  api_key: ${scalar(profile.control_plane.api_key)}`,
     "health:", `  listen_addr: ${scalar(profile.health.listen_addr)}`, `  url_file: ${scalar(profile.health.url_file)}`,
-    "admin_ui:", "  open_browser: false", "  allow_remote_ui: false", "  log_buffer_events: 0",
+    "admin_ui:", "  open_browser: false",
     "harpoon:", "  capture_payloads: false", "log:", "  level: info", "  format: json", "  http_raw_unsafe: false",
     "mcp:", "  commands:", "    - channel: main", `      command: ${scalar(profile.mcp.commands[0]!.command)}`, "",
   ].join("\n");
@@ -312,4 +327,80 @@ export function detectConfigDrift(input: ConfigDriftInput): ConfigDriftCheck {
     return { ok: false, code: "CE_TUNNEL_CONFIG_CONFLICT", reason: "env-profile-tunnel-id-mismatch" };
   }
   return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// REAL-START-FIX-01 — MCP child Node resolution and profile migration.
+// The durable Store refuses any Node whose exact version, bundled SQLite
+// version, and SQLite source id do not match the approved runtime (see
+// storage/runtime.ts), so the mcp child must resolve to the approved Node —
+// never blindly to the Pi process's own runtime when that differs.
+// ---------------------------------------------------------------------------
+
+/** The exact `major.minor.patch` the durable Store requires (no leading `v`).
+ *  Derived from storage/runtime.ts APPROVED_NODE_VERSION so the two cannot
+ *  drift. */
+export const REQUIRED_MCP_NODE_VERSION: string = APPROVED_NODE_VERSION.replace(/^v/, "");
+
+export interface ResolveMcpNodePathInput {
+  readonly env: NodeJS.ProcessEnv;
+  readonly execPath: string;
+  readonly execVersion: string;
+  readonly homeDir: string;
+  readonly requiredVersion: string;
+  readonly exists: (path: string) => boolean;
+}
+
+/** Resolve a Node executable matching `requiredVersion`. Prefers the running
+ *  runtime when it already matches; otherwise falls back to the mise install
+ *  layout derived from MISE_DATA_DIR (or `~/.local/share/mise`). Returns
+ *  `undefined` when no approved Node can be located — callers must then fail
+ *  closed rather than write a profile the Store will reject. */
+export function resolveMcpNodePath(input: ResolveMcpNodePathInput): string | undefined {
+  if (input.execVersion === `v${input.requiredVersion}` && input.execPath.length > 0) return input.execPath;
+  const dataDir = input.env.MISE_DATA_DIR !== undefined && input.env.MISE_DATA_DIR !== ""
+    ? input.env.MISE_DATA_DIR
+    : join(input.homeDir, ".local", "share", "mise");
+  const candidate = join(dataDir, "installs", "node", input.requiredVersion, "bin", "node");
+  return input.exists(candidate) ? candidate : undefined;
+}
+
+export interface TunnelProfileMigration {
+  readonly text: string;
+  readonly changed: boolean;
+}
+
+// The two admin_ui keys the real tunnel-client 0.0.16 rejects: `allow_remote_ui`
+// (a top-level flag, not an admin_ui member) and `log_buffer_events: 0` (must
+// be > 0). They are emitted with a fixed two-space indent by our generator.
+const ADMIN_UI_ALLOW_REMOTE_LINE = /^  allow_remote_ui:[^\n]*\n?/m;
+const ADMIN_UI_LOG_BUFFER_LINE = /^  log_buffer_events:[^\n]*\n?/m;
+const MCP_COMMAND_LINE = /^      command: "([^"]*)"$/m;
+
+/** True when a saved profile still carries a key the real client rejects. */
+export function needsTunnelProfileMigration(text: string): boolean {
+  return ADMIN_UI_ALLOW_REMOTE_LINE.test(text) || ADMIN_UI_LOG_BUFFER_LINE.test(text);
+}
+
+/** Rewrite a saved profile in place: drop the two rejected admin_ui keys and,
+ *  when a node path is supplied, repoint the mcp command's node executable
+ *  while preserving the script path, binding path, and --channel main token
+ *  byte-for-byte. Never touches tunnel_id, organization_id, api_key, or any
+ *  other line. */
+export function migrateTunnelProfileText(text: string, opts: { readonly nodePath?: string } = {}): TunnelProfileMigration {
+  let next = text;
+  let changed = false;
+  if (ADMIN_UI_ALLOW_REMOTE_LINE.test(next)) { next = next.replace(ADMIN_UI_ALLOW_REMOTE_LINE, ""); changed = true; }
+  if (ADMIN_UI_LOG_BUFFER_LINE.test(next)) { next = next.replace(ADMIN_UI_LOG_BUFFER_LINE, ""); changed = true; }
+  if (opts.nodePath !== undefined) {
+    const match = MCP_COMMAND_LINE.exec(next);
+    if (match !== null) {
+      const rebuilt = replaceTunnelMcpNodePath(match[1]!, opts.nodePath);
+      if (rebuilt !== match[1]) {
+        next = next.replace(MCP_COMMAND_LINE, () => `      command: "${rebuilt}"`);
+        changed = true;
+      }
+    }
+  }
+  return { text: next, changed };
 }
