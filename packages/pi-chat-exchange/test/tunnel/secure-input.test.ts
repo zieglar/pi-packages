@@ -155,6 +155,34 @@ describe("B1.1 secure input — capture and hand-off", () => {
     expect(h.doneCalls()).toBe(1);
   });
 
+  it("renders an optional caller preamble above the label, never the secret", async () => {
+    const api = await mod();
+    const h = harness();
+    const w = writer();
+    const pending = api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS, preamble: ["Tunnel Setup · 3/4 · Credential"] });
+    await h.installed;
+    for (const ch of SENTINEL) h.type(ch);
+    const lines = h.component().render(40);
+    expect(lines[0]).toBe("Tunnel Setup · 3/4 · Credential");
+    expect(lines.join("\n")).not.toContain(SENTINEL);
+    h.type("\r");
+    expect(await pending).toEqual({ status: "stored" });
+  });
+
+  it("sanitizes a control-bearing preamble so it cannot reach the render", async () => {
+    const api = await mod();
+    const h = harness();
+    const w = writer();
+    const pending = api.captureTunnelSecret(h.ctx, w, { keys: TEST_KEYS, preamble: ["\x1b[2Jspoofed-title\x07"] });
+    await h.installed;
+    const lines = h.component().render(60);
+    // The control bytes are stripped; only the visible text may survive.
+    expect(lines[0]).toBe("spoofed-title");
+    expect(lines.join("\n")).not.toMatch(/[\x1b\x07]/);
+    h.type("\x1b");
+    await pending;
+  });
+
   it("renders fixed labels, a mask only, and never exceeds the requested width", async () => {
     const api = await mod();
     const h = harness();

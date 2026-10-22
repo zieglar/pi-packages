@@ -59,8 +59,8 @@ describe("real tunnel manager extension routing", () => {
       await activateUi(h); // Manager Set Up Tunnel -> Wizard step 1
       await inputUi(h, "tunnel_12345678");
       await inputUi(h, "");
-      await inputUi(h, ""); // Recipients: none (managed default)
-      await activateUi(h); // Provide API key
+      // Step 3 is the masked credential input itself: no intermediate choice,
+      // and recipients are Advanced-only (CE-managed default applies).
       h.type(privateValue);
       expect(h.render().join("\n").includes(privateValue)).toBe(false);
       h.send("\r"); await flushUi();
@@ -69,7 +69,7 @@ describe("real tunnel manager extension routing", () => {
       await activateUi(h); // Continue -> Save
       expect(existsSync(join(f.directory, "profile.yaml"))).toBe(false);
       await activateUi(h); // Save -> fresh Manager
-      await vi.waitFor(() => expect(h.render().join("\n")).toMatch(/State: +STOPPED/));
+      await vi.waitFor(() => expect(h.render().join("\n")).toMatch(/State +STOPPED/));
       const text = readFileSync(join(f.directory, "profile.yaml"), "utf8");
       const { parseTunnelProfile } = await import("../../dist/tunnel/background-manager.js");
       const facts = parseTunnelProfile(text);
@@ -86,7 +86,7 @@ describe("real tunnel manager extension routing", () => {
       expect(existsSync(store)).toBe(false);
       expect(h.render().join("\n").includes("tunnel_12345678")).toBe(false);
       await activateUi(h); // Start: exact gate remains closed
-      await vi.waitFor(() => expect(h.render().join("\n")).toContain("Tunnel Manager"));
+      await vi.waitFor(() => expect(h.render().join("\n")).toContain("Chat Exchange Tunnel"));
       expect(f.notify.mock.calls.some(([text]) => String(text).includes("CE_TUNNEL_BACKGROUND_UNAUTHORIZED"))).toBe(true);
       expect(existsSync(join(f.directory, "background-state.json"))).toBe(false);
       expect(f.notify.mock.calls.some(([text]) => String(text).includes(privateValue))).toBe(false);
@@ -147,8 +147,11 @@ describe("real tunnel manager extension routing", () => {
     try {
       await vi.waitFor(() => expect(harness.isOpen).toBe(true));
       const screen = harness.render().join("\n");
-      expect(screen).toContain("Profile");
-      expect(screen).toContain(join(f.directory, "profile.yaml"));
+      // Step 1 is the first real decision; the write target moved to
+      // Review/Save/Edit context instead of decorating every step.
+      expect(screen).toContain("Tunnel Setup · 1/4 · Tunnel ID");
+      expect(screen).toContain("Required · tunnel_ followed by at least 8 alphanumeric characters");
+      expect(screen).not.toContain(join(f.directory, "profile.yaml"));
       harness.press("tui.select.cancel");
       await pending;
       expect(readdirSync(f.directory)).toEqual([]);
@@ -157,6 +160,30 @@ describe("real tunnel manager extension routing", () => {
       expect(f.notify.mock.calls.some(([text, level]) => String(text).includes("CANCELLED") && level === "info")).toBe(true);
     } finally { harness.dispose(); await pending; }
   });
+  it("Escape after the masked capture and at Review writes no profile, key, or binding", async () => {
+    const f = await fixture();
+    const h = createTuiHarness({ width: 120, rows: 40 });
+    Object.assign(f.ctx.ui, { custom: h.custom });
+    const pending = f.command.handler("setup", f.ctx);
+    const privateValue = ["fixture", "no", "write"].join("-");
+    try {
+      await vi.waitFor(() => expect(h.isOpen).toBe(true));
+      await inputUi(h, "tunnel_12345678");
+      await inputUi(h, "");
+      // The masked capture is reached: the secret exists in flight, then cancel.
+      expect(h.render().join("\n")).toContain("Tunnel Setup · 3/4 · Credential");
+      h.type(privateValue);
+      expect(h.render().join("\n").includes(privateValue)).toBe(false);
+      h.send("\r"); await flushUi();
+      expect(h.render().join("\n")).toContain("Tunnel Setup · 4/4 · Review");
+      h.press("tui.select.cancel"); await pending;
+      expect(readdirSync(f.directory)).toEqual([]);
+      expect(f.appendEntry).not.toHaveBeenCalled();
+      expect(f.ctx.ui.input).not.toHaveBeenCalled();
+      expect(f.notify.mock.calls.some(([text]) => String(text).includes(privateValue))).toBe(false);
+    } finally { h.dispose(); await pending; }
+  });
+
 
   it("direct status keeps malformed configuration distinct from stopped runtime", async () => {
     const f = await fixture();

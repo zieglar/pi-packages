@@ -112,11 +112,17 @@ export async function runSetupWizard(ctx: SetupUiContext, options: SetupWizardOp
   let outcome: SetupUiOutcome = cancelled();
   // Deliberately not a Kit state field: neither Kit renderers nor errors see it.
   let saved = false;
-  // Profile path is wizard context (and is shown in full at Review), never a
-  // step of its own: it carries no user decision.
+  // Profile path is the write target, not a decision: it appears in Review and in
+  // the Save confirmation, never as a step of its own and never on every screen.
   const STEPS = 4;
-  const context = `Profile: ${options.profilePath}`;
-  const lines = (): string[] => [context, ...(draft.error ? [draft.error] : [])];
+  /** Per-field help: what is required, in what format, and what empty means. */
+  const HELP = Object.freeze({
+    tunnel: "Required · tunnel_ followed by at least 8 alphanumeric characters",
+    organization: "Optional · org- followed by 1-128 alphanumeric characters · leave empty if not required",
+    recipients: "Optional · adapter:endpointId, comma-separated · empty keeps the CE-managed default",
+    credential: "Existing credential configured · Replace opens a masked input",
+  });
+  const lines = (help: string): string[] => [help, ...(draft.error ? [draft.error] : [])];
   const step = (n: number, name: string): string => `Tunnel Setup · ${n}/${STEPS} · ${name}`;
   const changes = (): string[] => {
     if (!existing) return [];
@@ -166,80 +172,107 @@ export async function runSetupWizard(ctx: SetupUiContext, options: SetupWizardOp
     `Credential\n${draft.credential === "keep" ? "Keep existing" : existing?.credentialConfigured ? "Replace" : "Provided"}`,
     ...changes(),
   ].join("\n\n");
-  const input = (title: string, value: string, action: Action): MenuScreen<Screen, Action> => ({ kind: "input", title, lines: lines(), initialValue: value, action, hint: "close" });
+  const input = (title: string, value: string, action: Action, help: string): MenuScreen<Screen, Action> => ({ kind: "input", title, lines: lines(help), initialValue: value, action, hint: "close" });
   const cancelItem = { id: "cancel", label: "Cancel", close: true } as const;
-  const definition = defineMenu<Draft, Screen, Action, SetupUiContext>({
-    start: "tunnel",
-    screens: {
-      tunnel: () => input(step(1, "Tunnel ID"), draft.tunnelId, "tunnel"),
-      organization: () => input(step(2, "Organization ID — optional, may be left empty"), draft.organizationId, "organization"),
-      recipients: () => input(step(3, "Recipients — optional, adapter:endpointId comma-separated"), draft.recipientsText, "recipients"),
-      credential: () => ({ kind: "actions", title: step(4, "Credential · API key"), lines: [...lines(), ...(existing?.credentialConfigured ? ["Existing credential configured"] : ["A masked API key is required."])], hint: "close", items: [
-        ...(existing?.credentialConfigured ? [{ id: "keep", label: "Keep existing credential", action: "keepCredential" as const }] : []),
-        { id: "replace", label: existing?.credentialConfigured ? "Replace credential" : "Provide API key (masked)", action: "capture" },
-        { id: "back", label: "Back", to: "recipients" as const }, cancelItem,
-      ] }),
-      reviewEntry: () => ({ kind: "actions", title: "Review configuration", lines: lines(), hint: "close", items: [{ id: "review", label: "Review", to: "review" }, { id: "edit", label: "Back · Edit configuration", to: "edit" }, cancelItem] }),
-      review: () => ({ kind: "review", title: "Review · Tunnel configuration", content: summary(), format: { kind: "text" }, hint: "close", confirm: { id: "continue", label: "Continue", action: "review" } }),
-      changes: () => ({ kind: "review", title: "Existing Tunnel configuration will be changed", content: changes().join("\n\n"), format: { kind: "text" }, hint: "close", confirm: { id: "confirm-change", label: "Confirm identity / routing changes", action: "review" } }),
-      save: () => ({ kind: "actions", title: "Save confirmation", lines: ["Only Save configuration writes the proposed configuration.", ...lines()], hint: "close", items: [{ id: "save", label: "Save configuration", action: "save" }, { id: "back", label: "Back · Edit configuration", to: "edit" }, cancelItem] }),
-      edit: () => ({ kind: "actions", title: "Edit configuration", lines: lines(), hint: "close", items: [{ id: "tunnel", label: "Tunnel ID", to: "tunnel" }, { id: "organization", label: "Organization ID", to: "organization" }, { id: "recipients", label: "Recipients", to: "recipients" }, { id: "credential", label: "Credential", to: "credential" }, { id: "back", label: "Back · Review", to: "reviewEntry" }, cancelItem] }),
+  /** Deferred masked capture. The Kit menu closes first so the CE secret
+   * component owns the terminal alone: the first-time path therefore enters the
+   * masked input directly, with no intermediate credential choice. */
+  let pendingCapture = false;
+  const credentialItem = existing?.credentialConfigured
+    ? { id: "credential", label: "Credential", to: "credential" as const }
+    : { id: "credential", label: "Credential · enter API key (masked)", action: "capture" as const };
+  const screens: Readonly<Record<Screen, (state: { state: Draft }) => MenuScreen<Screen, Action>>> = {
+    tunnel: () => input(step(1, "Tunnel ID"), draft.tunnelId, "tunnel", HELP.tunnel),
+    organization: () => input(step(2, "Organization ID"), draft.organizationId, "organization", HELP.organization),
+    // Advanced: reachable from Edit configuration only. CE has no trusted
+    // endpoint discovery, so recipients are never a linear setup step.
+    recipients: () => input("Tunnel Setup · Advanced · Recipients", draft.recipientsText, "recipients", HELP.recipients),
+    // Only an already-configured credential needs a decision; otherwise the
+    // capture component is opened directly instead of this screen.
+    credential: () => ({ kind: "actions", title: step(3, "Credential"), lines: lines(HELP.credential), hint: "close", items: [
+      { id: "keep", label: "Keep existing credential", action: "keepCredential" as const },
+      { id: "replace", label: "Replace credential (masked input)", action: "capture" as const },
+      { id: "back", label: "Back · Organization ID", to: "organization" as const }, cancelItem,
+    ] }),
+    reviewEntry: () => ({ kind: "actions", title: step(4, "Review"), lines: lines("Nothing is written until you confirm Save configuration."), hint: "close", items: [{ id: "review", label: "Review", to: "review" }, { id: "edit", label: "Back · Edit configuration", to: "edit" }, cancelItem] }),
+    review: () => ({ kind: "review", title: "Review · Tunnel configuration", content: summary(), format: { kind: "text" }, hint: "close", confirm: { id: "continue", label: "Continue", action: "review" } }),
+    changes: () => ({ kind: "review", title: "Existing Tunnel configuration will be changed", content: changes().join("\n\n"), format: { kind: "text" }, hint: "close", confirm: { id: "confirm-change", label: "Confirm identity / routing changes", action: "review" } }),
+    save: () => ({ kind: "actions", title: "Save confirmation", lines: ["Only Save configuration writes the proposed configuration.", `Profile: ${sanitizeTerminalText(options.profilePath)}`, ...(draft.error ? [draft.error] : [])], hint: "close", items: [{ id: "save", label: "Save configuration", action: "save" }, { id: "back", label: "Back · Edit configuration", to: "edit" }, cancelItem] }),
+    edit: () => ({ kind: "actions", title: "Edit configuration", lines: lines(`Profile: ${sanitizeTerminalText(options.profilePath)}`), hint: "close", items: [{ id: "tunnel", label: "Tunnel ID", to: "tunnel" }, { id: "organization", label: "Organization ID", to: "organization" }, credentialItem, { id: "recipients", label: "Advanced · Recipients", to: "recipients" }, { id: "back", label: "Back · Review", to: "reviewEntry" }, cancelItem] }),
+  };
+  const actions = {
+    tunnel: ({ value = "" }: { value?: string }) => {
+      draft.tunnelId = value; draft.error = "";
+      if (!TUNNEL.test(value)) { draft.error = "Invalid Tunnel ID"; return to("tunnel"); }
+      return to("organization");
     },
-    actions: {
-      tunnel: ({ value = "" }) => {
-        draft.tunnelId = value; draft.error = "";
-        if (!TUNNEL.test(value)) { draft.error = "Invalid Tunnel ID"; return to("tunnel"); }
-        return to("organization");
-      },
-      organization: ({ value = "" }) => {
-        draft.organizationId = value; draft.error = "";
-        if (value && !ORGANIZATION.test(value)) { draft.error = "Invalid Organization ID"; return to("organization"); }
-        return to("recipients");
-      },
-      recipients: ({ value = "" }) => {
-        draft.recipientsText = value; draft.error = "";
-        try {
-          // Parse now so a malformed list never leaves this step. The domain
-          // re-parses at Save; nothing here grants send eligibility.
-          parseRecipientList(value, { adapter: "pi", endpointId: "ce-self" });
-        } catch { draft.error = "Invalid recipients (use adapter:endpointId, comma-separated)"; return to("recipients"); }
-        return signal.aborted ? close : to("credential");
-      },
-      keepCredential: () => { secret = undefined; draft.credential = "keep"; return to("reviewEntry"); },
-      capture: async () => {
-        secret = undefined;
-        // An actions screen has already resolved before Kit invokes this action.
-        // Never run this from an in-place input/settings handler (nested custom).
-        const result = await captureTunnelSecret(ctx, { store: async (value) => { if (!signal.aborted) secret = value; } }, { signal, keys: options.keys });
-        if (result.status === "cancelled" || signal.aborted) { secret = undefined; controller.abort(); return close; }
-        if (result.status !== "stored" || !secret) { outcome = failed(); controller.abort(); return close; }
-        draft.credential = "replace";
-        return to("reviewEntry");
-      },
-      review: ({ itemId }) => to(itemId === "confirm-change" || changes().length === 0 ? "save" : "changes"),
-      save: async () => {
-        if (signal.aborted) return close;
-        if (!TUNNEL.test(draft.tunnelId) || (draft.organizationId !== "" && !ORGANIZATION.test(draft.organizationId)) || (draft.credential === "keep" && !existing?.credentialConfigured) || (draft.credential !== "keep" && !secret)) {
-          outcome = failed(); return close;
-        }
-        try {
-          const credential = draft.credential === "keep" ? { kind: "keep" as const } : { kind: "replace" as const, secret: secret! };
-          const recipients = recipientsChanged() ? parseRecipientList(draft.recipientsText, { adapter: "pi", endpointId: "ce-self" }) : undefined;
-          const result = await options.save({ tunnelId: draft.tunnelId, ...(draft.organizationId ? { organizationId: draft.organizationId } : {}), ...(recipients === undefined ? {} : { recipients }), credential }, signal);
-          if (result?.kind === "cancelled") { outcome = cancelled(); return close; }
-          saved = true;
-          outcome = { status: "saved" };
-        } catch { outcome = failed(); }
-        finally { secret = undefined; }
-        return close;
-      },
+    organization: ({ value = "" }: { value?: string }) => {
+      draft.organizationId = value; draft.error = "";
+      if (value && !ORGANIZATION.test(value)) { draft.error = "Invalid Organization ID"; return to("organization"); }
+      if (signal.aborted) return close;
+      // An existing credential is a decision; a missing one is captured now;
+      // an already captured one needs neither screen again.
+      if (existing?.credentialConfigured) return to("credential");
+      if (draft.credential === "replace") return to("reviewEntry");
+      pendingCapture = true;
+      return close;
     },
-  });
+    recipients: ({ value = "" }: { value?: string }) => {
+      draft.recipientsText = value; draft.error = "";
+      try {
+        // Parse now so a malformed list never leaves this step. The domain
+        // re-parses at Save; nothing here grants send eligibility.
+        parseRecipientList(value, { adapter: "pi", endpointId: "ce-self" });
+      } catch { draft.error = "Invalid recipients (use adapter:endpointId, comma-separated)"; return to("recipients"); }
+      return signal.aborted ? close : to("reviewEntry");
+    },
+    keepCredential: () => { secret = undefined; draft.credential = "keep"; return to("reviewEntry"); },
+    // Defer the masked capture: an action cannot open a second custom component
+    // while the Kit screen it was invoked from still owns the terminal.
+    capture: () => { secret = undefined; pendingCapture = true; return close; },
+    review: ({ itemId }: { itemId?: string }) => to(itemId === "confirm-change" || changes().length === 0 ? "save" : "changes"),
+    save: async () => {
+      if (signal.aborted) return close;
+      if (!TUNNEL.test(draft.tunnelId) || (draft.organizationId !== "" && !ORGANIZATION.test(draft.organizationId)) || (draft.credential === "keep" && !existing?.credentialConfigured) || (draft.credential !== "keep" && !secret)) {
+        outcome = failed(); return close;
+      }
+      try {
+        const credential = draft.credential === "keep" ? { kind: "keep" as const } : { kind: "replace" as const, secret: secret! };
+        const recipients = recipientsChanged() ? parseRecipientList(draft.recipientsText, { adapter: "pi", endpointId: "ce-self" }) : undefined;
+        const result = await options.save({ tunnelId: draft.tunnelId, ...(draft.organizationId ? { organizationId: draft.organizationId } : {}), ...(recipients === undefined ? {} : { recipients }), credential }, signal);
+        if (result?.kind === "cancelled") { outcome = cancelled(); return close; }
+        saved = true;
+        outcome = { status: "saved" };
+      } catch { outcome = failed(); }
+      finally { secret = undefined; }
+      return close;
+    },
+  };
+  /** One masked capture with no Kit screen mounted. Cancellation, timeout and
+   * writer failure stay closed: only a stored secret continues the wizard. */
+  const runCapture = async (): Promise<boolean> => {
+    secret = undefined;
+    const result = await captureTunnelSecret(ctx, { store: async (value) => { if (!signal.aborted) secret = value; } }, { signal, keys: options.keys, preamble: [step(3, "Credential")] });
+    if (result.status === "cancelled" || signal.aborted) { secret = undefined; outcome = cancelled(); controller.abort(); return false; }
+    if (result.status !== "stored" || secret === undefined) { outcome = failed(); controller.abort(); return false; }
+    draft.credential = "replace";
+    return true;
+  };
   try {
-    const result = await runMenu(menuCtx, definition, { getState: () => draft, signal, onError: () => { outcome = failed(); controller.abort(); } });
-    if (saved) return { status: "saved" }; // Do not falsely cancel an entered transaction.
-    if (result.kind === "error") return failed();
-    return outcome;
+    // The wizard is a sequence of Kit menus interleaved with at most one masked
+    // capture. Each iteration owns the screen alone; `startScreen` resumes the
+    // flow after a capture or an Edit navigation.
+    let startScreen: Screen = "tunnel";
+    for (;;) {
+      pendingCapture = false;
+      const definition = defineMenu<Draft, Screen, Action, SetupUiContext>({ start: startScreen, screens, actions });
+      const result = await runMenu(menuCtx, definition, { getState: () => draft, signal, onError: () => { outcome = failed(); controller.abort(); } });
+      if (saved) return { status: "saved" }; // Do not falsely cancel an entered transaction.
+      if (result.kind === "error") return failed();
+      if (!pendingCapture || signal.aborted) return outcome;
+      if (!(await runCapture())) return outcome;
+      startScreen = "reviewEntry";
+    }
   } catch { return failed(); }
   finally {
     secret = undefined;

@@ -26,6 +26,7 @@
  * and terminal recording remain independent exposure surfaces. Malicious
  * same-process extensions and process-level observation are not isolated by it.
  */
+import { sanitizeTerminalText } from "@narumitw/pi-tui-kit";
 import { TunnelRefusal, type TunnelRefusalCode } from "./codes.js";
 
 /** Narrow key-decoding surface injected by the host. The contract gate forbids
@@ -97,6 +98,9 @@ export interface SecureInputOptions {
   readonly signal?: AbortSignal;
   /** Host-injected key protocol. Required: there is no Pi import in `src/`. */
   readonly keys: TunnelKeyProtocol;
+  /** Optional non-secret caller context rendered above the label. Fixed text
+   * supplied by the caller (e.g. a wizard step title); never the secret. */
+  readonly preamble?: readonly string[];
 }
 
 /** Fixed policy. Not configurable from commands, profiles, or the model. */
@@ -152,6 +156,7 @@ class SecretPrompt implements SecureInputComponentView {
   private abortListener: (() => void) | undefined;
   private readonly signal: AbortSignal | undefined;
   private readonly keys: TunnelKeyProtocol;
+  private readonly preamble: readonly string[];
 
   constructor(
     private readonly tui: SecureInputTuiView,
@@ -159,6 +164,7 @@ class SecretPrompt implements SecureInputComponentView {
     options: SecureInputOptions,
   ) {
     this.keys = options.keys;
+    this.preamble = options.preamble ?? [];
     const timeoutMs = options.timeoutMs ?? SECURE_INPUT_LIMITS.defaultTimeoutMs;
     this.timer = setTimeout(() => this.finish({ kind: "cancelled", reason: "timeout" }), Math.max(0, timeoutMs));
     this.timer.unref?.();
@@ -178,7 +184,9 @@ class SecretPrompt implements SecureInputComponentView {
   }
 
   render(width: number): string[] {
-    const lines = [truncate(LABEL, width), truncate(PROMPT + MASK_CHAR.repeat(this.buffer.length), width), truncate(HINT, width)];
+    // The preamble is fixed caller text, but it is sanitized anyway: render
+    // lines must never carry terminal control sequences.
+    const lines = [...this.preamble.map((line) => truncate(sanitizeTerminalText(line), width)), truncate(LABEL, width), truncate(PROMPT + MASK_CHAR.repeat(this.buffer.length), width), truncate(HINT, width)];
     if (this.rejected) lines.push(truncate(REJECTED, width));
     return lines;
   }

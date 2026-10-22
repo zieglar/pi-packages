@@ -2,9 +2,18 @@
  * Domain-independent Tunnel Manager presentation. The extension supplies the
  * SAME operations as its direct commands; this module owns no process, Store,
  * configuration, credential, authorization, or recovery decisions.
+ *
+ * The Manager is a self-drawn `ui.custom` panel rather than a Kit menu screen:
+ * Kit screen `lines` are sanitized to plain text and rendered in one muted
+ * colour, and a screen context does not expose the terminal width, so a framed,
+ * width-adaptive, state-coloured panel is only possible from a component that
+ * receives the real render width and the host theme.
  */
-import { defineMenu, runMenu, sanitizeTerminalText } from "@narumitw/pi-tui-kit";
 import { isTunnelRefusalCode, type TunnelRefusalCode } from "./codes.js";
+import {
+  PLAIN_TUNNEL_PANEL_THEME, clipTunnelPanelText, renderTunnelPanel, tunnelPanelModel,
+  type TunnelPanelTheme,
+} from "./manager-panel.js";
 
 export type TunnelManagerUiState =
   | "UNCONFIGURED" | "STOPPED" | "STARTING" | "CONNECTED" | "STOPPING"
@@ -65,12 +74,18 @@ export function tunnelManagerActions(projection: TunnelManagerUiProjection): rea
   return [...(repair !== undefined ? [repair] : []), ...lifecycle, "refresh", "details", "close"];
 }
 
-const LABELS: Readonly<Record<TunnelManagerUiAction, string>> = Object.freeze({
+/** Menu items include one navigation-only entry that is not a domain action. */
+type TunnelManagerUiItem = TunnelManagerUiAction | "back";
+
+const LABELS: Readonly<Record<TunnelManagerUiItem, string>> = Object.freeze({
   setup: "Set Up Tunnel", edit: "Edit Configuration", start: "Start Tunnel", stop: "Stop Tunnel",
-  refresh: "Refresh", details: "Details", close: "Close",
+  refresh: "Refresh", details: "Details", close: "Close", back: "Back",
 });
-const STATES: readonly string[] = ["UNCONFIGURED", "STOPPED", "STARTING", "CONNECTED", "STOPPING", "ERROR", "UNKNOWN", "DEGRADED"];
-const EVIDENCE: readonly string[] = ["none", "process-identity", "health-probe", "offline-simulated", "unavailable"];
+const DETAIL_ITEMS: readonly TunnelManagerUiItem[] = Object.freeze(["back", "close"]);
+const MANAGER_HINT = "↑↓ move · Enter select · Esc close";
+const DETAILS_HINT = "↑↓ move · Enter select · Esc back";
+/** Wide terminals keep a readable measure instead of stretching the frame. */
+const PANEL_MAX_WIDTH = 78;
 
 function closedCode(error: unknown): TunnelRefusalCode {
   try {
@@ -80,84 +95,210 @@ function closedCode(error: unknown): TunnelRefusalCode {
   return "CE_TUNNEL_HEALTH_UNAVAILABLE";
 }
 
-/** One canonical read of the safe projection. Presentation never invents a
- * second state judgement: every derived label comes from these fields. */
-function readProjection(projection: TunnelManagerUiProjection) {
-  const state = STATES.includes(projection.state) ? projection.state : "UNKNOWN";
-  // A caller accidentally passing an unmasked ID cannot disclose it here.
-  const tunnel = typeof projection.tunnelIdAlreadyMasked === "string" && /^tunnel_[A-Za-z0-9]{6}…$/.test(projection.tunnelIdAlreadyMasked)
-    ? projection.tunnelIdAlreadyMasked : "Not configured";
-  const binding = projection.binding === "configured" ? "Configured"
-    : projection.binding === "invalid" ? "Invalid" : "Not configured";
-  const credential = projection.credentialConfigured === true ? "Configured" : "Not configured";
-  const organization = projection.organizationConfigured === true ? "Configured" : "Not configured";
-  const evidence = EVIDENCE.includes(projection.evidence ?? "") ? projection.evidence! : "unavailable";
-  const errorCode = isTunnelRefusalCode(projection.errorCode) ? projection.errorCode : undefined;
-  const needsRepair = tunnel === "Not configured" || binding !== "Configured" || credential !== "Configured" || errorCode !== undefined;
-  const unconfigured = state === "UNCONFIGURED" || tunnel === "Not configured";
-  return { state, tunnel, binding, credential, organization, evidence, errorCode, needsRepair, unconfigured };
+/** Narrow structural views of the `ui.custom` surface. The frozen contract gate
+ * forbids `src/` from importing `@earendil-works/*`, so the runtime objects are
+ * consumed structurally and validated at runtime before use. */
+interface ManagerTuiView {
+  requestRender?(): void;
+}
+interface ManagerComponentView {
+  render(width: number): string[];
+  handleInput?(data: string): void;
+  invalidate(): void;
+  dispose?(): void;
+}
+type ManagerCustomFn = <T>(
+  factory: (
+    tui: ManagerTuiView,
+    theme: unknown,
+    keybindings: unknown,
+    done: (result: T) => void,
+  ) => ManagerComponentView,
+) => Promise<T>;
+
+type ManagerKey = "up" | "down" | "confirm" | "cancel";
+const BINDINGS: Readonly<Record<ManagerKey, string>> = Object.freeze({
+  up: "tui.select.up", down: "tui.select.down", confirm: "tui.select.confirm", cancel: "tui.select.cancel",
+});
+/** Closed ASCII/CSI fallback used when the host supplies no key manager. */
+const RAW_KEYS: Readonly<Record<ManagerKey, readonly string[]>> = Object.freeze({
+  up: ["\x1b[A", "\x1bOA"], down: ["\x1b[B", "\x1bOB"],
+  confirm: ["\r", "\n"], cancel: ["\x1b", "\x03"],
+});
+const KEY_ORDER: readonly ManagerKey[] = Object.freeze(["up", "down", "confirm", "cancel"]);
+
+/** Structural views of the two host objects handed to a `ui.custom` factory.
+ * Both are validated at runtime before use: the declared shapes describe what
+ * the Pi runtime provides, not a trusted guarantee. */
+interface HostKeyMatcher {
+  matches(data: string, binding: string): boolean;
+}
+interface HostThemeView {
+  fg(role: string, text: string): string;
+  bold(text: string): string;
 }
 
-/** User-facing primary state. Derived from the same projection as the actions;
- * it summarizes, and never overrides, the measured runtime state. */
-function primaryState(view: ReturnType<typeof readProjection>): string {
-  if (view.unconfigured) return "● Not configured";
-  if (view.needsRepair) return "● Configuration incomplete";
-  switch (view.state) {
-    case "CONNECTED": return "● Connected";
-    case "STARTING": return "● Starting";
-    case "STOPPING": return "● Stopping";
-    case "STOPPED": return "● Configured · not running";
-    case "DEGRADED": return "● Degraded";
-    case "ERROR": return "● Error";
-    default: return "● State unknown";
+/** Resolve a key classifier from the injected keybindings manager, if any. */
+function keyReader(keybindings: unknown): (data: string) => ManagerKey | undefined {
+  const candidate = keybindings as { matches?: unknown } | null | undefined;
+  // SAFETY: only the callable `matches` member is used, and it is reached solely
+  // through this typeof check; a non-conforming host degrades to RAW_KEYS.
+  const matcher: HostKeyMatcher | undefined = candidate != null && typeof candidate.matches === "function"
+    ? (candidate as HostKeyMatcher) : undefined;
+  return (data: string): ManagerKey | undefined => {
+    for (const key of KEY_ORDER) {
+      if (RAW_KEYS[key].includes(data)) return key;
+    }
+    if (matcher === undefined) return undefined;
+    for (const key of KEY_ORDER) {
+      try {
+        if (matcher.matches(data, BINDINGS[key]) === true) return key;
+      } catch { /* A host matcher failure must not insert or replay input. */ }
+    }
+    return undefined;
+  };
+}
+
+/** Adapt the host theme structurally; any non-string result degrades to plain. */
+function panelTheme(theme: unknown): TunnelPanelTheme {
+  const candidate = theme as { fg?: unknown; bold?: unknown } | null | undefined;
+  if (candidate == null || typeof candidate.fg !== "function" || typeof candidate.bold !== "function") {
+    return PLAIN_TUNNEL_PANEL_THEME;
   }
+  // SAFETY: both members are confirmed callable above; their results are still
+  // re-checked as strings because a foreign theme can return any value.
+  const host = candidate as HostThemeView;
+  const styled = (produce: () => string, fallback: string): string => {
+    try {
+      const value: string = produce();
+      return typeof value === "string" ? value : fallback;
+    } catch { return fallback; }
+  };
+  return {
+    fg: (role, text) => styled(() => host.fg(role, text), text),
+    bold: (text) => styled(() => host.bold(text), text),
+  };
 }
 
-/** Manager landing page: primary state, Configuration, Runtime. Engineering
- * diagnostics (full profile path, evidence, raw codes, transport caveats) live
- * behind Details so they never dominate the operator's decision. */
-export function tunnelManagerRows(projection: TunnelManagerUiProjection): readonly string[] {
-  const view = readProjection(projection);
-  return [
-    primaryState(view),
-    "",
-    "Configuration",
-    `  Tunnel:        ${view.tunnel}`,
-    `  Organization:  ${view.organization}`,
-    `  MCP Binding:   ${view.binding}`,
-    `  Credential:    ${view.credential}`,
-    "",
-    "Runtime",
-    `  State:         ${view.state}`,
-    ...(view.needsRepair
-      ? ["", view.unconfigured
-          ? "Tunnel is not configured. Run setup to continue."
-          : "Configuration is invalid or incomplete. Edit configuration to continue."]
-      : []),
-  ];
-}
+/** What the operator chose. `details`/`back` never leave the component: they are
+ * internal views, so diagnostics never take a second component ownership. */
+type ManagerSelection =
+  | { readonly kind: "action"; readonly action: Exclude<TunnelManagerUiAction, "details" | "close"> }
+  | { readonly kind: "close" };
 
-/** Diagnostics view. Credential contents and any credential reference/path are
- * never projection fields, so they cannot appear here either. */
-export function tunnelManagerDetailRows(projection: TunnelManagerUiProjection): readonly string[] {
-  const view = readProjection(projection);
-  return [
-    "Configuration",
-    `  Profile:       ${sanitizeTerminalText(projection.profilePath)}`,
-    `  Tunnel:        ${view.tunnel}`,
-    `  Organization:  ${view.organization}`,
-    `  MCP Binding:   ${view.binding}`,
-    `  Credential:    ${view.credential}`,
-    "",
-    "Runtime",
-    `  State:         ${view.state}`,
-    `  Evidence:      ${view.evidence}`,
-    ...(view.errorCode !== undefined ? [`  Error:         ${view.errorCode}`] : []),
-    "",
-    "Configured != Connected",
-    "Transport only; not delivery/ACK/completion evidence.",
-  ];
+const CLOSE_SELECTION: ManagerSelection = Object.freeze({ kind: "close" });
+
+class TunnelManagerPanel implements ManagerComponentView {
+  private view: "manager" | "details" = "manager";
+  private cursor = 0;
+  private finished = false;
+  private readonly theme: TunnelPanelTheme;
+  private readonly key: (data: string) => ManagerKey | undefined;
+
+  constructor(
+    private readonly tui: ManagerTuiView,
+    theme: unknown,
+    keybindings: unknown,
+    private readonly done: (result: ManagerSelection) => void,
+    private readonly projection: TunnelManagerUiProjection,
+    private readonly operationError: TunnelRefusalCode | undefined,
+  ) {
+    this.theme = panelTheme(theme);
+    this.key = keyReader(keybindings);
+  }
+
+  private items(): readonly TunnelManagerUiItem[] {
+    return this.view === "details" ? DETAIL_ITEMS : tunnelManagerActions(this.projection);
+  }
+
+  render(width: number): string[] {
+    const total = Math.max(1, Math.floor(width));
+    const panelWidth = Math.min(total, PANEL_MAX_WIDTH);
+    const lines = [...renderTunnelPanel(tunnelPanelModel(this.projection, this.view), panelWidth, this.theme)];
+    if (this.operationError !== undefined) {
+      lines.push("", this.theme.fg("error", clipTunnelPanelText(`Last operation: ${this.operationError}`, total)));
+    }
+    lines.push("");
+    const items = this.items();
+    for (const [index, item] of items.entries()) {
+      const row = clipTunnelPanelText(`${index === this.cursor ? "❯ " : "  "}${LABELS[item]}`, total);
+      lines.push(index === this.cursor ? this.theme.bold(this.theme.fg("accent", row)) : this.theme.fg("text", row));
+    }
+    lines.push("", this.theme.fg("dim", clipTunnelPanelText(this.view === "details" ? DETAILS_HINT : MANAGER_HINT, total)));
+    return lines;
+  }
+
+  invalidate(): void {
+    // Nothing is cached: every row is rebuilt from the same safe projection.
+  }
+
+  /** Disposal is cleanup only. The host settles its own `custom` promise, and an
+   * adapter-initiated close always goes through `requestClose`. */
+  dispose(): void {
+    this.finished = true;
+  }
+
+  /** Owner abort / timeout closes the panel without choosing an action. */
+  requestClose(): void {
+    this.finish(CLOSE_SELECTION);
+  }
+
+  handleInput(data: string): void {
+    if (this.finished || data === "") return;
+    switch (this.key(data)) {
+      case "up": this.move(-1); return;
+      case "down": this.move(1); return;
+      case "cancel": this.cancel(); return;
+      case "confirm": this.confirm(); return;
+      default: return;
+    }
+  }
+
+  private move(delta: number): void {
+    const items = this.items();
+    if (items.length === 0) return;
+    const next = Math.min(items.length - 1, Math.max(0, this.cursor + delta));
+    if (next === this.cursor) return;
+    this.cursor = next;
+    this.requestRender();
+  }
+
+  private cancel(): void {
+    // Escape in diagnostics returns to the landing panel; only the landing
+    // panel closes the Manager, so a glance at Details cannot end the session.
+    if (this.view === "details") {
+      this.show("manager");
+      return;
+    }
+    this.finish(CLOSE_SELECTION);
+  }
+
+  private confirm(): void {
+    const item = this.items()[this.cursor];
+    if (item === undefined) return;
+    if (item === "details") { this.show("details"); return; }
+    if (item === "back") { this.show("manager"); return; }
+    if (item === "close") { this.finish(CLOSE_SELECTION); return; }
+    this.finish({ kind: "action", action: item });
+  }
+
+  private show(view: "manager" | "details"): void {
+    this.view = view;
+    this.cursor = 0;
+    this.requestRender();
+  }
+
+  private finish(selection: ManagerSelection): void {
+    if (this.finished) return;
+    this.finished = true;
+    this.done(selection);
+  }
+
+  private requestRender(): void {
+    try {
+      this.tui.requestRender?.();
+    } catch { /* Rendering is advisory; a failure must not replay an action. */ }
+  }
 }
 
 export async function runTunnelManagerUi(
@@ -168,6 +309,12 @@ export async function runTunnelManagerUi(
   if (ctx.mode !== "tui" || !ctx.hasUI || !("custom" in ctx.ui) || typeof ctx.ui.custom !== "function") {
     return { status: "unsupported" };
   }
+  // SAFETY: `custom<T>` resolves with exactly the value its factory hands to
+  // `done`. The only factory installed below is `TunnelManagerPanel`, whose
+  // `done` parameter is `(result: ManagerSelection) => void`, so the resolved
+  // value is a `ManagerSelection` or the host's own unmounted `undefined`.
+  // TypeScript cannot bind the caller-chosen T through a structural `object`.
+  const custom = ctx.ui.custom as unknown as ManagerCustomFn;
   const controller = new AbortController();
   const abort = (): void => controller.abort();
   options.signal?.addEventListener("abort", abort, { once: true });
@@ -184,71 +331,73 @@ export async function runTunnelManagerUi(
   let lastProjection: TunnelManagerUiProjection | undefined;
   let operationError: TunnelRefusalCode | undefined;
   const current = (): boolean => !controller.signal.aborted && (options.isCurrent?.() ?? true);
-  const menuContext = { mode: "tui" as const, hasUI: true, ui: ctx.ui };
-  type Context = typeof menuContext;
-  const menu = defineMenu<TunnelManagerUiProjection, "manager" | "details", Exclude<TunnelManagerUiAction, "close" | "details">, Context>({
-    start: "manager",
-    screens: {
-      manager: ({ state }) => ({
-        kind: "actions", title: "Tunnel Manager", hint: "close",
-        lines: [...tunnelManagerRows(state), ...(operationError === undefined ? [] : ["", `Last operation: ${operationError}`])],
-        items: tunnelManagerActions(state).map((action) => action === "close"
-          ? { id: action, label: LABELS[action], close: true as const }
-          : action === "details"
-            ? { id: action, label: LABELS[action], to: "details" as const }
-            : { id: action, label: LABELS[action], action }),
-      }),
-      // Diagnostics only: navigation, never a domain operation.
-      details: ({ state }) => ({
-        kind: "actions", title: "Tunnel Details", hint: "close",
-        lines: [...tunnelManagerDetailRows(state), ...(operationError === undefined ? [] : ["", `Last operation: ${operationError}`])],
-        items: [{ id: "back", label: "Back", to: "manager" as const }, { id: "close", label: "Close", close: true as const }],
-      }),
-    },
-    actions: {
-      setup: () => perform("setup"), edit: () => perform("setup"),
-      start: () => perform("start"), stop: () => perform("stop"),
-      refresh: () => { operationError = undefined; return { kind: "stay" }; },
-    },
-  });
+  /** Set while a panel owns the screen so an abort can close it immediately. */
+  let closeActive: (() => void) | undefined;
+  const closeOnAbort = (): void => closeActive?.();
+  controller.signal.addEventListener("abort", closeOnAbort);
 
-  // Kit closes an action screen before invoking these handlers, allowing setup
-  // to host its own Wizard without overlapping custom-component ownership.
-  async function perform(action: "setup" | "start" | "stop"): Promise<{ kind: "stay" | "close" }> {
-    if (!current()) return { kind: "close" };
+  /** One canonical read. A failed read never reuses the previous lifecycle: it
+   * degrades to UNKNOWN so Start/Stop disappear instead of acting on a stale
+   * snapshot. */
+  const read = async (): Promise<TunnelManagerUiProjection> => {
+    try {
+      lastProjection = await ports.read();
+    } catch (error) {
+      lastProjection = {
+        state: "UNKNOWN", profilePath: lastProjection?.profilePath ?? "Unavailable",
+        organizationConfigured: false, binding: "missing", credentialConfigured: false,
+        evidence: "unavailable", errorCode: closedCode(error),
+      };
+    }
+    return lastProjection;
+  };
+
+  // The panel closes itself BEFORE the adapter performs an operation, so setup
+  // can host its own Wizard without overlapping custom-component ownership.
+  const perform = async (action: "setup" | "start" | "stop"): Promise<void> => {
     operationError = undefined;
     try { await ports[action](); }
     catch (error) { operationError = closedCode(error); }
-    // runMenu's next getState rereads even after a refused operation. No action
+    // The next loop iteration rereads even after a refused operation. No action
     // is automatically retried; no setup result is interpreted as permission.
-    return { kind: current() ? "stay" : "close" };
-  }
+  };
 
   try {
-    const result = await runMenu(menuContext, menu, {
-      signal: controller.signal, isCurrent: current,
-      onError: () => { /* Never delegate raw exceptions to notifications. */ },
-      getState: async () => {
-        try {
-          lastProjection = await ports.read();
-        } catch (error) {
-          lastProjection = {
-            state: "UNKNOWN", profilePath: lastProjection?.profilePath ?? "Unavailable",
-            organizationConfigured: false, binding: "missing", credentialConfigured: false,
-            evidence: "unavailable", errorCode: closedCode(error),
-          };
-        }
-        return lastProjection;
-      },
-    });
-    if (!current() || result.kind === "stale") return { status: "cancelled" };
-    if (result.kind === "error") return { status: "refused", code: "CE_TUNNEL_HEALTH_UNAVAILABLE" };
-    return { status: "closed" };
+    while (current()) {
+      const projection = await read();
+      if (!current()) break;
+      let selection: ManagerSelection | undefined;
+      try {
+        selection = await custom<ManagerSelection | undefined>((tui, theme, keybindings, done) => {
+          const panel = new TunnelManagerPanel(tui, theme, keybindings, done, projection, operationError);
+          closeActive = () => panel.requestClose();
+          // Never call `done` synchronously inside the factory: the runtime has
+          // not installed (and therefore cannot dispose) this component yet.
+          if (controller.signal.aborted) {
+            const deferred = setTimeout(() => panel.requestClose(), 0);
+            deferred.unref?.();
+          }
+          return panel;
+        });
+      } catch {
+        return current() ? { status: "refused", code: "CE_TUNNEL_HEALTH_UNAVAILABLE" } : { status: "cancelled" };
+      } finally {
+        closeActive = undefined;
+      }
+      if (!current()) break;
+      // An externally disposed component resolves without a selection: that is
+      // a close, never an implied action.
+      if (selection === undefined || selection.kind === "close") return { status: "closed" };
+      if (selection.action === "refresh") { operationError = undefined; continue; }
+      await perform(selection.action === "edit" ? "setup" : selection.action);
+    }
+    return { status: "cancelled" };
   } catch {
     return current() ? { status: "refused", code: "CE_TUNNEL_HEALTH_UNAVAILABLE" } : { status: "cancelled" };
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     options.signal?.removeEventListener("abort", abort);
+    controller.signal.removeEventListener("abort", closeOnAbort);
     controller.abort();
   }
 }

@@ -18,8 +18,13 @@ PasswordInput or SecretInput. The Kit's ordinary input is never used for a key.
 Kit 0.66.0 also supplies a generic masked interaction; CE retains its specialized
 bounded ASCII/paste validation, sink-only result contract, and timeout policy.
 
-First setup collects Tunnel ID, optional Organization ID, an optional
-Recipients list, and a key. The review shows only nonsecret configuration and
+First setup is four numbered steps: Tunnel ID (required, with its format stated
+inline), optional Organization ID, the masked API key — entered directly, with no
+intermediate credential choice — and Review. Editing an existing profile replaces
+step 3 with Keep existing credential / Replace credential. Recipients are not a
+linear step: CE has no trusted endpoint discovery, so they live behind
+**Review -> Back - Edit configuration -> Advanced - Recipients** and default to the
+CE-managed empty list. The review shows only nonsecret configuration and
 credential intent. Only final Save enters the transaction. The MCP binding is
 never a typed file path: it is derived from the tunnel identity as a CE-managed
 document (`ce-<tunnel tail6>-<org tail6>.yaml`, preserving case, under a fixed
@@ -97,13 +102,22 @@ setup rereads a fresh projection and never auto-starts.
 ## Status and limits
 
 Manager and direct status read the same profile projection and measured runtime
-state, but render it differently. Both show a terminal-sanitized profile path,
-masked Tunnel ID, organization configured or not configured, binding validity,
-credential configured or not configured, and a closed refusal code when
-applicable. **Direct status additionally separates Configuration State from
-Runtime state.** The Manager screen renders a single fused state row, where a
-measured `STOPPED` is replaced by `UNCONFIGURED`/`ERROR` when the profile itself
-is unusable; it never upgrades that row toward a connected claim. Credential contents and credential reference/path are never
+state, but render it differently. Both show a terminal-sanitized profile path and the masked
+Tunnel ID, organization
+configured or not configured, binding validity, credential configured or not
+configured, and a closed refusal code when applicable; direct status renders the
+profile path inline while the Manager keeps it in Details. **Direct status
+additionally separates Configuration State from
+Runtime state.** The Manager is a self-drawn `ctx.ui.custom` panel: a closed
+border whose every row is exactly as wide as the real terminal (shrinking instead
+of wrapping), a theme-coloured primary state row, and `Configuration` /
+`Runtime` sections. It renders a single fused state row, where a
+measured `STOPPED` is replaced by `● Not configured` / `● Configuration incomplete`
+when the profile itself is unusable; it never upgrades that row toward a connected claim. The
+terminal-sanitized profile path, the health evidence, the raw refusal code and
+the transport caveats live in the Manager's internal **Details** view (an
+in-component view, never a second component ownership), so they never dominate
+the operator's decision. Credential contents and credential reference/path are never
 status display fields. `UNKNOWN` configuration must not be presented as runtime
 `STOPPED`; **Configured != Connected**. Invalid profile-path environment values are
 refused before they can reach a TUI or notification.

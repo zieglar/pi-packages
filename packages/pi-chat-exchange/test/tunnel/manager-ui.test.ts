@@ -16,6 +16,8 @@ async function api() {
   return loaded as ManagerApi;
 }
 
+const ITEMS = /(?:Set Up Tunnel|Start Tunnel|Edit Configuration|Stop Tunnel|Refresh|Details|Back|Close)/;
+
 function projection(state = "STOPPED"): {
   state: string; profilePath: string; tunnelIdAlreadyMasked: string | undefined;
   organizationConfigured: boolean; binding: string; credentialConfigured: boolean;
@@ -47,33 +49,35 @@ async function open(state = "STOPPED", options: Record<string, unknown> = {}) {
   await f.tui.waitForOpen();
   return { ...f, running };
 }
+async function flush(): Promise<void> {
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+/** Drive the real self-drawn item list, not a mocked action callback. */
 async function activate(f: Awaited<ReturnType<typeof open>>, label: string) {
-  // Navigate actual Kit bindings, not a mocked action callback.
-  const frame = f.tui.render();
-  const rows = frame.filter((line) => /(?:Set Up Tunnel|Start Tunnel|Edit Configuration|Stop Tunnel|Refresh|Details|Back|Close)/.test(line));
+  const rows = f.tui.render().filter((line) => ITEMS.test(line) && /^[❯ ] /.test(line));
   expect(rows.length).toBeGreaterThan(0);
-  const labels = rows.map((line) => line.replace(/^[^A-Za-z]*/, "").trim());
-  const index = labels.findIndex((line) => line.startsWith(label));
-  expect(index, `rendered actions include ${label}`).toBeGreaterThanOrEqual(0);
-  // Selection carries over between screens: move relative to the live cursor.
-  const cursor = Math.max(0, rows.findIndex((line) => line.trimStart().startsWith("→")));
+  const index = rows.findIndex((line) => line.includes(label));
+  expect(index, `rendered items include ${label}`).toBeGreaterThanOrEqual(0);
+  const cursor = Math.max(0, rows.findIndex((line) => line.startsWith("❯")));
   for (let i = cursor; i < index; i++) f.tui.press("tui.select.down");
   for (let i = cursor; i > index; i--) f.tui.press("tui.select.up");
   f.tui.press("tui.select.confirm");
-  await f.tui.waitForPending();
-  // Let runMenu finish its closed screen and load the next projection.
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  // Navigation between screens reopens a fresh component.
+  await flush();
+  // An action releases component ownership; the adapter reopens a fresh panel.
   if (!f.tui.isOpen) await Promise.race([f.tui.waitForOpen(), f.running.then(() => undefined)]);
 }
 async function close(f: Awaited<ReturnType<typeof open>>) {
+  // Escape in Details only returns to the landing panel, so closing from the
+  // diagnostics view legitimately needs a second Escape.
   f.tui.press("tui.select.cancel");
+  if (f.tui.isOpen) f.tui.press("tui.select.cancel");
   await expect(f.running).resolves.toEqual({ status: "closed" });
 }
 
 afterEach(() => vi.useRealTimers());
 
-describe("Tunnel Manager Kit interaction", () => {
+describe("Tunnel Manager custom panel interaction", () => {
   it("loads fresh projection and separates configuration from runtime", async () => {
     const f = await open();
     expect(f.ports.read).toHaveBeenCalledTimes(1);
@@ -82,12 +86,29 @@ describe("Tunnel Manager Kit interaction", () => {
     expect(frame).toContain("STOPPED");
     expect(frame).toContain("tunnel_ABCDEF…");
     // Diagnostics moved behind Details: not on the landing page.
-    expect(frame).not.toContain("Configured != Connected");
+    expect(frame).not.toContain("Configured ≠ Connected");
     expect(frame).not.toContain("/synthetic/tunnel.yaml");
-    expect(frame).not.toContain("Evidence:");
+    expect(frame).not.toContain("Evidence");
     expect(f.notify).not.toHaveBeenCalled();
     await close(f);
     for (const action of [f.ports.setup, f.ports.start, f.ports.stop]) expect(action).not.toHaveBeenCalled();
+  });
+
+  it("draws one closed frame whose rows all match the render width", async () => {
+    const f = await open("CONNECTED");
+    for (const width of [110, 72, 48, 36]) {
+      const frame = f.tui.render(width);
+      const panel = frame.filter((line) => /^[┌│├└]/.test(line));
+      expect(panel.length).toBeGreaterThan(4);
+      const expected = Math.min(width, 78);
+      for (const line of panel) expect([...line].length, line).toBe(expected);
+      expect(panel.at(0)?.startsWith("┌")).toBe(true);
+      expect(panel.at(-1)?.startsWith("└")).toBe(true);
+      // Items and hint stay inside the terminal width.
+      for (const line of frame) expect([...line].length).toBeLessThanOrEqual(width);
+      expect(frame.join("\n")).toContain("❯ ");
+    }
+    await close(f);
   });
 
   it.each([
@@ -127,8 +148,8 @@ describe("Tunnel Manager Kit interaction", () => {
     f.set(proj as ReturnType<typeof projection>);
     await activate(f, "Refresh");
     const frame = f.tui.render().join("\n");
-    expect(frame).toMatch(/State: +UNKNOWN/);
-    expect(frame).not.toMatch(/State: +STOPPED/);
+    expect(frame).toMatch(/State +UNKNOWN/);
+    expect(frame).not.toMatch(/State +STOPPED/);
     expect(frame).toContain(label);
     expect(frame).not.toContain("Start Tunnel");
     expect(frame).not.toContain("Stop Tunnel");
@@ -142,40 +163,50 @@ describe("Tunnel Manager Kit interaction", () => {
     await activate(f, "Refresh");
     const frame = f.tui.render().join("\n");
     // Primary user-facing state comes from the same projection as the actions.
-    expect(frame).toContain("Tunnel Manager");
+    expect(frame).toContain("Chat Exchange Tunnel");
     expect(frame).toContain("● Not configured");
+    expect(frame).toContain("Tunnel is not configured. Run setup to continue.");
     // Three zones, with Configuration before Runtime.
     expect(frame.indexOf("Configuration")).toBeLessThan(frame.indexOf("Runtime"));
-    for (const row of [/Tunnel: +Not configured/, /Organization: +Not configured/, /MCP Binding: +Not configured/, /Credential: +Not configured/, /State: +UNCONFIGURED/]) {
+    for (const row of [/Tunnel +Not configured/, /Organization +Not configured/, /MCP Binding +Not configured/, /Credential +Not configured/, /State +UNCONFIGURED/]) {
       expect(frame).toMatch(row);
     }
     // Diagnostics are not on the landing page.
     expect(frame).not.toContain("/synthetic/tunnel.yaml");
-    expect(frame).not.toContain("Evidence:");
+    expect(frame).not.toContain("Evidence");
     expect(frame).not.toContain("CE_TUNNEL_PROFILE_INVALID");
-    expect(frame).not.toContain("Configured != Connected");
+    expect(frame).not.toContain("Configured ≠ Connected");
     expect(frame).toContain("Details");
     await close(f);
   });
 
-  it("Details shows diagnostics, calls no domain operation, and returns via Back", async () => {
+  it("Details is an internal view: diagnostics, no domain operation, Back and Escape return", async () => {
     const f = await open("UNKNOWN");
     f.set({ ...projection("UNKNOWN"), binding: "invalid", credentialConfigured: false, errorCode: "CE_TUNNEL_PROFILE_INVALID" });
     await activate(f, "Refresh");
+    const opened = f.tui.openCount;
     await activate(f, "Details");
+    // Diagnostics never take a second component ownership.
+    expect(f.tui.openCount).toBe(opened);
     const details = f.tui.render().join("\n");
     expect(details).toContain("Tunnel Details");
     expect(details).toContain("/synthetic/tunnel.yaml");
-    expect(details).toMatch(/Evidence: +none/);
+    expect(details).toMatch(/Evidence +none/);
     expect(details).toContain("CE_TUNNEL_PROFILE_INVALID");
-    expect(details).toContain("Configured != Connected");
+    expect(details).toContain("Configured ≠ Connected");
     expect(details).toContain("not delivery/ACK/completion evidence");
-    expect(details).toMatch(/State: +UNKNOWN/);
+    expect(details).toMatch(/State +UNKNOWN/);
     // Diagnostics view never offers or performs a lifecycle operation.
     for (const label of ["Start Tunnel", "Stop Tunnel", "Set Up Tunnel", "Edit Configuration"]) expect(details).not.toContain(label);
     for (const port of [f.ports.setup, f.ports.start, f.ports.stop]) expect(port).not.toHaveBeenCalled();
     await activate(f, "Back");
-    expect(f.tui.render().join("\n")).toContain("Tunnel Manager");
+    expect(f.tui.render().join("\n")).toContain("Chat Exchange Tunnel");
+    // Escape inside Details returns to the landing panel instead of closing.
+    await activate(f, "Details");
+    f.tui.press("tui.select.cancel");
+    await flush();
+    expect(f.tui.isOpen).toBe(true);
+    expect(f.tui.render().join("\n")).toContain("Chat Exchange Tunnel");
     await close(f);
   });
 
@@ -194,14 +225,12 @@ describe("Tunnel Manager Kit interaction", () => {
     await close(f);
   });
 
-
-
   it("does not convert UNKNOWN into STOPPED when configuration is missing", async () => {
     const f = await open("UNKNOWN");
     f.set({ ...projection("UNKNOWN"), binding: "missing", credentialConfigured: false, organizationConfigured: false, tunnelIdAlreadyMasked: "" });
     await activate(f, "Refresh");
-    expect(f.tui.render().join("\n")).toMatch(/State: +UNKNOWN/);
-    expect(f.tui.render().join("\n")).toMatch(/Credential: +Not configured/);
+    expect(f.tui.render().join("\n")).toMatch(/State +UNKNOWN/);
+    expect(f.tui.render().join("\n")).toMatch(/Credential +Not configured/);
     expect(f.tui.render().join("\n")).not.toContain("STOPPED");
     expect((await api()).tunnelManagerActions(projection("UNKNOWN"))).toEqual(["refresh", "details", "close"]);
     await close(f);
@@ -251,12 +280,12 @@ describe("Tunnel Manager Kit interaction", () => {
       f.set(projection("STOPPED"));
     });
     f.tui.press("tui.select.confirm");
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await flush();
     expect(f.tui.render().join("\n")).toContain("Synthetic nested wizard");
     f.tui.send("complete");
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await flush();
     expect(f.ports.read).toHaveBeenCalledTimes(2);
-    expect(f.tui.render().join("\n")).toContain("Tunnel Manager");
+    expect(f.tui.render().join("\n")).toContain("Chat Exchange Tunnel");
     expect(f.ports.start).not.toHaveBeenCalled();
     await close(f);
   });
@@ -265,7 +294,6 @@ describe("Tunnel Manager Kit interaction", () => {
     const f = await open("STOPPED");
     f.set(projection("UNKNOWN"));
     await activate(f, "Refresh");
-    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(f.ports.read).toHaveBeenCalledTimes(2);
     expect(f.tui.render().join("\n")).toContain("UNKNOWN");
     await close(f);
@@ -304,7 +332,7 @@ describe("Tunnel Manager Kit interaction", () => {
     await activate(f, "Refresh");
     expect(f.tui.render().join("\n")).toContain("UNKNOWN");
     expect(f.tui.render().join("\n")).not.toContain("private read failure");
-    expect(f.tui.render().join("\n")).not.toMatch(/Edit Configuration|Start Tunnel\s*$/m);
+    expect(f.tui.render().join("\n")).not.toMatch(/Edit Configuration|Start Tunnel/);
     await close(f);
   });
 
@@ -340,13 +368,12 @@ describe("Tunnel Manager Kit interaction", () => {
     const f = await open("STOPPED", { signal: controller.signal });
     let finish!: () => void;
     f.ports.start.mockImplementation(() => new Promise<undefined>((resolve) => { finish = () => resolve(undefined); }));
-    const rows = f.tui.render().filter((line) => /(?:Set Up Tunnel|Start Tunnel|Edit Configuration|Stop Tunnel|Refresh|Details|Back|Close)/.test(line));
-    const labels = rows.map((line) => line.replace(/^[^A-Za-z]*/, "").trim());
-    const idx = labels.findIndex((line) => line.startsWith("Start Tunnel"));
+    const rows = f.tui.render().filter((line) => ITEMS.test(line) && /^[❯ ] /.test(line));
+    const idx = rows.findIndex((line) => line.includes("Start Tunnel"));
     expect(idx).toBeGreaterThanOrEqual(0);
     for (let i = 0; i < idx; i++) f.tui.press("tui.select.down");
     f.tui.press("tui.select.confirm");
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await flush();
     controller.abort();
     let settled = false;
     void f.running.then(() => { settled = true; });
