@@ -215,6 +215,24 @@ describe("explicit Pi payload tool registration", () => {
     expect(h.appendEntry).toHaveBeenCalledTimes(1); // startup mapping only
   });
 
+  it("exposes exact authorized read metadata to a content-only caller for ACK without guessing", async () => {
+    fake.allowlist.payloadRead = { enabled: true };
+    const h = await harness(); await h.start();
+    const result = await h.invoke({ messageId: "msg_test" });
+    // Pi forwards content to the model; details is UI/state data, not model input.
+    const modelVisible = JSON.parse(JSON.stringify(result.content)) as Result["content"];
+    const prefix = "ACK input metadata (reception only): ";
+    const line = modelVisible[0]!.text.split("\n").find((entry) => entry.startsWith(prefix));
+    expect(line, "authorized read must supply all four ACK parameters in model-facing content").toBeDefined();
+    expect(JSON.parse(line!.slice(prefix.length))).toEqual({
+      messageId: "msg_test", payloadDigest: "d".repeat(64), payloadLength: 25, messageCreatedAuditSequence: 9,
+    });
+    expect(modelVisible[1]!.text).toBe(PAYLOAD_TEXT);
+    expect(fake.readPayload).toHaveBeenCalledExactlyOnceWith("local/A", { messageId: "msg_test" });
+    expect(fake.send).not.toHaveBeenCalled(); expect(fake.list).not.toHaveBeenCalled();
+    expect(h.appendEntry).toHaveBeenCalledTimes(1);
+  });
+
   it.each(["piB", "unallowlisted"])("rejects a current Session change to %s", async (id) => {
     fake.allowlist.payloadRead = { enabled: true };
     const h = await harness();
