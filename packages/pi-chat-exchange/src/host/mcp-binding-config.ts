@@ -44,6 +44,8 @@ export interface McpBindingConfig {
   readonly debugExecutionGuard: { readonly enabled: boolean };
   /** Optional CE-managed provenance. Absent for operator-authored bindings. */
   readonly managed?: ManagedBindingMetadata;
+  /** Operator launch reference for deny-only admission. Never supplies grants. */
+  readonly admissionPolicy?: { readonly kind: "ce-multi-session-v1"; readonly profilePath: string };
 }
 
 /** Sanitized configuration refusal: a fixed code plus a structural field path;
@@ -198,7 +200,7 @@ export function parseMcpBindingConfig(raw: unknown): McpBindingConfig {
   const fields = plain(
     raw,
     "config",
-    ["version", "store", "exchange", "endpoint", "recipients", "lease", "payloadRead", "ack", "debugExecutionGuard", "managed"],
+    ["version", "store", "exchange", "endpoint", "recipients", "lease", "payloadRead", "ack", "debugExecutionGuard", "managed", "admissionPolicy"],
     ["version", "store", "exchange", "endpoint", "recipients"],
   );
   if (fields.version !== MCP_BINDING_CONFIG_VERSION) throw new McpBindingConfigError("config.version");
@@ -209,6 +211,13 @@ export function parseMcpBindingConfig(raw: unknown): McpBindingConfig {
     idempotencyKey: label(exchangeFields.idempotencyKey, "exchange.idempotencyKey", LABEL_MAX.identity),
   });
   const managed = fields.managed === undefined ? undefined : managedMetadata(fields.managed);
+  let admissionPolicy: McpBindingConfig["admissionPolicy"];
+  if (fields.admissionPolicy !== undefined) {
+    const ref = plain(fields.admissionPolicy, "admissionPolicy", ["kind", "profilePath"], ["kind", "profilePath"]);
+    const path = label(ref.profilePath, "admissionPolicy.profilePath", 4096);
+    if (ref.kind !== "ce-multi-session-v1" || !isAbsolute(path) || normalize(path) !== path || /[\u0000-\u001f\u007f]/.test(path)) throw new McpBindingConfigError("admissionPolicy");
+    admissionPolicy = Object.freeze({ kind: "ce-multi-session-v1", profilePath: path });
+  }
   const endpoint = endpointRef(fields.endpoint, "endpoint");
   if (!Array.isArray(fields.recipients)) throw new McpBindingConfigError("recipients");
   const recipients: CeRecipientRef[] = [];
@@ -231,5 +240,6 @@ export function parseMcpBindingConfig(raw: unknown): McpBindingConfig {
     ack: ackPolicy(fields.ack),
     debugExecutionGuard: debugExecutionGuardPolicy(fields.debugExecutionGuard),
     ...(managed === undefined ? {} : { managed }),
+    ...(admissionPolicy === undefined ? {} : { admissionPolicy }),
   });
 }

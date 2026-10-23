@@ -58,6 +58,10 @@ const PING_TOOL = {
  * carry sender/endpoint/session/capability fields. */
 export interface MessagingServerBinding {
   readonly port: ExchangeMessagingPort;
+  /** Optional trusted, synchronous deny-only composition check. Runs freshly
+   * before discovery and every tool dispatch, including ping/unknown names.
+   * No authority inputs come from model arguments. */
+  readonly admission?: () => void;
   /** HANDOFF-CE-E2B-01: the operator ack opt-in from the validated binding
    * configuration. Absent (or not exactly `true`) means `ce_ack` is neither
    * advertised nor callable; the base four-tool surface is unchanged. */
@@ -89,7 +93,13 @@ export function createExchangeMcpServer(
   const advertised = messaging?.ackEnabled === true ? [...tools, CE_ACK_TOOL] : tools;
   for (const tool of advertised) debugEvent("tool", "TOOL_REGISTERED", { tool: tool.name });
 
+  const admit = (): void => {
+    try { messaging?.admission?.(); }
+    catch { throw new McpError(ErrorCode.InternalError, "runtime admission denied"); }
+  };
+
   server.setRequestHandler(ListToolsRequestSchema, async () => {
+    admit();
     debugEvent("mcp", "MCP_TOOLS_LIST", { count: advertised.length });
     return { tools: advertised };
   });
@@ -114,6 +124,7 @@ export function createExchangeMcpServer(
       });
       throw new McpError(ErrorCode.InternalError, "tools/call blocked by development execution guard");
     }
+    admit();
     debugEvent("tool", "TOOL_CALL_STARTED", { tool, args: argumentShape(args) });
     try {
     // HANDOFF-CE-E2B-01: `ce_ack` exists only behind the explicit opt-in; a

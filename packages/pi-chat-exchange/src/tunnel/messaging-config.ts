@@ -93,14 +93,15 @@ function credentialIdentities(file: string | undefined): readonly FileIdentity[]
   try { const link = fs.lstatSync(file); return link.isSymbolicLink() ? [link, fs.statSync(file)] : [link]; }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw invalid("messaging.credential"); }
 }
-function snapshot(path: string, credentialFile?: string): FileSnapshot | undefined {
+/** Bounded private no-follow configuration snapshot; credential aliases are excluded before reads. */
+export function readPrivateMessagingFile(path: string, credentialFile?: string): FileSnapshot | undefined {
   if (path === credentialFile) throw invalid("messaging.credential");
   const excluded = credentialIdentities(credentialFile);
   let selected: fs.Stats;
   try { selected = fs.lstatSync(path); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw invalid("messaging.read"); }
   const safe = (s: fs.Stats): boolean => s.isFile() && !s.isSymbolicLink() && s.uid === process.geteuid?.() &&
-    (s.mode & 0o777) === 0o600 && s.size <= MAX_BYTES && !excluded.some((id) => same(id, s));
+    (s.mode & 0o7777) === 0o600 && s.size <= MAX_BYTES && !excluded.some((id) => same(id, s));
   if (!safe(selected)) throw invalid("messaging.permissions");
   let fd: number;
   try { fd = fs.openSync(path, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK); }
@@ -126,7 +127,7 @@ function syncDirectory(path: string, io: Io): void {
 /** Never rename over, unlink, or truncate a final pathname. Completed or partial
  * staging files are retained; they are not selected by any profile. */
 function publishOne(path: string, bytes: Buffer, io: Io, credentialFile?: string): void {
-  const previous = snapshot(path, credentialFile);
+  const previous = readPrivateMessagingFile(path, credentialFile);
   if (previous !== undefined) { if (!previous.bytes.equals(bytes)) throw conflict(); return; }
   const stage = join(dirname(path), `.messaging-stage-${randomUUID()}`);
   const fd = io.openSync(stage, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
@@ -138,7 +139,7 @@ function publishOne(path: string, bytes: Buffer, io: Io, credentialFile?: string
   try { io.linkSync(stage, path); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw invalid("messaging.write");
-    const raced = snapshot(path, credentialFile);
+    const raced = readPrivateMessagingFile(path, credentialFile);
     if (raced === undefined || !raced.bytes.equals(bytes)) throw conflict();
   }
 }
@@ -151,9 +152,15 @@ function matches(config: McpBindingConfig, input: PiSideConfigInput): boolean {
     config.payloadRead.enabled === input.payloadRead && config.ack.enabled === input.ack;
 }
 export function publishMessagingPair(profilePath: string, config: McpBindingConfig, input: PiSideConfigInput, options: MessagingPairOptions = {}): MessagingPairPublication {
-  const directory = profileDirectory(profilePath);
   const document = { ...buildPiAllowlistDocument(input), managedBy: { kind: "ce-tunnel-messaging-v1", profilePath } };
-  if (!matches(config, input) || config.store.directory !== directory) throw invalid("messaging.configuration");
+  if (!matches(config, input) || config.store.directory !== profileDirectory(profilePath)) throw invalid("messaging.configuration");
+  return publishMessagingGeneration(profilePath, config, document, options);
+}
+/** Low-level immutable pair writer. Callers must validate their mode-specific document first. */
+export function publishMessagingGeneration(profilePath: string, config: McpBindingConfig, document: Record<string, unknown>, options: MessagingPairOptions = {}): MessagingPairPublication {
+  const directory = profileDirectory(profilePath);
+  const stat = fs.lstatSync(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.geteuid?.() || (stat.mode & 0o7777) !== 0o700) throw invalid("messaging.directory");
   const binding = Buffer.from(`${JSON.stringify({ version: MCP_BINDING_CONFIG_VERSION, ...config }, null, 2)}\n`);
   const allowlist = Buffer.from(`${JSON.stringify(document, null, 2)}\n`);
   if (binding.length > MAX_BYTES || allowlist.length > MAX_BYTES) throw invalid("messaging.size");
@@ -169,15 +176,20 @@ export function publishMessagingPair(profilePath: string, config: McpBindingConf
   return { bindingPath, allowlistPath, config, document, durability };
 }
 export function readMessagingPair(profilePath: string, bindingPath: string, credentialFile?: string): MessagingPair | undefined {
+  const pair = readMessagingGeneration(profilePath, bindingPath, credentialFile);
+  if (pair !== undefined && !isManagedPiAllowlist(profilePath, pair.document)) throw invalid("messaging.provenance");
+  return pair;
+}
+/** Digest verification alone is not authorization; consumers validate the complete mode-specific schema. */
+export function readMessagingGeneration(profilePath: string, bindingPath: string, credentialFile?: string): MessagingPair | undefined {
   if (!isMessagingBinding(bindingPath)) return undefined;
   const allowlistPath = piAllowlistPath(profilePath, bindingPath);
-  const binding = snapshot(bindingPath, credentialFile);
-  const allowlist = snapshot(allowlistPath, credentialFile);
+  const binding = readPrivateMessagingFile(bindingPath, credentialFile);
+  const allowlist = readPrivateMessagingFile(allowlistPath, credentialFile);
   if (binding === undefined || allowlist === undefined || basename(bindingPath) !== `messaging-${digest(binding.bytes, allowlist.bytes)}.yaml`) throw invalid("messaging.generation");
   try {
     const config = parseMcpBindingConfig(JSON.parse(binding.bytes.toString("utf8")));
     const document = JSON.parse(allowlist.bytes.toString("utf8")) as Record<string, unknown>;
-    if (!isManagedPiAllowlist(profilePath, document)) throw invalid("messaging.provenance");
     return { bindingPath, allowlistPath, config, document };
   } catch { throw invalid("messaging.configuration"); }
 }

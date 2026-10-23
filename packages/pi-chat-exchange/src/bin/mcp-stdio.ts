@@ -37,6 +37,7 @@ import {
 import { debugEvent, errorSummary } from "../control/debug-log.js";
 import { observeTransport } from "../control/mcp/debug-transport.js";
 import { initializeStore, openStore } from "../storage/store.js";
+import { createMcpPolicyAdmission } from "../tunnel/multi-session-admission.js";
 
 debugEvent("server", "SERVER_ENTRY", { version: process.version });
 // Monitor rather than handle exceptions: preserve Node's fatal exit behavior.
@@ -101,6 +102,9 @@ async function main(): Promise<void> {
     fail("CE_MCP_LAUNCH_INVALID", "usage: mcp-stdio.js [--config /absolute/path.json]");
   }
   const config = loadBindingConfig(configPath);
+  // Verify actual launch bytes before Store creation; managed provenance grants nothing.
+  const admission = createMcpPolicyAdmission(config, configPath);
+  admission?.({ kind: "begin" });
 
   const host = new CeEndpointHost(openBindingStore(config), {
     adapter: config.endpoint.adapter,
@@ -116,6 +120,7 @@ async function main(): Promise<void> {
   debugEvent("authority", "AUTHORITY_CHECK_STARTED", { stage: "requireUnowned" });
   const bound = CeBoundEndpoint.start(host, config.endpoint.endpointId, {
     renewIntervalMs: config.lease.renewIntervalSeconds * 1_000,
+    ...(admission === undefined ? {} : { admission }),
     onEvent: (event) => {
       debugEvent("authority", "AUTHORITY_CHECK_RESULT", { stage: event.kind });
       if (event.kind === "renewed") return;
@@ -132,7 +137,10 @@ async function main(): Promise<void> {
   debugEvent("authority", "OWNERSHIP_ACQUIRED", { owned: true });
   // HANDOFF-CE-E2B-01: advertise `ce_ack` only when the validated binding
   // declares the ack opt-in; the default surface stays exactly four tools.
-  const server = createExchangeMcpServer(undefined, { port: bound, ackEnabled: config.ack.enabled, executionGuard: config.debugExecutionGuard });
+  const server = createExchangeMcpServer(undefined, {
+    port: bound, ackEnabled: config.ack.enabled, executionGuard: config.debugExecutionGuard,
+    ...(admission === undefined ? {} : { admission: () => admission({ kind: "inbox" }) }),
+  });
   if (config.debugExecutionGuard.enabled) {
     debugEvent("server", "EXECUTION_GUARD_ARMED", { scope: "tools/call", stage: "unified-dispatch-entry" });
   }

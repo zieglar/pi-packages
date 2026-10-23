@@ -103,10 +103,10 @@ function statuses(ctx: Ctx): Map<string, string | undefined> {
 }
 
 describe("B1.1 /ce-tunnel — subcommand surface", () => {
-  it("offers exactly setup, start, stop, status and help as completions", async () => {
+  it("offers exactly the legacy operations and four explicit multi-session operations as completions", async () => {
     const command = await tunnel();
     const values = (command.getArgumentCompletions?.("") ?? []).map((item) => item.value);
-    expect([...values].sort()).toEqual(["activate", "authorize", "help", "migrate", "setup", "start", "status", "stop"]);
+    expect([...values].sort()).toEqual(["activate", "authorize", "convert", "help", "migrate", "register", "revoke", "sessions", "setup", "start", "status", "stop"]);
     expect((command.getArgumentCompletions?.("sta") ?? []).map((i) => i.value).sort()).toEqual(["start", "status"]);
     for (const item of command.getArgumentCompletions?.("") ?? []) expect(typeof item.value).toBe("string");
   });
@@ -115,7 +115,7 @@ describe("B1.1 /ce-tunnel — subcommand surface", () => {
     const ctx = context();
     await (await tunnel()).handler("help", ctx);
     const text = messages(ctx);
-    for (const sub of ["setup", "authorize", "start", "stop", "status", "help"]) expect(text).toContain(sub);
+    for (const sub of ["setup", "authorize", "start", "stop", "status", "help", "sessions", "register", "revoke", "convert"]) expect(text).toContain(sub);
     expect(text).toMatch(/transport/i);
     expect(text).not.toMatch(/https?:\/\//);
   });

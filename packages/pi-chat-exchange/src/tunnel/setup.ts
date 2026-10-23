@@ -20,7 +20,7 @@ import {
 } from "./background-manager.js";
 import { buildTunnelMcpCommand, buildTunnelProfile, migrateTunnelProfileText, parseTunnelMcpCommand, replaceTunnelMcpBindingPath, resolveMcpNodePath, REQUIRED_MCP_NODE_VERSION, serializeTunnelProfile, validateTunnelIdentity } from "./profile.js";
 import { ensureManagedBinding } from "./managed-binding.js";
-import { isMessagingBinding, isManagedPiAllowlist, piAllowlistPath, publishMessagingPair, readMessagingPair } from "./messaging-config.js";
+import { isMessagingBinding, isManagedPiAllowlist, piAllowlistPath, publishMessagingPair, readMessagingPair, readMessagingGeneration } from "./messaging-config.js";
 
 const MAX_PROFILE_BYTES = 65_536;
 const invalid = (field: string): TunnelRefusal => new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", field);
@@ -471,6 +471,16 @@ export function createTunnelProfileSetup(options: TunnelProfileSetupOptions): Tu
       if (guard.profilePath !== profilePath) throw invalid("setup.lock-profile");
       const { text, facts } = read();
       if (revisionOf(text) !== input.expectedRevision) throw new TunnelRefusal("CE_TUNNEL_CONFIG_CONFLICT", "profile");
+      // The single-session wizard has no projection capable of preserving multi
+      // registrations. Refuse every save in this mode, including credential-only
+      // edits, rather than flattening or silently converting it back to legacy.
+      if (facts?.mcpCommand !== undefined) {
+        const selectedPath = parseTunnelMcpCommand(facts.mcpCommand).bindingPath;
+        if (isMessagingBinding(selectedPath)) {
+          const selectedPair = readMessagingGeneration(profilePath, selectedPath, facts.keyFile);
+          if (selectedPair?.config.admissionPolicy !== undefined || selectedPair?.document.kind === "ce-multi-session-v1") throw invalid("messaging.multiSession");
+        }
+      }
       if (input.credential.kind === "keep") {
         if (facts === undefined) throw new TunnelRefusal("CE_TUNNEL_KEY_MISSING");
         checkKeyFileMetadata(facts.keyFile);

@@ -38,7 +38,15 @@ export type BoundEndpointEvent =
   | { readonly kind: "renewal_deferred"; readonly code: string }
   | { readonly kind: "renewal_stopped"; readonly code: string; readonly reason: string | undefined };
 
+/** Additional deny-only checks supplied by trusted composition, not CE authority.
+ * Cleanup intentionally never calls this hook. */
+export type BoundEndpointOperation =
+  | { readonly kind: "send"; readonly to: string }
+  | { readonly kind: "begin" | "renew" | "inbox" | "readPayload" | "ack" };
+export type BoundEndpointAdmission = (operation: BoundEndpointOperation) => void;
+
 export interface BoundEndpointOptions {
+  readonly admission?: BoundEndpointAdmission;
   readonly renewIntervalMs: number;
   readonly timers?: TimerSeams;
   /** Code-only lifecycle observations (never identifiers or payload). */
@@ -66,6 +74,7 @@ const defaultTimers: TimerSeams = {
 };
 
 export class CeBoundEndpoint {
+  readonly #admission: BoundEndpointAdmission | undefined;
   readonly #host: CeEndpointHost;
   readonly #endpointId: string;
   readonly #timers: TimerSeams;
@@ -77,6 +86,7 @@ export class CeBoundEndpoint {
   #shutdown: Promise<BoundEndpointShutdown> | undefined;
 
   private constructor(host: CeEndpointHost, endpointId: string, options: BoundEndpointOptions) {
+    this.#admission = options.admission;
     this.#host = host;
     this.#endpointId = endpointId;
     this.#timers = options.timers ?? defaultTimers;
@@ -89,6 +99,7 @@ export class CeBoundEndpoint {
     if (!Number.isSafeInteger(options.renewIntervalMs) || options.renewIntervalMs < 1) {
       throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
     }
+    options.admission?.({ kind: "begin" });
     host.beginSession(endpointId, { requireUnowned: true });
     const bound = new CeBoundEndpoint(host, endpointId, options);
     bound.#heartbeat = bound.#timers.setInterval(() => bound.#renew(), options.renewIntervalMs);
@@ -117,6 +128,7 @@ export class CeBoundEndpoint {
   #renew(): void {
     if (this.#state !== "ACTIVE") return;
     try {
+      this.#admission?.({ kind: "renew" });
       this.#host.renew(this.#endpointId);
       this.#emit({ kind: "renewed" });
     } catch (error) {
@@ -147,8 +159,9 @@ export class CeBoundEndpoint {
     }
   }
 
-  #run<T>(write: boolean, operation: () => T): T {
+  #run<T>(write: boolean, request: BoundEndpointOperation, operation: () => T): T {
     this.#admit(write);
+    this.#admission?.(request);
     this.#inFlight += 1;
     try {
       return operation();
@@ -158,7 +171,7 @@ export class CeBoundEndpoint {
   }
 
   send(input: { readonly to: string; readonly text: string; readonly idempotencyKey: string }): CeSendResult {
-    return this.#run(true, () =>
+    return this.#run(true, { kind: "send", to: input.to }, () =>
       this.#host.send(this.#endpointId, { to: input.to, text: input.text, idempotencyKey: input.idempotencyKey }),
     );
   }
@@ -172,11 +185,11 @@ export class CeBoundEndpoint {
     if (input.afterAuditSequence !== undefined) request.afterAuditSequence = input.afterAuditSequence;
     if (input.pageSize !== undefined) request.pageSize = input.pageSize;
     if (input.rawScanLimit !== undefined) request.rawScanLimit = input.rawScanLimit;
-    return this.#run(false, () => this.#host.listInbox(this.#endpointId, request));
+    return this.#run(false, { kind: "inbox" }, () => this.#host.listInbox(this.#endpointId, request));
   }
 
   readPayload(input: { readonly messageId: string }): CeReadPayloadResult {
-    return this.#run(false, () => this.#host.readPayload(this.#endpointId, { messageId: input.messageId }));
+    return this.#run(false, { kind: "readPayload" }, () => this.#host.readPayload(this.#endpointId, { messageId: input.messageId }));
   }
 
   /** HANDOFF-CE-E2B-01 delivery ACK. It is a durable WRITE, so it runs through
@@ -190,7 +203,7 @@ export class CeBoundEndpoint {
     readonly payloadLength: number;
     readonly messageCreatedAuditSequence: number;
   }): CeAckResult {
-    return this.#run(true, () =>
+    return this.#run(true, { kind: "ack" }, () =>
       this.#host.acknowledge(this.#endpointId, {
         messageId: input.messageId,
         payloadDigest: input.payloadDigest,
