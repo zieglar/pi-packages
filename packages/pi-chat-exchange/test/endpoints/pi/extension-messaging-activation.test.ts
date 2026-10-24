@@ -9,8 +9,22 @@ import { parseTunnelProfile } from "../../../dist/tunnel/background-manager.js";
 import type { DurableStore } from "../../../dist/storage/store.js";
 import type { CeSessionHost, CeMappingIdentifiers } from "../../../src/endpoints/pi/session-host.js";
 
-const seam = vi.hoisted(() => ({ hosts: [] as CeSessionHost[], stores: [] as DurableStore[], confirm: vi.fn(async (_ctx: unknown, _options: unknown) => true) }));
-// Only operator confirmation is controlled; Setup, loader, Host and SQLite are real.
+const seam = vi.hoisted(() => ({ hosts: [] as CeSessionHost[], stores: [] as DurableStore[], confirm: vi.fn(async (_ctx: unknown, _options: unknown) => true),
+  defaultExec: vi.fn(() => { throw Error("FORBIDDEN default process inspection"); }),
+  defaultSpawn: vi.fn(() => { throw Error("FORBIDDEN default process spawn"); }),
+  signal: vi.fn(() => { throw Error("FORBIDDEN process signal"); }),
+}));
+vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), execFile: seam.defaultExec, spawn: seam.defaultSpawn }));
+// Inject process seams into EVERY manager, including the extension-created one.
+vi.mock("../../../dist/tunnel/background-manager.js", async original => {
+  const actual = await original<typeof import("../../../dist/tunnel/background-manager.js")>();
+  return { ...actual, createBackgroundTunnelManager: (options: Parameters<typeof actual.createBackgroundTunnelManager>[0]) => actual.createBackgroundTunnelManager({ ...options,
+    listProcesses: async () => ({ kind: "ok", processes: [] }),
+    inspectProcess: async () => ({ kind: "absent" }),
+    spawn: seam.defaultSpawn, signal: seam.signal,
+  }) };
+});
+// Setup, loader, Host and SQLite are real; process discovery is synthetic.
 vi.mock("../../../dist/tunnel/messaging-activation-ui.js", () => ({ confirmMessagingActivation: (...args: [unknown, unknown]) => seam.confirm(...args) }));
 vi.mock("../../../dist/endpoints/pi/session-host.js", async (original) => {
   const actual = await original<typeof import("../../../src/endpoints/pi/session-host.js")>();
@@ -24,13 +38,14 @@ const rootDirs: string[] = [];
 const shutdowns: Array<() => Promise<void>> = [];
 const extensionUrl = new URL("../../../pi-extension/index.ts", import.meta.url).href;
 type Entry = { type: string; customType: string; data: unknown };
-type Context = { mode: string; hasUI: boolean; cwd: string; sessionManager: { getSessionId(): string; getSessionFile(): string; getBranch(): Entry[] }; ui: { custom: ReturnType<typeof vi.fn>; notify: ReturnType<typeof vi.fn>; setStatus: ReturnType<typeof vi.fn> } };
+type Context = { mode: string; hasUI: boolean; cwd: string; sessionManager: { getSessionId(): string; getSessionFile(): string; getBranch(): Entry[] }; ui: { confirm: ReturnType<typeof vi.fn>; custom: ReturnType<typeof vi.fn>; notify: ReturnType<typeof vi.fn>; setStatus: ReturnType<typeof vi.fn> } };
 type Handler = (event: { reason: string }, ctx: Context) => Promise<void>;
 type Command = { handler(args: string, ctx: Context): Promise<void> };
-beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-22T00:00:00Z")); seam.hosts.length = 0; seam.stores.length = 0; seam.confirm.mockReset().mockResolvedValue(true); });
+beforeEach(() => { for (const key of Object.keys(process.env)) if (key.startsWith("CE_")) vi.stubEnv(key, undefined); vi.spyOn(process, "kill").mockImplementation(seam.signal); vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-22T00:00:00Z")); seam.hosts.length = 0; seam.stores.length = 0; seam.confirm.mockReset().mockResolvedValue(true); });
 afterEach(async () => {
   for (const end of shutdowns.splice(0)) await end().catch(() => undefined);
   for (const store of new Set(seam.stores.splice(0))) store.close();
+  expect(seam.defaultExec).not.toHaveBeenCalled(); expect(seam.defaultSpawn).not.toHaveBeenCalled(); expect(seam.signal).not.toHaveBeenCalled();
   vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllEnvs();
   for (const dir of rootDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -56,7 +71,7 @@ async function fixture() {
   const append = vi.fn((customType: string, data: unknown) => { entries.push({ type: "custom", customType, data }); });
   const ctx: Context = { mode: "tui", hasUI: true, cwd: dir,
     sessionManager: { getSessionId: () => runtimeId, getSessionFile: () => join(dir, "not-an-identity"), getBranch: () => entries },
-    ui: { custom: vi.fn(), notify: vi.fn(), setStatus: vi.fn() } };
+    ui: { confirm: vi.fn(async () => true), custom: vi.fn(), notify: vi.fn(), setStatus: vi.fn() } };
   const { default: factory } = await import(extensionUrl);
   const reloadFactory = () => factory({ on: (name: string, handler: Handler) => events.set(name, handler), registerTool: vi.fn(), registerCommand: (name: string, command: Command) => commands.set(name, command), appendEntry: append });
   reloadFactory();
@@ -191,5 +206,81 @@ describe("explicit current-session messaging activation over real isolated Host/
     await h.activate(); h.reloadFactory(); await h.start(); const before = counts(); await h.activate();
     expect(counts()).toEqual(before); expect(h.mapping()?.endpointId).toBe("pi/main");
     expect(h.notices()).toContain("CE_HOST_UNAVAILABLE");
+  });
+});
+
+describe("explicit current-session deactivation", () => {
+  it("characterizes ended legacy mapping: reload must refuse auto-resume, explicit activation may rebind", async () => {
+    const h = await fixture(); await h.start(); await h.activate(); await h.shutdown();
+    const before = counts(); h.ctx.ui.notify.mockClear(); h.reloadFactory(); await h.start();
+    expect(counts()).toEqual(before); expect(h.notices()).toContain("CE_HOST_MAPPING_INVALID");
+    h.ctx.ui.notify.mockClear(); await h.activate();
+    expect(h.notices()).toContain("Pi messaging bound"); expect(counts().owners).toBe(1);
+  });
+  it("ends once, preserves registration/history, cancels heartbeat and allows explicit activation", async () => {
+    const h = await fixture(); await h.start(); await h.activate(); const mapping = h.mapping();
+    const end = vi.spyOn(seam.hosts[0]!, "end"); const renew = vi.spyOn(seam.hosts[0]!, "renew");
+    const profile = fs.readFileSync(h.profilePath, "utf8");
+    const participants = seam.stores[0]!.database.prepare("SELECT * FROM participant").all();
+    await h.command("deactivate"); await h.command("deactivate"); await vi.advanceTimersByTimeAsync(30_000);
+    expect(end).toHaveBeenCalledTimes(1); expect(renew).not.toHaveBeenCalled(); expect(counts().owners).toBe(0);
+    expect(h.mapping()).toEqual(mapping); expect(fs.readFileSync(h.profilePath, "utf8")).toBe(profile);
+    expect(seam.stores[0]!.database.prepare("SELECT * FROM participant").all()).toEqual(participants);
+    expect(h.notices()).toContain("Pi messaging deactivated");
+    await h.activate(); expect(counts().owners).toBe(1);
+  });
+  it("no binding and cancellation write nothing", async () => {
+    const h = await fixture(); await h.start(); const before = counts();
+    await h.command("deactivate"); expect(counts()).toEqual(before); expect(h.ctx.ui.confirm).not.toHaveBeenCalled();
+    await h.activate(); const entries = [...h.entries]; const active = counts();
+    h.ctx.ui.confirm.mockResolvedValue(false); await h.command("deactivate");
+    expect(counts()).toEqual(active); expect(h.entries).toEqual(entries);
+    expect(h.ctx.ui.confirm).toHaveBeenCalledTimes(1); expect(h.notices()).not.toContain("Pi messaging deactivated");
+  });
+  it.each(["session", "configuration", "environment", "generation", "dialog"])("refuses stale %s without end", async change => {
+    const h = await fixture(); await h.start(); await h.activate(); const end = vi.spyOn(seam.hosts[0]!, "end");
+    h.ctx.ui.confirm.mockImplementation(async () => {
+      if (change === "session") h.switchSession();
+      else if (change === "configuration") fs.appendFileSync(h.profilePath, "\n# changed\n");
+      else if (change === "environment") vi.stubEnv("CE_STORE_FILE", "changed.sqlite");
+      else if (change === "generation") void h.start("reload");
+      else throw Error("private-dialog-error");
+      return true;
+    });
+    await h.command("deactivate"); expect(end).not.toHaveBeenCalled();
+    expect(h.notices()).not.toContain("Pi messaging deactivated"); expect(h.notices()).not.toContain("private-dialog-error");
+  });
+  it("rejects a stale native ID before opening the dialog", async () => {
+    const h = await fixture(); await h.start(); await h.activate(); h.switchSession();
+    const end = vi.spyOn(seam.hosts[0]!, "end"); await h.command("deactivate");
+    expect(h.ctx.ui.confirm).not.toHaveBeenCalled(); expect(end).not.toHaveBeenCalled();
+  });
+  it("shares operation busy latch and cancels pending confirmation on teardown", async () => {
+    const h = await fixture(); await h.start(); await h.activate();
+    let resolve!: (value: boolean) => void;
+    h.ctx.ui.confirm.mockImplementation(() => new Promise<boolean>(r => { resolve = r; }));
+    const pending = h.command("deactivate"); await Promise.resolve();
+    const end = vi.spyOn(seam.hosts[0]!, "end");
+    try {
+      await h.command("deactivate"); await h.activate(); await h.command("setup"); await h.command("");
+      expect(h.ctx.ui.confirm).toHaveBeenCalledTimes(1); expect(h.ctx.ui.custom).not.toHaveBeenCalled();
+      const ending = h.shutdown("reload"); resolve(true); await pending; await ending;
+      expect(end).not.toHaveBeenCalled(); expect(h.notices()).not.toContain("Pi messaging deactivated");
+    } finally { resolve?.(false); await pending; }
+  });
+  it.each(["end", "persistence"])("unknown %s fails closed, reports no success and never ends twice", async kind => {
+    const h = await fixture(); await h.start(); await h.activate();
+    const end = vi.spyOn(seam.hosts[0]!, "end");
+    if (kind === "end") end.mockImplementation(() => { throw Error("private-end-error"); });
+    else { const append = h.append.getMockImplementation()!; h.append.mockImplementation((type, data) => { if (type === "ce-messaging-released") throw Error("private-proof-error"); append(type, data); }); }
+    await h.command("deactivate"); await h.command("deactivate"); await h.activate();
+    expect(end).toHaveBeenCalledTimes(1); expect(h.notices()).not.toContain("Pi messaging deactivated");
+    expect(h.notices()).toContain("CE_HOST_UNAVAILABLE"); expect(h.notices()).not.toContain("private-end-error");
+    expect(h.notices()).not.toContain("private-proof-error");
+  });
+  it.each(["rpc", "json"])("requires real TUI confirmation in %s mode", async mode => {
+    const h = await fixture(); await h.start(); await h.activate(); h.ctx.mode = mode;
+    const end = vi.spyOn(seam.hosts[0]!, "end"); await h.command("deactivate");
+    expect(end).not.toHaveBeenCalled(); expect(h.ctx.ui.confirm).not.toHaveBeenCalled(); expect(h.notices()).toContain("CE_TUNNEL_INPUT_UNAVAILABLE");
   });
 });

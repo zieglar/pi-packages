@@ -3,7 +3,7 @@ import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { admitExecutable, qualifyNodeExecutable, resolveApprovedNode, resolveTunnelClient } from "../../src/runtime/executables.js";
+import { admitExecutable, qualifyNodeExecutable, resolveApprovedNode, resolveTunnelClient, diagnoseTunnelClient } from "../../src/runtime/executables.js";
 
 import { APPROVED_NODE_VERSION, APPROVED_SQLITE_VERSION, APPROVED_SQLITE_SOURCE_ID } from "../../src/storage/runtime.js";
 const roots: string[] = [];
@@ -161,5 +161,34 @@ describe("client selection", () => {
   });
   it("refuses unsafe explicit clients rather than using a default", () => {
     expect(() => resolveTunnelClient({ env: { CE_TUNNEL_CLIENT_PATH: "tunnel-client" } })).toThrow("CE_EXECUTABLE_UNTRUSTED");
+  });
+});
+
+describe("closed client installation diagnosis (same metadata admission)", () => {
+  it("distinguishes absence, rejected discovery and trusted metadata without client execution", () => {
+    const root = fixture(); const path = join(root, "tunnel-client"); const marker = join(root, "executed");
+    const options = { env: {}, systemDirectories: [root] };
+    expect(diagnoseTunnelClient(options)).toBe("CE_TUNNEL_CLIENT_MISSING");
+    writeFileSync(path, `#!/bin/sh\ntouch '${marker}'\n`, { mode: 0o700 });
+    expect(diagnoseTunnelClient(options)).toBe("TRUSTED_METADATA_ONLY");
+    chmodSync(path, 0o777); expect(diagnoseTunnelClient(options)).toBe("CE_EXECUTABLE_UNTRUSTED");
+    expect(() => realpathSync(marker)).toThrow();
+  });
+  it.each(["relative", "", "/missing/private-client"])("explicit invalid override %j never falls back", override => {
+    const root = fixture(); binary(root, "tunnel-client");
+    expect(diagnoseTunnelClient({ env: { CE_TUNNEL_CLIENT_PATH: override }, systemDirectories: [root] })).toBe("CE_EXECUTABLE_UNTRUSTED");
+  });
+  it.each(["ancestor", "symlink", "project"])("retains %s trust denial", kind => {
+    const root = fixture(); const installation = join(root, "installation"); mkdirSync(installation, { mode: 0o700 });
+    const target = binary(installation, "client"); const path = join(root, "tunnel-client"); symlinkSync(target, path);
+    if (kind === "ancestor") chmodSync(installation, 0o777);
+    else if (kind === "symlink") chmodSync(target, 0o777);
+    expect(diagnoseTunnelClient({ env: {}, systemDirectories: [root], ...(kind === "project" ? { projectRoot: root } : {}) })).toBe("CE_EXECUTABLE_UNTRUSTED");
+  });
+  it.skipIf(process.platform !== "darwin")("retains macOS ACL denial", () => {
+    const root = fixture(); const path = binary(root, "tunnel-client");
+    execFileSync("/bin/chmod", ["+a", "everyone allow write", path]);
+    try { expect(diagnoseTunnelClient({ env: {}, systemDirectories: [root] })).toBe("CE_EXECUTABLE_UNTRUSTED"); }
+    finally { execFileSync("/bin/chmod", ["-N", path]); }
   });
 });

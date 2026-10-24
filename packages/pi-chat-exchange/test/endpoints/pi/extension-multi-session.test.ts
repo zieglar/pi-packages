@@ -11,7 +11,12 @@ import { CeHostRefusal, CeEndpointHost } from "../../../dist/host/endpoint-host.
 import { openStore, type DurableStore } from "../../../dist/storage/store.js";
 import type { CeSessionHost } from "../../../dist/endpoints/pi/session-host.js";
 
-const seam = vi.hoisted(() => ({ hosts: [] as CeSessionHost[], stores: [] as DurableStore[], manager: undefined as unknown }));
+const seam = vi.hoisted(() => ({ hosts: [] as CeSessionHost[], stores: [] as DurableStore[], manager: undefined as unknown,
+  defaultExec: vi.fn(() => { throw Error("FORBIDDEN default process inspection"); }),
+  defaultSpawn: vi.fn(() => { throw Error("FORBIDDEN process spawn"); }),
+  signal: vi.fn(() => { throw Error("FORBIDDEN process signal"); }),
+}));
+vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), execFile: seam.defaultExec, spawn: seam.defaultSpawn }));
 vi.mock("../../../dist/tunnel/messaging-activation-ui.js", () => ({ confirmMessagingActivation: (ctx: Context) => ctx.ui.confirm("activate", "synthetic operator confirmation") }));
 vi.mock("../../../dist/tunnel/background-manager.js", async (original) => {
   const actual = await original<typeof import("../../../dist/tunnel/background-manager.js")>();
@@ -28,10 +33,11 @@ type Context = { mode: string; hasUI: boolean; cwd: string; sessionManager: { ge
 type Handler = (event: { reason: string }, ctx: Context) => Promise<void>;
 type Tool = { name: string; execute(id: string, input: unknown, signal: undefined, update: undefined, ctx: Context): Promise<{ isError?: boolean; details?: Record<string, unknown> }> };
 const dirs: string[] = []; const shutdowns: Array<() => Promise<void>> = [];
-beforeEach(() => { vi.useFakeTimers(); seam.hosts.length = 0; seam.stores.length = 0; seam.manager = undefined; });
+beforeEach(() => { for (const key of Object.keys(process.env)) if (key.startsWith("CE_")) vi.stubEnv(key, undefined); vi.spyOn(process, "kill").mockImplementation(seam.signal); vi.useFakeTimers(); seam.hosts.length = 0; seam.stores.length = 0; seam.manager = undefined; });
 afterEach(async () => {
   for (const stop of shutdowns.splice(0)) await stop();
   for (const store of new Set(seam.stores.splice(0))) store.close();
+  expect(seam.defaultExec).not.toHaveBeenCalled(); expect(seam.defaultSpawn).not.toHaveBeenCalled(); expect(seam.signal).not.toHaveBeenCalled();
   vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllEnvs(); seam.manager = undefined;
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -47,7 +53,7 @@ async function fixture(convert = true) {
   let processState: "ok" | "unknown" | "running" = "ok";
   const manager = createBackgroundTunnelManager({ env: {}, profilePath,
     listProcesses: async () => processState === "unknown" ? { kind: "unknown" } : { kind: "ok", processes: processState === "running" ? [{ pid: 123, command: `synthetic --profile-file ${profilePath}`, startedKey: "synthetic" }] : [] },
-    spawn: () => { throw Error("NO REAL SPAWN"); }, signal: () => { throw Error("NO REAL SIGNAL"); } });
+    inspectProcess: async () => ({ kind: "absent" }), spawn: seam.defaultSpawn, signal: seam.signal });
   seam.manager = manager;
   const api = createMultiSessionRegistration({ profilePath, manager });
   if (convert) { await api.convert({ expectedRevision: api.revision(), confirm: true }); await api.register({ expectedRevision: api.revision(), registration: { endpointId: "pi/B", runtimeSessionId: "real-B", payloadRead: true, ack: true } }); }
@@ -240,4 +246,30 @@ it.each(["unbound", "unloaded", "runtime", "mutex", "uncertain"])("sessions refu
   if (change === "uncertain") { vi.spyOn(seam.hosts[0]!, "end").mockImplementation(() => { throw new CeHostRefusal("CE_HOST_UNCERTAIN"); }); await a.stop(); }
   a.ctx.ui.notify.mockClear(); await a.command("sessions");
   expect(a.notices()).toContain("refused"); expect(a.notices()).not.toContain("selected configured active Endpoint IDs"); expect(a.notices()).not.toContain("pi/B");
+});
+
+it.each([false, true])("deactivate ends only current A, revoked=%s; B, registrations and history survive with no transport effects", async revoked => {
+  const f = await fixture(); const a = await f.runtime("real-A"); const b = await f.runtime("real-B"); await a.start(); await b.start();
+  if (revoked) { await f.api.revoke({ expectedRevision: f.api.revision(), endpointId: "pi/A" }); await vi.advanceTimersByTimeAsync(30_000); }
+  const selected = fs.readFileSync(f.profilePath, "utf8"); const mapping = a.entries.findLast(e => e.customType === "ce-mapping")!.data;
+  const manager = seam.manager as ReturnType<typeof createBackgroundTunnelManager>;
+  const effects = [vi.spyOn(manager, "start"), vi.spyOn(manager, "stop"), vi.spyOn(manager, "status")];
+  const aEnd = vi.spyOn(seam.hosts[0]!, "end"); const bEnd = vi.spyOn(seam.hosts[1]!, "end");
+  a.ctx.ui.notify.mockClear(); await a.command("deactivate"); await a.command("deactivate");
+  expect(aEnd).toHaveBeenCalledTimes(1); expect(bEnd).not.toHaveBeenCalled();
+  expect(a.notices()).toContain("Pi messaging deactivated"); expect((await b.call("ce_inbox_list")).isError).not.toBe(true);
+  expect(a.entries.findLast(e => e.customType === "ce-mapping")!.data).toEqual(mapping);
+  expect(fs.readFileSync(f.profilePath, "utf8")).toBe(selected); for (const effect of effects) expect(effect).not.toHaveBeenCalled();
+  if (!revoked) {
+    await a.stop("reload"); const fresh = await f.runtime("real-A", a.entries); await fresh.start("reload");
+    expect((await fresh.call("ce_inbox_list")).isError).toBe(true);
+    await fresh.command("activate"); expect((await fresh.call("ce_inbox_list")).isError).not.toBe(true);
+  }
+});
+it("ce-status displays native Pi and Exchange only through admission", async () => {
+  const f = await fixture(); const a = await f.runtime("real-A"); await a.start();
+  const mapping = a.entries.findLast(e => e.customType === "ce-mapping")!.data as { exchangeId: string };
+  a.ctx.ui.notify.mockClear(); await a.ceStatus(); expect(a.notices()).toContain("piSession=real-A"); expect(a.notices()).toContain(`exchange=${mapping.exchangeId}`);
+  await f.api.revoke({ expectedRevision: f.api.revision(), endpointId: "pi/A" });
+  a.ctx.ui.notify.mockClear(); await a.ceStatus(); expect(a.notices()).not.toContain("real-A"); expect(a.notices()).not.toContain(mapping.exchangeId);
 });

@@ -48,7 +48,7 @@ import {
 import { PI_ADAPTER_KIND } from "../dist/endpoints/pi/contract.js";
 import { initializeStore, openStore } from "../dist/storage/store.js";
 import { RuntimeEligibilityError } from "../dist/storage/runtime.js";
-import { hostRuntimeRepairMessage } from "../dist/runtime/diagnostics.js";
+import { diagnoseInstallation, hostRuntimeRepairMessage, installationDiagnosticMessage } from "../dist/runtime/diagnostics.js";
 import { TunnelRefusal } from "../dist/tunnel/codes.js";
 import {
   captureTunnelSecret,
@@ -1377,7 +1377,8 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       }
       notify(
         ctx,
-        `ce-chat-exchange: endpoint=${status.endpointId} registered=${status.registered} ` +
+        `ce-chat-exchange: piSession=${ctx.sessionManager.getSessionId()} exchange=${status.exchangeId ?? "none"} ` +
+          `endpoint=${status.endpointId} registered=${status.registered} ` +
           `participant=${status.participantId ?? "none"} session=${status.sessionId ?? "none"} ` +
           `lease=${status.lease} fencing=${status.fencingToken ?? "none"}`,
       );
@@ -1392,6 +1393,8 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     { value: "stop", description: "stop the tunnel instance this manager provably owns (one SIGTERM, verified exit)" },
     { value: "migrate", description: "repair a saved real profile in place (drop rejected admin_ui keys + repoint the mcp node) without re-entering the credential" },
     { value: "activate", description: "explicitly confirm and bind the configured current Pi messaging session; never takeover or a real Gate claim" },
+    { value: "deactivate", description: "confirm normal release of only this current Pi binding; retain registration/history and transport" },
+    { value: "doctor", description: "read-only host/child Node qualification and client metadata trust; no transport or Store access" },
     { value: "status", description: "show CE segment plus measured tunnel state (STOPPED/STARTING/CONNECTED/DEGRADED/UNKNOWN)" },
     { value: "sessions", description: "list selected configured active Endpoint IDs; MCP loaded policy is unknown" },
     { value: "register", description: "register <endpoint> [--payload-read] [--ack] for this real Pi Session only, with confirmation" },
@@ -1549,6 +1552,67 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         }
       }
     })();
+    activationTask = task;
+    try { await task; } finally {
+      if (activationTask === task) activationTask = undefined;
+      if (activationCapture === controller) activationCapture = undefined;
+    }
+  };
+
+  /** Normal cleanup uses the locally held handle, not deny-only policy admission:
+   * revocation must not prevent end/release. Configuration is only a dialog fence. */
+  const runMessagingDeactivation = async (ctx: ExtensionContextView): Promise<void> => {
+    if (activationTask !== undefined || setupTask !== undefined || managerUiTask !== undefined || shutdownInFlight !== undefined) {
+      notify(ctx, "ce-tunnel: deactivation refused CE_TUNNEL_MANAGER_BUSY", "warning"); return;
+    }
+    const state = generation;
+    if (state === undefined) {
+      notify(ctx, "ce-tunnel: no locally held Pi binding; nothing deactivated"); return;
+    }
+    if (ctx.mode !== "tui" || !ctx.hasUI || typeof ctx.ui.confirm !== "function") {
+      notify(ctx, "ce-tunnel: deactivation refused CE_TUNNEL_INPUT_UNAVAILABLE", "warning"); return;
+    }
+    const controller = new AbortController();
+    activationCapture = controller;
+    // Register before any operator callback can re-enter or trigger teardown.
+    const task = Promise.resolve().then(async () => {
+      try {
+        const piSessionId = ctx.sessionManager.getSessionId();
+        const environment = runtimeEnvironment();
+        const configuration = (): string => {
+          if (process.env.CE_ALLOWLIST) return readFileSync(process.env.CE_ALLOWLIST, "utf8");
+          const profilePath = resolveTunnelProfilePath({ env: process.env });
+          return JSON.stringify([readFileSync(profilePath, "utf8"), multiPolicy === undefined
+            ? readGeneratedPiAllowlist(profilePath) : readSelectedMultiSessionPolicy(profilePath)]);
+        };
+        const assertIdentity = (): void => {
+          if (controller.signal.aborted || generation !== state || state.stopping ||
+              !piSessionId || state.piSessionId !== piSessionId || ctx.sessionManager.getSessionId() !== piSessionId ||
+              runtimeEnvironment() !== environment) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+          if (state.failure !== undefined) throw state.failure;
+        };
+        assertIdentity();
+        const capturedConfiguration = configuration();
+        // Built-in Pi dialog owns cancellation/disposal; no custom UI or manager.
+        const safe = (text: string): string => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+        const confirmed = await ctx.ui.confirm!("Deactivate current Pi messaging?",
+          `Pi Session: ${safe(piSessionId)}\nEndpoint: ${safe(state.endpointId)}\n` +
+          "Release only this locally held CE binding. Registration and history remain. Tunnel transport is unchanged. Explicit activation is required afterward.",
+          { signal: controller.signal, timeout: 120_000 });
+        if (!confirmed || controller.signal.aborted) return;
+        assertIdentity();
+        if (configuration() !== capturedConfiguration) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+        await shutdownCe("messaging-deactivation");
+        if (state.failure !== undefined) throw state.failure;
+        if (controller.signal.aborted || ctx.sessionManager.getSessionId() !== piSessionId) return;
+        startupFailure = undefined;
+        startupRuntimeRepair = undefined;
+        notify(ctx, "ce-tunnel: Pi messaging deactivated; registration and history retained; transport unchanged; explicit Activate required");
+      } catch (error) {
+        if (!controller.signal.aborted) notify(ctx,
+          `ce-tunnel: deactivation refused ${error instanceof CeHostRefusal ? error.code : "CE_HOST_UNAVAILABLE"}; no automatic retry or takeover`, "warning");
+      }
+    });
     activationTask = task;
     try { await task; } finally {
       if (activationTask === task) activationTask = undefined;
@@ -1914,6 +1978,10 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   /** Direct shortcuts and the Manager invoke this same operation path. */
   const runTunnelCommand = async (args: string, ctx: ExtensionContextView): Promise<void> => {
         const sub = args.trim().split(/\s+/)[0] ?? "";
+        if (sub === "doctor") {
+          notify(ctx, installationDiagnosticMessage(diagnoseInstallation({ env: process.env }))); return;
+        }
+        if (sub === "deactivate") { await runMessagingDeactivation(ctx); return; }
         if (["sessions", "register", "revoke", "convert"].includes(sub)) {
           if (sub === "convert" && generation !== undefined) {
             notify(ctx, "ce-tunnel: conversion refused while this legacy binding is held; close it first and run Convert from an unbound Pi Session. All other legacy bindings/runtimes must also be stopped or updated.", "warning"); return;
@@ -1981,6 +2049,8 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
               `start/stop = with CE_TUNNEL_OFFLINE_TEST=1 the bundled OFFLINE simulator; otherwise the REAL background client ` +
                 `(detached, survives this session; ownership record + process-identity verified; manual only — no autostart/reconnect); ` +
               `migrate = repair a saved real profile in place (drop the rejected admin_ui keys + repoint the mcp node); ` +
+              `deactivate = confirm normal release of this current Pi binding only, preserving registration/history and transport; explicitly activate afterward. ` +
+              `doctor = read-only independent host/MCP child qualification and client metadata admission; no client execution, configuration/Store writes or transport operations. ` +
               `status = separate CE segment plus the measured tunnel state (real background or offline simulator). ` +
               `sessions = exact selected active Endpoints, not loaded MCP evidence; register <endpoint> [--payload-read] [--ack] = current real Session only; revoke <endpoint> = exact stable registration; convert = separate explicit legacy conversion with old-runtime acknowledgement. ` +
               `Registration requires verified STOPPED transport and confirmations; never stops/starts it. Reload Pi explicitly; Stop then Start separately loads MCP grants. Shared ChatGPT inbox is not conversation isolation. ` +

@@ -157,6 +157,31 @@ export function resolveApprovedNode(options: ExecutableResolutionOptions = {}): 
   return undefined;
 }
 
+export type TunnelClientDiagnosis = "TRUSTED_METADATA_ONLY" | "CE_TUNNEL_CLIENT_MISSING" | "CE_EXECUTABLE_UNTRUSTED";
+
+/** Diagnostic-only closed outcome. Same runtime admission, retaining discovery
+ * refusals instead of laundering rejected installations as absent. Explicit
+ * overrides are authoritative: even an absent override is a refusal. */
+export function diagnoseTunnelClient(options: ExecutableResolutionOptions = {}): TunnelClientDiagnosis {
+  const env = options.env ?? {};
+  if (env.CE_TUNNEL_CLIENT_PATH !== undefined) {
+    try { admitExecutable(env.CE_TUNNEL_CLIENT_PATH, options); return "TRUSTED_METADATA_ONLY"; }
+    catch { return "CE_EXECUTABLE_UNTRUSTED"; }
+  }
+  let rejected = false;
+  for (const directory of options.systemDirectories ?? SYSTEM_DIRECTORIES) {
+    const candidate = join(directory, "tunnel-client");
+    try { lstatSync(candidate); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") rejected = true;
+      continue;
+    }
+    try { admitExecutable(candidate, options); return "TRUSTED_METADATA_ONLY"; }
+    catch { rejected = true; }
+  }
+  return rejected ? "CE_EXECUTABLE_UNTRUSTED" : "CE_TUNNEL_CLIENT_MISSING";
+}
+
 /** Discovery is metadata-only: never execute a client to find or qualify it. */
 export function resolveTunnelClient(options: ExecutableResolutionOptions = {}): string | undefined {
   const env = options.env ?? {};
