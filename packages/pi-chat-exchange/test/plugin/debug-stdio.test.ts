@@ -6,7 +6,8 @@ import { createInterface } from "node:readline";
 import { expect, it } from "vitest";
 
 const pkg = resolve(import.meta.dirname, "../..");
-it("real launcher preserves JSON-RPC, logs stages and survives unavailable log files with clean signal shutdown", { timeout: 30_000 }, async () => {
+// Debug-only launcher remains explicitly pinned to 24.21.0; production stdio is tested separately.
+it.skipIf(process.version !== "v24.21.0")("real launcher preserves JSON-RPC, logs stages and survives unavailable log files with clean signal shutdown", { timeout: 30_000 }, async () => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), "ce-debug-stdio-"));
   const children: ReturnType<typeof spawn>[] = [];
   try {

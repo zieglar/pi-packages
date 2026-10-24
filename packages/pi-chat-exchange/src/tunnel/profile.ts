@@ -337,9 +337,8 @@ export function detectConfigDrift(input: ConfigDriftInput): ConfigDriftCheck {
 // never blindly to the Pi process's own runtime when that differs.
 // ---------------------------------------------------------------------------
 
-/** The exact `major.minor.patch` the durable Store requires (no leading `v`).
- *  Derived from storage/runtime.ts APPROVED_NODE_VERSION so the two cannot
- *  drift. */
+/** @deprecated Default version for the legacy pure location hint, not eligibility.
+ * Actual host/child qualification uses storage/runtime.ts exact tuple registry. */
 export const REQUIRED_MCP_NODE_VERSION: string = APPROVED_NODE_VERSION.replace(/^v/, "");
 
 export interface ResolveMcpNodePathInput {

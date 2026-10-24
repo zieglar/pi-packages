@@ -7,7 +7,7 @@
 | 组件 | 当前核实基线 | 注意 |
 |---|---|---|
 | Pi | 1.3.0 | 向导需要 interactive TUI；非交互模式不提供 masked 设置 |
-| Node.js | **24.21.0** | Pi 激活进程和 Tunnel MCP 子进程都必须满足 Store 的精确版本门槛，24.x 或 25.x 不等价 |
+| Node.js | **24.21.0 或 24.22.1** | 精确版本且 SQLite 完整资格合格；Pi host 与 MCP child 独立校验，不要求同一路径；其他 24.x 与 25.x 不等价 |
 | pnpm | 仓库固定 12.9.1 | 见根 `package.json` |
 | UI Kit | `@narumitw/pi-tui-kit` 0.66.0 | 包依赖负责安装；不是用户另外装一个 UI |
 | Secure MCP Tunnel | `tunnel-client` 0.0.16 | 显式 `CE_TUNNEL_CLIENT_PATH` 或受控系统目录发现；路径检查不等于新 client 版本兼容性验收 |
@@ -245,7 +245,7 @@ MCP binding 是封闭 schema：`version`、可选 `managed`、`store`、`exchang
 | `recipients: []` | 只做了四步基本设置，未授权 Messaging | `/ce-tunnel setup` 的 Advanced/Review | Keep key，显式授权当前 Session 的 Messaging 后 Save/加载；不随意放宽所有 recipient |
 | 对端 Inbox 看不到消息 / Store 或 Exchange 不一致 | directory/file/namespace/key 任一不同，或对端加入边界更晚 | 在本机核对四项配置一致，不导出 Store/正文 | 选定正确配置并显式重新授权；不复制数据库、合并历史或盲重发；空页也不是全局完整性证明 |
 | read/ACK 工具缺失或 disabled | 两个 opt-in 独立，或仍加载旧 generation | 核对两端各自 boolean 设置和工具发现 | 明确授权后加载策略；ACK 四字段必须从授权 payload read 复制，不从 metadata read 猜测 |
-| Store runtime / child Node mismatch | Pi 或 profile command 用了非 24.21.0 | Pi 启动 runtime 与 profile command 的 node 路径分别核实版本，不读取凭据 | 用批准 Node 启动 Pi；停止且所有权安全后 `/ce-tunnel migrate` 修 canonical profile 的 child Node。它不会改变正在运行 Pi 的 Node |
+| Store runtime / child Node mismatch | Pi 或 profile command 的 Node/SQLite tuple 未通过资格校验 | 分别核实 Pi 与 child 的实际版本、SQLite 身份和必要 API，不读取凭据 | 用批准 Node 启动 Pi；停止且所有权安全后 `/ce-tunnel migrate` 修 canonical profile 的 child Node。它不会改变正在运行 Pi 的 Node |
 | STARTING / Refresh 延迟 | 异步启动、client 初始 poll 或 probe 尚未结束 | 区分 spawn acknowledgement 与实测 CONNECTED | 等待一次终态，再 Refresh；同 Session 重复 Start 合并，不保证跨 Session 请求排队，勿开第二份 client |
 | 重复命令、队列、Manager already open | 重复加载扩展、前一个 custom UI 或 Start 在途 | `pi list` 与实际 `-e`/发现路径核对；关闭多余 UI | 一份扩展、一份 Manager；Close 不 Stop。去掉重复加载后正常 reload，不批量重复命令 |
 | client schema 拒绝 `admin_ui` | 老 profile 含 `allow_remote_ui` 或 `log_buffer_events: 0` | 固定错误/版本，勿公开原始 profile | 停止并核实 ownership 后 `/ce-tunnel migrate`；只修 canonical CE YAML，保留 identity/key reference/binding/Store；任意手改 YAML 可能需人工审查 |

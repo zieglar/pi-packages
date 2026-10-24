@@ -5,7 +5,7 @@
   "description": "Generic chat-exchange protocol with pure core rules, a private durable SQLite foundation, and a minimal MCP ping smoke.",
   "type": "module",
   "engines": {
-    "node": "24.21.0"
+    "node": "24.21.0 || 24.22.1"
   },
   "scripts": {
     "test": "vitest run",

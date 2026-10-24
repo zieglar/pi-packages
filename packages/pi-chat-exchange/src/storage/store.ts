@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync, type SQLOutputValue } from "node:sqlite";
-import { openStorageConnection, type StorageConnectionOptions } from "./connection.js";
+import { assertStorageRuntimeEligibility, openStorageConnection, type StorageConnectionOptions } from "./connection.js";
 import {
   FilesystemSafetyError,
   prepareDatabasePath,
@@ -11,7 +11,7 @@ import {
   pathStat,
   withRestrictiveUmask,
 } from "./filesystem.js";
-import { RuntimeEligibilityError } from "./runtime.js";
+import { assertHostRuntimeEligibility, RuntimeEligibilityError } from "./runtime.js";
 import {
   APPLICATION_ID,
   CURRENT_SCHEMA_VERSION,
@@ -418,6 +418,7 @@ function readAndValidateStore(db: DatabaseSync, databasePath: string): StoreMeta
 }
 
 export function initializeStore(options: InitializeStoreOptions): DurableStore {
+  assertStorageRuntimeEligibility(options);
   const databasePath = prepareDatabasePath(options);
   assertSecureDatabaseArtifacts(databasePath);
   if (pathStat(databasePath) !== undefined) {
@@ -492,6 +493,7 @@ export function initializeStore(options: InitializeStoreOptions): DurableStore {
 // Concurrent copying is not an atomic backup: corruption fails closed, and the
 // selected original is revalidated before writer setup and before handle return.
 function withStoreSnapshot<T>(databasePath: string, validate: (reader: DatabaseSync) => T): T {
+  assertHostRuntimeEligibility();
   if (pathStat(`${databasePath}-journal`) !== undefined) {
     throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", "rollback-journal recovery requires operator review");
   }
@@ -534,6 +536,7 @@ export function preflightStoreShape(
 }
 
 export function openStore(options: StorageConnectionOptions): DurableStore {
+  assertStorageRuntimeEligibility(options);
   const databasePath = prepareDatabasePath(options);
   assertSecureDatabaseArtifacts(databasePath);
   if (pathStat(databasePath) === undefined) {
@@ -577,6 +580,7 @@ export function openStore(options: StorageConnectionOptions): DurableStore {
  * to an intermediate version deliberately stops below current. Never use this
  * to serve ordinary operations. */
 export function openMigratedStore(options: StorageConnectionOptions, kind: StoreShapeKind): DurableStore {
+  assertStorageRuntimeEligibility(options);
   const databasePath = prepareDatabasePath(options);
   assertSecureDatabaseArtifacts(databasePath);
   if (pathStat(databasePath) === undefined) {

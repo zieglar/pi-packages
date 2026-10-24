@@ -43,6 +43,11 @@ strict Node `v24.21.0` guard in both launcher and actual server. A mismatch exit
 78, without replacing the check with a preflight subprocess. This verifies the
 running Node version, not binary provenance.
 
+The production Store's exact dual-runtime policy (24.21.0 / 24.22.1) does not
+expand this isolated debug derivative's pin. Its fatal-monitor and debug-launcher
+success tests run only on 24.21.0; 24.22.1 still must be refused with exit 78.
+Production Host/MCP and local-plugin qualification are separate from those tests.
+
 ## Events and interpretation
 
 - Shell/launcher: `LAUNCH_STARTED`, `NODE_RESOLVED`, `NODE_VERSION`,

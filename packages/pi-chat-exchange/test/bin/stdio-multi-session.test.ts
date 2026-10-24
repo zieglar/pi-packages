@@ -9,19 +9,24 @@ import { initializeStore, openStore } from "../../src/storage/store.js";
 import { readCurrentOwnership, readSessionBindings } from "../../src/storage/ownership.js";
 import { readParticipantByEndpoint } from "../../src/storage/participant.js";
 
-it("actual MCP process intersects loaded/current grants, retains B/shared reception, denies invalid policy on all tools", { timeout: 30_000 }, async () => {
+const qualificationChildren = [...new Set([process.env.CE_TEST_NODE_A, process.env.CE_TEST_NODE_B]
+  .filter((path): path is string => typeof path === "string" && path.length > 0))];
+if (qualificationChildren.length === 0) qualificationChildren.push(process.execPath);
+
+it.each(qualificationChildren)("actual MCP child %s intersects loaded/current grants, retains B/shared reception, denies invalid policy on all tools", { timeout: 30_000 }, async (childNode) => {
   const f = await multiSessionFixture();
   await f.api.register({ expectedRevision: f.api.revision(), registration: { endpointId: "pi/B", runtimeSessionId: "real-B", payloadRead: true, ack: true } });
   const loaded = f.selected();
   const store = initializeStore({ directory: loaded.config.store.directory, filename: loaded.config.store.file });
   const pi = new CeEndpointHost(store, { adapter: "pi", allowlist: [{ endpointId: "pi/A" }, { endpointId: "pi/B" }], recipients: [{ adapter: "chatgpt", endpointId: "chatgpt/main" }], exchangeNamespace: loaded.config.exchange.namespace, exchangeIdempotencyKey: loaded.config.exchange.idempotencyKey, leaseTtlSeconds: 300, payloadRead: { enabled: true }, ack: { enabled: true } });
   pi.beginSession("pi/A"); pi.beginSession("pi/B");
-  const transport = new StdioClientTransport({ command: process.execPath, args: [resolve("dist/bin/mcp-stdio.js"), "--config", loaded.bindingPath], stderr: "pipe" });
+  const transport = new StdioClientTransport({ command: childNode, args: [resolve("dist/bin/mcp-stdio.js"), "--config", loaded.bindingPath], stderr: "pipe" });
   let diagnostics = ""; transport.stderr?.on("data", (b) => { diagnostics += String(b); });
   const client = new Client({ name: "multi-session-fixture", version: "1" });
   try {
     await client.connect(transport);
     expect((await client.listTools()).tools.map((t) => t.name)).toEqual(["ping", "ce_send", "ce_inbox_list", "ce_read_payload", "ce_ack"]);
+    expect((await client.callTool({ name: "ping", arguments: {} })).isError).not.toBe(true);
     const send = (to: string, key: string) => client.callTool({ name: "ce_send", arguments: { to, text: "synthetic-chatgpt-text", idempotencyKey: key } });
     const a = await send("pi/A", "a"); const b = await send("pi/B", "b");
     expect(a.isError).not.toBe(true); expect(b.isError).not.toBe(true);

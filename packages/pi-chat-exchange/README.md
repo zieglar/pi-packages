@@ -6,7 +6,7 @@
 
 ## 当前支持什么
 
-- Pi 1.3.0 扩展；Node.js **24.21.0** 的私有 SQLite Store。
+- Pi 1.3.0 扩展；精确 Node.js **24.21.0 或 24.22.1** 的私有 SQLite Store（不是 `>=24`）。
 - ChatGPT 侧可使用 Secure MCP Tunnel（`tunnel-client 0.0.16`），或独立的 Desktop 本地 stdio 插件路径。两种部署不要同时占用同一个 Endpoint。
 - `/ce-tunnel` 提供设置向导、状态、显式后台 Start/Stop；Advanced Messaging 为当前 Pi Session 生成互补配置。
 - 双方共享同一个 Store 和 Exchange，但各自持有独立 Endpoint / Session / Ownership。收件人是显式 allowlist，不自动发现。
@@ -24,7 +24,7 @@ mise exec node@24.21.0 -- pnpm --dir packages/pi-chat-exchange run build
 mise exec node@24.21.0 -- pi -e ./packages/pi-chat-exchange/pi-extension/index.ts
 ```
 
-若未使用 mise，请用已安装的 Node 24.21.0 运行同样命令；不要切换全局 Node。已经安装此扩展时不要再用 `-e` 加载第二份。
+以上以默认开发版本 24.21.0 演示；24.22.1 也须通过完整 SQLite 身份、必要编译选项与 API 校验。未使用 mise 时，用可信绝对路径的已安装批准 Node 运行同样命令；不要切换全局 Node。Pi host 与 MCP child 独立校验，不要求使用同一 executable。已经安装此扩展时不要再用 `-e` 加载第二份。
 
 运行时选择不依赖 mise：显式可信绝对 `CE_NODE_PATH` 只配置 Tunnel MCP child；未设置时验证当前 Node、受控系统位置及兼容旧 mise 位置，不搜索项目 PATH。Pi host 自身仍须由批准 Node 启动（可用其绝对路径执行已安装 Pi 的 JavaScript 入口）；另配 child 不能修复正在运行的 host。显式 `CE_TUNNEL_CLIENT_PATH` 支持非 Homebrew 安装，缺失或不可信 client 不会触发 spawn。详见 [Tunnel 设置](docs/tunnel-setup.md)。Desktop 本地 stdio 分发包默认未配置；仅在本机验证 Node 后生成绝对命令，不包含开发机路径，且 Secure Tunnel 使用者无需 Marketplace 插件。
 

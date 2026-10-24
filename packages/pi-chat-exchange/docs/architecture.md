@@ -86,7 +86,7 @@ CE Receipt、Pi UI 通知、Tunnel health、runtime 执行事实和 Wayforge 工
 
 ## Storage 运行契约
 
-精确批准 Node **24.21.0**，SQLite **3.53.4** 及 source identity，平台 macOS arm64 / Linux x64；还需 approved detectable local filesystem、当前用户 ownership、目录 0700、DB/WAL/SHM 0600、非 symlink final artifacts。writers 使用 defensive mode、WAL、synchronous FULL、foreign keys、trusted-schema OFF、有界 busy wait；macOS 另有 fullfsync/checkpoint_fullfsync。
+精确批准 Node **24.21.0 或 24.22.1**，不接受其他 patch、25.x 或范围匹配。每个 registry tuple 绑定 SQLite **3.53.4**、source identity `2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc`、必要编译选项（`THREADSAFE=1`、`MUTEX_PTHREADS`；禁止 `OMIT_WAL`、`OMIT_FOREIGN_KEY`、`OMIT_TRIGGER`、`OMIT_CHECK`、`OMIT_COMPILEOPTION_DIAGS`）及实际 defensive/statement/transaction-state API 检查。Store 路径准备前即拒绝不合格 runtime；环境版本标签不是资格证据，实测矩阵与证据见 [Runtime qualification](runtime-qualification.md)。平台 allowlist 仍为 macOS arm64 / Linux x64；此次双版本实测仅 macOS arm64，不等于 Linux 新增验收。还需 approved detectable local filesystem、当前用户 ownership、目录 0700、DB/WAL/SHM 0600、非 symlink final artifacts。writers 使用 defensive mode、WAL、synchronous FULL、foreign keys、trusted-schema OFF、有界 busy wait；macOS 另有 fullfsync/checkpoint_fullfsync。
 
 migration ledger/checksum、application/store identity、integrity 与 restore hold 会拒绝 foreign/newer/corrupt Store，不自动 reset。Node 25 即使能执行 Pi UI，也不代表可以打开 CE Store。精确 gate 以 `src/storage/runtime.ts` 与 [Storage contract](storage-contract.md) 为准；受限文件权限并不能消除所有 TOCTOU、mount substitution、OS crash/power loss 风险。
 

@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { openStorageConnection, type StorageConnectionOptions } from "./connection.js";
+import { assertStorageRuntimeEligibility, openStorageConnection, type StorageConnectionOptions } from "./connection.js";
 import { StoreLifecycleError } from "./errors.js";
 import { assertSecureDatabaseArtifacts, pathStat, prepareDatabasePath } from "./filesystem.js";
 import {
@@ -329,6 +329,7 @@ const APPROVED_PATHS: readonly (readonly [number, number])[] = [
 ];
 
 export function migrateStore(options: MigrateStoreOptions): DurableStore {
+  assertStorageRuntimeEligibility(options);
   const approved = APPROVED_PATHS.some(
     ([fromVersion, toVersion]) => options.fromVersion === fromVersion && options.toVersion === toVersion,
   );

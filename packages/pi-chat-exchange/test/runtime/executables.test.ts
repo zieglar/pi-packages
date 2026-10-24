@@ -25,7 +25,7 @@ describe("executable admission", () => {
   it("admits a trusted absolute executable with spaces outside mise", () => {
     const path = binary(fixture(), "approved node");
     expect(admitExecutable(path)).toBe(path);
-    expect(qualifyNodeExecutable(path).nodeVersion).toBe("v24.21.0");
+    expect(qualifyNodeExecutable(path).nodeVersion).toBe(process.version);
   });
   it("validates symlink targets and canonicalizes a safe link", () => {
     const root = fixture(); const path = binary(root); const link = join(root, "node-link");
@@ -70,7 +70,7 @@ describe("executable admission", () => {
     const path = binary(fixture());
     execFileSync("/bin/chmod", ["+a", "everyone deny delete", path]);
     try {
-      expect(qualifyNodeExecutable(path).nodeVersion).toBe(APPROVED_NODE_VERSION);
+      expect(qualifyNodeExecutable(path).nodeVersion).toBe(process.version);
       expect(execFileSync("/bin/ls", ["-lde", path], { encoding: "utf8" })).toContain("deny delete");
     } finally { execFileSync("/bin/chmod", ["-N", path]); }
   });
@@ -101,8 +101,8 @@ describe("qualified Node selection", () => {
     const root = fixture(); const path = binary(root);
     expect(resolveApprovedNode({ env: {}, execPath: "/missing/current", systemDirectories: [root] })).toBe(path);
   });
-  it("retains a validated legacy mise candidate without requiring mise", () => {
-    const root = fixture(); const dir = join(root, "installs/node/24.21.0/bin"); mkdirSync(dir, { recursive: true });
+  it.each(["24.21.0", "24.22.1"])("retains a validated legacy mise %s location without requiring mise", (version) => {
+    const root = fixture(); const dir = join(root, `installs/node/${version}/bin`); mkdirSync(dir, { recursive: true });
     const path = binary(dir);
     expect(resolveApprovedNode({ env: { MISE_DATA_DIR: root }, execPath: "/missing/current", systemDirectories: [] })).toBe(path);
   });
@@ -115,10 +115,14 @@ describe("qualified Node selection", () => {
   it.each([
     { nodeVersion: "v24.21.1" }, { sqliteVersion: "unapproved" },
     { sqliteSourceId: "unapproved" }, { platform: "unsupported" },
+    { compileOptions: undefined }, { compileOptions: ["THREADSAFE=0"] },
+    { sqliteCapabilities: undefined }, { sqliteCapabilities: ["defensive"] },
   ])("rejects well-formed but unapproved probe identity %j", (override) => {
     const path = join(fixture(), "wrong-node");
     const identity = { nodeVersion: APPROVED_NODE_VERSION, sqliteVersion: APPROVED_SQLITE_VERSION,
-      sqliteSourceId: APPROVED_SQLITE_SOURCE_ID, platform: "linux", arch: "x64", ...override };
+      sqliteSourceId: APPROVED_SQLITE_SOURCE_ID, platform: "linux", arch: "x64",
+      compileOptions: ["THREADSAFE=1", "MUTEX_PTHREADS"],
+      sqliteCapabilities: ["defensive", "statement-get", "statement-all", "statement-run", "transaction-state"], ...override };
     writeFileSync(path, `#!/bin/sh\nprintf '%s' '${JSON.stringify(identity)}'\n`, { mode: 0o700 });
     expect(() => qualifyNodeExecutable(path)).toThrow("CE_NODE_INELIGIBLE");
   });
@@ -126,7 +130,7 @@ describe("qualified Node selection", () => {
     const path = binary(fixture());
     const before = process.env.NODE_OPTIONS;
     process.env.NODE_OPTIONS = "--require=/missing/private-hook.cjs";
-    try { expect(qualifyNodeExecutable(path).nodeVersion).toBe("v24.21.0"); }
+    try { expect(qualifyNodeExecutable(path).nodeVersion).toBe(process.version); }
     finally { if (before === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = before; }
   });
 });
@@ -144,7 +148,7 @@ console.log(JSON.stringify({node:process.version, executable:process.execPath, s
     cwd: root, env: { PATH: "/usr/bin:/bin", HOME: root }, encoding: "utf8",
     timeout: 10_000, maxBuffer: 16_384, stdio: ["ignore", "pipe", "pipe"],
   }));
-  expect(result).toEqual({ node: "v24.21.0", executable: node, sameStore: true });
+  expect(result).toEqual({ node: process.version, executable: node, sameStore: true });
 });
 
 describe("client selection", () => {

@@ -55,7 +55,7 @@ function peer(session: string, profile: string, dir: string) {
 }
 
 it("composes independent Pi factory OS processes, current-policy gates and fixed-sender MCP with independent durable evidence", { timeout: 60_000 }, async () => {
-  expect(process.version).toBe("v24.21.0");
+  expect(["v24.21.0", "v24.22.1"]).toContain(process.version);
   const f = await multiSessionFixture();
   const peers: ReturnType<typeof peer>[] = [];
   let client: Client | undefined; let transport: StdioClientTransport | undefined;
@@ -75,7 +75,7 @@ it("composes independent Pi factory OS processes, current-policy gates and fixed
     const a = spawn("real-A"), b = spawn("real-B"), c = spawn("real-C");
     const identities = await Promise.all([a.ready, b.ready, c.ready]);
     expect(new Set([process.pid, ...identities.map(x => x.pid)]).size).toBe(4);
-    for (const [index, id] of identities.entries()) { expect(id.node).toBe("v24.21.0"); expect(id.pid).toBe([a, b, c][index]!.child.pid); }
+    for (const [index, id] of identities.entries()) { expect(id.node).toBe(process.version); expect(id.pid).toBe([a, b, c][index]!.child.pid); }
     console.info("synthetic process identities", { parent: process.pid, workers: identities });
     const starts = await Promise.all([a.request("start"), b.request("start")]);
     console.info("synthetic start diagnostics", starts);

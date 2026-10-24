@@ -1,6 +1,6 @@
 # Pi Chat Exchange 扩展指南
 
-当前运行基线：**Pi 1.3.0 / Node.js 24.21.0**。本页说明 Pi 适配器与工具契约；从零开始请先走[用户指南](../docs/tunnel-setup.md)。历史 B3 文档中的 Pi 0.86.1 / NOT_RUN 是当时切片记录，不代表当前基线。
+当前运行基线：**Pi 1.3.0 / 精确 Node.js 24.21.0 或 24.22.1**，另须通过 Store SQLite tuple/API 门槛；Pi host 和 MCP child 分别校验，无需使用同一 executable。示例保持默认开发版本 24.21.0。本页说明 Pi 适配器与工具契约；从零开始请先走[用户指南](../docs/tunnel-setup.md)。历史 B3 文档中的 Pi 0.86.1 / NOT_RUN 是当时切片记录，不代表当前基线。
 
 ## 加载与两种配置方式
 

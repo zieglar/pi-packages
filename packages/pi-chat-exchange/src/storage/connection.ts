@@ -32,6 +32,10 @@ export interface StorageConnectionOptions extends DatabasePathOptions {
   readonly runtimeIdentity?: () => RuntimeIdentity;
 }
 
+export function assertStorageRuntimeEligibility(options: StorageConnectionOptions): void {
+  assertRuntimeEligibility((options.runtimeIdentity ?? readRuntimeIdentity)());
+}
+
 function readPragma(db: DatabaseSync, name: string): SQLOutputValue | undefined {
   const row = db.prepare(`PRAGMA ${name}`).get();
   return row === undefined ? undefined : Object.values(row)[0];
@@ -85,8 +89,7 @@ export function openStorageConnection(
     );
   }
 
-  const identity = (options.runtimeIdentity ?? readRuntimeIdentity)();
-  assertRuntimeEligibility(identity);
+  assertStorageRuntimeEligibility(options);
 
   const databasePath = prepareDatabasePath(options);
   assertSecureDatabaseArtifacts(databasePath);

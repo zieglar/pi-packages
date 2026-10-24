@@ -11,7 +11,7 @@
 
 ## Desktop 适用条件与打包
 
-要求：支持 local plugins 的 ChatGPT Desktop、macOS 或 Linux、Store-approved **Node.js 24.21.0**、仓库 pnpm 12.9.1。Desktop 插件使用 `plugin.json`、根 `mcp.json`、`${PLUGIN_ROOT}` 与本地 stdio；不要求公网 URL 或 Secure MCP Tunnel。
+要求：支持 local plugins 的 ChatGPT Desktop、macOS 或 Linux、Store-approved 精确 **Node.js 24.21.0 或 24.22.1**（还须满足完整 SQLite tuple/API 门槛）、仓库 pnpm 12.9.1。双版本此次实测为 macOS arm64，未新增 Linux/Desktop UI 验收。Desktop 插件使用 `plugin.json`、根 `mcp.json`、`${PLUGIN_ROOT}` 与本地 stdio；不要求公网 URL 或 Secure MCP Tunnel。
 
 官方格式参考（客户端入口与组织资格以其当前文档为准）：
 

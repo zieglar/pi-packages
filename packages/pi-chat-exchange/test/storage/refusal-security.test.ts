@@ -73,13 +73,16 @@ it("F3: revalidates compatibility on the selected writer before WAL setup", () =
   modifier.exec("PRAGMA journal_mode=DELETE");
   modifier.close();
   let afterChange: ReturnType<typeof snapshot> = [];
+  let runtimeChecks = 0;
   expect(() => openStore({ ...options, runtimeIdentity: () => {
-    // This seam runs after snapshot preflight, before the writer is opened.
+    // First check precedes path preparation; second follows snapshot preflight.
+    if (++runtimeChecks === 1) return readRuntimeIdentity();
     const changed = new DatabaseSync(path);
     changed.exec("PRAGMA user_version=0");
     changed.close();
     afterChange = snapshot(options.directory);
     return readRuntimeIdentity();
   } })).toThrowError(expect.objectContaining({ code: "STORAGE_INCOMPATIBLE" }));
+  expect(runtimeChecks).toBe(2);
   expect(snapshot(options.directory)).toEqual(afterChange);
 });

@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { openStorageConnection, type StorageConnectionOptions } from "./connection.js";
+import { assertStorageRuntimeEligibility, openStorageConnection, type StorageConnectionOptions } from "./connection.js";
 import { StoreLifecycleError } from "./errors.js";
 import { assertSecureDatabaseArtifacts, pathStat, prepareDatabasePath } from "./filesystem.js";
 import { classifyStoreShape, openMigratedStore, openStore, preflightStoreShape, type DurableStore } from "./store.js";
@@ -58,6 +58,7 @@ export function classifyRecoveryFailure(error: unknown): unknown {
 }
 
 export function recoverTrustRoot(options: RecoverTrustRootOptions): DurableStore {
+  assertStorageRuntimeEligibility(options);
   const databasePath = prepareDatabasePath(options);
   assertSecureDatabaseArtifacts(databasePath);
   if (pathStat(databasePath) === undefined) {

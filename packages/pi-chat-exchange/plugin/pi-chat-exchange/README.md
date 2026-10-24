@@ -19,7 +19,7 @@ launcher 从系统 home 取得固定 binding 路径，不接受模型参数或�
 ## Runtime 与已知部署限制
 
 - 支持 local plugins 的 ChatGPT Desktop；macOS 或 Linux。
-- Store-approved **Node.js 24.21.0**。`mcp.json` 的 command 必须指向本机可执行的批准 Node，不能依赖 Desktop 受限 PATH。
+- Store-approved 精确 **Node.js 24.21.0 或 24.22.1**，另需 SQLite 身份、编译选项和 API 门槛通过。`mcp.json` 的 command 必须指向本机可信可执行的批准 Node，不能依赖 Desktop 受限 PATH。此次双版本实测仅 macOS arm64，不代表 Linux/Desktop UI 安装验收。
 - 分发包的 `mcp.json` 默认没有启用的 server；既不嵌入开发机路径，也不回退到未验证的 `node`。先将 ZIP 解压到本机私有、操作者拥有的目录，再执行下面的显式配置。
 - 重新打包/刷新插件后用新对话发现工具；不要同时用 Tunnel 与本地插件争用同一个 Endpoint。
 

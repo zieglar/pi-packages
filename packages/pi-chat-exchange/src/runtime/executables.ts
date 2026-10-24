@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { accessSync, constants, existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize, relative, sep } from "node:path";
-import { APPROVED_NODE_VERSION, assertRuntimeEligibility, type RuntimeIdentity } from "../storage/runtime.js";
+import { APPROVED_RUNTIME_TUPLES, REQUIRED_SQLITE_CAPABILITIES, assertRuntimeEligibility, type RuntimeIdentity } from "../storage/runtime.js";
 
 /** These are locations, not PATH search. Every discovered file still needs admission. */
 const SYSTEM_DIRECTORIES = ["/usr/local/bin", "/usr/bin", "/bin", "/opt/homebrew/bin"] as const;
@@ -98,7 +98,22 @@ const { DatabaseSync } = require('node:sqlite');
 const db = new DatabaseSync(':memory:');
 try {
   const row = db.prepare('SELECT sqlite_source_id() AS sourceId').get();
-  process.stdout.write(JSON.stringify({nodeVersion:process.version,sqliteVersion:process.versions.sqlite,sqliteSourceId:row.sourceId,platform:process.platform,arch:process.arch}));
+  const compileOptions = db.prepare('PRAGMA compile_options').all().map(option => {
+    const value = Object.values(option)[0];
+    if (typeof value !== 'string') throw new Error('invalid compile option');
+    return value;
+  }).sort();
+  db.enableDefensive(true);
+  db.exec('PRAGMA writable_schema=ON');
+  if (db.prepare('PRAGMA writable_schema').get()?.writable_schema !== 0) throw new Error('defensive mode unavailable');
+  db.exec('CREATE TABLE runtime_probe (value INTEGER); BEGIN');
+  if (db.isTransaction !== true) throw new Error('transaction state unavailable');
+  if (db.prepare('INSERT INTO runtime_probe VALUES (?)').run(1).changes !== 1
+      || db.prepare('SELECT value FROM runtime_probe').get()?.value !== 1
+      || db.prepare('SELECT value FROM runtime_probe').all().length !== 1) throw new Error('statement APIs unavailable');
+  db.exec('ROLLBACK');
+  if (db.isTransaction !== false) throw new Error('transaction state unavailable');
+  process.stdout.write(JSON.stringify({nodeVersion:process.version,sqliteVersion:process.versions.sqlite,sqliteSourceId:row.sourceId,platform:process.platform,arch:process.arch,compileOptions,sqliteCapabilities:${JSON.stringify(REQUIRED_SQLITE_CAPABILITIES)}}));
 } finally { db.close(); }
 `;
 export function qualifyNodeExecutable(path: string, options: ExecutableTrustOptions = {}): RuntimeIdentity {
@@ -134,7 +149,7 @@ export function resolveApprovedNode(options: ExecutableResolutionOptions = {}): 
   const candidates = [
     options.execPath ?? process.execPath,
     ...(options.systemDirectories ?? SYSTEM_DIRECTORIES).map((directory) => join(directory, "node")),
-    ...(isAbsolute(legacyRoot) ? [join(legacyRoot, "installs/node", APPROVED_NODE_VERSION.slice(1), "bin/node")] : []),
+    ...(isAbsolute(legacyRoot) ? APPROVED_RUNTIME_TUPLES.map(({ nodeVersion }) => join(legacyRoot, "installs/node", nodeVersion.slice(1), "bin/node")) : []),
   ];
   for (const path of new Set(candidates)) {
     try { return qualify(path); } catch { /* Discovery candidates may be absent or unqualified. */ }
