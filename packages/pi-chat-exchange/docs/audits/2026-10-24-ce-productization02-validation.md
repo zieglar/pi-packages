@@ -36,6 +36,16 @@ Earlier baseline/activation runs used an existing harness that injected process 
 
 The corrected activation and multi-session harnesses inject synthetic list/inspect seams into all managers and assert no default inspection, spawn or signalling calls. The doctor harness asserts no Manager/Store creation or append. Final parent command tests ran with these corrections; prior affected isolation claims are superseded, not erased.
 
+## Follow-up qualification of policy-source fencing and durable history
+
+Runtime/test follow-up commit: `7ed30efeb9035713db0dd4a94e7ccece41d5d890` (on `34bf64ba4519d3b9a552bf426e54400faacc1424`). This section supplements, not replaces, the earlier runs.
+
+- Fallback-source RED reproduced two distinct failures: absent-profile standalone binding did not end, and fallback allowlist drift during confirmation was missed (2 failed / 35 passed, `/tmp/ceprod02-r1-b1-red.log`). The corrected fingerprint follows explicit → validated generated → fallback precedence, including the actual fallback file without requiring a Tunnel profile. Positive/drift tests cover absent/nonmessaging profile and explicit policy; malformed selected generation still refuses.
+- Legacy and multi-session deactivation tests now seed nonempty synthetic Message and reception Receipt history through existing Host APIs. They compare exact durable rows, UTF-8 payload bytes/hex and identifiers after first and repeated deactivation; the other Pi Owner row remains unchanged.
+- A temporary test-only destructive mutant disabled foreign keys and dropped the receipt-delete guard only in a disposable synthetic database, then deleted its message/receipt rows. Both normal and revoked cleanup cases failed the new history equality assertion (2 failed / 27 skipped, `/tmp/ceprod02-r1-c1-history-deletion-mutant.log`); this was not a trigger/fixture failure. Mutant code was removed before GREEN and commit. Production storage schema/guards are unchanged. This demonstrates the preservation oracle detects missing history; it is not evidence of a production deletion defect.
+
+Parent independently reran the same command matrix above after the follow-up: check, typecheck, build all exit 0; eight targeted files / **143 tests PASS**; packaged plugin file / **7 tests PASS**. Logs `/tmp/ceprod02-parent-r2-{check,typecheck,build,targeted,plugin}.log` include the actual exit code. Child final 143-test logs are `/tmp/ceprod02-r1-final-{build,green,typecheck,check}.log`. No real client/runtime/Store was used; full-suite and manual/live limits below remain unchanged.
+
 ## Explicit limits
 
 - Full suite NOT RUN: existing real-client compatibility tests execute an installed client; broader unreviewed process harnesses are not assumed safe under the protected-live-runtime constraints.
