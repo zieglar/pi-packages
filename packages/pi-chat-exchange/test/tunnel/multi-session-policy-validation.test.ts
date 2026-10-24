@@ -70,11 +70,23 @@ it.each(["digest", "missing-sidecar", "mode", "special-mode", "symlink", "hardli
   if (kind === "digest") fs.writeFileSync(path, "{}");
   if (kind === "missing-sidecar") fs.unlinkSync(path);
   if (kind === "mode") fs.chmodSync(path, 0o644);
-  if (kind === "special-mode") fs.chmodSync(path, 0o2600);
+  if (kind === "special-mode") {
+    // macOS strips setgid (0o2000) from a wheel-group file for a non-root caller,
+    // silently leaving a valid 0o600 sidecar; setuid survives for the owner, so
+    // prove the special bits are actually present before asserting the rejection.
+    fs.chmodSync(path, 0o4600);
+    expect(fs.statSync(path).mode & 0o7777).toBe(0o4600);
+  }
   if (kind === "symlink") { const renamed = `${path}.old`; fs.renameSync(path, renamed); fs.symlinkSync(renamed, path); }
   if (kind === "hardlink-key") { fs.unlinkSync(path); fs.linkSync(f.credentialFile, path); }
   if (kind === "directory-symlink") { const dir = join(f.dir, ".ce-bindings"); fs.renameSync(dir, `${dir}.old`); fs.symlinkSync(`${dir}.old`, dir); }
   expect(() => multi.readSelectedMultiSessionPolicy(f.profilePath)).toThrow();
+});
+it("accepts a sidecar whose real mode is exactly private 0o600", async () => {
+  const f = await fixture(); const path = `${f.loaded.bindingPath}.pi-allowlist.json`;
+  fs.chmodSync(path, 0o600);
+  expect(fs.statSync(path).mode & 0o7777).toBe(0o600);
+  expect(multi.readSelectedMultiSessionPolicy(f.profilePath).manifest.registrations).toHaveLength(1);
 });
 it.skipIf(process.geteuid?.() !== 0)("refuses wrong file owner (requires chown authority)", async () => {
   const f = await fixture(); fs.chownSync(`${f.loaded.bindingPath}.pi-allowlist.json`, 12345, 12345);
