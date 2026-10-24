@@ -250,12 +250,34 @@ it.each(["unbound", "unloaded", "runtime", "mutex", "uncertain"])("sessions refu
 
 it.each([false, true])("deactivate ends only current A, revoked=%s; B, registrations and history survive with no transport effects", async revoked => {
   const f = await fixture(); const a = await f.runtime("real-A"); const b = await f.runtime("real-B"); await a.start(); await b.start();
+  const store = seam.stores[0]!; const config = readSelectedMultiSessionPolicy(f.profilePath).config;
+  const chat = new CeEndpointHost(store, { adapter: "chatgpt", exchangeNamespace: config.exchange.namespace,
+    exchangeIdempotencyKey: config.exchange.idempotencyKey, allowlist: [{ endpointId: "chatgpt/main" }],
+    recipients: config.recipients, payloadRead: { enabled: true }, ack: { enabled: true } });
+  chat.beginSession("chatgpt/main"); shutdowns.push(async () => { chat.end("chatgpt/main"); });
+  for (const [endpoint, host] of [["pi/A", seam.hosts[0]!], ["pi/B", seam.hosts[1]!]] as const) {
+    const sent = chat.send("chatgpt/main", { to: endpoint, text: `synthetic retained history · ${endpoint} 非空 🧪`, idempotencyKey: `history-${endpoint}` });
+    const payload = host.readPayload(endpoint, { messageId: sent.messageId });
+    host.acknowledge(endpoint, { messageId: sent.messageId, payloadDigest: payload.payloadDigest,
+      payloadLength: payload.payloadLength, messageCreatedAuditSequence: payload.auditSequence });
+  }
+  const history = () => ({ messages: store.database.prepare("SELECT *, hex(payload_body) AS payload_hex FROM message ORDER BY message_id").all(),
+    receipts: store.database.prepare("SELECT * FROM delivery_ack_receipt ORDER BY receipt_id").all() });
+  const before = history(); expect(before.messages).toHaveLength(2); expect(before.receipts).toHaveLength(2);
+  expect(before.messages.map(row => row.payload_hex).sort()).toEqual(["pi/A", "pi/B"].map(endpoint => Buffer.from(`synthetic retained history · ${endpoint} 非空 🧪`).toString("hex").toUpperCase()).sort());
+  const bStatus = seam.hosts[1]!.status("pi/B");
+  const bOwner = () => store.database.prepare("SELECT * FROM participant_ownership WHERE participant_id = ?").get(bStatus.participantId!);
+  const originalBOwner = bOwner(); expect(originalBOwner).toBeDefined();
   if (revoked) { await f.api.revoke({ expectedRevision: f.api.revision(), endpointId: "pi/A" }); await vi.advanceTimersByTimeAsync(30_000); }
+  // Revocation's heartbeat may renew B; capture its owner row at the release boundary.
+  const ownerBeforeRelease = bOwner();
   const selected = fs.readFileSync(f.profilePath, "utf8"); const mapping = a.entries.findLast(e => e.customType === "ce-mapping")!.data;
   const manager = seam.manager as ReturnType<typeof createBackgroundTunnelManager>;
   const effects = [vi.spyOn(manager, "start"), vi.spyOn(manager, "stop"), vi.spyOn(manager, "status")];
   const aEnd = vi.spyOn(seam.hosts[0]!, "end"); const bEnd = vi.spyOn(seam.hosts[1]!, "end");
-  a.ctx.ui.notify.mockClear(); await a.command("deactivate"); await a.command("deactivate");
+  a.ctx.ui.notify.mockClear(); await a.command("deactivate");
+  expect(history()).toEqual(before); expect(bOwner()).toEqual(ownerBeforeRelease);
+  await a.command("deactivate"); expect(history()).toEqual(before); expect(bOwner()).toEqual(ownerBeforeRelease);
   expect(aEnd).toHaveBeenCalledTimes(1); expect(bEnd).not.toHaveBeenCalled();
   expect(a.notices()).toContain("Pi messaging deactivated"); expect((await b.call("ce_inbox_list")).isError).not.toBe(true);
   expect(a.entries.findLast(e => e.customType === "ce-mapping")!.data).toEqual(mapping);

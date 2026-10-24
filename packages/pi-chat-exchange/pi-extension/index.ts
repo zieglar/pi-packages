@@ -1580,10 +1580,14 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         const piSessionId = ctx.sessionManager.getSessionId();
         const environment = runtimeEnvironment();
         const configuration = (): string => {
-          if (process.env.CE_ALLOWLIST) return readFileSync(process.env.CE_ALLOWLIST, "utf8");
+          if (process.env.CE_ALLOWLIST) return JSON.stringify(["explicit", allowlistPath(), readFileSync(allowlistPath(), "utf8")]);
           const profilePath = resolveTunnelProfilePath({ env: process.env });
-          return JSON.stringify([readFileSync(profilePath, "utf8"), multiPolicy === undefined
-            ? readGeneratedPiAllowlist(profilePath) : readSelectedMultiSessionPolicy(profilePath)]);
+          // Match loadAllowlist precedence: validate any selected generated
+          // pair before considering the extension-local fallback. Missing or
+          // nonmessaging profiles may select fallback; malformed pairs may not.
+          const selected = multiPolicy === undefined ? readGeneratedPiAllowlist(profilePath) : readSelectedMultiSessionPolicy(profilePath);
+          return JSON.stringify([profilePath, existsSync(profilePath) ? readFileSync(profilePath, "utf8") : null,
+            selected === undefined ? ["fallback", allowlistPath(), readFileSync(allowlistPath(), "utf8")] : ["generated", selected]]);
         };
         const assertIdentity = (): void => {
           if (controller.signal.aborted || generation !== state || state.stopping ||

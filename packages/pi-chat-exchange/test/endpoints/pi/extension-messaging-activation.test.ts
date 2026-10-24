@@ -2,10 +2,12 @@ import fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createTunnelProfileSetup } from "../../../dist/tunnel/setup.js";
+import { createTunnelProfileSetup, readGeneratedPiAllowlist } from "../../../dist/tunnel/setup.js";
 import { createBackgroundTunnelManager } from "../../../dist/tunnel/background-manager.js";
 import { parseTunnelMcpCommand, buildTunnelMcpCommand, buildTunnelProfile, serializeTunnelProfile } from "../../../dist/tunnel/profile.js";
 import { parseTunnelProfile } from "../../../dist/tunnel/background-manager.js";
+import { CeEndpointHost } from "../../../dist/host/endpoint-host.js";
+import type { McpBindingConfig } from "../../../dist/host/mcp-binding-config.js";
 import type { DurableStore } from "../../../dist/storage/store.js";
 import type { CeSessionHost, CeMappingIdentifiers } from "../../../src/endpoints/pi/session-host.js";
 
@@ -13,7 +15,16 @@ const seam = vi.hoisted(() => ({ hosts: [] as CeSessionHost[], stores: [] as Dur
   defaultExec: vi.fn(() => { throw Error("FORBIDDEN default process inspection"); }),
   defaultSpawn: vi.fn(() => { throw Error("FORBIDDEN default process spawn"); }),
   signal: vi.fn(() => { throw Error("FORBIDDEN process signal"); }),
+  fallback: undefined as string | undefined,
 }));
+// Virtualize ONLY this isolated extension's default allowlist path; never
+// create/read an installed or parent runtime allowlist.
+vi.mock("node:fs", async original => {
+  const actual = await original<typeof import("node:fs")>();
+  return { ...actual, readFileSync: (...args: Parameters<typeof actual.readFileSync>) =>
+    String(args[0]) === new URL("../../../pi-extension/allowlist.json", import.meta.url).pathname && seam.fallback !== undefined
+      ? seam.fallback : actual.readFileSync(...args) };
+});
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), execFile: seam.defaultExec, spawn: seam.defaultSpawn }));
 // Inject process seams into EVERY manager, including the extension-created one.
 vi.mock("../../../dist/tunnel/background-manager.js", async original => {
@@ -41,7 +52,7 @@ type Entry = { type: string; customType: string; data: unknown };
 type Context = { mode: string; hasUI: boolean; cwd: string; sessionManager: { getSessionId(): string; getSessionFile(): string; getBranch(): Entry[] }; ui: { confirm: ReturnType<typeof vi.fn>; custom: ReturnType<typeof vi.fn>; notify: ReturnType<typeof vi.fn>; setStatus: ReturnType<typeof vi.fn> } };
 type Handler = (event: { reason: string }, ctx: Context) => Promise<void>;
 type Command = { handler(args: string, ctx: Context): Promise<void> };
-beforeEach(() => { for (const key of Object.keys(process.env)) if (key.startsWith("CE_")) vi.stubEnv(key, undefined); vi.spyOn(process, "kill").mockImplementation(seam.signal); vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-22T00:00:00Z")); seam.hosts.length = 0; seam.stores.length = 0; seam.confirm.mockReset().mockResolvedValue(true); });
+beforeEach(() => { seam.fallback = undefined; for (const key of Object.keys(process.env)) if (key.startsWith("CE_")) vi.stubEnv(key, undefined); vi.spyOn(process, "kill").mockImplementation(seam.signal); vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-22T00:00:00Z")); seam.hosts.length = 0; seam.stores.length = 0; seam.confirm.mockReset().mockResolvedValue(true); });
 afterEach(async () => {
   for (const end of shutdowns.splice(0)) await end().catch(() => undefined);
   for (const store of new Set(seam.stores.splice(0))) store.close();
@@ -49,7 +60,7 @@ afterEach(async () => {
   vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllEnvs();
   for (const dir of rootDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
-async function fixture() {
+async function fixture(source: "generated" | "absent-profile" | "nonmessaging-profile" | "explicit" = "generated") {
   const dir = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "ce-explicit-activation-"))); rootDirs.push(dir);
   const profilePath = join(dir, "tunnel.yaml"); const key = join(dir, "key");
   fs.writeFileSync(key, "SYNTHETIC-ONLY", { mode: 0o600 });
@@ -66,6 +77,16 @@ async function fixture() {
   const binding = JSON.parse(fs.readFileSync(bindingPath, "utf8"));
   for (const [name, value] of Object.entries({ CE_ALLOWLIST: "", CE_STORE_DIR: binding.store.directory, CE_STORE_FILE: binding.store.file,
     CE_TUNNEL_PROFILE: profilePath, CE_TUNNEL_OFFLINE_TEST: "", CE_LEASE_TTL_SECONDS: "" })) vi.stubEnv(name, value);
+  if (source !== "generated") {
+    const document = JSON.stringify(readGeneratedPiAllowlist(profilePath));
+    if (source === "explicit") {
+      const path = join(dir, "explicit-allowlist.json"); fs.writeFileSync(path, document, { mode: 0o600 }); vi.stubEnv("CE_ALLOWLIST", path);
+    } else {
+      seam.fallback = document;
+      if (source === "absent-profile") fs.unlinkSync(profilePath);
+      else fs.writeFileSync(profilePath, serializeTunnelProfile(buildTunnelProfile({ tunnelId: "tunnel_abcdefgh123456", keyFile: key, healthUrlFile: join(dir, "health.url"), mcpCommand: buildTunnelMcpCommand({ nodePath: "/abs/node", scriptPath: "/abs/mcp-stdio.js", bindingPath: join(dir, "nonmessaging.json") }) })), { mode: 0o600 });
+    }
+  }
   const entries: Entry[] = []; let runtimeId = "runtime-current";
   const events = new Map<string, Handler>(); const commands = new Map<string, Command>();
   const append = vi.fn((customType: string, data: unknown) => { entries.push({ type: "custom", customType, data }); });
@@ -84,6 +105,22 @@ async function fixture() {
     mapping: () => entries.findLast((e) => e.customType === "ce-mapping")?.data as CeMappingIdentifiers | undefined,
     notices: () => ctx.ui.notify.mock.calls.map(([text]) => String(text)).join("\n"),
   };
+}
+function seedHistory(binding: McpBindingConfig) {
+  const store = seam.stores[0]!;
+  const chat = new CeEndpointHost(store, { adapter: "chatgpt", exchangeNamespace: binding.exchange.namespace,
+    exchangeIdempotencyKey: binding.exchange.idempotencyKey, allowlist: [{ endpointId: "chatgpt/main" }],
+    recipients: binding.recipients, payloadRead: { enabled: true }, ack: { enabled: true } });
+  chat.beginSession("chatgpt/main"); shutdowns.push(async () => { chat.end("chatgpt/main"); });
+  const sent = chat.send("chatgpt/main", { to: "pi/main", text: "synthetic history · 非空 🧪", idempotencyKey: "history-before-deactivate" });
+  const pi = seam.hosts[0]!; const payload = pi.readPayload("pi/main", { messageId: sent.messageId });
+  pi.acknowledge("pi/main", { messageId: sent.messageId, payloadDigest: payload.payloadDigest,
+    payloadLength: payload.payloadLength, messageCreatedAuditSequence: payload.auditSequence });
+  const snapshot = () => ({ messages: store.database.prepare("SELECT *, hex(payload_body) AS payload_hex FROM message ORDER BY message_id").all(),
+    receipts: store.database.prepare("SELECT * FROM delivery_ack_receipt ORDER BY receipt_id").all() });
+  const before = snapshot(); expect(before.messages).toHaveLength(1); expect(before.receipts).toHaveLength(1);
+  expect(before.messages[0]!.payload_hex).toBe(Buffer.from("synthetic history · 非空 🧪").toString("hex").toUpperCase());
+  return { snapshot, before };
 }
 function counts() { const db = seam.stores[0]!.database; return { sessions: db.prepare("SELECT count(*) n FROM participant_session").get()!.n,
   capabilities: db.prepare("SELECT count(*) n FROM participant_capability").get()!.n, owners: db.prepare("SELECT count(*) n FROM participant_ownership").get()!.n }; }
@@ -219,15 +256,18 @@ describe("explicit current-session deactivation", () => {
   });
   it("ends once, preserves registration/history, cancels heartbeat and allows explicit activation", async () => {
     const h = await fixture(); await h.start(); await h.activate(); const mapping = h.mapping();
+    const history = seedHistory(h.binding);
     const end = vi.spyOn(seam.hosts[0]!, "end"); const renew = vi.spyOn(seam.hosts[0]!, "renew");
     const profile = fs.readFileSync(h.profilePath, "utf8");
     const participants = seam.stores[0]!.database.prepare("SELECT * FROM participant").all();
-    await h.command("deactivate"); await h.command("deactivate"); await vi.advanceTimersByTimeAsync(30_000);
-    expect(end).toHaveBeenCalledTimes(1); expect(renew).not.toHaveBeenCalled(); expect(counts().owners).toBe(0);
+    await h.command("deactivate"); expect(history.snapshot()).toEqual(history.before);
+    await h.command("deactivate"); expect(history.snapshot()).toEqual(history.before);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(end).toHaveBeenCalledTimes(1); expect(renew).not.toHaveBeenCalled(); expect(counts().owners).toBe(1); // synthetic ChatGPT owner remains
     expect(h.mapping()).toEqual(mapping); expect(fs.readFileSync(h.profilePath, "utf8")).toBe(profile);
     expect(seam.stores[0]!.database.prepare("SELECT * FROM participant").all()).toEqual(participants);
     expect(h.notices()).toContain("Pi messaging deactivated");
-    await h.activate(); expect(counts().owners).toBe(1);
+    await h.activate(); expect(counts().owners).toBe(2); expect(history.snapshot()).toEqual(history.before);
   });
   it("no binding and cancellation write nothing", async () => {
     const h = await fixture(); await h.start(); const before = counts();
@@ -283,4 +323,34 @@ describe("explicit current-session deactivation", () => {
     const end = vi.spyOn(seam.hosts[0]!, "end"); await h.command("deactivate");
     expect(end).not.toHaveBeenCalled(); expect(h.ctx.ui.confirm).not.toHaveBeenCalled(); expect(h.notices()).toContain("CE_TUNNEL_INPUT_UNAVAILABLE");
   });
+});
+
+it.each(["absent-profile", "nonmessaging-profile", "explicit"] as const)("standalone %s source deactivates normally without requiring generated configuration", async source => {
+  const h = await fixture(source);
+  if (source === "explicit") fs.writeFileSync(h.profilePath, "irrelevant malformed profile\n", { mode: 0o600 });
+  await h.start("startup");
+  expect(counts().owners).toBe(1); const end = vi.spyOn(seam.hosts[0]!, "end");
+  await h.command("deactivate"); expect(end).toHaveBeenCalledTimes(1); expect(counts().owners).toBe(0);
+  expect(h.notices()).toContain("Pi messaging deactivated");
+});
+it("standalone fallback allowlist drift during confirmation refuses before end", async () => {
+  const h = await fixture("nonmessaging-profile"); await h.start("startup");
+  const end = vi.spyOn(seam.hosts[0]!, "end");
+  h.ctx.ui.confirm.mockImplementation(async () => { seam.fallback += "\n "; return true; });
+  await h.command("deactivate"); expect(end).not.toHaveBeenCalled(); expect(counts().owners).toBe(1);
+  expect(h.notices()).not.toContain("Pi messaging deactivated"); expect(h.notices()).toContain("CE_HOST_MAPPING_INVALID");
+});
+it("standalone explicit allowlist drift during confirmation refuses before end", async () => {
+  const h = await fixture("explicit"); await h.start("startup");
+  const end = vi.spyOn(seam.hosts[0]!, "end");
+  h.ctx.ui.confirm.mockImplementation(async () => { fs.appendFileSync(process.env.CE_ALLOWLIST!, "\n "); return true; });
+  await h.command("deactivate"); expect(end).not.toHaveBeenCalled(); expect(counts().owners).toBe(1);
+});
+it("a malformed selected generated pair cannot redirect deactivation to the fallback", async () => {
+  const h = await fixture(); await h.start(); await h.activate();
+  seam.fallback = JSON.stringify(readGeneratedPiAllowlist(h.profilePath));
+  const selectedBinding = parseTunnelMcpCommand(parseTunnelProfile(fs.readFileSync(h.profilePath, "utf8")).mcpCommand!).bindingPath;
+  fs.writeFileSync(selectedBinding, "{}", { mode: 0o600 });
+  const end = vi.spyOn(seam.hosts[0]!, "end"); await h.command("deactivate");
+  expect(end).not.toHaveBeenCalled(); expect(h.ctx.ui.confirm).not.toHaveBeenCalled(); expect(counts().owners).toBe(1);
 });
