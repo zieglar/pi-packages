@@ -1,19 +1,19 @@
 # Pi Chat Exchange 扩展指南
 
-当前运行基线：**Pi 1.3.0 / 精确 Node.js 24.21.0 或 24.22.1**，另须通过 Store SQLite tuple/API 门槛；Pi host 和 MCP child 分别校验，无需使用同一 executable。示例保持默认开发版本 24.21.0。本页说明 Pi 适配器与工具契约；从零开始请先走[用户指南](../docs/tunnel-setup.md)。历史 B3 文档中的 Pi 0.86.1 / NOT_RUN 是当时切片记录，不代表当前基线。
+当前运行基线：**Pi 1.3.0 / 精确 Node.js 24.21.0 或 24.22.1**，另须通过 Store SQLite tuple/API 门槛；Pi host 和 MCP child 分别校验，无需使用同一 executable。初次安装先走 [Tunnel 用户指南](../docs/tunnel-setup.md)；Desktop stdio 使用[独立安装路径](../docs/chatgpt-installation.md)。
 
 ## 加载与两种配置方式
 
-在仓库根目录先 build，再显式加载一次：
+在仓库根目录、已选中批准 Node 的 shell 中，先 build 再临时加载一次。mise 不是要求：
 
-```bash
-mise exec node@24.21.0 -- pnpm --dir packages/pi-chat-exchange run build
-mise exec node@24.21.0 -- pi -e ./packages/pi-chat-exchange/pi-extension/index.ts
+```sh
+pnpm --dir packages/pi-chat-exchange run build
+pi -e ./packages/pi-chat-exchange/pi-extension/index.ts
 ```
 
-已安装本地包时不再 `-e` 第二份。支持的配置路径：
+长期跨项目使用可在 build 后 `pi install /absolute/path/to/packages/pi-chat-exchange` 注册本地包；已安装时不要再 `-e` 第二份。批准 Node 的可信绝对路径启动方式见 [安装](../docs/tunnel-setup.md#1-前提与安装)。支持的配置路径：
 
-1. **推荐：Tunnel Advanced Messaging 生成配对。** 从 profile 选中的 immutable binding 读取配套 sidecar，双方 Store/Exchange 一致，绑定当前可信 Pi Session。
+1. **推荐：Tunnel 生成策略。** 初次用 Advanced Messaging 生成配对；多 Session 用显式 convert/register。profile 选中 immutable binding 与配套 sidecar，Store/Exchange 精确一致，每个真实 Pi Session 绑定独立 Endpoint，见[多 Session 指南](../docs/multi-session-usage.md)。
 2. **高级/独立 stdio：操作者维护 allowlist。** 非空 `CE_ALLOWLIST` 优先于生成配置，否则无生成配对时读取扩展目录的 `allowlist.json`。自带 `allowlist.example.json` 是旧式 `mcp/chatgpt-desktop` 与 `pi-main` 标签示例，不是当前 Tunnel `chatgpt/main` ↔ `pi/main` 的通用模板；不要直接复制后假定完成配对。
 
 下面是**完整、虚构、非生成** allowlist，用于理解与独立部署。实际 `sessions` key 必须由可信运行时取得并由操作者核实，不能从日志或文件名猜测：
@@ -89,7 +89,7 @@ Storage 在读取任何正文 bytes 前检查 payload_read scope、ATTACHED Sess
 
 ## 生命周期、状态与恢复
 
-`/ce-status` 展示 Endpoint、registered、Participant/Session、lease、fencing；不是 transport status。`/ce-tunnel status` 才查看 Tunnel。
+`/ce-status` 展示经当前 admission 校验的 native Pi Session、Endpoint、registered、Participant、CE Session、Exchange、lease 和 fencing。CE Session 是 Owner incarnation，不是 native Pi Session；标识符都不是认证凭据。`/ce-tunnel status` 查看 transport；`/ce-tunnel doctor` 只读检查 host/child Node 与 client 信任，不联网或读 Store。
 
 - `session_start` 从可信 `ctx.sessionManager.getSessionId()` 查 allowlist。startup/reload/resume 有 mapping 时经 `resume()` 校验；reload 缺 mapping 拒绝，其他初始化分支可调用初始 beginSession。新/fork 不继承旧 mapping。
 - 成功绑定后 `pi.appendEntry("ce-mapping", ...)` 只保存 identifiers；capability 明文仅在 Host 内存。Heartbeat 默认 30 秒 / TTL 120 秒，仅维持自身 Ownership，不收发消息。
@@ -97,6 +97,7 @@ Storage 在读取任何正文 bytes 前检查 payload_read scope、ATTACHED Sess
 - quit/Session replacement 停 timer、等待 renew，并尝试 end 一次以释放 Ownership、detach。renew/end 未确认即停工具和自动续租，持久 `ce-lifecycle-blocked` 与进程级 deny-only fallback 阻止错误 adoption。
 - 若诊断持久化失败且进程退出，volatile deny fallback 也丢失；重启前需 operator 核实，不能宣称自动恢复安全。
 - 显式 `/ce-tunnel activate` 只在确认生成策略、映射释放证据和 requireUnowned 前提后绑定当前 Session；不把 reload 拒绝变成隐式 provision，不接管过期 Owner。配对变更具体顺序见[生效步骤](../docs/tunnel-setup.md#让保存的策略生效)。
+- `/ce-tunnel deactivate` 经当前 Session 确认后走正常 end/release/detach，停止续租但不停止 Tunnel、不撤销注册、不删除消息；取消不解绑，重复调用不重复 end。已正常释放后 reload 不自动重绑；需显式 activate。未知释放或证据写入失败仍拒绝，不因通知或标记而自授权。
 
 `CE_HOST_AUTHORITY_ABSENT`、UNKNOWN、映射写入失败都不是盲重试信号。BUSY 只有在明确确认适合时才由调用者手动重试；INDETERMINATE 要先停止、另行核实 durable 状态。operator-only 恢复 CLI 不注册为 Pi command/model tool。
 
@@ -117,4 +118,4 @@ allowlist 是 registration authority；当前 runtime 也必须经 CE Host/Stora
 
 ## 验证与现场限制
 
-隔离 harness 覆盖工具、权限、分页、payload/ACK、Heartbeat、reload、fork 与 activation。实际 ChatGPT↔Pi 双向 send/list/read/ACK 已人工验证，真实 Tunnel Start/Stop/Restart 也已确认；这不代表所有 stdio/Desktop 部署都分别验收。机器冷启动和 iTerm2 部分交互仍未验证。用户报告过 `/ce-status` no endpoint bound，具体现场根因未完全复现；排查路径见[排障表](../docs/tunnel-setup.md#故障排查先定位层再进行最小修复)，不得把未经复现的重启建议写成已修复事实。
+隔离 harness 验证工具、权限、分页、payload/ACK、Heartbeat、reload、fork 与显式 binding 操作；不证明真实终端或云端连接。平台及人工消息验收边界见[概览](../README.md#边界与验证)。no endpoint 应按当前身份、策略和 mapping/release 证据排查，不把 reload/重启当通用修复；见[排障表](../docs/tunnel-setup.md#故障排查先定位层再进行最小修复)。

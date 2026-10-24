@@ -1,6 +1,6 @@
 # pi-chat-exchange 开发者架构指南
 
-本文描述当前源码，不将早期 PH-0003 的 ping-only / contract-only 切片状态当成今天的实现范围。历史纠偏证据见 [PH-0002](ph0002-validation.md)、[PH-0003](ph0003-validation.md) 与 [quarantine hotfix](quarantine-hotfix-ph0003.md)；冻结协议与 authority 仍以对应契约为准。
+本文说明消息、Endpoint/Session authority、transport 与 Pi 适配器的边界。用户入口见[快速开始](tunnel-setup.md)，多项目操作见[多 Session 使用](multi-session-usage.md)。精确约束仍以协议、Storage 与 Ownership 契约及源码 gate 为准。
 
 ## 分层与依赖方向
 
@@ -38,7 +38,7 @@ src/tunnel: transport/profile/setup/Manager；不替代 CE Host authority
 ## 身份模型与注册权威
 
 - **Exchange**：关联聚合，不是一个对话或 transport 连接；namespace/idempotencyKey 只负责确定性 bootstrap。
-- **EndpointRef**：`{adapter, endpointId}` 是非秘密身份。当前配对为 `chatgpt/main` 与 `pi/main`，adapter 分别 `chatgpt`、`pi`。它们是独立 Authority，不共享 Owner。
+- **EndpointRef**：`{adapter, endpointId}` 是非秘密身份。初始配对为 `chatgpt/main` 与 `pi/main`；多 Session 时每个 Pi Session 显式注册独立稳定 Endpoint（如 `pi/project-B`）。各 Endpoint 是独立 Authority，不共享 Owner；共享 ChatGPT inbox 不是对话隔离。
 - **Participant**：Store/Exchange 中注册的参与者；与当前具体 Session/incarnation 分开。
 - **CE Session / Ownership / fencing**：活跃执行权威与 incarnation，需 membership、lease、current owner、fencing 和精确作用域 capability 一起校验。
 - **Pi runtime Session ID**：从可信 Pi API 取得，作为 operator allowlist lookup。不是 CE Session ID，也不是凭自身能发消息的凭据。
@@ -46,6 +46,16 @@ src/tunnel: transport/profile/setup/Manager；不替代 CE Host authority
 - **Capability**：Host 内存中的 scoped authority；不写 mapping/日志/配置，不让模型自选。
 
 MCP 身份固定于 operator-owned `--config`，不是由一次 MCP invocation 或 ChatGPT 当前文字声明认证。Pi 身份固定于可信 allowlist 与当前 context。两边共享 Store directory/file 与 Exchange namespace/key；任一不同都没有自动路由补偿。`managed`/`managedBy` 是 provenance，不是替代 recipients 或 Storage 检查的许可。
+
+### 多 Session：配置准入不取代 durable authority
+
+`src/tunnel/{multi-session-policy,multi-session-admission}.ts` 管理 profile 选中的不可变 registration 策略；`pi-extension/multi-session-runtime.ts` 管理当前进程 guard。注册绑定可信 native Pi Session、稳定 Endpoint、active/revoked 状态与 epoch，payload/ACK 独立 opt-in；不从项目路径或模型参数推导身份。
+
+- convert/register/revoke 需人工确认、配置 revision 校验与 verified STOPPED transport lock；不自动启停，也不能约束仍在运行的旧二进制。
+- Pi factory grants 在 reload 前不变；MCP child 在显式 Stop/Start 前不能宣称已加载新 generation。selected configured、loaded、bound、connected 分开报告。
+- deny-only gates 约束后续准入，包括 read/renew；已经准入的操作可能完成。正常 end/release 不被撤销门禁阻挡；撤销不删除 Owner、Participant、历史消息或 Receipt。
+- process mutex 是本地 exclusion，不是 CE authority/recovery。runtime/epoch/Store/Exchange 与 guard 均须一致，最终权限仍由原 Host/Storage 校验；不增加 takeover 或跨 Exchange router。
+- `/ce-tunnel sessions` 仅在当前 runtime 经 admission 后投影所选 active Endpoint IDs；不读取 Inbox，不证明运行中的 MCP 已加载。
 
 ## Message、DeliveryAttempt、Receipt、Result 的分离
 
@@ -68,10 +78,13 @@ CE Receipt、Pi UI 通知、Tunnel health、runtime 执行事实和 Wayforge 工
 - Pi reload 结束旧内存 generation/timer，不结束有效 durable Ownership；正常退出/Session replacement 尝试 end/release/detach。renew/end 未知或 diagnostic persistence 失败锁住后续路径。
 - `ce-mapping`、`ce-messaging-released`、`ce-lifecycle-blocked` 仅存 identifiers/拒绝证据，不携带 capability。释放标记不能独立授予新权威，需验证旧 mapping 的 exact released+detached proof。
 - 显式 activation 在 profile lock 下核实当前配置/环境/runtime，只有 requireUnowned 可绑定。匹配已有有效 binding 为 no-op；未知释放、映射写入失败或旧 Exchange 证据不符拒绝，不自动 takeover。
+- `/ce-tunnel deactivate` 在确认与当前 generation/Session fence 后复用 `shutdownCe()` 正常结束路径；仅释放本地 CE binding，保留 registration/history/transport。未知 end 或证据持久化失败仍关闭操作；已释放 mapping 不在 reload 时自动重绑，只有显式 activate 可重新申请。
 - Tunnel 管理的是 detached client 的进程所有权，不是 CE Owner。跨进程 directory lock、PID+exact command+start key、write-ahead termination ledger 共同避免误杀/双启动；UNKNOWN 不等于进程消失。
 - 每个 record-backed run 最多一次 SIGTERM，不 SIGKILL、不 name-based bulk kill。intent 持久后信号丢失允许零次实际 signal；不能删除 ledger 以便重发。client MCP child 属 client，不由 Manager 擅自终止。
 
 恢复 CLI 是另行授权的 operator-only 路径，既不注册为 MCP tool 也不由模型自动调用。进程恢复、CE Owner 恢复、消息未知结果调查是三个不同问题。
+
+`/ce-tunnel doctor` 是独立只读安装诊断：host qualification、child executable qualification 与 client metadata trust 分开；复用现有 executable admission，不启动 Manager/client、不读取 credential 或 Store、不发布配置。它不证明 profile 当前 child 命令、client schema 兼容、云端权限或网络健康；对应证据仍由配置/真实兼容测试和 Manager 提供。
 
 ## 配置 generation 与原子迁移
 
@@ -115,7 +128,7 @@ pnpm run verify
 | packaged plugin tests | 可移植包内容、stdio 启动、tool discovery | Desktop 安装菜单/资格/对话更新 |
 | 人工 real Gate | 当前 ChatGPT 对话与 Pi 的实际 send/list/read/ACK、Tunnel 启停 | 冷启动、所有平台、所有客户端或正式发布资格 |
 
-近期集成阶段以有界 worker 完成扩展验证（默认并行曾暴露时序/fixture 问题，不能隐去）；ACK 字段可见性修复另有定向测试，不等于该修复后重跑全仓验证。本 docs-only 变更只做文档/source/link/privacy 检查，不把历史测试数当新鲜执行证据。实际验收范围见[README](../README.md)。
+本地测试只对其实际执行的固定版本与环境提供证据，跳过项和平台限制必须明示。人工消息验收与隔离回归互不替代；不要将历史报告的测试数当作当前变更的新鲜执行证据。公共验收边界见[README](../README.md)。
 
 ### 高价值回归入口
 
@@ -131,7 +144,7 @@ pnpm run verify
 - 新 endpoint integration 声明独立 support，不假设 peer capabilities 对称；unsupported/unknown 保持明确，需真实 evidence 才能声称实现。
 - 新 client 版本要真实 schema/doctor 回归，不能仅用 offline fixture；新 Node/SQLite/平台先独立资格验证，不能放松 runtime guard。
 - UI/异步任务要保留 draft/commit 边界、Session generation、在途合并、取消/teardown 的权限分离；不以通知成功当显示/送达成功。
-- 仍待后续：credential/generation 的显式安全 GC、机器冷启动、iTerm2 部分实体交互、Desktop Node command 的跨机配置化。用户 no endpoint bound 现场尚未完全复现，不能写成已修复 reload bug。
+- 仍待后续：credential/generation 的显式安全 GC、机器冷启动与部分实体终端交互、受控 client 安装/升级流程。Desktop 已支持对私有副本显式配置本机批准 Node；这不是自动跨机安装或 Desktop UI 验收。
 - 不在当前范围：自动 Inbox draining/idle wake、自动业务重试/Owner takeover、自动远端执行、任意 Store 合并或跨 Exchange router、以 ACK 代替任务完成。
 
 ## 文档事实溯源与维护
@@ -144,6 +157,6 @@ pnpm run verify
 | binding closed schema / opt-in | `src/host/mcp-binding-config.ts`、`src/control/mcp/` |
 | generation/Store/Exchange 一致性 | `src/tunnel/{managed-binding,messaging-config,setup}.ts` |
 | 工具参数/ACK metadata/状态 | `pi-extension/index.ts`、Host port、对应 extension-ack / messaging-ack tests |
-| 当前人工验收 | HANDOFF-CE-TUNNEL-MESSAGING-INTEGRATION-01 的独立验收记录及操作者后续启停确认；公共文档不复制原始消息/Session/日志 |
+| 当前支持与验收边界 | [README](../README.md)、对应隔离测试与独立人工验收；公共文档不复制原始消息/Session/日志 |
 
 历史 plans/audits/validation 报告保留其时间截面，不应机械改写为“今日已全部完成”。发现代码/配置与文档目标冲突时记录限制、另开实现任务；文档提交不偷偷改 runtime 或冻结契约。

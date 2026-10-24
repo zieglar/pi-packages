@@ -24,8 +24,9 @@ launcher 从系统 home 取得固定 binding 路径，不接受模型参数或�
 - 重新打包/刷新插件后用新对话发现工具；不要同时用 Tunnel 与本地插件争用同一个 Endpoint。
 
 ```sh
-chmod 700 "/private/local-plugin"
-"/trusted/absolute/node" "/private/local-plugin/server/configure.mjs" --node "/trusted/absolute/node"
+# 先把 artifact 解压至仓库外新建的私有目录，再替换下列路径
+chmod 700 "/absolute/private/plugin"
+"/trusted/absolute/node" "/absolute/private/plugin/server/configure.mjs" --node "/trusted/absolute/node"
 ```
 
 将示例替换为本机路径（允许目录含空格）。配置器先检查路径、权限与完整 Node/SQLite 资格，只修改该本地副本的 `mcp.json`；不安装、注册或启动服务，不读取 binding 或 Store。已配置副本不会被静默覆盖；需重新配置时使用新的未配置副本。生成的 manifest 含本机绝对路径，不要重新分发；ZIP 与仓库模板保持未配置。此命令应在解压后的 artifact 上运行，不是未构建的源码模板。
@@ -35,5 +36,7 @@ chmod 700 "/private/local-plugin"
 macOS 同时检查根目录及祖先 ACL，仅接受无 ACL 或 deny-only 条目；allow ACL、检查失败或未知输出均拒绝（即使 POSIX mode 为 `0700`）。不会自动清除 ACL 或修改系统安装权限；请选用满足门槛的私有副本。
 
 Pi host 也必须以批准 Node 启动；另配 MCP child 不会改变 Pi 正在使用的 Node。mise 不是运行要求。Secure Tunnel 使用者不需要此本地 stdio 插件或 Marketplace 安装。
+
+Pi 侧 `/ce-tunnel doctor` 可分别检查当前 host、所选 child Node 和 Tunnel client 信任；它不检查 Desktop 的已安装 manifest，也不证明该客户端已加载工具。Desktop 以本机 configure 成功及新对话的实际工具发现为准。每个 Pi Session 的 Endpoint、当前身份、正常 deactivate 与 revoke 区别见[多 Session 指南](../../docs/multi-session-usage.md)。
 
 源码仓库中的 [ChatGPT 安装指南](../../docs/chatgpt-installation.md)包含打包、marketplace、完整虚构 binding 和恢复限制。本 README 随 artifact 分发时，相对链接可能没有仓库 docs，请回到源码仓库阅读。

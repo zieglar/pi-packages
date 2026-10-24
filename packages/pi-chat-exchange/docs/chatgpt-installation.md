@@ -4,10 +4,14 @@
 
 | 路径 | 连接方式 | 配置入口 |
 |---|---|---|
-| Secure MCP Tunnel（当前主指南） | ChatGPT 连接受支持的 Tunnel，client 启动本机 MCP | [`/ce-tunnel setup` / Advanced Messaging](tunnel-setup.md)；profile 选中不可变配对 |
+| Secure MCP Tunnel | ChatGPT 自定义 MCP 插件选择 Tunnel，client 启动本机 MCP | [完整 Tunnel 快速开始](tunnel-setup.md)，无需本地 marketplace |
 | Desktop 本地插件（本页后续） | ChatGPT Desktop 启动 bundled MCP，stdio | 外置 `mcp-binding.json`；操作者配置互补 Pi allowlist |
 
 **不要**给 Tunnel generation 再复制一个 Desktop binding 当作同一客户端，也不要把 Desktop 默认路径误当成 Tunnel 使用的 `--config` 路径。两个模式共用 CE Host/Storage 契约，不共用进程所有权。
+
+## Tunnel：ChatGPT 自定义 MCP
+
+先按 [Tunnel 指南](tunnel-setup.md)完成 `/ce-tunnel doctor`、Setup / Advanced Messaging、显式 reload/activate 与单独 Start。在 [ChatGPT Plugins](https://chatgpt.com/plugins)选择 **+ → Add custom MCP server → Connection: Tunnel**，选择相同 Tunnel，按目标配置认证，审阅风险后创建并安装插件；当前对话用 `@` 选择它。工具变更在插件详情刷新；不能只凭 CONNECTED 判断当前对话权限。资格及具体入口以[官方自定义 MCP 指南](https://developers.openai.com/api/docs/guides/custom-mcp-server)为准。下面仅适用于 Desktop 本地 stdio，不要混做。
 
 ## Desktop 适用条件与打包
 
@@ -18,12 +22,13 @@
 - <https://developers.openai.com/plugins/deploy/desktop-only>
 - <https://developers.openai.com/plugins/build/plugins>
 
-在仓库根目录安装依赖，然后进入包目录：
+在已选中批准 Node 的 shell，从仓库根目录安装依赖，然后打包（无需 mise）：
 
-```bash
-mise exec node@24.21.0 -- pnpm install
+```sh
+node --version
+pnpm install --frozen-lockfile
 cd packages/pi-chat-exchange
-mise exec node@24.21.0 -- pnpm run package:desktop-plugin
+pnpm run package:desktop-plugin
 ```
 
 生成的 ignored artifacts：
@@ -34,27 +39,33 @@ mise exec node@24.21.0 -- pnpm run package:desktop-plugin
 
 包内含 compiled server 与生产依赖，不含 live Endpoint、Store、token、capability 或密钥。public directory 发布是独立流程，不能把本地 marketplace 安装解释成公开发布。
 
-**本机运行时配置：** 分发 ZIP 和 marketplace 的 `mcp.json` 默认为空 server 集合，不包含机器路径，也不会执行未验证的 `node`。以下示例将**完整 marketplace** 复制到仓库外、新建的操作者私有目录；配置与后续注册必须使用这同一副本。请替换为本机真实绝对路径：
+**本机运行时配置：** 分发 ZIP 和 marketplace 的 `mcp.json` 默认为空 server 集合，不包含机器路径，也不会执行未验证的 `node`。以下将完整 marketplace 复制到仓库外的新私有目录；已存在时应停止，不覆盖旧配置。将 Node 路径替换为本机可信批准 executable：
 
 ```sh
 umask 077
-mkdir -m 700 "/private/ce-marketplace-local"
-cp -R "/absolute/path/to/packages/pi-chat-exchange/.plugin-build/marketplace/." "/private/ce-marketplace-local/"
-chmod 700 "/private/ce-marketplace-local/plugins/pi-chat-exchange"
-"/trusted/absolute/node" "/private/ce-marketplace-local/plugins/pi-chat-exchange/server/configure.mjs" --node "/trusted/absolute/node"
+mkdir -p "$HOME/.local/share"
+MARKETPLACE="$HOME/.local/share/ce-marketplace-local"
+mkdir -m 700 "$MARKETPLACE" && \
+  cp -R .plugin-build/marketplace/. "$MARKETPLACE/" && \
+  chmod 700 "$MARKETPLACE/plugins/pi-chat-exchange" && \
+  "/trusted/absolute/node" "$MARKETPLACE/plugins/pi-chat-exchange/server/configure.mjs" --node "/trusted/absolute/node"
 ```
 
-插件根目录必须由当前操作者拥有且权限恰为 `0700`，阻止其他账户遍历及替换内部代码；配置器不会自动修复权限。命令验证路径信任与原有完整 Node/SQLite 资格，然后仅生成该副本的绝对 stdio command，不安装/注册/启动、不读取 binding 或 Store。目录可含空格。生成的 manifest 属于本机配置，不可重新分发。仓库、ZIP、原始 marketplace 保持未配置；不能配置独立插件副本却注册另一个未配置 marketplace。mise 只是上面构建示例的可选运行器；可用批准 Node 运行同样工具，无需全局 Node 变更。Secure Tunnel 用户不需要此 stdio 插件或 Marketplace。
+插件根目录必须由当前操作者拥有且权限恰为 `0700`；根目录、祖先及 Node 的路径/ACL 全链都须通过信任门槛。配置器不自动修复权限或清 ACL。它验证完整 Node/SQLite 资格后只生成该副本的绝对 stdio command，不安装/注册/启动、不读取 binding 或 Store。目录可含空格；生成的 manifest 属本机配置，不可重新分发。仓库、ZIP、原始 marketplace 保持未配置；配置与注册必须使用同一副本。Secure Tunnel 用户无需此流程。
 
 ## 创建外置 binding
 
 binding 留在插件安装/cache 之外，默认由系统账户 home 定位：
 
 ```bash
+umask 077
 mkdir -p "$HOME/.config/pi-chat-exchange"
-cp plugin/pi-chat-exchange/config/binding.example.json \
-  "$HOME/.config/pi-chat-exchange/mcp-binding.json"
-chmod 600 "$HOME/.config/pi-chat-exchange/mcp-binding.json"
+# 目标已存在则停止，先核实原配置，不覆盖
+test ! -e "$HOME/.config/pi-chat-exchange/mcp-binding.json" && \
+  test ! -L "$HOME/.config/pi-chat-exchange/mcp-binding.json" && \
+  cp plugin/pi-chat-exchange/config/binding.example.json \
+    "$HOME/.config/pi-chat-exchange/mcp-binding.json" && \
+  chmod 600 "$HOME/.config/pi-chat-exchange/mcp-binding.json"
 ```
 
 下面是可解析的完整虚构示例，与 [Pi 指南](../pi-extension/README.md)的手工示例互补。路径与 Session placeholder 必须按本机授权替换；不要将示例当作已生效设置。payload/ACK 若未授权，分别保持 false。
@@ -79,15 +90,16 @@ launcher 固定读取 `~/.config/pi-chat-exchange/mcp-binding.json`，不从模�
 
 ## 注册与使用
 
-以下为操作者命令，注册上面已配置的同一私有 marketplace 副本（不是 `.plugin-build/marketplace`）：
+按[官方本地 marketplace 流程](https://developers.openai.com/plugins/build/plugins)，用支持该命令的 Codex CLI 注册上面已配置的同一私有目录（此处 `MARKETPLACE` 沿用前文同一 shell）：
 
-```bash
-codex plugin marketplace add "/private/ce-marketplace-local"
+```sh
+codex plugin marketplace add "$MARKETPLACE"
+codex plugin marketplace list
 ```
 
-重启支持该功能的 ChatGPT Desktop，在 Plugins 里选择 **Pi Chat Exchange Local**，安装 **Pi Chat Exchange**。更新时重新打包，将完整 marketplace 复制到另一个新建的私有目录，收紧嵌套插件根目录为 `0700`，配置该副本后注册它，再刷新/重装 entry 并新建 local Work/Codex chat；旧对话不保证重载新工具。
+重启支持本地插件的 ChatGPT Desktop，在 Plugins Directory 选择 **Pi Chat Exchange Local**，安装 **Pi Chat Exchange**，新建对话核对工具。客户端可能从 plugin cache 的安装副本加载；目录权限和本机 Node 在实际安装环境中仍须合格，不能用打包测试替代 UI 验收。
 
-该客户端安装流程来自现有集成记录，不意味着任意 ChatGPT 产品/组织均显示相同菜单；缺少 local plugin 资格时应停止，不能用 Tunnel CONNECTED 或 packaged tests 替代 Desktop 安装验收。
+更新时重新打包，复制到新的私有目录、收紧嵌套 plugin 根目录为 `0700`、配置后再注册；刷新/重装并新建对话，旧对话不保证重载。缺少资格或菜单不同时按官方说明核实，不绕过组织限制，也不要改用 Tunnel 来证明 Desktop 安装成功。
 
 ## 针对性验收与结果边界
 
