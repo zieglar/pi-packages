@@ -47,6 +47,8 @@ import {
 } from "../dist/endpoints/pi/session-host.js";
 import { PI_ADAPTER_KIND } from "../dist/endpoints/pi/contract.js";
 import { initializeStore, openStore } from "../dist/storage/store.js";
+import { RuntimeEligibilityError } from "../dist/storage/runtime.js";
+import { hostRuntimeRepairMessage } from "../dist/runtime/diagnostics.js";
 import { TunnelRefusal } from "../dist/tunnel/codes.js";
 import {
   captureTunnelSecret,
@@ -625,6 +627,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   /** Truthful startup failure (e.g. authority absent after lease expiry).
    * Tools report this instead of a misleading not-registered refusal. */
   let startupFailure: CeHostRefusal | undefined;
+  let startupRuntimeRepair: string | undefined;
   let advisoryState: {
     readonly generation: object;
     watermark: number;
@@ -827,6 +830,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     processFailureCodes.set(failureKey(state.piSessionId, state.endpointId), code);
     state.failure = new CeHostRefusal(code); // Lifecycle failures never suggest a retry.
     startupFailure = state.failure;
+    startupRuntimeRepair = undefined;
     stopHeartbeat(state);
     currentEndpoint = undefined;
     inboxBinding = undefined;
@@ -857,6 +861,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           // Deny-only policy failure must not discard the CE cleanup handle.
           stopHeartbeat(state);
           startupFailure = error;
+          startupRuntimeRepair = undefined;
         } else failLifecycle(state, error);
       } finally {
         state.renewal = undefined;
@@ -953,6 +958,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     await transport;
     currentEndpoint = undefined;
     startupFailure = undefined;
+    startupRuntimeRepair = undefined;
     inboxBinding = undefined;
     advisoryState = undefined;
     const piSessionId = ctx.sessionManager.getSessionId();
@@ -992,6 +998,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       // Persist identifiers only; never credentials.
       pi.appendEntry("ce-mapping", mapping);
       startupFailure = undefined;
+      startupRuntimeRepair = undefined;
       inboxBinding = Object.freeze({ piSessionId, endpointId });
       startHeartbeat(generation);
       advisoryState = notificationConfig === undefined
@@ -1013,7 +1020,8 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       advisoryState = undefined;
       startupFailure = generation?.failure ??
         (error instanceof CeHostRefusal ? error : new CeHostRefusal("CE_HOST_UNAVAILABLE"));
-      notify(ctx, `ce-chat-exchange: session start failed closed (${startupFailure.code})`, "warning");
+      startupRuntimeRepair = error instanceof RuntimeEligibilityError ? hostRuntimeRepairMessage() : undefined;
+      notify(ctx, `ce-chat-exchange: session start failed closed (${startupFailure.code})${startupRuntimeRepair === undefined ? "" : `; ${startupRuntimeRepair}`}`, "warning");
     }
   });
 
@@ -1352,7 +1360,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     description: "Show this session's chat-exchange endpoint, ownership lease, and fencing status",
     async handler(_args, ctx) {
       if (startupFailure !== undefined) {
-        notify(ctx, `ce-chat-exchange: session start failed closed (${startupFailure.code})`, "warning");
+        notify(ctx, `ce-chat-exchange: session start failed closed (${startupFailure.code})${startupRuntimeRepair === undefined ? "" : `; ${startupRuntimeRepair}`}`, "warning");
         return;
       }
       if (currentEndpoint === undefined) {
@@ -1525,6 +1533,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           currentEndpoint = endpointId;
           inboxBinding = Object.freeze({ piSessionId, endpointId });
           startupFailure = undefined;
+          startupRuntimeRepair = undefined;
           startHeartbeat(targetState);
           advisoryState = notificationConfig === undefined ? undefined :
             { generation: Object.freeze({}), watermark: 0, inFlight: false, failureLatched: false };

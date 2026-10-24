@@ -26,6 +26,8 @@ mise exec node@24.21.0 -- pi -e ./packages/pi-chat-exchange/pi-extension/index.t
 
 若未使用 mise，请用已安装的 Node 24.21.0 运行同样命令；不要切换全局 Node。已经安装此扩展时不要再用 `-e` 加载第二份。
 
+运行时选择不依赖 mise：显式可信绝对 `CE_NODE_PATH` 只配置 Tunnel MCP child；未设置时验证当前 Node、受控系统位置及兼容旧 mise 位置，不搜索项目 PATH。Pi host 自身仍须由批准 Node 启动（可用其绝对路径执行已安装 Pi 的 JavaScript 入口）；另配 child 不能修复正在运行的 host。显式 `CE_TUNNEL_CLIENT_PATH` 支持非 Homebrew 安装，缺失或不可信 client 不会触发 spawn。详见 [Tunnel 设置](docs/tunnel-setup.md)。Desktop 本地 stdio 分发包默认未配置；仅在本机验证 Node 后生成绝对命令，不包含开发机路径，且 Secure Tunnel 使用者无需 Marketplace 插件。
+
 1. 执行 `/ce-tunnel setup`，在 masked 输入中提供凭据，不要发到聊天里。
 2. 在 Review → Back · Edit configuration → Advanced · Messaging 显式授权当前 Session，最后 Save。
 3. 按[用户指南](docs/tunnel-setup.md)加载所选策略并显式激活 Pi，另行授权真实后台启动。

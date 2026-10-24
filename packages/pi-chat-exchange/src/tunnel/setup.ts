@@ -18,26 +18,24 @@ import {
   checkKeyFileMetadata, createBackgroundTunnelManager, parseTunnelProfile, resolveTunnelProfilePath,
   type BackgroundTunnelManager, type TunnelProfileFacts,
 } from "./background-manager.js";
-import { buildTunnelMcpCommand, buildTunnelProfile, migrateTunnelProfileText, parseTunnelMcpCommand, replaceTunnelMcpBindingPath, resolveMcpNodePath, REQUIRED_MCP_NODE_VERSION, serializeTunnelProfile, validateTunnelIdentity } from "./profile.js";
+import { buildTunnelMcpCommand, buildTunnelProfile, migrateTunnelProfileText, parseTunnelMcpCommand, replaceTunnelMcpBindingPath, serializeTunnelProfile, validateTunnelIdentity } from "./profile.js";
+import { resolveApprovedNode } from "../runtime/executables.js";
 import { ensureManagedBinding } from "./managed-binding.js";
 import { isMessagingBinding, isManagedPiAllowlist, piAllowlistPath, publishMessagingPair, readMessagingPair, readMessagingGeneration } from "./messaging-config.js";
 
 const MAX_PROFILE_BYTES = 65_536;
 const invalid = (field: string): TunnelRefusal => new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", field);
 
-/** Resolve the mcp child's node executable to the Store-approved version
- *  (REAL-START-FIX-01). An explicit `nodePath` option wins; otherwise the
- *  resolver prefers the running runtime when it already matches and falls back
- *  to the mise install layout. No approved Node means a hard refusal — never a
- *  profile whose durable Store the child cannot open. */
+/** Production selection validates filesystem trust and the complete unchanged
+ * Store runtime identity. `nodePath` is a constructor dependency seam used by
+ * domain tests; production callers configure CE_NODE_PATH instead. */
 function resolveSetupNodePath(options: TunnelProfileSetupOptions): string {
   if (options.nodePath !== undefined) return options.nodePath;
-  const resolved = resolveMcpNodePath({
-    env: options.env, execPath: process.execPath, execVersion: process.version,
-    homeDir: homedir(), requiredVersion: REQUIRED_MCP_NODE_VERSION, exists: fs.existsSync,
-  });
-  if (resolved === undefined) throw invalid("mcp.commands.0.command");
-  return resolved;
+  try {
+    const resolved = resolveApprovedNode({ env: options.env });
+    if (resolved !== undefined) return resolved;
+  } catch { /* Refuse without forwarding child output or operator paths. */ }
+  throw invalid("mcp.commands.0.command");
 }
 function absolute(path: string, field: string): void {
   if (typeof path !== "string" || !isAbsolute(path) || normalize(path) !== path ||

@@ -10,10 +10,10 @@
 | Node.js | **24.21.0** | Pi 激活进程和 Tunnel MCP 子进程都必须满足 Store 的精确版本门槛，24.x 或 25.x 不等价 |
 | pnpm | 仓库固定 12.9.1 | 见根 `package.json` |
 | UI Kit | `@narumitw/pi-tui-kit` 0.66.0 | 包依赖负责安装；不是用户另外装一个 UI |
-| Secure MCP Tunnel | `tunnel-client` 0.0.16 | 当前真实 Manager 固定默认 `/opt/homebrew/bin/tunnel-client`，不做 PATH 自动发现；不同版本/安装位置需独立配置能力变更与兼容验证 |
+| Secure MCP Tunnel | `tunnel-client` 0.0.16 | 显式 `CE_TUNNEL_CLIENT_PATH` 或受控系统目录发现；路径检查不等于新 client 版本兼容性验收 |
 | Store 平台 | macOS arm64 / Linux x64 | 另有 SQLite、文件系统和权限门槛；不能据此宣称所有 Linux 部署已验收 |
 
-本仓库不提供 `tunnel-client` 下载器或云端 Tunnel 创建器。按官方 Secure MCP Tunnel 分发说明安装对应客户端，再用 `/opt/homebrew/bin/tunnel-client --version` 核对实际 Manager 使用的 binary；不要把 PATH 中另一个同名程序当成它。这个固定 Homebrew 路径限制了开箱即用范围，Linux Store 资格不代表 Linux Tunnel 默认部署已支持；本次只记录限制，不修改实现。Node/Pi/provider 的安装与登录仍由操作者完成。
+本仓库不提供 `tunnel-client` 下载器或云端 Tunnel 创建器。Node/Pi/provider/client 的安装与登录仍由操作者完成；客户端版本需由操作者另行核实。本次路径可移植性不宣称已完成真实 Tunnel、Linux client 或 Desktop UI 安装验收。
 
 从仓库根目录执行：
 
@@ -22,9 +22,24 @@ mise exec node@24.21.0 -- pnpm install
 mise exec node@24.21.0 -- pnpm --dir packages/pi-chat-exchange run build
 mise exec node@24.21.0 -- node --version
 pi --version
-/opt/homebrew/bin/tunnel-client --version
+"/trusted/absolute/tunnel-client" --version # 操作者核实选中的客户端；不是 CE 自动探测
 mise exec node@24.21.0 -- pi -e ./packages/pi-chat-exchange/pi-extension/index.ts
 ```
+
+mise 只是上面示例的可选运行器，不是 CE 依赖。无 mise 时，用批准 Node 的绝对路径运行已安装 Pi 的实际 JavaScript 入口，例如：
+
+```sh
+CE_NODE_PATH="/trusted/node-install/bin/node" \
+CE_TUNNEL_CLIENT_PATH="/trusted/client-install/bin/tunnel-client" \
+"/trusted/node-install/bin/node" "/absolute/installed-pi/dist/cli.js" \
+  -e ./packages/pi-chat-exchange/pi-extension/index.ts
+```
+
+请将示例路径替换为本机可信安装。`CE_NODE_PATH` 显式设置非法时拒绝，不静默回退；未设置时依次完整验证当前运行时、固定系统目录和兼容旧 mise 安装位置。Node 与 client 的系统候选仅来自 `/usr/local/bin`、`/usr/bin`、`/bin`、`/opt/homebrew/bin`，不执行项目 PATH 候选。路径必须为可信绝对路径；拒绝项目目录、`node_modules`、可写 executable/祖先或不可信 symlink 目标。目录可含空格（仍受现有 profile grammar 限制）。Node 必须通过原有精确 Node/SQLite/source/platform 门槛；client 发现只检查文件元数据，不启动客户端。
+
+macOS 还会逐项检查 executable、真实目标及祖先的 ACL：只接受无 ACL 或仅 deny 条目；任何 allow 条目、无法识别的输出或检查失败都会拒绝（包括可能无害的只读 allow ACL）。Desktop 私有根目录复用该检查。配置器不自动清除 ACL 或修改系统安装权限；遇到拒绝时由操作者选择另一处可信、隔离的安装。
+
+**Pi host 与 MCP child 分别检查。** `CE_NODE_PATH` 不会改变已经运行的 Pi Node；host 不合格时需用批准 Node 重启 Pi，而不是只重写 profile。缺失 client 不阻断检查/修复，但 Start 在 spawn 前拒绝；不会自行注册、联网或提权。Secure Tunnel 不需要安装 Desktop 本地 stdio 插件或 Marketplace。
 
 这是显式临时加载方式。也可在确认路径后用 `pi install /absolute/path/to/packages/pi-chat-exchange` 注册本地包；只选一种加载方式，避免包安装、自动发现和 `-e` 重复。修改构建产物先 build，更新扩展后 `/reload`；不要重复注册命令来“修复”加载问题。
 

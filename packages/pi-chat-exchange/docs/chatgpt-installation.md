@@ -34,7 +34,17 @@ mise exec node@24.21.0 -- pnpm run package:desktop-plugin
 
 包内含 compiled server 与生产依赖，不含 live Endpoint、Store、token、capability 或密钥。public directory 发布是独立流程，不能把本地 marketplace 安装解释成公开发布。
 
-**已知可移植性限制：** 当前源码 `plugin/pi-chat-exchange/mcp.json` 的 `command` 仍是开发机 Node 24.21.0 的绝对路径，打包不会自动适配另一台机器。本文不复制该个人路径。操作者必须在安装前核实生成 artifact 中的 command 指向本机批准 Node；路径不存在时插件不会启动。修改该源配置/重新打包属于独立部署变更，本次 docs-only 任务不修改它。不要用 Desktop 受限 PATH 下的任意 `node` 替代精确版本约束。
+**本机运行时配置：** 分发 ZIP 和 marketplace 的 `mcp.json` 默认为空 server 集合，不包含机器路径，也不会执行未验证的 `node`。以下示例将**完整 marketplace** 复制到仓库外、新建的操作者私有目录；配置与后续注册必须使用这同一副本。请替换为本机真实绝对路径：
+
+```sh
+umask 077
+mkdir -m 700 "/private/ce-marketplace-local"
+cp -R "/absolute/path/to/packages/pi-chat-exchange/.plugin-build/marketplace/." "/private/ce-marketplace-local/"
+chmod 700 "/private/ce-marketplace-local/plugins/pi-chat-exchange"
+"/trusted/absolute/node" "/private/ce-marketplace-local/plugins/pi-chat-exchange/server/configure.mjs" --node "/trusted/absolute/node"
+```
+
+插件根目录必须由当前操作者拥有且权限恰为 `0700`，阻止其他账户遍历及替换内部代码；配置器不会自动修复权限。命令验证路径信任与原有完整 Node/SQLite 资格，然后仅生成该副本的绝对 stdio command，不安装/注册/启动、不读取 binding 或 Store。目录可含空格。生成的 manifest 属于本机配置，不可重新分发。仓库、ZIP、原始 marketplace 保持未配置；不能配置独立插件副本却注册另一个未配置 marketplace。mise 只是上面构建示例的可选运行器；可用批准 Node 运行同样工具，无需全局 Node 变更。Secure Tunnel 用户不需要此 stdio 插件或 Marketplace。
 
 ## 创建外置 binding
 
@@ -69,14 +79,13 @@ launcher 固定读取 `~/.config/pi-chat-exchange/mcp-binding.json`，不从模�
 
 ## 注册与使用
 
-以下为操作者命令，路径替换为本机生成 marketplace 的绝对路径：
+以下为操作者命令，注册上面已配置的同一私有 marketplace 副本（不是 `.plugin-build/marketplace`）：
 
 ```bash
-codex plugin marketplace add \
-  /absolute/path/to/packages/pi-chat-exchange/.plugin-build/marketplace
+codex plugin marketplace add "/private/ce-marketplace-local"
 ```
 
-重启支持该功能的 ChatGPT Desktop，在 Plugins 里选择 **Pi Chat Exchange Local**，安装 **Pi Chat Exchange**。插件更新后重新打包、刷新/重装 marketplace entry，并新建 local Work/Codex chat；旧对话不保证重载新工具。
+重启支持该功能的 ChatGPT Desktop，在 Plugins 里选择 **Pi Chat Exchange Local**，安装 **Pi Chat Exchange**。更新时重新打包，将完整 marketplace 复制到另一个新建的私有目录，收紧嵌套插件根目录为 `0700`，配置该副本后注册它，再刷新/重装 entry 并新建 local Work/Codex chat；旧对话不保证重载新工具。
 
 该客户端安装流程来自现有集成记录，不意味着任意 ChatGPT 产品/组织均显示相同菜单；缺少 local plugin 资格时应停止，不能用 Tunnel CONNECTED 或 packaged tests 替代 Desktop 安装验收。
 

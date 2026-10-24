@@ -1,6 +1,6 @@
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { accessSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir, userInfo } from "node:os";
+import { accessSync, chmodSync, constants, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import readline from "node:readline";
 import { pathToFileURL } from "node:url";
@@ -13,7 +13,6 @@ const packageManifest = JSON.parse(readFileSync(resolve(packageRoot, "package.js
 const archivePath = resolve(packageRoot, `.plugin-build/pi-chat-exchange-${packageManifest.version}.zip`);
 const marketplaceRoot = resolve(packageRoot, ".plugin-build/marketplace");
 const packageVerificationEnabled = process.env.CE_PLUGIN_PACKAGE_TEST === "1";
-const pinnedNodeCommand = "/Users/zieglar/.local/share/mise/installs/node/24.21.0/bin/node";
 const chatgptDesktopPath = "/usr/bin:/bin:/usr/sbin:/sbin";
 
 function readJson(relativePath: string): Record<string, unknown> {
@@ -47,14 +46,7 @@ describe("ChatGPT Desktop local plugin source package", () => {
     const mcp = readJson("mcp.json");
     expect(mcp).toEqual({
       $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
-      mcpServers: {
-        "pi-chat-exchange": {
-          type: "stdio",
-          command: pinnedNodeCommand,
-          args: ["${PLUGIN_ROOT}/server/launch.mjs"],
-          cwd: "${PLUGIN_ROOT}",
-        },
-      },
+      mcpServers: {},
     });
 
     const launcher = readFileSync(resolve(pluginRoot, "server/launch.mjs"), "utf8");
@@ -153,17 +145,10 @@ describe("ChatGPT Desktop local plugin source package", () => {
     expect(packagedText).not.toMatch(/cap_[0-9a-f]{16,}/i);
     expect(packagedText).not.toMatch(/sk-[A-Za-z0-9_-]{12,}/);
 
-    // mcp.json intentionally pins this machine's Node runtime by absolute path
-    // (HANDOFF-968413); every other packaged file must stay free of home paths.
-    const packagedWithoutMcpJson = files
-      .filter((file) => /\.(?:json|md|mjs)$/.test(file) && file !== "mcp.json")
-      .map((file) => readFileSync(resolve(stagedRoot, file), "utf8"))
-      .join("\n");
-    expect(packagedWithoutMcpJson).not.toContain("/Users/");
-    const packagedMcp = JSON.parse(readFileSync(resolve(stagedRoot, "mcp.json"), "utf8")) as {
-      mcpServers: { "pi-chat-exchange": { command: string } };
-    };
-    expect(packagedMcp.mcpServers["pi-chat-exchange"].command).toBe(pinnedNodeCommand);
+    expect(packagedText).not.toContain("/Users/");
+    const packagedMcp = JSON.parse(readFileSync(resolve(stagedRoot, "mcp.json"), "utf8"));
+    expect(packagedMcp.mcpServers).toEqual({});
+    expect(files).toContain("server/configure.mjs");
   }, 60_000);
 
   it.runIf(packageVerificationEnabled)("omits the redundant pnpm private deployment mirror from packaged servers", () => {
@@ -250,16 +235,28 @@ describe("ChatGPT Desktop local plugin source package", () => {
   }, 30_000);
 
   it.runIf(packageVerificationEnabled)("launches the packaged plugin exactly as mcp.json declares under the ChatGPT Desktop PATH", async () => {
-    const stagedMcp = JSON.parse(readFileSync(resolve(stagedRoot, "mcp.json"), "utf8")) as {
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ce-plugin-desktop-path-"));
+    const localRoot = resolve(root, "local-plugin");
+    cpSync(stagedRoot, localRoot, { recursive: true });
+    chmodSync(localRoot, 0o700);
+    const runtimeRoot = resolve(root, "portable runtime");
+    mkdirSync(runtimeRoot, { mode: 0o700 });
+    const approvedNodeCommand = resolve(runtimeRoot, "node");
+    copyFileSync(process.execPath, approvedNodeCommand);
+    chmodSync(approvedNodeCommand, 0o700);
+    execFileSync(approvedNodeCommand, [resolve(localRoot, "server/configure.mjs"), "--node", approvedNodeCommand], {
+      env: { PATH: "/usr/bin:/bin" }, cwd: localRoot, stdio: "pipe",
+    });
+    const stagedMcp = JSON.parse(readFileSync(resolve(localRoot, "mcp.json"), "utf8")) as {
       mcpServers: { "pi-chat-exchange": { type: string; command: string; args: string[]; cwd: string } };
     };
     const declared = stagedMcp.mcpServers["pi-chat-exchange"];
     expect(declared.type).toBe("stdio");
-    expect(declared.command).toBe(pinnedNodeCommand);
+    expect(declared.command).toBe(approvedNodeCommand);
     expect(declared.command.startsWith("/")).toBe(true);
     expect(declared.args).toEqual(["${PLUGIN_ROOT}/server/launch.mjs"]);
     expect(declared.cwd).toBe("${PLUGIN_ROOT}");
-    const expand = (value: string) => value.replaceAll("${PLUGIN_ROOT}", stagedRoot);
+    const expand = (value: string) => value.replaceAll("${PLUGIN_ROOT}", localRoot);
     const command = expand(declared.command);
     const args = declared.args.map(expand);
     const launchCwd = expand(declared.cwd);
@@ -269,16 +266,6 @@ describe("ChatGPT Desktop local plugin source package", () => {
     // $HOME. To keep this regression away from the operator's real store while
     // spawning the exact declared command, args, and cwd, a preload hook
     // redirects only os.userInfo inside the child environment.
-    const realBindingPath = resolve(userInfo().homedir, ".config/pi-chat-exchange/mcp-binding.json");
-    const realBindingBefore = existsSync(realBindingPath)
-      ? JSON.parse(readFileSync(realBindingPath, "utf8")) as { store?: { directory?: string; file?: string } }
-      : null;
-    const realStoreFile = realBindingBefore?.store?.directory
-      ? resolve(realBindingBefore.store.directory, realBindingBefore.store.file ?? "ce-store.sqlite")
-      : null;
-    const realStoreExistedBefore = realStoreFile !== null && existsSync(realStoreFile);
-
-    const root = mkdtempSync(join(realpathSync(tmpdir()), "ce-plugin-desktop-path-"));
     const fakeHome = resolve(root, "home");
     const configDirectory = resolve(fakeHome, ".config/pi-chat-exchange");
     mkdirSync(configDirectory, { recursive: true });
@@ -380,6 +367,8 @@ describe("ChatGPT Desktop local plugin source package", () => {
         for (const tool of tools) {
           expect(tool.inputSchema?.additionalProperties, `schema for ${tool.name}`).toBe(false);
         }
+        const ping = await call("tools/call", { name: "ping", arguments: {} });
+        expect((ping.result as { structuredContent: { status: string } }).structuredContent.status).toBe("reachable");
       } finally {
         if (child.exitCode === null && child.signalCode === null) {
           child.kill("SIGTERM");
@@ -390,16 +379,12 @@ describe("ChatGPT Desktop local plugin source package", () => {
 
       expect(stdoutViolations).toEqual([]);
       expect(existsSync(storeDirectory) && readdirSync(storeDirectory).length > 0).toBe(true);
-      if (realStoreFile !== null) {
-        expect(existsSync(realStoreFile)).toBe(realStoreExistedBefore);
-      } else {
-        expect(existsSync(realBindingPath)).toBe(realBindingBefore !== null);
-      }
+      expect(JSON.parse(readFileSync(resolve(stagedRoot, "mcp.json"), "utf8")).mcpServers).toEqual({});
 
       await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 300));
       const lingering = execFileSync("/bin/ps", ["-axo", "stat=,command="], { encoding: "utf8" })
         .split("\n")
-        .filter((line) => line.includes(stagedRoot) && !/^\s*Z/.test(line));
+        .filter((line) => line.includes(localRoot) && !/^\s*Z/.test(line));
       expect(lingering).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });

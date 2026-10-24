@@ -20,7 +20,20 @@ launcher 从系统 home 取得固定 binding 路径，不接受模型参数或�
 
 - 支持 local plugins 的 ChatGPT Desktop；macOS 或 Linux。
 - Store-approved **Node.js 24.21.0**。`mcp.json` 的 command 必须指向本机可执行的批准 Node，不能依赖 Desktop 受限 PATH。
-- 当前源码仍固定开发机 Node 绝对路径，打包不自动适配另一台机器；安装前必须核实。路径可移植性需单独配置变更，不因本说明而视为已修复。
+- 分发包的 `mcp.json` 默认没有启用的 server；既不嵌入开发机路径，也不回退到未验证的 `node`。先将 ZIP 解压到本机私有、操作者拥有的目录，再执行下面的显式配置。
 - 重新打包/刷新插件后用新对话发现工具；不要同时用 Tunnel 与本地插件争用同一个 Endpoint。
+
+```sh
+chmod 700 "/private/local-plugin"
+"/trusted/absolute/node" "/private/local-plugin/server/configure.mjs" --node "/trusted/absolute/node"
+```
+
+将示例替换为本机路径（允许目录含空格）。配置器先检查路径、权限与完整 Node/SQLite 资格，只修改该本地副本的 `mcp.json`；不安装、注册或启动服务，不读取 binding 或 Store。已配置副本不会被静默覆盖；需重新配置时使用新的未配置副本。生成的 manifest 含本机绝对路径，不要重新分发；ZIP 与仓库模板保持未配置。此命令应在解压后的 artifact 上运行，不是未构建的源码模板。
+
+插件根目录须由当前操作者拥有且权限恰为 `0700`，防止其他账户遍历或替换内部代码。若通过 marketplace 安装，复制完整 marketplace 到新的私有目录，将其中 `plugins/pi-chat-exchange` 设为 `0700`，运行该嵌套副本的配置器，并注册同一个私有 marketplace 根目录；不要配置独立插件副本后注册未配置的原始 marketplace。
+
+macOS 同时检查根目录及祖先 ACL，仅接受无 ACL 或 deny-only 条目；allow ACL、检查失败或未知输出均拒绝（即使 POSIX mode 为 `0700`）。不会自动清除 ACL 或修改系统安装权限；请选用满足门槛的私有副本。
+
+Pi host 也必须以批准 Node 启动；另配 MCP child 不会改变 Pi 正在使用的 Node。mise 不是运行要求。Secure Tunnel 使用者不需要此本地 stdio 插件或 Marketplace 安装。
 
 源码仓库中的 [ChatGPT 安装指南](../../docs/chatgpt-installation.md)包含打包、marketplace、完整虚构 binding 和恢复限制。本 README 随 artifact 分发时，相对链接可能没有仓库 docs，请回到源码仓库阅读。

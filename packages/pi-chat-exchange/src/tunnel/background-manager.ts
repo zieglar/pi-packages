@@ -168,6 +168,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize } from "node:path";
 import { TunnelRefusal } from "./codes.js";
+import { resolveTunnelClient } from "../runtime/executables.js";
 import { createHealthCompletionRecorder, type HealthProbeInput } from "./health.js";
 import { checkKeyFileRequirements, childEnvironment } from "./profile.js";
 import {
@@ -347,7 +348,6 @@ const DEFAULT_BACKGROUND_TUNNEL_TIMING: TunnelTiming = Object.freeze({
   ...DEFAULT_TUNNEL_TIMING, startupTimeoutMs: 45_000,
 });
 
-const DEFAULT_CLIENT_PATH = "/opt/homebrew/bin/tunnel-client";
 /** Derived from the invoking account rather than a hardcoded operator home. */
 const defaultProfilePath = (): string => join(homedir(), ".config", "pi-chat-exchange", "tunnel", "tunnel.yaml");
 const PS_PATH = "/bin/ps";
@@ -547,15 +547,17 @@ const defaultListProcesses: ListProcessesSeam = () => new Promise((resolve) => {
       if (pidText === undefined) continue;
       const row = parsePsIdentity(Number.parseInt(pidText, 10), pidMatch[2] ?? "");
       if (row.kind !== "present") continue;
-      if (!row.identity.command.includes("tunnel-client run") && !row.identity.command.includes("mcp-stdio.js")) continue;
+      // Refusal-only discovery must not depend on a configurable client's basename.
+      if (!row.identity.command.includes("--profile-file ") && !row.identity.command.includes("mcp-stdio.js")) continue;
       out.push(row.identity);
     }
     resolve({ kind: "ok", processes: out });
   });
 });
 
-function defaultProbeHealth(clientPath: string): ProbeHealthSeam {
+function defaultProbeHealth(clientPath: string | undefined): ProbeHealthSeam {
   return (urlFile, pid) => new Promise((resolve) => {
+    if (clientPath === undefined) { resolve({ stdout: "", exitCode: 2 }); return; }
     nodeExecFile(
       clientPath,
       ["health", "--url-file", urlFile, "--pid", String(pid), "--require-control-plane-poll", "--json"],
@@ -760,7 +762,11 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
   const env = options.env ?? {};
   const now = options.now ?? Date.now;
   const timing = options.timing ?? DEFAULT_BACKGROUND_TUNNEL_TIMING;
-  const clientPath = options.clientPath ?? DEFAULT_CLIENT_PATH;
+  // Constructor overrides remain domain-test dependencies. Operator settings
+  // and discovered production executables always cross the trust boundary.
+  const clientPath = options.clientPath ?? (() => {
+    try { return resolveTunnelClient({ env }); } catch { return undefined; }
+  })();
   const profilePath = resolveTunnelProfilePath(options);
   const stateFilePath = options.stateFilePath ?? `${dirname(profilePath)}/background-state.json`;
   const logPath = `${dirname(stateFilePath)}/background-tunnel.log`;
@@ -1406,7 +1412,7 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
       const listed = await listProcesses();
       if (listed.kind !== "ok") throw new TunnelRefusal("CE_TUNNEL_HEALTH_UNAVAILABLE");
       for (const proc of listed.processes) {
-        if (proc.command.includes("tunnel-client run") && proc.command.includes(`--profile-file ${profilePath}`)) {
+        if (proc.command.includes(`--profile-file ${profilePath}`)) {
           throw new TunnelRefusal("CE_TUNNEL_EXTERNAL_INSTANCE");
         }
       }
@@ -1421,6 +1427,7 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
       catch { throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "profile"); }
       if (currentProfileText !== profileText) throw new TunnelRefusal("CE_TUNNEL_CONFIG_CONFLICT", "profile");
       checkKeyFileMetadata(facts.keyFile);
+      if (clientPath === undefined) throw new TunnelRefusal("CE_TUNNEL_SPAWN_FAILED", "client");
       const runId = `bg-${randomUUID()}`;
       const startedAt = now();
       state = initialTunnelState(startedAt);

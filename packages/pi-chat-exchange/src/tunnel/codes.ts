@@ -45,9 +45,9 @@ export const TUNNEL_REFUSAL_CODES = [
 export type TunnelRefusalCode = (typeof TUNNEL_REFUSAL_CODES)[number];
 
 const MESSAGES: Readonly<Record<TunnelRefusalCode, string>> = Object.freeze({
-  CE_TUNNEL_PROFILE_INVALID: "tunnel profile shape rejected",
+  CE_TUNNEL_PROFILE_INVALID: "tunnel profile shape rejected; for the MCP Node command, verify trusted absolute CE_NODE_PATH (approved Node 24.21.0)",
   CE_TUNNEL_DOCTOR_FAILED: "tunnel client preflight did not pass",
-  CE_TUNNEL_SPAWN_FAILED: "tunnel client could not be started",
+  CE_TUNNEL_SPAWN_FAILED: "tunnel client could not be started; verify trusted absolute CE_TUNNEL_CLIENT_PATH or a trusted system installation (no project PATH fallback)",
   CE_TUNNEL_READY_TIMEOUT: "tunnel client did not present health evidence in time",
   CE_TUNNEL_EXTERNAL_INSTANCE: "another tunnel client instance is present; this manager will not take it over",
   CE_TUNNEL_KEY_MISSING: "no authorized credential source is configured",

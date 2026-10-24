@@ -351,11 +351,9 @@ export interface ResolveMcpNodePathInput {
   readonly exists: (path: string) => boolean;
 }
 
-/** Resolve a Node executable matching `requiredVersion`. Prefers the running
- *  runtime when it already matches; otherwise falls back to the mise install
- *  layout derived from MISE_DATA_DIR (or `~/.local/share/mise`). Returns
- *  `undefined` when no approved Node can be located — callers must then fail
- *  closed rather than write a profile the Store will reject. */
+/** @deprecated Legacy pure location hint only, NOT executable admission or runtime
+ * qualification. Retained for compatibility; production setup uses
+ * runtime/executables.resolveApprovedNode and fails closed after full checks. */
 export function resolveMcpNodePath(input: ResolveMcpNodePathInput): string | undefined {
   if (input.execVersion === `v${input.requiredVersion}` && input.execPath.length > 0) return input.execPath;
   const dataDir = input.env.MISE_DATA_DIR !== undefined && input.env.MISE_DATA_DIR !== ""

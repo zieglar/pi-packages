@@ -32,6 +32,7 @@ const allowedPluginSourceFiles = [
   "config/binding.example.json",
   "mcp.json",
   "plugin.json",
+  "server/configure.mjs",
   "server/launch-config.mjs",
   "server/launch.mjs",
 ];
