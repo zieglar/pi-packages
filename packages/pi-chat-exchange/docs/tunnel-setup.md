@@ -185,6 +185,7 @@ Store directory/file 与 Exchange namespace/idempotencyKey 四项精确一致才
 | host / child Node 不合格 | doctor 分开看两者；批准 Node 必须通过 SQLite 全资格。host 需用正确 Node 启动；child canonical profile 修复用显式 migrate，先核实 STOPPED |
 | client 缺失或信任拒绝 | doctor；核实独立安装及全链权限，不复制绕过不可信 Homebrew 祖先、不运行未准入 binary、不放宽 guard |
 | `CE_TUNNEL_BACKGROUND_UNAUTHORIZED` | 核实父 Pi 的精确许可；在子 shell export 无效 |
+| legacy 单 Session profile 的 register / sessions / revoke 拒绝 `CE_TUNNEL_PROFILE_INVALID` | 需先显式 `/ce-tunnel convert` 创建多 Session generation，按提示分别确认旧 runtime 已停止或更新及转换授权；不自动转换，不是 transport 未 STOPPED |
 | `recipients: []` / CONNECTED 但不能发 | 核对 Advanced Messaging、Pi binding、当前 ChatGPT 工具、Store/Exchange/recipient，不重发原消息测通 |
 | no endpoint / `CE_HOST_MAPPING_INVALID` | 先核对当前 native Session、所选注册、加载策略与 release 证据；新/正常释放后显式 activate；UNKNOWN 不当作普通未绑定 |
 | read/ACK 不可用 | 两个 opt-in 分别核对并显式加载；ACK 不开启 payload read |

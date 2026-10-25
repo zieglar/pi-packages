@@ -1996,12 +1996,14 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           const controller = new AbortController(); activationCapture = controller;
           // Install the task before dialogs can synchronously trigger teardown.
           const task = Promise.resolve().then(async () => {
+            let profilePath: string | undefined;
             try {
               if (ctx.mode !== "tui" || !ctx.hasUI) throw new TunnelRefusal("CE_TUNNEL_INPUT_UNAVAILABLE");
               const manager = activeManager();
               if (!("kind" in manager)) throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID");
+              profilePath = resolveTunnelProfilePath({ env: process.env });
               await runSessionConfiguration(args, ctx, {
-                profilePath: resolveTunnelProfilePath({ env: process.env }), manager, signal: controller.signal,
+                profilePath, manager, signal: controller.signal,
                 withTargetAdmission: operation => {
                   // Target discovery is a runtime read, unlike register/convert.
                   if (multiPolicy === undefined) throw new CeHostRefusal("CE_HOST_NOT_REGISTERED");
@@ -2010,7 +2012,15 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
                 },
               });
             } catch (error) {
-              notify(ctx, `ce-tunnel: configuration refused ${refusalText(error)}; transport must be verified STOPPED. Use explicit Stop, then retry with a fresh confirmation; no automatic stop/start.`, "warning");
+              let legacy = false;
+              if (error instanceof TunnelRefusal && error.code === "CE_TUNNEL_PROFILE_INVALID" && !process.env.CE_ALLOWLIST && profilePath !== undefined) {
+                try { legacy = readGeneratedPiAllowlist(profilePath) !== undefined; } catch { /* Keep the original refusal if legacy inspection fails. */ }
+              }
+              if (legacy) {
+                notify(ctx, "ce-tunnel: configuration refused CE_TUNNEL_PROFILE_INVALID; selected profile is a legacy single-session registration — run /ce-tunnel convert to create the multi-session generation first (explicit confirmation required); no automatic conversion is performed", "warning");
+              } else {
+                notify(ctx, `ce-tunnel: configuration refused ${refusalText(error)}; transport must be verified STOPPED. Use explicit Stop, then retry with a fresh confirmation; no automatic stop/start.`, "warning");
+              }
             }
           });
           activationTask = task;

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createBackgroundTunnelManager } from "../../../dist/tunnel/background-manager.js";
+import { TunnelRefusal } from "../../../dist/tunnel/codes.js";
 import { ensureManagedBinding } from "../../../dist/tunnel/managed-binding.js";
 import { publishMessagingPair } from "../../../dist/tunnel/messaging-config.js";
 import { buildTunnelMcpCommand, buildTunnelProfile, serializeTunnelProfile } from "../../../dist/tunnel/profile.js";
@@ -150,6 +151,28 @@ it.each(["session", "revision", "environment", "shutdown"])("registration refuse
 it.each(["unknown", "running"] as const)("registration refuses transport %s without stop/start", async (state) => {
   const f = await fixture(); const c = await f.runtime("real-C"); f.setProcessState(state);
   await c.command("register pi/C"); expect(readSelectedMultiSessionPolicy(f.profilePath).manifest.registrations).toHaveLength(2); expect(c.notices()).toContain("Stop");
+});
+const originalProfileInvalidNotice = "ce-tunnel: configuration refused CE_TUNNEL_PROFILE_INVALID; transport must be verified STOPPED. Use explicit Stop, then retry with a fresh confirmation; no automatic stop/start.";
+it("legacy registration refusal points to explicit conversion without registration side effects", async () => {
+  const f = await fixture(false); const c = await f.runtime("real-C");
+  vi.stubEnv("CE_ALLOWLIST", undefined);
+  const before = f.api.revision(); const files = fs.readdirSync(f.dir, { recursive: true });
+  await c.command("register pi/C");
+  expect(c.notices()).toBe("ce-tunnel: configuration refused CE_TUNNEL_PROFILE_INVALID; selected profile is a legacy single-session registration — run /ce-tunnel convert to create the multi-session generation first (explicit confirmation required); no automatic conversion is performed");
+  expect(c.notices()).not.toMatch(/transport|STOPPED/);
+  expect(c.ctx.ui.confirm).not.toHaveBeenCalled(); expect(c.entries).toHaveLength(0); expect(seam.hosts).toHaveLength(0);
+  expect(f.api.revision()).toBe(before); expect(fs.readdirSync(f.dir, { recursive: true })).toEqual(files);
+  expect(() => readSelectedMultiSessionPolicy(f.profilePath)).toThrow();
+});
+it.each(["multi-session", "explicit allowlist", "malformed profile"])("%s profile-invalid refusal keeps the original notification", async (scenario) => {
+  const f = await fixture(scenario === "multi-session"); const c = await f.runtime("real-C");
+  vi.stubEnv("CE_ALLOWLIST", scenario === "explicit allowlist" ? "/synthetic/explicit-allowlist.json" : undefined);
+  if (scenario === "malformed profile") fs.appendFileSync(f.profilePath, "INVALID\n");
+  // Inject the closed refusal before command dispatch can publish any configuration.
+  const session = vi.spyOn(c.ctx.sessionManager, "getSessionId").mockImplementation(() => { throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID"); });
+  await c.command("register pi/C"); session.mockRestore();
+  expect(c.notices()).toBe(originalProfileInvalidNotice);
+  expect(c.notices()).not.toContain("/ce-tunnel convert"); expect(c.ctx.ui.confirm).not.toHaveBeenCalled();
 });
 it("conversion requires separate legacy-runtime acknowledgement and confirmation, preserving mapping", async () => {
   const f = await fixture(false); const a = await f.runtime("real-A");
