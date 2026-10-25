@@ -199,6 +199,10 @@ describe("REAL-HOST crash recovery closure (opt-in lane, synthetic Store)", () =
       expect(reaped.name).toBe("04-mutex-refusal");
       expect(reaped.pid).toBe(launchMeta(state.paths!, "04-mutex-refusal").pid);
       expect(reaped.reaped).toBe(true);
+      expect(reaped).toMatchObject({ groupDead: true, anchorReaped: true, confirmed: true, driverLost: false });
+      expect(reaped.anchorPid).not.toBe(reaped.pid);
+      expect(reaped.pgid).toBe(reaped.anchorPid);
+      expect(reaped.events).toEqual(["final-group-kill", "no-live-members", "anchor-reaped"]);
       expect(reaped.exit).toBe(0);
     });
   }, 120_000);
@@ -216,6 +220,7 @@ describe("REAL-HOST crash recovery closure (opt-in lane, synthetic Store)", () =
     check("reconcile.offlineThroughout", "no Store-capable owned process exists at either end of the serialized offline window", "raw/reconcile-first.json", () => {
       expect(result.offlineBefore.name).toBe("04-mutex-refusal");
       expect(result.offlineBefore.reaped).toBe(true);
+      expect(result.offlineBefore).toMatchObject({ groupDead: true, anchorReaped: true, confirmed: true, driverLost: false });
       expect(result.offlineAfter).toEqual(result.offlineBefore);
     });
     check("reconcile.exit", "documented reconcile script exits 0 with its fixed success line and empty stderr", "raw/reconcile-first.json", () => {
@@ -389,6 +394,8 @@ describe("REAL-HOST crash recovery closure (opt-in lane, synthetic Store)", () =
     check("expired.offlineThroughout", "the exact recovered launch is reaped throughout the second offline window", "raw/reconcile-second.json", () => {
       expect(result.offlineBefore).toEqual(reaped);
       expect(result.offlineBefore.name).toBe("08-resumed");
+      expect(result.offlineBefore).toMatchObject({ groupDead: true, anchorReaped: true, confirmed: true, driverLost: false });
+      expect(result.offlineBefore.events).toEqual(["final-group-kill", "no-live-members", "anchor-reaped"]);
       expect(result.offlineAfter).toEqual(reaped);
     });
     check("expired.reconcile", "the recovered process's own slot was reconciled the same documented way", "raw/reconcile-second.json", () => {
@@ -449,12 +456,14 @@ describe("REAL-HOST crash recovery closure (opt-in lane, synthetic Store)", () =
     check("accounting.allReaped", "all four Store-capable owned launches were positively reaped", "raw/*.meta.json", () => {
       for (const name of ["02-persisted-bound", "04-mutex-refusal", "08-resumed", "13-expired-refusal"]) {
         const meta = launchMeta(state.paths!, name);
-        expect(meta.cleanup).toMatchObject({ name, pid: meta.pid, reaped: true, exit: meta.exit });
+        expect(meta.cleanup).toMatchObject({ name, pid: meta.pid, reaped: true, exit: meta.exit,
+          groupDead: true, anchorReaped: true, confirmed: true, driverLost: false });
       }
     });
     const summary = accounting(state.paths!);
     check("accounting.zeroClient", "no child_process call in the whole host tree named tunnel-client", "raw/process-accounting-summary.json", () => {
       expect(summary.tunnelClientExecutions).toBe(0);
+      expect(summary.unsupportedEscapes).toBe(0);
     });
     check("accounting.recorded", "the hook observed real child_process activity (the accounting is live, not vacuous)", "raw/process-accounting-summary.json", () => {
       expect(summary.total).toBeGreaterThan(0);

@@ -166,7 +166,16 @@ export interface ReapedLaunch {
   readonly startedAt: number;
   readonly reaped: true;
   readonly exit: number;
-  readonly reapedAt: number;
+  readonly generation: string;
+  readonly anchorPid: number;
+  readonly pgid: number;
+  readonly guardianPid: number;
+  readonly confirmed: true;
+  readonly groupDead: true;
+  readonly anchorReaped: true;
+  readonly driverLost: false;
+  readonly events: readonly string[];
+  readonly members: ReadonlyArray<{ pid: number; dead: boolean; reaped: false }>;
 }
 
 export interface LaunchMeta {
@@ -181,6 +190,7 @@ export interface LaunchMeta {
 
 export interface Driver {
   readonly child: unknown;
+  readonly guardian: unknown;
   stderr(): string;
   launch(name: string, argv: string[], environment: Record<string, string>, cwd: string, waitSeconds?: number): { readonly pid: number };
   send(text: string, waitSeconds?: number): void;
@@ -194,6 +204,7 @@ export interface Driver {
 
 export interface AccountingSummary {
   readonly total: number;
+  readonly unsupportedEscapes: number;
   readonly distinctCommands: ReadonlyArray<[string, number]>;
   readonly tunnelClientExecutions: number;
   readonly tunnelClientRecords: ReadonlyArray<Record<string, unknown>>;

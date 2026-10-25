@@ -92,11 +92,15 @@ export function prepareRoot() {
     "for(const method of ['spawn','spawnSync','exec','execSync','execFile','execFileSync','fork']){",
     "  const original=cp[method];",
     "  cp[method]=function(...a){",
-    "    const rec={time:new Date().toISOString(),pid:process.pid,method,command:a[0],args:Array.isArray(a[1])?a[1]:null};",
-    "    try{fs.appendFileSync(process.env.HR_ACCOUNT,JSON.stringify(rec)+'\\n',{mode:0o600});}catch{}", // accounting must never break the host
-    "    if(base(a[0]).includes('tunnel-client')||(typeof a[0]==='string'&&method.startsWith('exec')&&!Array.isArray(a[1])&&a[0].includes('tunnel-client')))",
-    "      throw Error('HR_NO_CLIENT_EXECUTION');",
-    "    return original.apply(this,a);",
+    "    const options=a.find((v,i)=>i>0&&v&&typeof v==='object'&&!Array.isArray(v))||{};",
+    "    const rec={time:new Date().toISOString(),pid:process.pid,method,command:a[0],args:Array.isArray(a[1])?a[1]:null,detached:options.detached===true};",
+    "    const log=()=>fs.appendFileSync(process.env.HR_ACCOUNT,JSON.stringify(rec)+'\\n',{mode:0o600});",
+    "    if(rec.detached||/^(setsid|nohup)$/.test(base(a[0]))){rec.outcome='unsupported-escape';log();throw Error('HR_UNSUPPORTED_ESCAPE');}",
+    "    if(base(a[0]).includes('tunnel-client')||(typeof a[0]==='string'&&method.startsWith('exec')&&!Array.isArray(a[1])&&a[0].includes('tunnel-client'))){",
+    "      rec.outcome='refused-client';log();throw Error('HR_NO_CLIENT_EXECUTION');}",
+    "    try {const result=original.apply(this,a);rec.outcome='returned';rec.childPid=result?.pid??null;rec.status=result?.status??null;log();",
+    "      if(result?.once) result.once('error',e=>{rec.outcome='spawn-error';rec.error=String(e);log();});return result;}",
+    "    catch(e){rec.outcome='threw';rec.error=String(e);log();throw e;}",
     "  };",
     "}",
     "require('node:module').syncBuiltinESMExports();",
@@ -525,14 +529,39 @@ export function runReconcile(paths, built, argv, label, driver) {
 // ---------------------------------------------------------------------------
 
 export function startDriver(paths) {
-  const child = spawn("/usr/bin/python3", [driverPath, paths.root], { stdio: ["ignore", "pipe", "pipe"], env: {
-    PATH: "/usr/bin:/bin:/usr/sbin:/sbin", PYTHONUNBUFFERED: "1" } });
+  const environment = { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", PYTHONUNBUFFERED: "1", TMPDIR: paths.tmp };
+  const child = spawn("/usr/bin/python3", [driverPath, "--driver", paths.root], {
+    stdio: ["ignore", "pipe", "pipe", "pipe"], env: environment });
+  // Pass the driver's private write-channel peer ONLY to guardian. Node closes
+  // its copy so no parent/workload descriptor can postpone driver-death EOF.
+  const guardian = spawn("/usr/bin/python3", [driverPath, "--guardian", paths.root], {
+    stdio: ["ignore", "pipe", "pipe", child.stdio[3]], env: environment });
+  child.stdio[3].destroy();
   let stderr = "";
-  child.stderr.on("data", (chunk) => { stderr += String(chunk); });
-  const exited = new Promise((settled, reject) => {
-    child.once("error", reject);
-    child.once("close", (code, signal) => settled({ code, signal }));
+  for (const owned of [child, guardian]) owned.stderr.on("data", (chunk) => { stderr += String(chunk); });
+  const observe = (owned) => new Promise((settled, reject) => {
+    owned.once("error", reject);
+    owned.once("close", (code, signal) => settled({ code, signal }));
   });
+  const exited = observe(child);
+  const guardianExited = observe(guardian);
+  let current;
+  const matchesCurrent = (receipt) => current && receipt?.confirmed === true && receipt.groupDead === true &&
+    receipt.anchorReaped === true && receipt.reaped === true && receipt.driverLost === false && receipt.anchorExit === -9 &&
+    Number.isInteger(receipt.exit) && receipt.pid === current.pid && receipt.anchorPid === current.anchorPid &&
+    receipt.pgid === current.pgid && receipt.generation === current.generation && receipt.guardianPid === guardian.pid &&
+    JSON.stringify(receipt.events) === JSON.stringify(["final-group-kill", "no-live-members", "anchor-reaped"]) &&
+    Array.isArray(receipt.members) && receipt.members.every((member) => member.dead === true && member.reaped === false);
+  const guardianResult = async () => {
+    const result = await bounded(guardianExited, 15_000, "guardian exit");
+    const outcome = JSON.parse(fs.readFileSync(join(paths.raw, "guardian-outcome.json"), "utf8"));
+    if (result.code !== 0 || outcome.successful !== true || outcome.driverLost !== false || outcome.guardianPid !== guardian.pid ||
+        (current ? !matchesCurrent(outcome.barrier) || JSON.stringify(outcome.barrier) !==
+          JSON.stringify(JSON.parse(fs.readFileSync(join(paths.raw, `barrier-${current.generation}.json`), "utf8"))) : outcome.barrier !== null)) {
+      throw new Error(`guardian cleanup failed (${result.code}/${result.signal}): ${JSON.stringify(outcome)}; ${stderr}`);
+    }
+    return outcome;
+  };
   let sequence = 0;
   const enqueue = (command) => {
     const stem = `control-${String(++sequence).padStart(3, "0")}`;
@@ -564,9 +593,11 @@ export function startDriver(paths) {
           await boundedExit(5_000);
         } catch (killError) { errors.push(killError); }
       }
+      try { await guardianResult(); } catch (guardianError) { errors.push(guardianError); }
       if (errors.length > 1) throw new AggregateError(errors, "PTY driver fallback cleanup failed");
       throw error;
     }
+    await guardianResult();
     if (result.code !== 0 || (stem && !fs.existsSync(join(paths.raw, `result-${stem}.json`)))) {
       throw new Error(`PTY driver exited without confirmed cleanup (${result.code}/${result.signal}): ${stderr}`);
     }
@@ -583,20 +614,35 @@ export function startDriver(paths) {
         return result;
       }
       if (Date.now() > deadline) throw new Error(`PTY driver never answered ${stem}; driver stderr so far: ${stderr}`);
-      if (child.exitCode !== null) throw new Error(`PTY driver exited early (${child.exitCode}): ${stderr}`);
+      if (fs.existsSync(join(paths.raw, "guardian-outcome.json")) || child.exitCode !== null || child.signalCode !== null || guardian.exitCode !== null || guardian.signalCode !== null) {
+        throw new Error(`PTY driver/guardian exited early: ${stderr}`);
+      }
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
     }
   };
   return {
-    child,
+    child, guardian,
     stderr: () => stderr,
-    launch: (name, argv, environment, cwd, waitSeconds = 6) => call({ op: "launch", name, argv, env: environment, cwd }, waitSeconds),
+    launch: (name, argv, environment, cwd, waitSeconds = 6) => {
+      current = Object.freeze(call({ op: "launch", name, argv, env: environment, cwd }, waitSeconds));
+      return current;
+    },
     send: (text, waitSeconds = 3) => call({ op: "send", text }, waitSeconds),
     snapshot: () => call({ op: "snapshot" }),
     kill: () => call({ op: "kill" }),
     // Natural exit only. Timeout is a refusal, NOT permission to reconcile.
     awaitExit: (timeoutMs = 15_000) => call({ op: "await-exit", timeoutMs }),
-    requireOffline: () => call({ op: "offline" }),
+    requireOffline: () => {
+      const receipt = call({ op: "offline" });
+      const persisted = JSON.parse(fs.readFileSync(join(paths.raw, `barrier-${current?.generation}.json`), "utf8"));
+      if (!matchesCurrent(receipt) || JSON.stringify(persisted) !== JSON.stringify(receipt)) {
+        throw new Error("offline group/guardian identity mismatch");
+      }
+      receipt.members.forEach(Object.freeze);
+      Object.freeze(receipt.members);
+      Object.freeze(receipt.events);
+      return Object.freeze(receipt);
+    },
     stop,
     /** Wait for a terminal predicate over the ANSI-stripped stream of `name`. */
     waitFor: async (name, predicate, timeoutMs, note) => {
@@ -683,7 +729,8 @@ export function accounting(paths) {
   }
   const clientExecutions = records.filter((record) => String(record.command).includes("tunnel-client"));
   const summary = { total: records.length, distinctCommands: [...byCommand.entries()].sort(),
-    tunnelClientExecutions: clientExecutions.length, tunnelClientRecords: clientExecutions };
+    tunnelClientExecutions: clientExecutions.length, tunnelClientRecords: clientExecutions,
+    unsupportedEscapes: records.filter((record) => record.outcome === "unsupported-escape").length };
   fs.writeFileSync(join(paths.raw, "process-accounting-summary.json"), JSON.stringify(summary, null, 2));
   return summary;
 }

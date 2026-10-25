@@ -1,10 +1,116 @@
 import fs from "node:fs";
-import type { ChildProcess } from "node:child_process";
+import { spawnSync, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
 import { once } from "node:events";
 import { expect, it, vi } from "vitest";
-import { finishRun, nodePath, prepareRoot, startDriver } from "./support/harness.mjs";
+import { driverPath, finishRun, nodePath, prepareRoot, startDriver } from "./support/harness.mjs";
 import { settleFixtureDriver } from "./support/fixture.mjs";
+
+// The descendant self-expires even against the old broken driver. Never use a
+// stale numeric PID as cleanup authority in a failing characterization.
+for (const end of ["quit", "crash"] as const) {
+  it(`eliminates a TERM-resistant descendant after the actual leader ${end}`, async () => {
+    const paths = prepareRoot();
+    const driver = startDriver(paths);
+    try {
+      const descendant = "process.on('SIGTERM',()=>{}); console.log('descendant-ready '+process.pid); setTimeout(()=>process.exit(0),8000)";
+      const program = `const cp=require('node:child_process'); const c=cp.spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore','pipe','inherit']}); c.stdout.on('data',b=>process.stdout.write(b)); process.stdin.on('data',()=>process.exit(0)); setInterval(()=>{},1000)`;
+      const { pid } = driver.launch("descendants", [nodePath, "-e", program], { PATH: "/usr/bin:/bin" }, paths.cwd, 0);
+      const ready = await driver.waitFor("descendants", (text) => text.match(/descendant-ready (\d+)/)?.[1], 5_000);
+      const descendantPid = Number(ready.matched);
+      if (end === "quit") { driver.send("quit\r", 0); expect(driver.awaitExit(5_000)).toMatchObject({ pid, exit: 0 }); }
+      else expect(driver.kill()).toMatchObject({ pid, exit: -9 });
+      const probe = spawnSync("/bin/ps", ["-p", String(descendantPid), "-o", "stat="], { encoding: "utf8" });
+      expect(probe.error).toBeUndefined();
+      expect(probe.status === 1 || (probe.status === 0 && /^Z/.test(probe.stdout.trim())), "leader death must not authorize offline while descendant is live").toBe(true);
+      const receipt = driver.requireOffline();
+      expect(receipt).toMatchObject({ pid, groupDead: true, anchorReaped: true, confirmed: true, driverLost: false });
+      expect(receipt.anchorPid).not.toBe(pid);
+      expect(receipt.pgid).toBe(receipt.anchorPid);
+      expect(receipt.events).toEqual(["final-group-kill", "no-live-members", "anchor-reaped"]);
+      expect(receipt.members.every((member) => member.dead && !member.reaped)).toBe(true);
+    } finally {
+      await settleFixtureDriver(driver);
+      await new Promise((done) => setTimeout(done, 8_500));
+    }
+  }, 25_000);
+}
+
+for (const failure of ["SIGKILL/EOF", "exception"] as const) {
+it(`guardian independently cleans the resistant descendant on driver ${failure} without offline authority`, async () => {
+  const paths = prepareRoot();
+  const driver = startDriver(paths);
+  try {
+    const descendant = "process.on('SIGTERM',()=>{}); console.log('descendant-ready '+process.pid); setTimeout(()=>process.exit(0),8000)";
+    const program = `const c=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore','pipe','inherit']}); c.stdout.on('data',b=>process.stdout.write(b)); setInterval(()=>{},1000)`;
+    const { pid } = driver.launch("eof", [nodePath, "-e", program], { PATH: "/usr/bin:/bin" }, paths.cwd, 0);
+    const ready = await driver.waitFor("eof", (text) => text.match(/descendant-ready (\d+)/)?.[1], 5_000);
+    if (failure === "SIGKILL/EOF") (driver.child as ChildProcess).kill("SIGKILL");
+    else {
+      const exited = once(driver.child as ChildProcess, "exit");
+      fs.writeFileSync(join(paths.raw, "control-999.json"), JSON.stringify({ op: "invalid-control" }));
+      await exited; // do not enqueue an earlier sorted stop ahead of the fault
+    }
+    await expect(driver.stop()).rejects.toThrow(/guardian|driver/i);
+    const guardian = driver.guardian as ChildProcess;
+    expect(guardian.exitCode !== null || guardian.signalCode !== null).toBe(true);
+    const outcome = JSON.parse(fs.readFileSync(join(paths.raw, "guardian-outcome.json"), "utf8"));
+    expect(outcome).toMatchObject({ driverLost: failure === "SIGKILL/EOF", barrier: { pid, groupDead: true, confirmed: failure !== "SIGKILL/EOF" } });
+    if (failure === "SIGKILL/EOF") expect(outcome.successful).toBe(false);
+    const probe = spawnSync("/bin/ps", ["-p", ready.matched, "-o", "stat="], { encoding: "utf8" });
+    expect(probe.status === 1 || (probe.status === 0 && /^Z/.test(probe.stdout.trim()))).toBe(true);
+    expect(() => driver.requireOffline()).toThrow();
+  } finally { await settleFixtureDriver(driver); }
+}, 25_000);
+}
+
+it("actual workload inherits anchor group but not the private driver-liveness descriptor", async () => {
+  const paths = prepareRoot();
+  const driver = startDriver(paths);
+  try {
+    const program = "import os,json\ntry:\n os.fstat(3); leaked=True\nexcept OSError:\n leaked=False\nprint(json.dumps({'pid':os.getpid(),'pgid':os.getpgrp(),'leaked':leaked}),flush=True)";
+    const { pid } = driver.launch("descriptor", ["/usr/bin/python3", "-c", program], { PATH: "/usr/bin:/bin" }, paths.cwd, 0);
+    const output = await driver.waitFor("descriptor", (text) => text.match(/\{[^\r\n]+\}/)?.[0], 5_000);
+    const observation = JSON.parse(output.matched);
+    const barrier = driver.awaitExit(3_000);
+    expect(observation).toEqual({ pid, pgid: barrier.anchorPid, leaked: false });
+  } finally { await settleFixtureDriver(driver); }
+}, 20_000);
+
+it("real final-barrier adapter pins final signal before reap and refuses failed/malformed/timed-out inspection", () => {
+  const program = `
+import importlib.util,json,subprocess
+spec=importlib.util.spec_from_file_location('driver',${JSON.stringify(driverPath)})
+m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+results=[]
+for kind in ['dead','failed','malformed','timeout']:
+ events=[]
+ class Anchor:
+  pid=123
+  def poll(self): raise AssertionError('must not poll anchor')
+  def wait(self,timeout):
+   events.append('reap'); return -9
+ def send(pid,sig):
+  assert 'reap' not in events
+  events.append('signal')
+ def inspect(pgid):
+  if kind=='failed': return m.members(pgid,lambda *a,**k:subprocess.CompletedProcess([],1,'','denied'))
+  if kind=='malformed': return m.members(pgid,lambda *a,**k:subprocess.CompletedProcess([],0,'not a numeric process row',''))
+  if kind=='timeout': return [{'pid':124,'dead':False,'reaped':False}]
+  return m.members(pgid,lambda *a,**k:subprocess.CompletedProcess([],0,'123 1 123 Z\\n',''))
+ ticks=iter([0,4])
+ result=m.final_barrier(Anchor(),inspect,send,lambda:next(ticks),lambda _:None)
+ assert events==['signal','reap'],events
+ assert result['groupDead']==(kind=='dead'),result
+ if kind!='dead': assert 'error' in result
+ if kind=='dead': assert result['members'][0]['reaped']==False
+ results.append({'kind':kind,'outcome':result})
+print(json.dumps(results))
+`;
+  const result = spawnSync("/usr/bin/python3", ["-c", program], { encoding: "utf8", env: { PATH: "/usr/bin:/bin", TMPDIR: process.env.TMPDIR }, timeout: 5_000 });
+  expect(result.status, result.stderr).toBe(0);
+  expect(JSON.parse(result.stdout)).toHaveLength(4);
+});
 
 function gone(pid: number) {
   expect(() => process.kill(pid, 0)).toThrow(/ESRCH/);
