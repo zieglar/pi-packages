@@ -233,6 +233,13 @@ def guardian_mode(raw):
                     generation = request['generation']
                     command = request
                     barrier = None
+                    # The predecessor anchor's ownership ended at its confirmed
+                    # barrier reap, and a reaped PGID may already be reused by an
+                    # unrelated group. Drop both saved references BEFORE any
+                    # fallible replacement setup, so a failed slave open or anchor
+                    # spawn leaves finally-cleanup nothing stale to signal.
+                    anchor = None
+                    actual = None
                     slave = os.open(request['slave'], os.O_RDWR)
                     try:
                         anchor = subprocess.Popen([sys.executable, __file__, '--anchor', str(raw.parent), generation],
@@ -268,9 +275,31 @@ def guardian_mode(raw):
                 publish(raw / ('guardian-result-' + path.stem + '.json'), result)
             time.sleep(.01)
     finally:
-        result = cleanup()
-        publish(raw / 'guardian-outcome.json', {'successful': successful and not driver_lost,
-                'driverLost': driver_lost, 'barrier': result, 'guardianPid': os.getpid()})
+        # A cleanup failure here must neither hide the original cause nor skip
+        # the guardian-outcome evidence: capture the in-flight exception first,
+        # keep the last barrier, and publish an explicitly unsuccessful outcome
+        # with distinct error fields. The run stays fail-closed either way.
+        failure = sys.exc_info()[1]
+        result = barrier
+        cleanup_error = None
+        try:
+            result = cleanup()
+        except Exception as error:
+            cleanup_error = str(error)
+            result = barrier
+        outcome = {'successful': successful and not driver_lost and failure is None and cleanup_error is None,
+                'driverLost': driver_lost, 'barrier': result, 'guardianPid': os.getpid()}
+        if failure is not None:
+            outcome['error'] = str(failure)
+        if cleanup_error is not None:
+            outcome['cleanupError'] = cleanup_error
+        try:
+            publish(raw / 'guardian-outcome.json', outcome)
+        except OSError as error:
+            # Best-effort only: a failed write (e.g. disk full) must not mask
+            # the original failure, and the missing outcome stays fail-closed
+            # for the parent. Bounded diagnostic, no unrelated fields.
+            sys.stderr.write(f'guardian outcome publication failed: {error}\n')
 
 
 def driver_mode(raw):

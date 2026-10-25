@@ -1,8 +1,8 @@
 import fs from "node:fs";
-import { spawnSync, type ChildProcess } from "node:child_process";
+import childProcess, { spawnSync, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
 import { once } from "node:events";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { driverPath, finishRun, nodePath, prepareRoot, startDriver } from "./support/harness.mjs";
 import { settleFixtureDriver } from "./support/fixture.mjs";
 
@@ -273,3 +273,255 @@ for (const mode of ["normal", "assertion-failure", "exception", "prior-kill", "e
     } finally { signals.mockRestore(); }
   }, 20_000);
 }
+
+// ---------------------------------------------------------------------------
+// Recovery Closure D: guardian replacement-launch ownership and failure evidence.
+// ---------------------------------------------------------------------------
+
+type GuardianFault = "replacement-open" | "replacement-popen" | "cleanup-raise" | "cleanup-raise-outcome-write";
+
+interface GuardianSpyEntry {
+  kind: "killpg" | "slave-open" | "anchor-spawn" | "actual-wait" | "barrier-publish" | "outcome-publish";
+  action?: "passed" | "refused-unowned" | "injected-failure";
+  pid?: number;
+  owned?: boolean;
+}
+
+/** Runs the REAL guardian_mode from pty-driver.py with ownership-scoped spies.
+ * Only this fixture's own guardian process is intercepted; driver, anchor,
+ * workload and barrier stay the real paths. The fallible infrastructure edges
+ * (slave open, anchor spawn, evidence publication) fail on demand, and
+ * os.killpg is wrapped BEFORE the module loads so final_barrier's bound
+ * `send=os.killpg` default observes it too: a signal to a still-owned anchor
+ * Popen passes through to the kernel, while any other target is recorded and
+ * REFUSED — so a regression can never reach a real, possibly recycled process
+ * group, and the recorded attempt is the regression evidence. */
+function guardianFaultSource(mode: GuardianFault, spyLog: string): string {
+  return `
+import importlib.util, json, os, subprocess, sys
+DRIVER=${JSON.stringify(driverPath)}
+LOG=${JSON.stringify(spyLog)}
+MODE=${JSON.stringify(mode)}
+__import__('pathlib').Path(LOG).parent.mkdir(parents=True, exist_ok=True)
+log=open(LOG,'w')
+def note(entry):
+    log.write(json.dumps(entry)+'\\n'); log.flush()
+real_killpg=os.killpg; real_open=os.open; real_popen=subprocess.Popen
+owned=set(); counters={'tty':0,'anchor':0,'actual':0,'barrier':0}
+def spy_killpg(pid,sig):
+    entry={'kind':'killpg','pid':pid,'signal':int(sig),'owned':pid in owned}
+    if pid not in owned:
+        entry['action']='refused-unowned'; note(entry); return None
+    entry['action']='passed'; note(entry); return real_killpg(pid,sig)
+os.killpg=spy_killpg
+def spy_open(path,flags,*args,**kwargs):
+    if str(path).startswith('/dev/ttys'):
+        counters['tty']+=1
+        if MODE=='replacement-open' and counters['tty']==2:
+            note({'kind':'slave-open','action':'injected-failure','path':str(path)})
+            raise OSError('injected replacement slave open failure')
+    return real_open(path,flags,*args,**kwargs)
+os.open=spy_open
+def spy_popen(*args,**kwargs):
+    argv=list(args[0] if args else kwargs.get('args') or [])
+    if '--anchor' in argv:
+        counters['anchor']+=1
+        if MODE=='replacement-popen' and counters['anchor']==2:
+            note({'kind':'anchor-spawn','action':'injected-failure','argv':argv})
+            raise RuntimeError('injected replacement anchor spawn failure')
+        child=real_popen(*args,**kwargs); owned.add(child.pid)
+        real_wait=child.wait
+        def waited(*wait_args,**wait_kwargs):
+            result=real_wait(*wait_args,**wait_kwargs)
+            owned.discard(child.pid)
+            return result
+        child.wait=waited
+        return child
+    return real_popen(*args,**kwargs)
+subprocess.Popen=spy_popen
+spec=importlib.util.spec_from_file_location('driver',DRIVER)
+m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+real_wait_file=m.wait_file; real_publish=m.publish
+def spy_wait_file(path,timeout=10):
+    if path.name.startswith('actual-'):
+        counters['actual']+=1
+        if MODE.startswith('cleanup-raise') and counters['actual']==2:
+            note({'kind':'actual-wait','action':'injected-failure','path':path.name})
+            raise RuntimeError('injected actual confirmation failure')
+    return real_wait_file(path,timeout)
+m.wait_file=spy_wait_file
+def spy_publish(path,value):
+    if path.name.startswith('barrier-'):
+        counters['barrier']+=1
+        if MODE.startswith('cleanup-raise') and counters['barrier']==2:
+            note({'kind':'barrier-publish','action':'injected-failure','path':path.name})
+            raise OSError('injected barrier publication failure')
+    if path.name=='guardian-outcome.json' and MODE=='cleanup-raise-outcome-write':
+        note({'kind':'outcome-publish','action':'injected-failure'})
+        raise OSError('injected outcome publication failure')
+    return real_publish(path,value)
+m.publish=spy_publish
+m.guardian_mode(__import__('pathlib').Path(sys.argv[1])/'raw')
+`;
+}
+
+function startGuardianFaultDriver(paths: ReturnType<typeof prepareRoot>, mode: GuardianFault) {
+  const original = childProcess.spawn;
+  const spyLog = join(paths.raw, "guardian-spy.jsonl");
+  const guardianStderr = join(paths.raw, "guardian-stderr.log");
+  const source = guardianFaultSource(mode, spyLog);
+  const spawn = vi.spyOn(childProcess, "spawn").mockImplementation(((command: string, args: string[], options: unknown) => {
+    if (args?.[1] !== "--guardian") return original(command, args, options as Parameters<typeof original>[2]);
+    const guardian = original(command, ["-c", source, paths.root], options as Parameters<typeof original>[2]);
+    // The guardian's own stderr, teed synchronously to a file: call()'s
+    // Atomics.wait poll freezes the event loop, so the driver's later rpc
+    // traceback must never be able to interleave into this evidence.
+    guardian.stderr?.on("data", (chunk: Buffer) => { try { fs.appendFileSync(guardianStderr, chunk); } catch { /* bounded evidence */ } });
+    return guardian;
+  }) as typeof original);
+  const driver = startDriver(paths);
+  spawn.mockRestore();
+  return { driver, spyLog, guardianStderr };
+}
+
+/** Bounded reap observation for an owned child of this test process. */
+async function ownedExit(owned: ChildProcess, note: string, timeoutMs = 30_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (owned.exitCode === null && owned.signalCode === null) {
+    if (Date.now() > deadline) throw new Error(`${note} never exited`);
+    await new Promise((done) => setTimeout(done, 50));
+  }
+}
+
+function spyEntries(spyLog: string): GuardianSpyEntry[] {
+  return fs.readFileSync(spyLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as GuardianSpyEntry);
+}
+
+function replacementGeneration(paths: ReturnType<typeof prepareRoot>, predecessor: string): string {
+  const generations = fs.readdirSync(paths.raw)
+    .map((name) => /^launch-([0-9a-f]+)\.json$/.exec(name)?.[1])
+    .filter((generation): generation is string => generation !== undefined);
+  expect(generations).toHaveLength(2);
+  const replacement = generations.find((generation) => generation !== predecessor);
+  expect(replacement, "the failed replacement launch published its generation").toBeDefined();
+  return replacement!;
+}
+
+/** Confirms the predecessor launch and reaps it through the real barrier, then
+ * drives the replacement launch whose injected failure must leave the reaped
+ * predecessor group untouched. */
+async function confirmedPredecessor(driver: ReturnType<typeof startDriver>, paths: ReturnType<typeof prepareRoot>) {
+  const program = "console.log('guardian-ready'); setInterval(()=>{},1000)";
+  const { pid } = driver.launch("predecessor", [nodePath, "-e", program], { PATH: "/usr/bin:/bin" }, paths.cwd, 0);
+  await driver.waitFor("predecessor", (text) => text.includes("guardian-ready") ? "ready" : undefined, 5_000, "predecessor ready");
+  expect(driver.kill()).toMatchObject({ pid, exit: -9 });
+  const predecessor = driver.requireOffline();
+  expect(predecessor).toMatchObject({ confirmed: true, groupDead: true, anchorReaped: true, driverLost: false });
+  return { program, predecessor };
+}
+
+describe("recovery closure D: guardian launch ownership and failure evidence", () => {
+  for (const stage of ["slave-open", "anchor-spawn"] as const) {
+    it(`failed replacement launch after a confirmed barrier owns nothing to signal: ${stage}`, async () => {
+      const paths = prepareRoot();
+      const mode: GuardianFault = stage === "slave-open" ? "replacement-open" : "replacement-popen";
+      const { driver, spyLog } = startGuardianFaultDriver(paths, mode);
+      try {
+        const { program, predecessor } = await confirmedPredecessor(driver, paths);
+        let failure: unknown;
+        try { driver.launch("replacement", [nodePath, "-e", program], { PATH: "/usr/bin:/bin" }, paths.cwd, 0); }
+        catch (error) { failure = error; }
+        expect(String(failure)).toMatch(/exited early|never answered/);
+        await ownedExit(driver.guardian as ChildProcess, "injected guardian");
+        const entries = spyEntries(spyLog);
+        expect(entries.filter((entry) => entry.action === "injected-failure").map((entry) => entry.kind),
+          "the injected fault must fire inside the real guardian").toEqual([stage === "slave-open" ? "slave-open" : "anchor-spawn"]);
+        expect(entries.filter((entry) => entry.action === "refused-unowned"),
+          "never signal the saved PGID of the reaped predecessor").toEqual([]);
+        const signalled = entries.filter((entry) => entry.kind === "killpg" && entry.action === "passed");
+        expect(signalled.length).toBeGreaterThan(0);
+        expect(signalled.every((entry) => entry.pid === predecessor.anchorPid && entry.owned === true),
+          "only the still-owned predecessor group is ever signalled").toBe(true);
+        const replacement = replacementGeneration(paths, predecessor.generation);
+        expect(fs.existsSync(join(paths.raw, `barrier-${replacement}.json`)),
+          "no fabricated replacement-generation barrier").toBe(false);
+        expect(fs.existsSync(join(paths.raw, `actual-${replacement}.json`)),
+          "the replacement anchor never ran").toBe(false);
+        const outcome = JSON.parse(fs.readFileSync(join(paths.raw, "guardian-outcome.json"), "utf8"));
+        expect(outcome).toMatchObject({ successful: false, driverLost: false });
+        expect(outcome.barrier, "no fabricated current barrier").toBe(null);
+        // Every synthetic role is already reaped through the confirmed predecessor
+        // barrier; the driver is only stuck in doomed rpc deadlines against the
+        // dead guardian, so reaping it directly bypasses no cleanup authority.
+        (driver.child as ChildProcess).kill("SIGKILL");
+        await ownedExit(driver.child as ChildProcess, "fixture driver");
+      } finally {
+        await settleFixtureDriver(driver);
+      }
+    }, 180_000);
+  }
+
+  it("cleanup failure inside the guardian finally still publishes explicit unsuccessful outcome evidence", async () => {
+    const paths = prepareRoot();
+    const { driver, spyLog } = startGuardianFaultDriver(paths, "cleanup-raise");
+    try {
+      const { program, predecessor } = await confirmedPredecessor(driver, paths);
+      let failure: unknown;
+      try { driver.launch("replacement", [nodePath, "-e", program], { PATH: "/usr/bin:/bin" }, paths.cwd, 0); }
+      catch (error) { failure = error; }
+      expect(String(failure)).toMatch(/exited early|never answered/);
+      await ownedExit(driver.guardian as ChildProcess, "injected guardian");
+      const outcomePath = join(paths.raw, "guardian-outcome.json");
+      expect(fs.existsSync(outcomePath), "a cleanup failure must not skip outcome publication").toBe(true);
+      const outcome = JSON.parse(fs.readFileSync(outcomePath, "utf8"));
+      expect(outcome.successful).toBe(false);
+      expect(String(outcome.error), "the original failure is preserved").toContain("injected actual confirmation failure");
+      expect(String(outcome.cleanupError), "the cleanup failure is a distinct field, not an overwrite")
+        .toContain("injected barrier publication failure");
+      const entries = spyEntries(spyLog);
+      expect(entries.filter((entry) => entry.action === "injected-failure").map((entry) => entry.kind))
+        .toEqual(["actual-wait", "barrier-publish"]);
+      expect(entries.filter((entry) => entry.action === "refused-unowned")).toEqual([]);
+      const replacement = replacementGeneration(paths, predecessor.generation);
+      expect(outcome.barrier).toMatchObject({ generation: replacement, anchorReaped: true, confirmed: false });
+      expect(fs.existsSync(join(paths.raw, `barrier-${replacement}.json`)),
+        "the failed publication leaves no barrier file").toBe(false);
+      const probe = spawnSync("/bin/ps", ["-p", String(outcome.barrier.anchorPid), "-o", "stat="], { encoding: "utf8" });
+      expect(probe.error).toBeUndefined();
+      expect(probe.status, "the owned replacement anchor was still fully reaped").toBe(1);
+      (driver.child as ChildProcess).kill("SIGKILL");
+      await ownedExit(driver.child as ChildProcess, "fixture driver");
+    } finally {
+      await settleFixtureDriver(driver);
+    }
+  }, 180_000);
+
+  it("an unwritable guardian outcome stays fail-closed and never masks the original failure", async () => {
+    const paths = prepareRoot();
+    const { driver, spyLog, guardianStderr } = startGuardianFaultDriver(paths, "cleanup-raise-outcome-write");
+    try {
+      const { program } = await confirmedPredecessor(driver, paths);
+      let failure: unknown;
+      try { driver.launch("replacement", [nodePath, "-e", program], { PATH: "/usr/bin:/bin" }, paths.cwd, 0); }
+      catch (error) { failure = error; }
+      expect(String(failure)).toMatch(/exited early|never answered/);
+      await ownedExit(driver.guardian as ChildProcess, "injected guardian");
+      const guardian = driver.guardian as ChildProcess;
+      expect(guardian.exitCode, "the guardian still terminates on its failure").toBe(1);
+      expect(fs.existsSync(join(paths.raw, "guardian-outcome.json")), "publication cannot be guaranteed").toBe(false);
+      const stderr = fs.readFileSync(guardianStderr, "utf8");
+      const lines = stderr.trimEnd().split("\n");
+      expect(lines[lines.length - 1], "the process terminates on the ORIGINAL failure, not the publication error")
+        .toBe("RuntimeError: injected actual confirmation failure");
+      expect(stderr).toContain("guardian outcome publication failed");
+      expect(spyEntries(spyLog).filter((entry) => entry.action === "injected-failure").map((entry) => entry.kind))
+        .toEqual(["actual-wait", "barrier-publish", "outcome-publish"]);
+      (driver.child as ChildProcess).kill("SIGKILL");
+      await ownedExit(driver.child as ChildProcess, "fixture driver");
+      await expect(driver.stop(), "absent evidence still rejects; no confirmation can be fabricated")
+        .rejects.toThrow(/guardian cleanup failed|ENOENT/);
+    } finally {
+      await settleFixtureDriver(driver);
+    }
+  }, 180_000);
+});
