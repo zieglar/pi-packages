@@ -8,11 +8,25 @@
  * instead of silently skipping or hanging on a missing binary.
  *
  * REWORK-01 remediation adds the runtime dimension: the default lane script
- * sets CE_DEFAULT_CLIENT_GUARD=1, a vitest setup file wraps child_process so a
- * forbidden tunnel-client spawn throws BEFORE process creation, and a runtime
- * probe proves the guard blocks a synthetic sentinel NAMED tunnel-client while
- * benign synthetic spawns keep working. The real installed client binary is
- * never touched or executed by this file.
+ * sets CE_DEFAULT_CLIENT_GUARD=1 and a vitest setup file wraps child_process so
+ * a forbidden tunnel-client spawn throws BEFORE process creation. Round 2 pins
+ * the guard's LANE ISOLATION: vitest 4.1.11 hoists the setup file's nested
+ * vi.mock out of its enclosing condition, so the wrapper is registered in
+ * EVERY vitest lane that loads the setup file; isolation comes from the wrapper
+ * consulting the env AT CALL TIME, which makes it a pass-through whenever
+ * CE_DEFAULT_CLIENT_GUARD !== "1". The probes below prove both directions with
+ * synthetic sentinels only:
+ *   (i)   env-set plain-Node child + install(): a tunnel-client spawn is
+ *         refused before process creation (fixed GUARD_MESSAGE, no ran-marker);
+ *   (ii)  env-unset plain-Node child + install(): an EXECUTABLE tunnel-client
+ *         sentinel runs (marker written) — registration without activation is
+ *         a pass-through;
+ *   (iii) this default-collected file's ORDINARY top-level
+ *         `import { spawnSync } from "node:child_process"` is intercepted by
+ *         the setupFiles/mock path (GUARD_MESSAGE fires);
+ *   (iv)  a vitest child lane WITHOUT the env (its own minimal config loading
+ *         this package's guard setup file) may spawn the executable sentinel.
+ * The real installed client binary is never touched or executed by this file.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -20,6 +34,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { GUARD_MESSAGE } from "../support/default-client-guard.js";
 
 const packageRoot = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -42,6 +57,18 @@ const readIfPresent = (path: string): string | undefined => {
 
 const probeDirs: string[] = [];
 afterEach(() => { for (const dir of probeDirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+
+/** A synthetic sentinel NAMED tunnel-client plus a ran-marker in a fresh temp
+ *  dir — NEVER the real installed client. Non-executable sentinels cannot run
+ *  at all; executable ones write the marker and exit 42 when run. */
+function sentinelFixture(executable: boolean): { sentinel: string; ranMarker: string } {
+  const dir = mkdtempSync(join(tmpdir(), "ce-guard-probe-"));
+  probeDirs.push(dir);
+  const sentinel = join(dir, "tunnel-client");
+  const ranMarker = join(dir, "sentinel-ran");
+  writeFileSync(sentinel, `#!/bin/sh\nprintf ran > ${JSON.stringify(ranMarker)}\nexit 42\n`, { mode: executable ? 0o755 : 0o644 });
+  return { sentinel, ranMarker };
+}
 
 describe("default test lane is isolated from the installed tunnel-client", () => {
   it("excludes exactly the two installed-client files and sets the guard env on the default `pnpm test`", () => {
@@ -100,6 +127,9 @@ describe("default test lane is isolated from the installed tunnel-client", () =>
       '"/opt/homebrew/bin/tunnel-client"',
       'basename(command) === "tunnel-client"',
       '"spawn", "spawnSync", "execFile", "execFileSync"',
+      // Per-call activation is the round-2 lane-isolation mechanism: the
+      // wrapper consults the env AT CALL TIME, not at registration.
+      "guardActive() && forbiddenTarget(command)",
     ]) {
       expect(
         source!.includes(literal),
@@ -108,15 +138,8 @@ describe("default test lane is isolated from the installed tunnel-client", () =>
     }
   });
 
-  it("runtime probe: install() blocks tunnel-client spawns before process creation and passes benign spawns through", () => {
-    const probeDir = mkdtempSync(join(tmpdir(), "ce-guard-probe-"));
-    probeDirs.push(probeDir);
-    const sentinel = join(probeDir, "tunnel-client");
-    const ranMarker = join(probeDir, "sentinel-ran");
-    // A synthetic sentinel NAMED tunnel-client: the guard must throw before
-    // process creation, so the sentinel is never executed. If it ever ran, it
-    // would create ranMarker and exit 42.
-    writeFileSync(sentinel, `#!/bin/sh\nprintf ran > ${JSON.stringify(ranMarker)}\nexit 42\n`, { mode: 0o755 });
+  it("probe (i): with CE_DEFAULT_CLIENT_GUARD=1, install() refuses tunnel-client spawns before process creation", () => {
+    const { sentinel, ranMarker } = sentinelFixture(false);
     const guardUrl = new URL("../support/default-client-guard.ts", import.meta.url).href;
     const probe = `
       const { install } = await import(${JSON.stringify(guardUrl)});
@@ -132,18 +155,80 @@ describe("default test lane is isolated from the installed tunnel-client", () =>
       out.benign = benign && benign.status;
       console.log(JSON.stringify(out));
     `;
-    const childEnv = { ...process.env } as NodeJS.ProcessEnv;
-    // The probe tests install() directly in a plain Node realm; the lane-level
-    // env activation (which registers the vitest mock) must not fire here.
-    delete childEnv.CE_DEFAULT_CLIENT_GUARD;
+    const childEnv = { ...process.env, CE_DEFAULT_CLIENT_GUARD: "1" } as NodeJS.ProcessEnv;
+    // The child is plain Node: strip the inherited VITEST marker so the guard's
+    // vitest-only mock registration cannot fire without a mocker.
+    delete childEnv.VITEST;
     const result = spawnSync(process.execPath, ["--input-type=module", "-e", probe, sentinel], { encoding: "utf8", env: childEnv });
-    expect(result.status).toBe(0);
+    expect(result.status, result.stderr).toBe(0);
     expect(result.stderr).toBe("");
     const out = JSON.parse(result.stdout) as Record<string, unknown>;
-    expect(out.spawnSync).toContain("CE default test lane isolation guard");
-    expect(out.execFileSync).toBe(out.spawnSync);
-    // Synthetic fixtures must keep spawning through the guard untouched.
+    expect(out.spawnSync).toBe(GUARD_MESSAGE);
+    expect(out.execFileSync).toBe(GUARD_MESSAGE);
+    // Synthetic non-tunnel-client targets must keep spawning through the guard.
     expect(out.benign).toBe(0);
     expect(existsSync(ranMarker), "the sentinel named tunnel-client must never be executed").toBe(false);
+  });
+
+  it("probe (ii): without CE_DEFAULT_CLIENT_GUARD, install() passes an executable tunnel-client sentinel through", () => {
+    const { sentinel, ranMarker } = sentinelFixture(true);
+    const guardUrl = new URL("../support/default-client-guard.ts", import.meta.url).href;
+    const probe = `
+      const { install } = await import(${JSON.stringify(guardUrl)});
+      install();
+      const cp = await import("node:child_process");
+      const r = cp.spawnSync(process.argv[1], []);
+      console.log(JSON.stringify({ status: r.status, error: r.error ? String(r.error) : null }));
+    `;
+    const childEnv = { ...process.env } as NodeJS.ProcessEnv;
+    delete childEnv.CE_DEFAULT_CLIENT_GUARD;
+    delete childEnv.VITEST;
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", probe, sentinel], { encoding: "utf8", env: childEnv });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toBe("");
+    const out = JSON.parse(result.stdout) as { status: number | null; error: string | null };
+    // The wrapper is REGISTERED (install() ran) but the activation env is
+    // absent, so the call must pass through: the sentinel EXECUTES.
+    expect(out.error).toBeNull();
+    expect(out.status).toBe(42);
+    expect(existsSync(ranMarker), "an executable sentinel must run when the guard env is absent").toBe(true);
+  });
+
+  it("probe (iii): the default lane intercepts an ordinary top-level child_process import", () => {
+    const { sentinel, ranMarker } = sentinelFixture(false);
+    // This uses the module-top-level `import { spawnSync } from
+    // "node:child_process"` above — no install() call, no env changes — proving
+    // the setupFiles/mock path intercepts plain imports in the default lane. If
+    // the guard were unwired, the non-executable spawn would EACCES without a
+    // marker: still a loud failure, never executing anything real.
+    expect(() => spawnSync(sentinel, [])).toThrow(GUARD_MESSAGE);
+    expect(existsSync(ranMarker)).toBe(false);
+  });
+
+  it("probe (iv): a vitest child lane without CE_DEFAULT_CLIENT_GUARD is not blocked", { timeout: 120_000 }, () => {
+    const dir = mkdtempSync(join(tmpdir(), "ce-lane-probe-"));
+    probeDirs.push(dir);
+    const sentinel = join(dir, "tunnel-client");
+    const ranMarker = join(dir, "sentinel-ran");
+    writeFileSync(sentinel, `#!/bin/sh\nprintf ran > ${JSON.stringify(ranMarker)}\nexit 42\n`, { mode: 0o755 });
+    // A minimal config loading THIS package's guard setup file: the child lane
+    // registers the hoisted child_process mock exactly like the installed-
+    // client lane does — but without the guard env.
+    writeFileSync(join(dir, "vitest.config.mts"), `export default { test: { setupFiles: [${JSON.stringify(join(packageRoot, "test/support/default-client-guard.ts"))}] } };\n`);
+    writeFileSync(join(dir, "lane-probe.test.ts"), `
+import { spawnSync } from "node:child_process";
+import { expect, it } from "vitest";
+it("spawns the executable tunnel-client sentinel via an ordinary import", () => {
+  const r = spawnSync(${JSON.stringify(sentinel)}, []);
+  expect(r.error).toBeUndefined();
+  expect(r.status).toBe(42);
+});
+`);
+    const childEnv = { ...process.env } as NodeJS.ProcessEnv;
+    delete childEnv.CE_DEFAULT_CLIENT_GUARD;
+    const vitestEntry = join(packageRoot, "node_modules", "vitest", "vitest.mjs");
+    const result = spawnSync(process.execPath, [vitestEntry, "run", "--root", dir, "lane-probe.test.ts"], { encoding: "utf8", env: childEnv });
+    expect(result.status, `lane probe failed:\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`).toBe(0);
+    expect(existsSync(ranMarker), "the executable sentinel must run in a lane without the guard env").toBe(true);
   });
 });

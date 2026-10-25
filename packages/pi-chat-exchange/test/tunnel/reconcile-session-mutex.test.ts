@@ -133,7 +133,87 @@ it("concurrent reconciliation of the same dead owner publishes exactly one recei
   const pending = join(f.slot, "release-pending.json");
   if (fs.existsSync(pending)) expect(fs.readFileSync(pending)).toEqual(f.bytes);
 });
+/** Round-2 deterministic failure injection: the script exports its publication
+ *  step with injectable fs operations (defaults = the real fs; there is no
+ *  environmental fault variable), so pre-rename failures and rename outcomes
+ *  can be forced without any change to the CLI behavior. */
+const PUBLICATION_UNCERTAIN = "publication uncertain; manual review required; no retry";
+type PublicationScript = {
+  deriveReconciliationTarget(args: Map<string, string>): unknown;
+  validateReconciliationTarget(target: unknown, expectedInventory: string[]): unknown;
+  publishReleaseReceipt(target: unknown, first: unknown, fsOperations?: Record<string, unknown>): void;
+};
+async function publicationFixture() {
+  const f = await fixture();
+  const script = await import(new URL("../../scripts/reconcile-session-process-mutex.mjs", import.meta.url).href) as PublicationScript;
+  const args = new Map(Object.entries(f.values).map(([name, value]) => [`--expect-${name}`, value]));
+  const target = script.deriveReconciliationTarget(args);
+  const first = script.validateReconciliationTarget(target, ["owner.json"]);
+  return { f, script, target, first };
+}
+it("injected pre-rename fsync failure retains the exact pending artifact and refuses as publication uncertain", async () => {
+  const { f, script, target, first } = await publicationFixture();
+  const pending = join(f.slot, "release-pending.json");
+  const receipt = join(f.slot, "released.json");
+  let error: Error | undefined;
+  try { script.publishReleaseReceipt(target, first, { fsync: () => { throw new Error("injected pre-rename fsync failure"); } }); }
+  catch (e) { error = e as Error; }
+  expect(error?.message).toBe(PUBLICATION_UNCERTAIN);
+  // The pending artifact is retained with the EXACT original owner bytes.
+  expect(fs.readFileSync(pending)).toEqual(f.bytes);
+  expect(fs.readFileSync(f.marker)).toEqual(f.bytes);
+  expect(fs.existsSync(receipt)).toBe(false);
+  // Nothing was published: acquisition of the scope must still refuse.
+  expect(() => acquireSessionProcessMutex(f.options)).toThrow("CE_SESSION_PROCESS_MUTEX_REFUSED");
+  // A second reconciliation run refuses on the retained pending (unsafe
+  // target inventory) and never cleans it up.
+  const second = f.run();
+  expect(second.status).toBe(1);
+  expect(second.stderr).toContain("slot inventory");
+  expect(second.stderr).toMatch(REFUSAL_LINE);
+  expect(fs.readdirSync(f.slot).sort()).toEqual(["owner.json", "release-pending.json"]);
+});
+it("injected rename throw with the exact committed receipt is committed-success", async () => {
+  const { f, script, target, first } = await publicationFixture();
+  const pending = join(f.slot, "release-pending.json");
+  const receipt = join(f.slot, "released.json");
+  const renameCommittedButThrows = (from: string, to: string) => {
+    fs.renameSync(from, to); // the rename commits the exact prepared inode...
+    throw new Error("injected rename failure"); // ...but reports failure
+  };
+  expect(() => script.publishReleaseReceipt(target, first, { rename: renameCommittedButThrows })).not.toThrow();
+  expect(fs.readFileSync(receipt)).toEqual(f.bytes);
+  expect(fs.existsSync(pending)).toBe(false);
+  expect(fs.readFileSync(f.marker)).toEqual(f.bytes);
+  // Committed success is reusable: the next acquisition takes slot 2.
+  const next = acquireSessionProcessMutex(f.options);
+  expect(next.markerPath).toContain("/2/owner.json");
+  next.closeAdmission(); await next.drain(); next.release({ released: true, detached: true });
+});
+it("injected rename throw with non-matching committed bytes hard-stops as publication uncertain", async () => {
+  const { f, script, target, first } = await publicationFixture();
+  const receipt = join(f.slot, "released.json");
+  const renameTampered = (from: string, to: string) => {
+    fs.renameSync(from, to);
+    fs.writeFileSync(to, "non-matching committed bytes", { mode: 0o600 });
+    throw new Error("injected rename failure");
+  };
+  let error: Error | undefined;
+  try { script.publishReleaseReceipt(target, first, { rename: renameTampered }); }
+  catch (e) { error = e as Error; }
+  expect(error?.message).toBe(PUBLICATION_UNCERTAIN);
+  // The unverified receipt stays in place for manual review — no retry, no
+  // cleanup — and must not unlock acquisition.
+  expect(fs.readFileSync(receipt).toString()).toBe("non-matching committed bytes");
+  expect(() => acquireSessionProcessMutex(f.options)).toThrow("CE_SESSION_PROCESS_MUTEX_REFUSED");
+});
 it("refuses without artifacts when the slot directory becomes unwritable", async () => {
+  // Mode 0500 fails the PRE-publication privateDir() validation (a slot must
+  // be exactly 0700), so this refusal happens before the publication step
+  // starts and covers only the no-artifact pre-publication path.
+  // Publication-phase retention (pending kept with exact bytes, fixed
+  // publication-uncertain refusal, no retry) is covered by the injected-
+  // failure tests above.
   const f = await fixture();
   fs.chmodSync(f.slot, 0o500);
   try {
