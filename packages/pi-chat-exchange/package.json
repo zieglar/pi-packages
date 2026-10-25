@@ -16,6 +16,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "tsc -p tsconfig.build.json",
+    "package:pi-extension": "pnpm run build && node scripts/package-pi-extension.mjs",
     "package:desktop-plugin": "node scripts/package-local-plugin.mjs",
     "recover:ownership": "node scripts/recover-stale-ownership.mjs",
     "reconcile:session-mutex": "node scripts/reconcile-session-process-mutex.mjs",
@@ -34,6 +35,16 @@
     "typescript": "5.9.3",
     "vitest": "4.1.11"
   },
+  "files": [
+    "pi-extension/*.ts",
+    "pi-extension/README.md",
+    "pi-extension/allowlist.example.json",
+    "dist/**/*.js",
+    "native/tunnel-keychain.swift",
+    "scripts/recover-stale-ownership.mjs",
+    "scripts/reconcile-session-process-mutex.mjs",
+    "docs/*.md"
+  ],
   "pi": {
     "extensions": [
       "./pi-extension/index.ts"
