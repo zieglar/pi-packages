@@ -16,6 +16,11 @@
  * - user stop (SIGTERM -> Stopped) and stop cleanup (url-file removed)
  * - probing a stopped manager (missing url-file) is a refusal, not a crash
  * - state bar labels derive from state, not from history
+ *
+ * REWORK-01 B0: this file is EXCLUDED from the default `pnpm test` lane (see
+ * package.json); it runs only via the opt-in `pnpm run test:installed-client`
+ * lane and REQUIRES the installed tunnel-client binary. A missing binary is a
+ * setup error and fails loudly below — never a silent skip.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawn, spawnSync } from "node:child_process";
@@ -26,6 +31,15 @@ import { createHealthCompletionRecorder, parseHealthProbe } from "../../src/tunn
 import { DEFAULT_TUNNEL_TIMING, nextTunnelState, tunnelStatusLabel, type TunnelState } from "../../src/tunnel/state.js";
 
 const CLIENT = process.env.CE_TUNNEL_CLIENT_BIN ?? "/opt/homebrew/bin/tunnel-client";
+const clientAvailable = existsSync(CLIENT);
+
+if (!clientAvailable) {
+  throw new Error(
+    `offline dev-proxy lifecycle tests require the installed tunnel-client binary (${CLIENT}); ` +
+      "this file is the opt-in `pnpm run test:installed-client` lane, not the default `pnpm test`. " +
+      "A missing client is a setup error, not a silent skip.",
+  );
+}
 
 function probe(urlFile: string, pid?: number): { stdout: string; exitCode: number } | undefined {
   const args = ["health", "--url-file", urlFile, "--json"];

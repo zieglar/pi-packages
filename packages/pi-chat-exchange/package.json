@@ -8,7 +8,8 @@
     "node": "24.21.0 || 24.22.1"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run --exclude test/tunnel/real-client-compat.test.ts --exclude test/tunnel/offline.integration.test.ts",
+    "test:installed-client": "vitest run test/tunnel/real-client-compat.test.ts test/tunnel/offline.integration.test.ts",
     "test:storage": "vitest run test/storage",
     "test:plugin-package": "CE_PLUGIN_PACKAGE_TEST=1 vitest run test/plugin/local-plugin-package.test.ts",
     "test:watch": "vitest",
