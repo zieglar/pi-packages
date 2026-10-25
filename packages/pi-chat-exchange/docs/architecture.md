@@ -115,6 +115,8 @@ pnpm test
 pnpm run test:plugin-package
 # 可选（需本机已安装 tunnel-client；不属于默认门禁）
 pnpm run test:installed-client
+# 可选（真实 Pi CLI + PTY 的 crash/resume 回归；数分钟，不属于默认门禁）
+pnpm run test:host-regression
 # 完整串行门禁（build 在 test 前）
 pnpm run verify
 ```
@@ -128,6 +130,7 @@ pnpm run verify
 | Tunnel offline / TUI harness | 合成 health、取消/在途/通知/屏幕契约 | 真实 client schema、认证、计费连接、终端物理表现 |
 | `test/tunnel/real-client-compat.test.ts` | 真实 client doctor 与本地 schema 兼容；可选 lane（`pnpm run test:installed-client`），需本机已安装 tunnel-client，未安装时按可用性跳过；已排除出 `pnpm test` 与 `pnpm run verify` | 真实网络 readiness 或双向消息 |
 | `test/tunnel/offline.integration.test.ts` | 真实 client 的离线集成；同一可选 lane，需本机已安装 tunnel-client，未安装时大声失败而非静默跳过；已排除出 `pnpm test` 与 `pnpm run verify` | 真实网络 readiness 或双向消息 |
+| `test/host-regression/real-host-recovery.test.ts` | 真实 Pi 1.3.0 CLI + 真实 PTY 的 crash→mutex 拒绝→离线 reconcile→resume→租约续期→授权路由完成→策略收窄拒绝→expired Owner 拒绝（含 reason/hint、fencing、slot 计数）回归；可选 lane（`CE_HOST_REGRESSION_TEST=1 pnpm run test:host-regression`），先以 `git archive HEAD` 出树编译并比对 blob 身份，全合成 Store/loopback provider，零 tunnel-client 执行；前置缺失或未设 opt-in 时大声失败而非跳过；已排除出 `pnpm test` 与 `pnpm run verify` | 真实 Tunnel/Exchange、真实凭据/网络、ChatGPT UI、installed client、Operator Recovery 执行 |
 | packaged plugin tests | 可移植包内容、stdio 启动、tool discovery | Desktop 安装菜单/资格/对话更新 |
 | 人工 real Gate | 当前 ChatGPT 对话与 Pi 的实际 send/list/read/ACK、Tunnel 启停 | 冷启动、所有平台、所有客户端或正式发布资格 |
 

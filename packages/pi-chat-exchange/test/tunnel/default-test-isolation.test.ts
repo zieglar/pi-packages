@@ -45,10 +45,21 @@ const INSTALLED_CLIENT_TEST_FILES = [
   "test/tunnel/offline.integration.test.ts",
 ] as const;
 
+/** HANDOFF-CE-RELEASE-READINESS-01 phase 3: the real-PTY crash-recovery lane is
+ * excluded from the default `pnpm test` for a different reason — it drives the
+ * real Pi CLI on a real pseudo-terminal for minutes and must never enter a
+ * clean-machine default gate. Pinning it here keeps every default exclusion
+ * explicit and reviewed instead of silently accumulating. */
+const HOST_REGRESSION_TEST_FILE = "test/host-regression/real-host-recovery.test.ts" as const;
+const DEFAULT_EXCLUDED_TEST_FILES = [...INSTALLED_CLIENT_TEST_FILES, HOST_REGRESSION_TEST_FILE] as const;
+
 const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")) as {
   scripts: Record<string, string>;
 };
 const offlineGuardSource = readFileSync(join(packageRoot, "test/tunnel/offline.integration.test.ts"), "utf8");
+const hostRegressionSource = existsSync(join(packageRoot, HOST_REGRESSION_TEST_FILE))
+  ? readFileSync(join(packageRoot, HOST_REGRESSION_TEST_FILE), "utf8")
+  : "";
 
 /** Read a wiring file if present so a missing file fails the assertion, not collection. */
 const readIfPresent = (path: string): string | undefined => {
@@ -71,10 +82,37 @@ function sentinelFixture(executable: boolean): { sentinel: string; ranMarker: st
 }
 
 describe("default test lane is isolated from the installed tunnel-client", () => {
-  it("excludes exactly the two installed-client files and sets the guard env on the default `pnpm test`", () => {
+  it("excludes exactly the installed-client files and the real-host lane, and sets the guard env on the default `pnpm test`", () => {
     expect(manifest.scripts.test).toBe(
-      `CE_DEFAULT_CLIENT_GUARD=1 vitest run --exclude ${INSTALLED_CLIENT_TEST_FILES[0]} --exclude ${INSTALLED_CLIENT_TEST_FILES[1]}`,
+      `CE_DEFAULT_CLIENT_GUARD=1 vitest run${DEFAULT_EXCLUDED_TEST_FILES.map((file) => ` --exclude ${file}`).join("")}`,
     );
+  });
+
+  it("keeps an explicit opt-in real-host lane that sets its own opt-in variable", () => {
+    expect(manifest.scripts["test:host-regression"]).toBe(
+      `CE_HOST_REGRESSION_TEST=1 vitest run ${HOST_REGRESSION_TEST_FILE}`,
+    );
+  });
+
+  it("guards the real-host lane with a loud opt-in precheck instead of a skip", () => {
+    expect(existsSync(join(packageRoot, HOST_REGRESSION_TEST_FILE)), `${HOST_REGRESSION_TEST_FILE} must exist`).toBe(true);
+    for (const literal of [
+      'process.env.CE_HOST_REGRESSION_TEST === "1"',
+      "if (!laneEnabled) {",
+      "throw new Error(",
+      "pnpm run test:host-regression",
+      "excluded from the default",
+      "setup error, not a skip",
+    ]) {
+      expect(
+        hostRegressionSource.includes(literal),
+        `${HOST_REGRESSION_TEST_FILE} must keep the loud opt-in guard (missing literal: ${JSON.stringify(literal)})`,
+      ).toBe(true);
+    }
+    // An availability/env skipIf would silently hide a missing prerequisite
+    // instead of failing this opt-in lane loudly.
+    expect(hostRegressionSource.includes("skipIf")).toBe(false);
+    expect(hostRegressionSource.includes("runIf")).toBe(false);
   });
 
   it("keeps an explicit installed-client lane referencing exactly those two files", () => {

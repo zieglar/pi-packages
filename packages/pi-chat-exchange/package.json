@@ -8,8 +8,9 @@
     "node": "24.21.0 || 24.22.1"
   },
   "scripts": {
-    "test": "CE_DEFAULT_CLIENT_GUARD=1 vitest run --exclude test/tunnel/real-client-compat.test.ts --exclude test/tunnel/offline.integration.test.ts",
+    "test": "CE_DEFAULT_CLIENT_GUARD=1 vitest run --exclude test/tunnel/real-client-compat.test.ts --exclude test/tunnel/offline.integration.test.ts --exclude test/host-regression/real-host-recovery.test.ts",
     "test:installed-client": "vitest run test/tunnel/real-client-compat.test.ts test/tunnel/offline.integration.test.ts",
+    "test:host-regression": "CE_HOST_REGRESSION_TEST=1 vitest run test/host-regression/real-host-recovery.test.ts",
     "test:storage": "vitest run test/storage",
     "test:plugin-package": "CE_PLUGIN_PACKAGE_TEST=1 vitest run test/plugin/local-plugin-package.test.ts",
     "test:watch": "vitest",
