@@ -17,6 +17,7 @@
     "build": "tsc -p tsconfig.build.json",
     "package:desktop-plugin": "node scripts/package-local-plugin.mjs",
     "recover:ownership": "node scripts/recover-stale-ownership.mjs",
+    "reconcile:session-mutex": "node scripts/reconcile-session-process-mutex.mjs",
     "check": "node scripts/check-contract.mjs",
     "verify": "pnpm run check && pnpm run typecheck && pnpm run build && pnpm test && pnpm run test:plugin-package"
   },

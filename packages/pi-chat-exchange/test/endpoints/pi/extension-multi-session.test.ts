@@ -9,7 +9,7 @@ import { publishMessagingPair } from "../../../dist/tunnel/messaging-config.js";
 import { buildTunnelMcpCommand, buildTunnelProfile, serializeTunnelProfile } from "../../../dist/tunnel/profile.js";
 import { createMultiSessionRegistration, readSelectedMultiSessionPolicy } from "../../../dist/tunnel/multi-session-policy.js";
 import { CeHostRefusal, CeEndpointHost } from "../../../dist/host/endpoint-host.js";
-import { openStore, type DurableStore } from "../../../dist/storage/store.js";
+import { initializeStore, openStore, type DurableStore } from "../../../dist/storage/store.js";
 import type { CeSessionHost } from "../../../dist/endpoints/pi/session-host.js";
 
 const seam = vi.hoisted(() => ({ hosts: [] as CeSessionHost[], stores: [] as DurableStore[], manager: undefined as unknown,
@@ -98,6 +98,32 @@ it("actual factory events bind independent A/B Hosts; exact ChatGPT messages/rep
   }
   expect((await a.call("ce_send", { to: "pi/B", text: "no", idempotencyKey: "no-pi-pi" })).isError).toBe(true);
   await a.stop(); expect((await b.call("ce_inbox_list")).isError).not.toBe(true); chat.end();
+});
+
+it("abandoned local mutex fails closed with operator hint; clean scope is unaffected", async () => {
+  vi.useRealTimers();
+  const f = await fixture();
+  // Ensure the synthetic Store exists; the child exercises only the local mutex.
+  initializeStore({ directory: f.binding.config.store.directory, filename: f.binding.config.store.file }).close();
+  const { spawn } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  const child = spawn(process.execPath, ["--input-type=module", "-e", `import { acquireSessionProcessMutex } from ${JSON.stringify(new URL("../../../dist/tunnel/session-process-mutex.js", import.meta.url).href)}; acquireSessionProcessMutex(JSON.parse(process.argv[1])); console.log("READY"); process.stdin.resume();`, JSON.stringify({ store: f.binding.config.store, endpointId: "pi/A", runtimeSessionId: "real-A" })], { stdio: ["pipe", "pipe", "pipe"] });
+  const exited = new Promise<void>(r => child.once("exit", () => r()));
+  try {
+    await new Promise<void>((r, reject) => { child.stdout.once("data", () => r()); child.once("error", reject); child.once("exit", () => reject(Error("owner failed"))); });
+  } finally { child.kill("SIGKILL"); await exited; }
+  const a = await f.runtime("real-A"); await a.start();
+  expect((await a.call("ce_inbox_list")).details?.code).toBe("CE_HOST_UNAVAILABLE");
+  const hint = "; local session-process mutex still holds an unreleased slot for this session scope after an unclean exit — operator offline reconciliation required (see docs/tunnel-setup.md troubleshooting); no automatic recovery";
+  expect(a.notices()).toContain(`session start failed closed (CE_HOST_UNAVAILABLE)${hint}`);
+  // A failed startup is latched by design. Reload without inherited mapping
+  // loads this runtime's policy but stops before acquisition (MAPPING_INVALID),
+  // allowing explicit activation to exercise its actual acquisition catch.
+  const activation = await f.runtime("real-A"); await activation.start("reload");
+  expect(activation.notices()).toContain("CE_HOST_MAPPING_INVALID");
+  activation.ctx.ui.notify.mockClear(); await activation.command("activate");
+  expect(activation.notices()).toContain(`activation refused CE_HOST_UNAVAILABLE; no automatic retry or takeover${hint}`);
+  const b = await f.runtime("real-B"); await b.start();
+  expect(b.notices()).toContain("endpoint pi/B bound"); expect(b.notices()).not.toContain("operator offline reconciliation");
 });
 
 it("reload transfers only a drained same-runtime handle; duplicate same-PID factory is denied and B survives", async () => {
