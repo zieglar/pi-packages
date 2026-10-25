@@ -7,6 +7,7 @@ Guardian owns an unreaped anchor; anchor owns/reaps actual Pi. No saved identity
 is signalled after anchor reap. Explicit modes keep all roles in this test file.
 """
 from __future__ import annotations
+
 import fcntl
 import json
 import os
@@ -21,6 +22,7 @@ import sys
 import termios
 import time
 import uuid
+from contextlib import suppress
 
 
 def publish(path, value):
@@ -42,20 +44,52 @@ def wait_file(path, timeout=10):
     return load(path)
 
 
+INSPECTION_QUERY = ['/bin/ps', '-axo', 'pid=,ppid=,pgid=,stat=']
+evidence_root: pathlib.Path | None = None  # private per-launch evidence directory
+
+
+def record_inspection(pgid, result, reason, detail):
+    """DIAGNOSTIC-ONLY raw record. Refusal semantics are deliberately unchanged:
+    the caller still raises, so no relaxed parsing or filtering happens here.
+    The query selects numeric identity/state fields only: no command lines.
+    """
+    if evidence_root is None:
+        return
+    document = {'argv': INSPECTION_QUERY, 'pgid': pgid, 'reason': reason, 'detail': detail,
+                'returncode': getattr(result, 'returncode', None),
+                'stdout': getattr(result, 'stdout', None), 'stderr': getattr(result, 'stderr', None),
+                'at': time.time(), 'recorderPid': os.getpid()}
+    path = evidence_root / f'inspection-failure-{os.getpid()}-{time.time_ns()}.json'
+    # Evidence recording must never weaken or replace the refusal.
+    with suppress(OSError):
+        publish(path, document)
+
+
 def members(pgid, inspect=None):
     """Numeric snapshot. A zombie is dead, NOT evidence of descendant reap."""
     result = (inspect or subprocess.run)(
-        ['/bin/ps', '-axo', 'pid=,ppid=,pgid=,stat='],
-        capture_output=True, text=True, timeout=2, close_fds=True)
+        INSPECTION_QUERY, capture_output=True, text=True, timeout=2, close_fds=True)
     if result.returncode != 0 or result.stderr or not result.stdout.strip():
+        record_inspection(pgid, result, 'group inspection failed',
+                          {'why': 'non-zero status, stderr present, or empty stdout'})
         raise RuntimeError('group inspection failed')
     rows = []
-    for line in result.stdout.splitlines():
-        match = re.fullmatch(r'\s*(\d+)\s+(\d+)\s+(\d+)\s+([A-Za-z+<>NsXWEILV0-9-]+)\s*', line)
+    for index, line in enumerate(result.stdout.splitlines()):
+        # The installed macOS ps renders a transient state as unknown '?'
+        # (observed '?', '?+', '?s', '?E'). Such a row is valid output, so it is
+        # parsed rather than refused; it is NEVER classified dead or reaped, so
+        # the bounded observation keeps polling and still fails closed.
+        match = re.fullmatch(r'\s*(\d+)\s+(\d+)\s+(\d+)\s+([?A-Za-z+<>NsXWEILV0-9-]+)\s*', line)
         if not match:
+            fields = line.split()
+            record_inspection(pgid, result, 'malformed group inspection',
+                              {'lineIndex': index, 'line': repr(line), 'fieldCount': len(fields),
+                               'fields': fields[:4], 'why': 'row did not match the strict numeric identity/state row'})
             raise ValueError('malformed group inspection')
         pid, ppid, group = map(int, match.groups()[:3])
         if min(pid, group) <= 0:
+            record_inspection(pgid, result, 'invalid process identity',
+                              {'lineIndex': index, 'line': repr(line), 'why': 'pid or pgid was not positive'})
             raise ValueError('invalid process identity')
         if group == pgid:
             rows.append({'pid': pid, 'ppid': ppid, 'pgid': group,
@@ -381,6 +415,7 @@ if __name__ == '__main__':
     mode, root = sys.argv[1:3]
     raw = pathlib.Path(root) / 'raw'
     raw.mkdir(parents=True, exist_ok=True)
+    evidence_root = raw
     if mode == '--driver':
         driver_mode(raw)
     elif mode == '--guardian':

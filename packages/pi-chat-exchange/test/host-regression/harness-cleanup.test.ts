@@ -77,6 +77,99 @@ it("actual workload inherits anchor group but not the private driver-liveness de
   } finally { await settleFixtureDriver(driver); }
 }, 20_000);
 
+// Literal rows captured from the installed macOS ps during the diagnosed
+// failures. Unknown "?" states are transient, never proof of death.
+it("classifies the captured transient unknown ps states conservatively", () => {
+  const program = `
+import importlib.util,json,subprocess,sys
+spec=importlib.util.spec_from_file_location('driver',${JSON.stringify(driverPath)})
+m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+def snapshot(text,status=0,stderr=''):
+ return lambda *a,**k: subprocess.CompletedProcess([],status,text,stderr)
+cases={}
+# captured unrelated-group transient rows must not hide the target group's Z
+unrelated='29796 29742 29796 Z   \\n31433 15671 31433 ?s  \\n31440 15671 31440 ?+  \\n'
+cases['unrelatedTransient']=m.members(29796,snapshot(unrelated))
+# captured owned mid-exit row must count NOT DEAD alongside the zombie anchor
+owned='33764 33763 33764 Z   \\n33768     1 33764 ?E  \\n'
+cases['ownedExiting']=m.members(33764,snapshot(owned))
+cases['ownedUnknownPlain']=m.members(40,snapshot('40 1 40 ?   \\n'))
+cases['ownedUnknownSession']=m.members(41,snapshot('41 1 41 ?s  \\n'))
+cases['ownedUnknownForeground']=m.members(42,snapshot('42 1 42 ?+  \\n'))
+cases['positiveDead']=m.members(43,snapshot('43 1 43 Z   \\n'))
+refusals={}
+for name,args in {'malformed':('44 1 44 \\u00a7bogus\\n',0,''),'shortRow':('44 1 44\\n',0,''),
+  'invalidIdentity':('0 0 0 S   \\n',0,''),'nonzero':('45 1 45 S   \\n',1,''),
+  'stderr':('45 1 45 S   \\n',0,'denied'),'empty':('   \\n',0,'')}.items():
+ try:
+  m.members(44,snapshot(*args)); refusals[name]='NOT REFUSED'
+ except Exception as error: refusals[name]=type(error).__name__+': '+str(error)
+print(json.dumps({'cases':cases,'refusals':refusals}))
+`;
+  const result = spawnSync("/usr/bin/python3", ["-c", program], { encoding: "utf8", env: { PATH: "/usr/bin:/bin", TMPDIR: process.env.TMPDIR }, timeout: 5_000 });
+  expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+  const { cases, refusals } = JSON.parse(result.stdout);
+  // Unrelated transient rows are parsed, not filtered away, and excluded only by group.
+  expect(cases.unrelatedTransient).toEqual([{ pid: 29796, ppid: 29742, pgid: 29796, state: "Z", dead: true, reaped: false }]);
+  expect(cases.ownedExiting).toEqual([
+    { pid: 33764, ppid: 33763, pgid: 33764, state: "Z", dead: true, reaped: false },
+    { pid: 33768, ppid: 1, pgid: 33764, state: "?E", dead: false, reaped: false },
+  ]);
+  for (const key of ["ownedUnknownPlain", "ownedUnknownSession", "ownedUnknownForeground"]) {
+    expect(cases[key], key).toHaveLength(1);
+    expect(cases[key][0], key).toMatchObject({ dead: false, reaped: false });
+  }
+  expect(cases.positiveDead[0]).toMatchObject({ state: "Z", dead: true, reaped: false });
+  expect(refusals).toEqual({
+    malformed: "ValueError: malformed group inspection",
+    shortRow: "ValueError: malformed group inspection",
+    invalidIdentity: "ValueError: invalid process identity",
+    nonzero: "RuntimeError: group inspection failed",
+    stderr: "RuntimeError: group inspection failed",
+    empty: "RuntimeError: group inspection failed",
+  });
+});
+
+it("bounded polling refuses while an owned member stays in an unknown state, and confirms only on positive dead evidence", () => {
+  const program = `
+import importlib.util,json,subprocess
+spec=importlib.util.spec_from_file_location('driver',${JSON.stringify(driverPath)})
+m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+results={}
+for kind in ['persisting','settles']:
+ events=[];polls=[]
+ class Anchor:
+  pid=33764
+  def poll(self): raise AssertionError('must not poll anchor')
+  def wait(self,timeout):
+   events.append('reap'); return -9
+ def send(pid,sig):
+  assert 'reap' not in events, 'final group signal must precede the reap'
+  events.append('signal')
+ def inspect(group):
+  polls.append(len(polls))
+  exiting='33764 33763 33764 Z   \\n33768     1 33764 ?E  \\n'
+  dead='33764 33763 33764 Z   \\n'
+  text=exiting if (kind=='persisting' or len(polls)<3) else dead
+  return m.members(group,lambda *a,**k: subprocess.CompletedProcess([],0,text,''))
+ ticks=iter([0,0.1,0.2,0.3,0.4,0.5,9,9,9])
+ outcome=m.final_barrier(Anchor(),inspect,send,lambda:next(ticks),lambda _:None)
+ assert events==['signal','reap'], events
+ results[kind]={'groupDead':outcome['groupDead'],'error':outcome.get('error'),'polls':len(polls),
+   'anchorReaped':outcome['anchorReaped'],'members':outcome['members']}
+print(json.dumps(results))
+`;
+  const result = spawnSync("/usr/bin/python3", ["-c", program], { encoding: "utf8", env: { PATH: "/usr/bin:/bin", TMPDIR: process.env.TMPDIR }, timeout: 5_000 });
+  expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+  const results = JSON.parse(result.stdout);
+  expect(results.persisting.groupDead).toBe(false);
+  expect(results.persisting.error).toMatch(/timed out/);
+  expect(results.persisting.polls).toBeGreaterThan(1);
+  expect(results.persisting.anchorReaped).toBe(true);
+  expect(results.settles).toMatchObject({ groupDead: true, error: null, anchorReaped: true });
+  expect(results.settles.members).toEqual([{ pid: 33764, ppid: 33763, pgid: 33764, state: "Z", dead: true, reaped: false }]);
+});
+
 it("real final-barrier adapter pins final signal before reap and refuses failed/malformed/timed-out inspection", () => {
   const program = `
 import importlib.util,json,subprocess
