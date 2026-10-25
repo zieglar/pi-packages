@@ -116,7 +116,7 @@ pnpm run test:plugin-package
 # 可选（需本机已安装 tunnel-client；不属于默认门禁）
 pnpm run test:installed-client
 # 可选（真实 Pi CLI + PTY 的 crash/resume 回归；数分钟，不属于默认门禁）
-pnpm run test:host-regression
+CE_HOST_REGRESSION_KEEP=1 pnpm run test:host-regression
 # 完整串行门禁（build 在 test 前）
 pnpm run verify
 ```
@@ -133,6 +133,8 @@ pnpm run verify
 | `test/host-regression/real-host-recovery.test.ts` | 真实 Pi 1.3.0 CLI + 真实 PTY 的 crash→mutex 拒绝→离线 reconcile→resume→租约续期→授权路由完成→策略收窄拒绝→expired Owner 拒绝（含 reason/hint、fencing、slot 计数）回归；可选 lane（`CE_HOST_REGRESSION_TEST=1 pnpm run test:host-regression`），先以 `git archive HEAD` 出树编译并比对 blob 身份，全合成 Store/loopback provider，零 tunnel-client 执行；前置缺失或未设 opt-in 时大声失败而非跳过；已排除出 `pnpm test` 与 `pnpm run verify` | 真实 Tunnel/Exchange、真实凭据/网络、ChatGPT UI、installed client、Operator Recovery 执行 |
 | packaged plugin tests | 可移植包内容、stdio 启动、tool discovery | Desktop 安装菜单/资格/对话更新 |
 | 人工 real Gate | 当前 ChatGPT 对话与 Pi 的实际 send/list/read/ACK、Tunnel 启停 | 冷启动、所有平台、所有客户端或正式发布资格 |
+
+真实 Host lane 的证据留在原始临时根目录，不复制到另一处。`CE_HOST_REGRESSION_KEEP=1` 保留成功运行的证据；测试或清理失败会自动保留并打印实际路径。仅在所有测试成功、驱动已等待并回收其自有子进程、合成 provider 已关闭且未设 KEEP 时删除根目录。默认收集的 `test/host-regression/*-cleanup.test.ts` 与 `refusal-comparator.test.ts` 只验证合成进程清理、证据保留和拒绝前后完整 message/audit 数组比较，不启动真实 Pi/client 或业务恢复。
 
 本地测试只对其实际执行的固定版本与环境提供证据，跳过项和平台限制必须明示。人工消息验收与隔离回归互不替代；不要将历史报告的测试数当作当前变更的新鲜执行证据。公共验收边界见[README](../README.md)。
 

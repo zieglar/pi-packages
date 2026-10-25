@@ -233,7 +233,9 @@ export async function startProvider(paths) {
   }, null, 2), { mode: 0o600 });
   fs.writeFileSync(join(paths.agent, "auth.json"), "{}", { mode: 0o600 });
   fs.writeFileSync(join(paths.agent, "settings.json"), JSON.stringify({ lastChangelogVersion: "1.3.0" }), { mode: 0o600 });
-  return { server, port, close: () => new Promise((done) => server.close(done)) };
+  return { server, port, close: () => new Promise((done, reject) => {
+    server.close((error) => error ? reject(error) : done());
+  }) };
 }
 
 export function setProviderDirective(paths, directive) {
@@ -522,11 +524,49 @@ export function startDriver(paths) {
     PATH: "/usr/bin:/bin:/usr/sbin:/sbin", PYTHONUNBUFFERED: "1" } });
   let stderr = "";
   child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+  const exited = new Promise((settled, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) => settled({ code, signal }));
+  });
   let sequence = 0;
+  const enqueue = (command) => {
+    const stem = `control-${String(++sequence).padStart(3, "0")}`;
+    const temporary = join(paths.raw, `${stem}.tmp`);
+    fs.writeFileSync(temporary, JSON.stringify(command));
+    fs.renameSync(temporary, join(paths.raw, `${stem}.json`));
+    return stem;
+  };
+  const boundedExit = async (ms) => {
+    let timer;
+    try {
+      return await Promise.race([exited, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`PTY driver exit timed out after ${ms}ms`)), ms);
+      })]);
+    } finally { clearTimeout(timer); }
+  };
+  let stopping;
+  const stop = () => stopping ??= (async () => {
+    let stem;
+    if (child.exitCode === null && child.signalCode === null) stem = enqueue({ op: "stop" });
+    let result;
+    try { result = await boundedExit(15_000); }
+    catch (error) {
+      // Only this spawned driver is signalled. Its SIGTERM handler runs the
+      // owned-session cleanup; SIGKILL is a bounded last resort, never success.
+      child.kill("SIGTERM");
+      try { await boundedExit(10_000); }
+      catch {
+        child.kill("SIGKILL");
+        await boundedExit(5_000);
+      }
+      throw error;
+    }
+    if (result.code !== 0 || (stem && !fs.existsSync(join(paths.raw, `result-${stem}.json`)))) {
+      throw new Error(`PTY driver exited without confirmed cleanup (${result.code}/${result.signal}): ${stderr}`);
+    }
+  })();
   const call = (command, waitSeconds = 0) => {
-    sequence += 1;
-    const stem = `control-${String(sequence).padStart(3, "0")}`;
-    fs.writeFileSync(join(paths.raw, `${stem}.json`), JSON.stringify(command));
+    const stem = enqueue(command);
     if (waitSeconds > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.round(waitSeconds * 1000));
     const deadline = Date.now() + 60_000;
     for (;;) {
@@ -544,7 +584,7 @@ export function startDriver(paths) {
     send: (text, waitSeconds = 3) => call({ op: "send", text }, waitSeconds),
     snapshot: () => call({ op: "snapshot" }),
     kill: () => call({ op: "kill" }),
-    stop: () => call({ op: "stop" }),
+    stop,
     /** Wait for a terminal predicate over the ANSI-stripped stream of `name`. */
     waitFor: async (name, predicate, timeoutMs, note) => {
       const deadline = Date.now() + timeoutMs;
@@ -557,6 +597,24 @@ export function startDriver(paths) {
       }
     },
   };
+}
+
+/** Delete only after BOTH a successful run and confirmed cleanup. Any failure
+ * retains the original evidence root and remains a failure to the caller. */
+export async function finishRun(paths, driver, provider, { successful, keep = false }) {
+  const errors = [];
+  try { await driver?.stop(); } catch (error) { errors.push(error); }
+  try { await provider?.close(); } catch (error) { errors.push(error); }
+  const retained = !successful || keep || errors.length > 0;
+  if (paths) {
+    fs.writeFileSync(join(paths.raw, "cleanup.json"), JSON.stringify({
+      successful, keep, retained, errors: errors.map(String), at: new Date().toISOString(),
+    }, null, 2));
+    if (retained) console.log(`real-host regression evidence retained at: ${paths.root}`);
+    else fs.rmSync(paths.root, { recursive: true });
+  }
+  if (errors.length > 0) throw new AggregateError(errors, "host regression cleanup failed; evidence retained");
+  return { retained };
 }
 
 export function terminalText(paths, name) {

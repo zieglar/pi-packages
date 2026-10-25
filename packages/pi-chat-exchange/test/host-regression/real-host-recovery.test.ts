@@ -26,11 +26,11 @@
  */
 import fs from "node:fs";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { OwnershipRow } from "./support/harness.mjs";
 import {
   ENDPOINT_ID, LEASE_TTL_SECONDS, accounting, assertPrerequisites, buildFixedHead,
-  captureAuthority, deathEvidence, deriveReconcileArguments, launchMeta, piArgv, piEnvironment,
+  captureAuthority, deathEvidence, deriveReconcileArguments, finishRun, launchMeta, piArgv, piEnvironment,
   prepareRoot, publishConfiguration, recordAssertion, restoreRegistration, revokeRegistration, runReconcile,
   setProviderDirective, sleep, startDriver, startProvider, terminalText, unreleasedSlots, waitForLease,
 } from "./support/harness.mjs";
@@ -67,6 +67,9 @@ const state: {
   recoveredCeSession?: string | undefined;
   fencingToken?: number | undefined;
 } = {};
+let failed = false;
+let reachedEnd = false;
+afterEach(({ task }) => { if (task.result?.state === "fail") failed = true; });
 
 function check(id: string, detail: string, evidence: string, verify: () => void) {
   try {
@@ -85,12 +88,12 @@ beforeAll(() => {
   fs.writeFileSync(join(state.paths.raw, "scenario-root.txt"), `${state.paths.root}\n`);
 }, 60_000);
 
-afterAll(() => {
-  try { state.driver?.stop(); } catch { /* the driver may already be gone */ }
-  void state.provider?.close();
-  if (state.paths && process.env.CE_HOST_REGRESSION_KEEP !== "1") {
-    try { fs.rmSync(state.paths.root, { recursive: true, force: true }); } catch { /* keep evidence on failure */ }
-  }
+// Await owned-process reaping and provider closure before any fixture deletion.
+afterAll(async () => {
+  await finishRun(state.paths, state.driver, state.provider, {
+    successful: reachedEnd && !failed,
+    keep: process.env.CE_HOST_REGRESSION_KEEP === "1",
+  });
 }, 60_000);
 
 describe("REAL-HOST crash recovery closure (opt-in lane, synthetic Store)", () => {
@@ -331,8 +334,8 @@ describe("REAL-HOST crash recovery closure (opt-in lane, synthetic Store)", () =
       expect(flat(refused.text)).toContain("chat-exchange refused: CE_HOST_AUTHORITY_ABSENT (ADMISSION_POLICY_DENIED)");
     });
     check("narrow.noWrite", "no new message or audit row was written by the refused operation", "raw/authority-10-refused.json", () => {
-      expect(after.messages?.map((row) => row.idempotency_key)).not.toContain("hr-narrowed-001");
-      expect(after.messages?.length).toBe((captureAuthority(state.paths!, "10-after-revoke").messages?.length ?? 0));
+      expect(after.messages).toEqual(narrowed.messages);
+      expect(after.auditEvents).toEqual(narrowed.auditEvents);
     });
     setProviderDirective(state.paths!, { mode: "text" });
     // Deliberately NO clean shutdown: the next step SIGKILLs this process so its
@@ -428,13 +431,13 @@ describe("REAL-HOST crash recovery closure (opt-in lane, synthetic Store)", () =
     });
   }, 60_000);
 
-  it("copies the evidence bundle next to the run and prints the assertion ledger", () => {
+  it("records the assertion ledger in the original evidence root", () => {
     const ledger = fs.existsSync(state.paths!.assertions) ? fs.readFileSync(state.paths!.assertions, "utf8") : "";
     const rows = ledger.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as { id: string; status: string });
     fs.writeFileSync(join(state.paths!.raw, "ledger.json"), JSON.stringify(rows, null, 2));
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every((row) => row.status === "PASS")).toBe(true);
-    // Surface the evidence root for the operator even when the lane is green.
-    console.log(`real-host regression evidence root: ${state.paths!.root}`);
+    // Teardown prints the actual retained path only if KEEP or failure applies.
+    reachedEnd = true;
   }, 60_000);
 });

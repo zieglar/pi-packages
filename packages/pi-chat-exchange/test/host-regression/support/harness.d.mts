@@ -176,7 +176,7 @@ export interface Driver {
   send(text: string, waitSeconds?: number): void;
   snapshot(): { readonly pid: number; readonly exit: number | null; readonly tail: string; readonly at: number };
   kill(): { readonly pid: number; readonly exit: number };
-  stop(): void;
+  stop(): Promise<void>;
   waitFor(name: string, predicate: (text: string) => string | undefined | false, timeoutMs: number, note?: string): Promise<{ readonly text: string; readonly matched: string }>;
 }
 
@@ -220,6 +220,8 @@ export function deathEvidence(paths: Paths, pid: number, label: string): DeathEv
 export function deriveReconcileArguments(snapshot: Snapshot, store: StoreRef, death: string): string[];
 export function runReconcile(paths: Paths, built: Built, argv: string[], label?: string): ReconcileRecord;
 export function startDriver(paths: Paths): Driver;
+export function finishRun(paths: Paths | undefined, driver: Pick<Driver, "stop"> | undefined,
+  provider: { close(): Promise<void> } | undefined, options: { successful: boolean; keep?: boolean }): Promise<{ retained: boolean }>;
 export function terminalText(paths: Paths, name: string): string;
 export function launchMeta(paths: Paths, name: string): LaunchMeta;
 export function accounting(paths: Paths): AccountingSummary;
