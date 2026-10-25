@@ -160,6 +160,15 @@ export interface ReconcileRecord {
   readonly stderr: string;
 }
 
+export interface ReapedLaunch {
+  readonly name: string;
+  readonly pid: number;
+  readonly startedAt: number;
+  readonly reaped: true;
+  readonly exit: number;
+  readonly reapedAt: number;
+}
+
 export interface LaunchMeta {
   readonly argv: string[];
   readonly env: Record<string, string>;
@@ -167,6 +176,7 @@ export interface LaunchMeta {
   readonly pid: number;
   readonly actions: unknown[];
   readonly exit: number | null;
+  readonly cleanup?: ReapedLaunch;
 }
 
 export interface Driver {
@@ -176,6 +186,8 @@ export interface Driver {
   send(text: string, waitSeconds?: number): void;
   snapshot(): { readonly pid: number; readonly exit: number | null; readonly tail: string; readonly at: number };
   kill(): { readonly pid: number; readonly exit: number };
+  awaitExit(timeoutMs?: number): ReapedLaunch;
+  requireOffline(): ReapedLaunch;
   stop(): Promise<void>;
   waitFor(name: string, predicate: (text: string) => string | undefined | false, timeoutMs: number, note?: string): Promise<{ readonly text: string; readonly matched: string }>;
 }
@@ -205,7 +217,7 @@ export const ENDPOINT_ID: string;
 export function assertPrerequisites(): Prerequisites;
 export function prepareRoot(): Paths;
 export function buildFixedHead(paths: Paths): Built;
-export function startProvider(paths: Paths): Promise<{ readonly server: unknown; readonly port: number; close(): Promise<void> }>;
+export function startProvider(paths: Paths): Promise<{ readonly server: { closeAllConnections(): void }; readonly port: number; close(): Promise<void> }>;
 export function setProviderDirective(paths: Paths, directive: { mode: string; tool?: string; args?: Record<string, unknown> }): void;
 export function piEnvironment(paths: Paths, overrides?: Record<string, string>): Record<string, string>;
 export function piArgv(paths: Paths, built: Built, options?: { sessionId?: string; resume?: string }): string[];
@@ -218,10 +230,11 @@ export function slotCount(snapshot: Snapshot): number;
 export function unreleasedSlots(snapshot: Snapshot): MutexSlot[];
 export function deathEvidence(paths: Paths, pid: number, label: string): DeathEvidence;
 export function deriveReconcileArguments(snapshot: Snapshot, store: StoreRef, death: string): string[];
-export function runReconcile(paths: Paths, built: Built, argv: string[], label?: string): ReconcileRecord;
+export function runReconcile(paths: Paths, built: Built, argv: string[], label: string, driver: Driver): ReconcileRecord & { offlineBefore: ReapedLaunch; offlineAfter: ReapedLaunch };
 export function startDriver(paths: Paths): Driver;
 export function finishRun(paths: Paths | undefined, driver: Pick<Driver, "stop"> | undefined,
-  provider: { close(): Promise<void> } | undefined, options: { successful: boolean; keep?: boolean }): Promise<{ retained: boolean }>;
+  provider: { close(): Promise<void>; server?: { closeAllConnections?(): void } } | undefined,
+  options: { successful: boolean; keep?: boolean }): Promise<{ retained: boolean }>;
 export function terminalText(paths: Paths, name: string): string;
 export function launchMeta(paths: Paths, name: string): LaunchMeta;
 export function accounting(paths: Paths): AccountingSummary;

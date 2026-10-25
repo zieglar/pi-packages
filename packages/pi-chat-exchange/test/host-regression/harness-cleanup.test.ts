@@ -2,19 +2,26 @@ import fs from "node:fs";
 import type { ChildProcess } from "node:child_process";
 import { join } from "node:path";
 import { once } from "node:events";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { finishRun, nodePath, prepareRoot, startDriver } from "./support/harness.mjs";
+import { settleFixtureDriver } from "./support/fixture.mjs";
 
 function gone(pid: number) {
   expect(() => process.kill(pid, 0)).toThrow(/ESRCH/);
 }
 
-for (const mode of ["normal", "assertion-failure", "exception", "prior-kill", "escalation"] as const) {
+for (const mode of ["normal", "assertion-failure", "exception", "prior-kill", "escalation", "post-reap-assertion-failure"] as const) {
   it(`reaps the owned synthetic child and driver before fixture removal: ${mode}`, async () => {
     const paths = prepareRoot();
     const driver = startDriver(paths);
     const child = driver.child as ChildProcess;
     let pid: number | undefined;
+    let failure: unknown;
+    const originalKill = process.kill;
+    const signals = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (signal !== 0) throw new Error("numeric PID signalling forbidden in fixture cleanup");
+      return originalKill(pid, signal);
+    });
     try {
       const program = mode === "escalation"
         ? "process.on('SIGTERM',()=>{}); console.log('ready'); setInterval(()=>{},1000)"
@@ -41,6 +48,7 @@ for (const mode of ["normal", "assertion-failure", "exception", "prior-kill", "e
       // Python's metadata records its own wait of the owned synthetic child.
       expect(child.exitCode).not.toBeNull();
       gone(pid);
+      if (mode === "post-reap-assertion-failure") expect("injected post-reap assertion").toBe("success");
       const ownedPid = pid;
       pid = undefined; // confirmed gone: never signal a potentially reused PID
       const meta = JSON.parse(fs.readFileSync(join(paths.raw, "synthetic.meta.json"), "utf8"));
@@ -51,15 +59,18 @@ for (const mode of ["normal", "assertion-failure", "exception", "prior-kill", "e
       expect(fs.existsSync(paths.root)).toBe(true);
       fs.rmSync(paths.root, { recursive: true });
       expect(fs.existsSync(paths.root)).toBe(false);
+    } catch (error) {
+      failure = error;
     } finally {
-      // RED safety net: signal ONLY the PID returned by our synthetic launch.
-      if (pid !== undefined) { try { process.kill(pid, "SIGKILL"); } catch { /* already dead */ } }
-      if (child.exitCode === null) {
-        const exited = once(child, "exit");
-        child.kill("SIGTERM");
-        await exited;
-      }
+      await settleFixtureDriver(driver);
       // Keep failed fixtures, including the old driver's unreaped-child metadata.
     }
+    try {
+      expect(signals.mock.calls.filter(([, signal]) => signal !== 0), "never signal a numeric PID after reap").toEqual([]);
+      if (mode === "post-reap-assertion-failure") {
+        expect(String(failure)).toContain("injected post-reap assertion");
+        fs.rmSync(paths.root, { recursive: true });
+      } else if (failure) throw failure;
+    } finally { signals.mockRestore(); }
   }, 20_000);
 }

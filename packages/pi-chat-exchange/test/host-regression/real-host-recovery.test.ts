@@ -193,8 +193,14 @@ describe("REAL-HOST crash recovery closure (opt-in lane, synthetic Store)", () =
       expect(snapshot.leaseEvaluation?.[0]?.lease).toBe("ACTIVE");
       expect(snapshot.ownership?.[0]).toEqual(state.preKillOwnership);
     });
-    state.driver!.send("/quit\r", 5);
-    await sleep(1_000);
+    state.driver!.send("/quit\r", 0);
+    const reaped = state.driver!.awaitExit();
+    check("reconcile.currentLaunch", "the CURRENT refused launch positively exited and was reaped before the offline window", "raw/04-mutex-refusal.meta.json", () => {
+      expect(reaped.name).toBe("04-mutex-refusal");
+      expect(reaped.pid).toBe(launchMeta(state.paths!, "04-mutex-refusal").pid);
+      expect(reaped.reaped).toBe(true);
+      expect(reaped.exit).toBe(0);
+    });
   }, 120_000);
 
   it("reconciles the local mutex offline with every documented expect flag and independent death evidence", async () => {
@@ -206,7 +212,12 @@ describe("REAL-HOST crash recovery closure (opt-in lane, synthetic Store)", () =
     });
     const argv = deriveReconcileArguments(before, state.publication!.store,
       `ps -p ${state.firstPid} exit=1 empty-output at ${death.at}; harness SIGKILL (raw/death-02-persisted-bound.json, raw/02-persisted-bound.meta.json)`);
-    const result = runReconcile(state.paths!, state.built!, argv, "reconcile-first");
+    const result = runReconcile(state.paths!, state.built!, argv, "reconcile-first", state.driver!);
+    check("reconcile.offlineThroughout", "no Store-capable owned process exists at either end of the serialized offline window", "raw/reconcile-first.json", () => {
+      expect(result.offlineBefore.name).toBe("04-mutex-refusal");
+      expect(result.offlineBefore.reaped).toBe(true);
+      expect(result.offlineAfter).toEqual(result.offlineBefore);
+    });
     check("reconcile.exit", "documented reconcile script exits 0 with its fixed success line and empty stderr", "raw/reconcile-first.json", () => {
       expect(argv).toHaveLength(39);
       expect(result.status).toBe(0);
@@ -369,10 +380,17 @@ describe("REAL-HOST crash recovery closure (opt-in lane, synthetic Store)", () =
       expect(expired.lease.lease).toBe("EXPIRED");
       expect(Date.now()).toBeGreaterThan(expiresAt);
     });
+    const reaped = state.driver!.awaitExit();
+    expect(reaped.pid).toBe(state.recoveredPid);
     const slotTwo = captureAuthority(state.paths!, "12-lease-expired");
     const argv = deriveReconcileArguments(slotTwo, state.publication!.store,
       `ps -p ${state.recoveredPid} exit=1 empty-output at ${death.at}; harness SIGKILL (raw/death-final.json, raw/08-resumed.meta.json)`);
-    const result = runReconcile(state.paths!, state.built!, argv, "reconcile-second");
+    const result = runReconcile(state.paths!, state.built!, argv, "reconcile-second", state.driver!);
+    check("expired.offlineThroughout", "the exact recovered launch is reaped throughout the second offline window", "raw/reconcile-second.json", () => {
+      expect(result.offlineBefore).toEqual(reaped);
+      expect(result.offlineBefore.name).toBe("08-resumed");
+      expect(result.offlineAfter).toEqual(reaped);
+    });
     check("expired.reconcile", "the recovered process's own slot was reconciled the same documented way", "raw/reconcile-second.json", () => {
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("local mutex receipt reconciled");
@@ -417,11 +435,23 @@ describe("REAL-HOST crash recovery closure (opt-in lane, synthetic Store)", () =
       expect(flat(activated.text)).toContain(flat(staleHint));
       expect(flat(activated.text)).not.toContain(flat(mutexHint));
     });
-    state.driver!.send("/quit\r", 5);
-    await sleep(1_000);
+    state.driver!.send("/quit\r", 0);
+    const reaped = state.driver!.awaitExit();
+    check("activation.reaped", "the final Store-capable launch exited and was reaped before accounting/teardown", "raw/13-expired-refusal.meta.json", () => {
+      expect(reaped.name).toBe("13-expired-refusal");
+      expect(reaped.pid).toBe(launchMeta(state.paths!, "13-expired-refusal").pid);
+      expect(reaped.reaped).toBe(true);
+      expect(reaped.exit).toBe(0);
+    });
   }, 120_000);
 
   it("accounts for every child process and proves zero tunnel-client executions", () => {
+    check("accounting.allReaped", "all four Store-capable owned launches were positively reaped", "raw/*.meta.json", () => {
+      for (const name of ["02-persisted-bound", "04-mutex-refusal", "08-resumed", "13-expired-refusal"]) {
+        const meta = launchMeta(state.paths!, name);
+        expect(meta.cleanup).toMatchObject({ name, pid: meta.pid, reaped: true, exit: meta.exit });
+      }
+    });
     const summary = accounting(state.paths!);
     check("accounting.zeroClient", "no child_process call in the whole host tree named tunnel-client", "raw/process-accounting-summary.json", () => {
       expect(summary.tunnelClientExecutions).toBe(0);

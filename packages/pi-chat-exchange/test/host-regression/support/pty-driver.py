@@ -79,13 +79,35 @@ def cleanup() -> None:
                     child.wait(timeout=3)
             else:
                 child.wait(timeout=3)  # idempotent after intentional SIGKILL
-            meta["cleanup"] = {"pid": child.pid, "reaped": True, "exit": child.returncode}
+            if "cleanup" not in meta:
+                meta["cleanup"] = {"name": name, "pid": child.pid, "startedAt": meta["startedAt"],
+                                   "reaped": True, "exit": child.returncode, "reapedAt": time.time()}
     finally:
         for fd in (master, replica):
             if fd >= 0:
                 os.close(fd)
         master = replica = -1
     save()
+
+
+def drain() -> None:
+    global data
+    if master >= 0 and select.select([master], [], [], 0.05)[0]:
+        try:
+            chunk = os.read(master, 65536)
+        except OSError:
+            chunk = b""
+        data += chunk
+        if b"\x1b[6n" in chunk:
+            os.write(master, b"\x1b[1;1R")
+
+
+def offline() -> dict:
+    # Each replacement launch first cleans/reaps its predecessor. Thus only the
+    # current launch can be live; an old launch's death is never sufficient.
+    if child is None or child.poll() is None or "cleanup" not in meta:
+        return {"error": "offline window not confirmed: current launch live or unreaped"}
+    return meta["cleanup"]
 
 
 def interrupted(signum, _frame) -> None:
@@ -98,14 +120,8 @@ lastFlush = 0.0
 try:
     while True:
         live = child is not None and child.poll() is None and master >= 0
-        if live and select.select([master], [], [], 0.05)[0]:
-            try:
-                chunk = os.read(master, 65536)
-            except OSError:
-                chunk = b""
-            data += chunk
-            if b"\x1b[6n" in chunk:
-                os.write(master, b"\x1b[1;1R")
+        if live:
+            drain()
         if name and time.time() - lastFlush > 0.2:
             lastFlush = time.time()
             save()
@@ -146,7 +162,23 @@ try:
                     child.kill()
                 child.wait(3)
                 meta["actions"].append({"SIGKILL": child.pid, "exit": child.returncode, "time": time.time()})
+                cleanup()
                 result = {"pid": child.pid, "exit": child.returncode}
+            elif op == "await-exit":
+                timeout = command.get("timeoutMs", 15000)
+                if not isinstance(timeout, (int, float)) or not 0 < timeout <= 30000:
+                    raise ValueError("await-exit timeout must be in (0, 30000]ms")
+                deadline = time.monotonic() + timeout / 1000
+                while child is not None and child.poll() is None and time.monotonic() < deadline:
+                    drain()  # do not deadlock a quitting child on PTY backpressure
+                    time.sleep(0.01)
+                if child is None or child.poll() is None:
+                    result = {"error": "current launch exit not confirmed: still live or absent"}
+                else:
+                    cleanup()  # wait/reap and record this exact launch, no signal
+                    result = offline()
+            elif op == "offline":
+                result = offline()
             elif op == "snapshot":
                 save()
                 result = {"pid": child.pid if child else None, "exit": child.poll() if child else None,

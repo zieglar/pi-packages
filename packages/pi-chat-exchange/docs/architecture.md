@@ -134,7 +134,7 @@ pnpm run verify
 | packaged plugin tests | 可移植包内容、stdio 启动、tool discovery | Desktop 安装菜单/资格/对话更新 |
 | 人工 real Gate | 当前 ChatGPT 对话与 Pi 的实际 send/list/read/ACK、Tunnel 启停 | 冷启动、所有平台、所有客户端或正式发布资格 |
 
-真实 Host lane 的证据留在原始临时根目录，不复制到另一处。`CE_HOST_REGRESSION_KEEP=1` 保留成功运行的证据；测试或清理失败会自动保留并打印实际路径。仅在所有测试成功、驱动已等待并回收其自有子进程、合成 provider 已关闭且未设 KEEP 时删除根目录。默认收集的 `test/host-regression/*-cleanup.test.ts` 与 `refusal-comparator.test.ts` 只验证合成进程清理、证据保留和拒绝前后完整 message/audit 数组比较，不启动真实 Pi/client 或业务恢复。
+真实 Host lane 的证据留在原始临时根目录，不复制到另一处。`CE_HOST_REGRESSION_KEEP=1` 保留成功运行的证据；测试、进程/provider 清理（含本地超时）或清理记录写入失败时不启动删除，并尽力打印原始路径。仅在所有测试成功、驱动已等待并回收其自有子进程、合成 provider 已关闭、清理记录写入成功且未设 KEEP 时删除根目录。递归删除本身失败可能已部分移除证据；此时聚合错误以 `possibly-partially-removed` 标明状态并尽力打印原始路径，不承诺完整保留。两次离线 reconcile 均由驱动确认并记录**当前启动实例**的退出/回收身份，且在串行离线窗口前后再确认无存活自有 Store-capable 进程；未确认退出即拒绝执行，不以 `/quit` 加固定等待代替。默认收集的 `test/host-regression/*-cleanup.test.ts`、`failure-path.test.ts` 与 `refusal-comparator.test.ts` 只验证合成进程清理、离线屏障、故障证据状态和拒绝前后完整 message/audit 数组比较，不启动真实 Pi/client 或业务恢复。
 
 本地测试只对其实际执行的固定版本与环境提供证据，跳过项和平台限制必须明示。人工消息验收与隔离回归互不替代；不要将历史报告的测试数当作当前变更的新鲜执行证据。公共验收边界见[README](../README.md)。
 

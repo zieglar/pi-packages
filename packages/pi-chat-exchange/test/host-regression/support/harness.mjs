@@ -506,11 +506,16 @@ export function deriveReconcileArguments(snapshot, store, death) {
   ];
 }
 
-export function runReconcile(paths, built, argv, label = "reconcile") {
-  const meta = { argv, cwd: built.packageRoot, at: new Date().toISOString() };
+export function runReconcile(paths, built, argv, label, driver) {
+  // The owning driver serializes launch/exit controls. Recheck the CURRENT
+  // launch at both ends of this synchronous offline window, never an old PID.
+  const offlineBefore = driver.requireOffline();
+  const meta = { argv, cwd: built.packageRoot, at: new Date().toISOString(), offlineBefore };
   const result = spawnSync(nodePath, [built.reconcileScript, ...argv], { cwd: built.packageRoot, encoding: "utf8",
     env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", TMPDIR: paths.tmp } });
-  const record = { ...meta, status: result.status, signal: result.signal, stdout: result.stdout, stderr: result.stderr };
+  const offlineAfter = driver.requireOffline();
+  if (JSON.stringify(offlineAfter) !== JSON.stringify(offlineBefore)) throw new Error("offline launch identity changed during reconciliation");
+  const record = { ...meta, offlineAfter, status: result.status, signal: result.signal, stdout: result.stdout, stderr: result.stderr };
   fs.writeFileSync(join(paths.raw, `${label}.json`), JSON.stringify(record, null, 2));
   return record;
 }
@@ -536,29 +541,30 @@ export function startDriver(paths) {
     fs.renameSync(temporary, join(paths.raw, `${stem}.json`));
     return stem;
   };
-  const boundedExit = async (ms) => {
-    let timer;
-    try {
-      return await Promise.race([exited, new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`PTY driver exit timed out after ${ms}ms`)), ms);
-      })]);
-    } finally { clearTimeout(timer); }
-  };
+  const boundedExit = (ms) => bounded(exited, ms, "PTY driver exit");
   let stopping;
   const stop = () => stopping ??= (async () => {
     let stem;
-    if (child.exitCode === null && child.signalCode === null) stem = enqueue({ op: "stop" });
     let result;
-    try { result = await boundedExit(15_000); }
-    catch (error) {
-      // Only this spawned driver is signalled. Its SIGTERM handler runs the
-      // owned-session cleanup; SIGKILL is a bounded last resort, never success.
-      child.kill("SIGTERM");
-      try { await boundedExit(10_000); }
-      catch {
-        child.kill("SIGKILL");
-        await boundedExit(5_000);
+    try {
+      if (child.exitCode === null && child.signalCode === null) stem = enqueue({ op: "stop" });
+      result = await boundedExit(15_000);
+    } catch (error) {
+      // Publication errors belong to the SAME recovery scope as exit timeouts.
+      // Do not settle/cache rejection until the owning driver's TERM handler
+      // has had bounded time to reap its child. Never signal a saved numeric PID.
+      const errors = [error];
+      try {
+        child.kill("SIGTERM");
+        await boundedExit(10_000);
+      } catch (termError) {
+        errors.push(termError);
+        try {
+          child.kill("SIGKILL");
+          await boundedExit(5_000);
+        } catch (killError) { errors.push(killError); }
       }
+      if (errors.length > 1) throw new AggregateError(errors, "PTY driver fallback cleanup failed");
       throw error;
     }
     if (result.code !== 0 || (stem && !fs.existsSync(join(paths.raw, `result-${stem}.json`)))) {
@@ -571,7 +577,11 @@ export function startDriver(paths) {
     const deadline = Date.now() + 60_000;
     for (;;) {
       const answer = join(paths.raw, `result-${stem}.json`);
-      if (fs.existsSync(answer)) return JSON.parse(fs.readFileSync(answer, "utf8"));
+      if (fs.existsSync(answer)) {
+        const result = JSON.parse(fs.readFileSync(answer, "utf8"));
+        if (result.error) throw new Error(result.error);
+        return result;
+      }
       if (Date.now() > deadline) throw new Error(`PTY driver never answered ${stem}; driver stderr so far: ${stderr}`);
       if (child.exitCode !== null) throw new Error(`PTY driver exited early (${child.exitCode}): ${stderr}`);
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
@@ -584,6 +594,9 @@ export function startDriver(paths) {
     send: (text, waitSeconds = 3) => call({ op: "send", text }, waitSeconds),
     snapshot: () => call({ op: "snapshot" }),
     kill: () => call({ op: "kill" }),
+    // Natural exit only. Timeout is a refusal, NOT permission to reconcile.
+    awaitExit: (timeoutMs = 15_000) => call({ op: "await-exit", timeoutMs }),
+    requireOffline: () => call({ op: "offline" }),
     stop,
     /** Wait for a terminal predicate over the ANSI-stripped stream of `name`. */
     waitFor: async (name, predicate, timeoutMs, note) => {
@@ -599,21 +612,52 @@ export function startDriver(paths) {
   };
 }
 
-/** Delete only after BOTH a successful run and confirmed cleanup. Any failure
- * retains the original evidence root and remains a failure to the caller. */
+/** Local deadlines also cover provider callbacks that never settle. */
+async function bounded(promise, ms, note) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${note} timed out after ${ms}ms`)), ms);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+/** Delete only after success AND cleanup AND recording. A failed recursive rm
+ * can partially remove evidence: report the original root without promising
+ * preservation. Recording/cleanup failures never authorize deletion. */
 export async function finishRun(paths, driver, provider, { successful, keep = false }) {
   const errors = [];
   try { await driver?.stop(); } catch (error) { errors.push(error); }
-  try { await provider?.close(); } catch (error) { errors.push(error); }
-  const retained = !successful || keep || errors.length > 0;
-  if (paths) {
-    fs.writeFileSync(join(paths.raw, "cleanup.json"), JSON.stringify({
-      successful, keep, retained, errors: errors.map(String), at: new Date().toISOString(),
-    }, null, 2));
-    if (retained) console.log(`real-host regression evidence retained at: ${paths.root}`);
-    else fs.rmSync(paths.root, { recursive: true });
+  try {
+    if (provider) await bounded(Promise.resolve().then(() => provider.close()), 5_000, "provider close");
+  } catch (error) {
+    errors.push(error);
+    // Only this synthetic provider's server, never a global connection sweep.
+    try { provider?.server?.closeAllConnections?.(); } catch (closeError) { errors.push(closeError); }
   }
-  if (errors.length > 0) throw new AggregateError(errors, "host regression cleanup failed; evidence retained");
+  let retained = !successful || keep || errors.length > 0;
+  let evidenceState = "retained";
+  if (paths) {
+    try {
+      fs.writeFileSync(join(paths.raw, "cleanup.json"), JSON.stringify({
+        successful, keep, retained, errors: errors.map(String), at: new Date().toISOString(),
+      }, null, 2));
+    } catch (error) { errors.push(error); retained = true; }
+    if (!retained) {
+      try { fs.rmSync(paths.root, { recursive: true }); evidenceState = "removed"; }
+      catch (error) { errors.push(error); evidenceState = "possibly-partially-removed"; }
+    }
+    if (retained || errors.length > 0) {
+      // Best effort even when evidence recording itself has failed.
+      try { console.log(`real-host regression evidence ${evidenceState} at: ${paths.root}`); }
+      catch (error) { errors.push(error); }
+    }
+  }
+  if (errors.length > 0) {
+    const error = new AggregateError(errors, `host regression cleanup failed; evidence ${evidenceState}`);
+    error.evidence = { root: paths?.root, state: evidenceState };
+    throw error;
+  }
   return { retained };
 }
 
