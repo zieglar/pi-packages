@@ -1021,9 +1021,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       startupFailure = generation?.failure ??
         (error instanceof CeHostRefusal ? error : new CeHostRefusal("CE_HOST_UNAVAILABLE"));
       startupRuntimeRepair = error instanceof RuntimeEligibilityError ? hostRuntimeRepairMessage() : undefined;
-      const mutexHint = (error as { code?: unknown } | null)?.code === "CE_SESSION_PROCESS_MUTEX_REFUSED"
-        ? "; local session-process mutex still holds an unreleased slot for this session scope after an unclean exit — operator offline reconciliation required (see docs/tunnel-setup.md troubleshooting); no automatic recovery" : "";
-      notify(ctx, `ce-chat-exchange: session start failed closed (${startupFailure.code})${startupRuntimeRepair === undefined ? "" : `; ${startupRuntimeRepair}`}${mutexHint}`, "warning");
+      notify(ctx, `ce-chat-exchange: session start failed closed (${startupFailure.code})${startupRuntimeRepair === undefined ? "" : `; ${startupRuntimeRepair}`}${mutexRefusalHint(error)}`, "warning");
     }
   });
 
@@ -1409,6 +1407,13 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   const refusalText = (error: unknown): string =>
     error instanceof TunnelRefusal ? error.code : "CE_TUNNEL_HEALTH_UNAVAILABLE";
 
+  /** One fixed mutex hint for every call site; not instanceof because the
+   *  closed code can arrive on wrapped or rethrown non-TunnelRefusal carriers. */
+  const mutexRefusalHint = (error: unknown): string =>
+    (error as { code?: unknown } | null)?.code === "CE_SESSION_PROCESS_MUTEX_REFUSED"
+      ? "; local session-process mutex still holds an unreleased slot for this session scope after an unclean exit — operator offline reconciliation required (see docs/tunnel-setup.md troubleshooting); no automatic recovery"
+      : "";
+
   /** Explicit operator activation, not a reload fallback. Only the selected
    * immutable pair may provision; an old instance can release its known handle
    * but cannot switch its captured tool policy in place. */
@@ -1550,9 +1555,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         }
         if (!controller.signal.aborted) {
           const code = error instanceof CeHostRefusal || error instanceof TunnelRefusal ? error.code : "CE_HOST_UNAVAILABLE";
-          const mutexHint = (error as { code?: unknown } | null)?.code === "CE_SESSION_PROCESS_MUTEX_REFUSED"
-            ? "; local session-process mutex still holds an unreleased slot for this session scope after an unclean exit — operator offline reconciliation required (see docs/tunnel-setup.md troubleshooting); no automatic recovery" : "";
-          notify(ctx, `ce-tunnel: activation refused ${code}; no automatic retry or takeover${mutexHint}`, "warning");
+          notify(ctx, `ce-tunnel: activation refused ${code}; no automatic retry or takeover${mutexRefusalHint(error)}`, "warning");
         }
       }
     })();

@@ -178,16 +178,31 @@ it.each(["unknown", "running"] as const)("registration refuses transport %s with
   const f = await fixture(); const c = await f.runtime("real-C"); f.setProcessState(state);
   await c.command("register pi/C"); expect(readSelectedMultiSessionPolicy(f.profilePath).manifest.registrations).toHaveLength(2); expect(c.notices()).toContain("Stop");
 });
+/** Byte-exact snapshot of every file under a directory tree (hex-encoded so
+ *  binary Store files compare exactly): a refusal must not touch one byte. */
+function snapshotFileBytes(root: string): Record<string, string> {
+  const snapshot: Record<string, string> = {};
+  for (const name of fs.readdirSync(root, { recursive: true }) as string[]) {
+    const path = join(root, name);
+    if (fs.statSync(path).isFile()) snapshot[name] = fs.readFileSync(path).toString("hex");
+  }
+  return snapshot;
+}
+
 const originalProfileInvalidNotice = "ce-tunnel: configuration refused CE_TUNNEL_PROFILE_INVALID; transport must be verified STOPPED. Use explicit Stop, then retry with a fresh confirmation; no automatic stop/start.";
 it("legacy registration refusal points to explicit conversion without registration side effects", async () => {
   const f = await fixture(false); const c = await f.runtime("real-C");
   vi.stubEnv("CE_ALLOWLIST", undefined);
   const before = f.api.revision(); const files = fs.readdirSync(f.dir, { recursive: true });
+  const bytesBefore = snapshotFileBytes(f.dir);
   await c.command("register pi/C");
   expect(c.notices()).toBe("ce-tunnel: configuration refused CE_TUNNEL_PROFILE_INVALID; selected profile is a legacy single-session registration — run /ce-tunnel convert to create the multi-session generation first (explicit confirmation required); no automatic conversion is performed");
   expect(c.notices()).not.toMatch(/transport|STOPPED/);
   expect(c.ctx.ui.confirm).not.toHaveBeenCalled(); expect(c.entries).toHaveLength(0); expect(seam.hosts).toHaveLength(0);
   expect(f.api.revision()).toBe(before); expect(fs.readdirSync(f.dir, { recursive: true })).toEqual(files);
+  // Byte-exact configuration snapshot: the refused register must leave every
+  // configuration file byte unchanged, not just the file list.
+  expect(snapshotFileBytes(f.dir)).toEqual(bytesBefore);
   expect(() => readSelectedMultiSessionPolicy(f.profilePath)).toThrow();
 });
 it.each(["multi-session", "explicit allowlist", "malformed profile"])("%s profile-invalid refusal keeps the original notification", async (scenario) => {

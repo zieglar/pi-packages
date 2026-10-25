@@ -6,6 +6,7 @@
  * These tests are skipped when `tunnel-client` is not installed (CI / other
  * machines). They never start a daemon, read a credential, or contact a control
  * plane: `tunnel-client doctor` only parses and validates the profile.
+ * Intentional difference inside this opt-in lane: this file skips on a missing client, while offline.integration.test.ts throws loudly instead of skipping.
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
