@@ -266,6 +266,12 @@ export interface CeStatus {
   readonly sessionId: string | undefined;
   readonly exchangeId: string | undefined;
   readonly lease: "ACTIVE" | "EXPIRED" | "CLOCK_REGRESSION" | "UNOWNED" | "ABSENT";
+  /** HANDOFF-CE-RELEASE-READINESS-01: the persisted expiry of the CURRENT term
+   * of this Endpoint's own lease, read live with the status (never a cached
+   * adoption-time value); `undefined` when no current lease was observed. It is
+   * advisory like the rest of this record and authorizes nothing: a caller may
+   * only use it to schedule its own renewal earlier, never to extend a term. */
+  readonly leaseExpiresAt: string | undefined;
   readonly fencingToken: number | undefined;
 }
 
@@ -1064,6 +1070,7 @@ export class CeEndpointHost {
         sessionId: undefined,
         exchangeId: undefined,
         lease: "ABSENT",
+        leaseExpiresAt: undefined,
         fencingToken: undefined,
       });
     }
@@ -1080,6 +1087,8 @@ export class CeEndpointHost {
         sessionId: authority.sessionId,
         exchangeId: authority.exchangeId,
         lease,
+        leaseExpiresAt:
+          ownership !== undefined && ownership.sessionId === authority.sessionId ? ownership.expiresAt : undefined,
         fencingToken: ownership?.fencingToken,
       });
     } catch {
@@ -1091,6 +1100,7 @@ export class CeEndpointHost {
         sessionId: authority.sessionId,
         exchangeId: authority.exchangeId,
         lease: "ABSENT",
+        leaseExpiresAt: undefined,
         fencingToken: undefined,
       });
     }

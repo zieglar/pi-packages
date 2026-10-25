@@ -174,6 +174,22 @@ it.each(["session", "revision", "environment", "shutdown"])("registration refuse
   await c.command("register pi/C"); expect(readSelectedMultiSessionPolicy(f.profilePath).manifest.registrations).toHaveLength(2);
   expect(c.notices()).toContain("refused"); if (change !== "revision") expect(f.api.revision()).toBe(before);
 });
+// HANDOFF-CE-RELEASE-READINESS-01 C4: reassignment of an already mapped runtime
+// Session is a configuration fact, not transport state.
+it("register refused for an already mapped Pi Session names the real cause instead of transport state", async () => {
+  const f = await fixture(); const b = await f.runtime("real-B");
+  const before = f.api.revision(); const bytesBefore = snapshotFileBytes(f.dir);
+  await b.command("register pi/D");
+  expect(b.notices()).toContain("ce-tunnel: configuration refused CE_TUNNEL_PROFILE_INVALID");
+  expect(b.notices()).toContain("already registered to a different Endpoint");
+  expect(b.notices()).toContain("reassignment is rejected");
+  expect(b.notices()).not.toMatch(/STOPPED/);
+  // Text only: the policy decision, the revision and every byte are unchanged.
+  expect(f.api.revision()).toBe(before);
+  expect(snapshotFileBytes(f.dir)).toEqual(bytesBefore);
+  expect(readSelectedMultiSessionPolicy(f.profilePath).manifest.registrations).toHaveLength(2);
+  expect(readSelectedMultiSessionPolicy(f.profilePath).manifest.registrations.map(r => r.endpointId)).not.toContain("pi/D");
+});
 it.each(["unknown", "running"] as const)("registration refuses transport %s without stop/start", async (state) => {
   const f = await fixture(); const c = await f.runtime("real-C"); f.setProcessState(state);
   await c.command("register pi/C"); expect(readSelectedMultiSessionPolicy(f.profilePath).manifest.registrations).toHaveLength(2); expect(c.notices()).toContain("Stop");

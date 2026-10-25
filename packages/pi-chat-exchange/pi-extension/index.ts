@@ -618,6 +618,9 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     readonly endpointId: string;
     readonly ctx: ExtensionContextView;
     timer: ReturnType<typeof setInterval> | undefined;
+    /** HANDOFF-CE-RELEASE-READINESS-01 C3: one-shot early renewal used only when
+     * an adopted lease has less than the regular heartbeat period left. */
+    earlyTimer: ReturnType<typeof setTimeout> | undefined;
     renewal: Promise<void> | undefined;
     stopping: boolean;
     failure: CeHostRefusal | undefined;
@@ -804,6 +807,8 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   const stopHeartbeat = (state: Generation): void => {
     if (state.timer !== undefined) clearInterval(state.timer);
     state.timer = undefined;
+    if (state.earlyTimer !== undefined) clearTimeout(state.earlyTimer);
+    state.earlyTimer = undefined;
   };
 
   // Diagnostics contain lookup labels and fixed codes only, never authority.
@@ -846,30 +851,60 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     notify(state.ctx, `ce-chat-exchange: lifecycle failed closed (${code})`, "warning");
   };
 
-  const startHeartbeat = (state: Generation): void => {
-    state.timer = setInterval(() => {
-      if (generation !== state || state.stopping || state.failure !== undefined || state.renewal !== undefined) return;
-      let settle!: () => void;
-      state.renewal = new Promise<void>((resolve) => { settle = resolve; });
-      try {
-        if (state.ctx.sessionManager.getSessionId() !== state.piSessionId) {
-          throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
-        }
-        withHost("renew", () => getHost().renew(state.endpointId));
-      } catch (error) {
-        if (multiPolicy !== undefined && error instanceof CeHostRefusal && error.reason === "ADMISSION_POLICY_DENIED") {
-          // Deny-only policy failure must not discard the CE cleanup handle.
-          stopHeartbeat(state);
-          startupFailure = error;
-          startupRuntimeRepair = undefined;
-        } else failLifecycle(state, error);
-      } finally {
-        state.renewal = undefined;
-        if (state.failure !== undefined) host?.drop(state.endpointId);
-        settle();
+  const renewTick = (state: Generation): void => {
+    if (generation !== state || state.stopping || state.failure !== undefined || state.renewal !== undefined) return;
+    let settle!: () => void;
+    state.renewal = new Promise<void>((resolve) => { settle = resolve; });
+    try {
+      if (state.ctx.sessionManager.getSessionId() !== state.piSessionId) {
+        throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
       }
-    }, leaseTtlSeconds * 1_000 / 4);
+      withHost("renew", () => getHost().renew(state.endpointId));
+    } catch (error) {
+      if (multiPolicy !== undefined && error instanceof CeHostRefusal && error.reason === "ADMISSION_POLICY_DENIED") {
+        // Deny-only policy failure must not discard the CE cleanup handle.
+        stopHeartbeat(state);
+        startupFailure = error;
+        startupRuntimeRepair = undefined;
+      } else failLifecycle(state, error);
+    } finally {
+      state.renewal = undefined;
+      if (state.failure !== undefined) host?.drop(state.endpointId);
+      settle();
+    }
+  };
+
+  /** HANDOFF-CE-RELEASE-READINESS-01 C3: the remaining term of the lease this
+   * generation ADOPTED, taken from the live advisory status. An adopted term can
+   * be much shorter than the configured TTL, in which case a TTL/4 heartbeat
+   * would first renew after the lease has already expired (a successful bind
+   * followed by a deterministic fail-closed). Advisory only: an unknown or
+   * non-ACTIVE term keeps the configured schedule, and nothing here extends,
+   * revives, or takes over authority. */
+  const adoptedLeaseRemainingMs = (endpointId: string): number | undefined => {
+    try {
+      const status = withHost("status", () => getHost().status(endpointId));
+      if (status.lease !== "ACTIVE" || status.leaseExpiresAt === undefined) return undefined;
+      const expiry = Date.parse(status.leaseExpiresAt);
+      return Number.isFinite(expiry) ? Math.max(0, expiry - Date.now()) : undefined;
+    } catch {
+      return undefined; // Advisory read only; the configured schedule still applies.
+    }
+  };
+
+  /** `remainingLeaseMs` is the adopted term, when known. The steady-state period
+   * stays at TTL/4; a shorter adopted term only adds one earlier renewal inside
+   * that term. Every renewal still runs through the same policy-gated
+   * `multiRuntime.run` and the Host's ownership/fencing checks. */
+  const startHeartbeat = (state: Generation, remainingLeaseMs?: number): void => {
+    const period = leaseTtlSeconds * 1_000 / 4;
+    state.timer = setInterval(() => renewTick(state), period);
     state.timer.unref();
+    if (remainingLeaseMs === undefined) return;
+    const firstRenewal = Math.min(period, Math.max(0, remainingLeaseMs / 2));
+    if (firstRenewal >= period) return;
+    state.earlyTimer = setTimeout(() => renewTick(state), firstRenewal);
+    state.earlyTimer.unref();
   };
 
   /**
@@ -994,13 +1029,14 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         inherited !== undefined
           ? sessionHost.resume(endpointId, inherited)
           : sessionHost.beginSession(endpointId));
-      generation = { piSessionId, endpointId, ctx, timer: undefined, renewal: undefined, stopping: false, failure: undefined };
+      generation = { piSessionId, endpointId, ctx, timer: undefined, earlyTimer: undefined, renewal: undefined, stopping: false, failure: undefined };
       // Persist identifiers only; never credentials.
       pi.appendEntry("ce-mapping", mapping);
       startupFailure = undefined;
       startupRuntimeRepair = undefined;
       inboxBinding = Object.freeze({ piSessionId, endpointId });
-      startHeartbeat(generation);
+      // C3: a resumed generation inherits the REMAINING durable term.
+      startHeartbeat(generation, inherited === undefined ? undefined : adoptedLeaseRemainingMs(endpointId));
       advisoryState = notificationConfig === undefined
         ? undefined
         : { generation: Object.freeze({}), watermark: 0, inFlight: false, failureLatched: false };
@@ -1021,7 +1057,11 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       startupFailure = generation?.failure ??
         (error instanceof CeHostRefusal ? error : new CeHostRefusal("CE_HOST_UNAVAILABLE"));
       startupRuntimeRepair = error instanceof RuntimeEligibilityError ? hostRuntimeRepairMessage() : undefined;
-      notify(ctx, `ce-chat-exchange: session start failed closed (${startupFailure.code})${startupRuntimeRepair === undefined ? "" : `; ${startupRuntimeRepair}`}${mutexRefusalHint(error)}`, "warning");
+      // C1: the sanitized domain `reason` is the only thing that distinguishes an
+      // expired lease (EXPIRED/LEASE_EXPIRED) from OWNERSHIP_HELD,
+      // ADMISSION_POLICY_DENIED or FENCING_STALE for the operator. Fixed
+      // secret-free strings only (the `toRefusal` contract).
+      notify(ctx, `ce-chat-exchange: session start failed closed (${startupFailure.code}${startupFailure.reason ? ` / ${startupFailure.reason}` : ""})${startupRuntimeRepair === undefined ? "" : `; ${startupRuntimeRepair}`}${mutexRefusalHint(error)}${staleOwnershipHint(error)}`, "warning");
     }
   });
 
@@ -1414,6 +1454,23 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       ? "; local session-process mutex still holds an unreleased slot for this session scope after an unclean exit — operator offline reconciliation required (see docs/tunnel-setup.md troubleshooting); no automatic recovery"
       : "";
 
+  /** HANDOFF-CE-RELEASE-READINESS-01 C2: the sibling hint for a stale durable CE
+   *  Owner record, i.e. exactly the state the documented operator-only recovery
+   *  accepts (an EXPIRED owner). Those reasons are `EXPIRED` from the advisory
+   *  lease evaluation (`resume`/fencing checks), `LEASE_EXPIRED` from the
+   *  storage domain refusal, and `OWNERSHIP_TAKEOVER_REQUIRED` from a start over
+   *  an expired owner. A live owner (`OWNERSHIP_HELD`), a clock regression, a
+   *  stale fencing token and a policy denial are deliberately NOT hinted: that
+   *  recovery neither applies to nor may be used for them. Text only: it grants
+   *  and performs nothing. Duck typed for the same reason as the mutex hint. */
+  const staleOwnershipHint = (error: unknown): string => {
+    const refusal = error as { code?: unknown; reason?: unknown } | null;
+    if (refusal?.code !== "CE_HOST_AUTHORITY_ABSENT") return "";
+    return refusal.reason === "EXPIRED" || refusal.reason === "LEASE_EXPIRED" || refusal.reason === "OWNERSHIP_TAKEOVER_REQUIRED"
+      ? "; the durable CE ownership record for this Endpoint is stale — only the explicit operator-only stale-ownership recovery can clear it with exact evidence (pnpm run recover:ownership / scripts/recover-stale-ownership.mjs; see docs/tunnel-setup.md troubleshooting); mutex reconciliation does not cover it, and there is no automatic recovery and no takeover"
+      : "";
+  };
+
   /** Explicit operator activation, not a reload fallback. Only the selected
    * immutable pair may provision; an old instance can release its known handle
    * but cannot switch its captured tool policy in place. */
@@ -1534,7 +1591,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
               });
             if (!releaseProven) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
           }
-          targetState = { piSessionId, endpointId, ctx, timer: undefined, renewal: undefined, stopping: false, failure: undefined };
+          targetState = { piSessionId, endpointId, ctx, timer: undefined, earlyTimer: undefined, renewal: undefined, stopping: false, failure: undefined };
           const targetHost = getHost(); // existing canonical Store before acquiring the local guard
           if (multiPolicy !== undefined) multiRuntime = new PiMultiSessionRuntime(multiPolicy, piSessionId, () => ctx.sessionManager.getSessionId(), false, undefined);
           const mapping = withHost("begin", () => targetHost.beginSession(endpointId, { requireUnowned: true }));
@@ -1555,7 +1612,9 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         }
         if (!controller.signal.aborted) {
           const code = error instanceof CeHostRefusal || error instanceof TunnelRefusal ? error.code : "CE_HOST_UNAVAILABLE";
-          notify(ctx, `ce-tunnel: activation refused ${code}; no automatic retry or takeover${mutexRefusalHint(error)}`, "warning");
+          // C1: same sanitized domain reason as the MCP surface already reports.
+          const reason = error instanceof CeHostRefusal ? error.reason : undefined;
+          notify(ctx, `ce-tunnel: activation refused ${code}${reason ? ` / ${reason}` : ""}; no automatic retry or takeover${mutexRefusalHint(error)}${staleOwnershipHint(error)}`, "warning");
         }
       }
     })();
@@ -2020,11 +2079,27 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
               });
             } catch (error) {
               let legacy = false;
+              // HANDOFF-CE-RELEASE-READINESS-01 C4: a register refused because this
+              // runtime Session is already mapped to a different Endpoint is a
+              // configuration fact, not transport state; the old Stop advice sent
+              // operators to the wrong next step. Detection is read-only: the
+              // refusal code and the policy decision are unchanged.
+              let alreadyMapped = false;
               if (error instanceof TunnelRefusal && error.code === "CE_TUNNEL_PROFILE_INVALID" && !process.env.CE_ALLOWLIST && profilePath !== undefined) {
                 try { legacy = readGeneratedPiAllowlist(profilePath) !== undefined; } catch { /* Keep the original refusal if legacy inspection fails. */ }
+                if (!legacy && sub === "register") {
+                  try {
+                    const requested = args.trim().split(/\s+/)[1];
+                    const runtimeSessionId = ctx.sessionManager.getSessionId();
+                    alreadyMapped = readSelectedMultiSessionPolicy(profilePath).manifest.registrations
+                      .some(r => r.status === "active" && r.runtimeSessionId === runtimeSessionId && r.endpointId !== requested);
+                  } catch { /* Keep the original refusal if inspection fails. */ }
+                }
               }
               if (legacy) {
                 notify(ctx, "ce-tunnel: configuration refused CE_TUNNEL_PROFILE_INVALID; selected profile is a legacy single-session registration — run /ce-tunnel convert to create the multi-session generation first (explicit confirmation required); no automatic conversion is performed", "warning");
+              } else if (alreadyMapped) {
+                notify(ctx, `ce-tunnel: configuration refused ${refusalText(error)}; this Pi Session is already registered to a different Endpoint in the selected configuration — one runtime Session maps to exactly one Endpoint and reassignment is rejected. Use /ce-tunnel sessions to see the configured Endpoints, then either explicitly Revoke that exact Endpoint first or register from a different Pi Session. Transport state is not the cause; nothing was stopped, started, or published.`, "warning");
               } else {
                 notify(ctx, `ce-tunnel: configuration refused ${refusalText(error)}; transport must be verified STOPPED. Use explicit Stop, then retry with a fresh confirmation; no automatic stop/start.`, "warning");
               }

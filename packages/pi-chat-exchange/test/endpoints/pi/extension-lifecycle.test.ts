@@ -226,6 +226,81 @@ describe("Pi runtime generation lifecycle over an isolated Store", () => {
     expect(durable()).toEqual(before);
     expect(vi.getTimerCount()).toBe(0);
   });
+  // HANDOFF-CE-RELEASE-READINESS-01 C3: a resumed generation adopts the REMAINING
+  // durable term, which can be shorter than the configured TTL/4 heartbeat. The
+  // first renewal must therefore land inside the adopted term instead of after a
+  // deterministic fail-closed expiry.
+  it("resuming with less than a quarter TTL left renews inside the remaining adopted term", async () => {
+    const h = await runtime();
+    await h.start();
+    const bound = durable().owner!;
+    const adoptedExpiry = new Date(bound.expires_at as string).getTime();
+    await h.shutdown("reload");
+    // Only 20s of the adopted 120s term remain: shorter than the TTL/4 period.
+    vi.setSystemTime(new Date(adoptedExpiry - 20_000));
+    const fresh = await runtime();
+    await fresh.start("reload");
+    expect((await fresh.invoke()).isError).not.toBe(true);
+    await vi.advanceTimersByTimeAsync(19_999);
+    const renewed = durable().owner!;
+    expect(Number(renewed.private_revision)).toBe(Number(bound.private_revision) + 1);
+    expect(new Date(renewed.expires_at as string).getTime()).toBeGreaterThan(adoptedExpiry);
+    // Renewal only; never a takeover, a new fencing token, or a new Session.
+    expect(renewed.fencing_token).toBe(bound.fencing_token);
+    expect(renewed.session_id).toBe(bound.session_id);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect((await fresh.invoke()).isError).not.toBe(true);
+    expect(entries.filter((entry) => entry.customType === "ce-lifecycle-blocked")).toHaveLength(0);
+    await fresh.shutdown();
+  });
+  // HANDOFF-CE-RELEASE-READINESS-01 C1/C2: the sanitized domain reason is the only
+  // operator-visible discriminator between authority-absence causes, and the
+  // stale-ownership recovery hint may point only at the two reasons the
+  // documented operator-only path actually addresses.
+  // `resume` reports the advisory lease evaluation (`EXPIRED`), not the storage
+  // domain code `LEASE_EXPIRED`; both belong to the same stale-owner family.
+  it("an expired adopted lease still fails closed, names the expiry reason, and offers only operator-only recovery", async () => {
+    const h = await runtime();
+    await h.start();
+    await h.shutdown("reload");
+    vi.setSystemTime(new Date(Date.now() + 120_001));
+    const before = durable();
+    const fresh = await runtime();
+    await fresh.start("reload");
+    const notices = fresh.ctx.ui.notify.mock.calls.map(([text]) => String(text)).join("\n");
+    expect(notices).toContain("session start failed closed (CE_HOST_AUTHORITY_ABSENT / EXPIRED)");
+    expect(notices).toContain("operator-only stale-ownership recovery");
+    expect(notices).toContain("no automatic recovery and no takeover");
+    // Fail closed: the expired lease is never revived, adopted, or taken over.
+    expect(durable()).toEqual(before);
+    expect(vi.getTimerCount()).toBe(0);
+    expect((await fresh.invoke()).details).toMatchObject({ code: "CE_HOST_AUTHORITY_ABSENT", reason: "EXPIRED" });
+  });
+  it.each([
+    ["EXPIRED", true],
+    ["LEASE_EXPIRED", true],
+    ["OWNERSHIP_TAKEOVER_REQUIRED", true],
+    ["OWNERSHIP_HELD", false],
+    ["OWNERSHIP_NOT_CURRENT", false],
+    ["CLOCK_REGRESSION", false],
+    ["LEASE_CLOCK_REGRESSION", false],
+    ["FENCING_STALE", false],
+    ["ADMISSION_POLICY_DENIED", false],
+  ] as const)("startup reports reason %s and hints stale-ownership recovery only when authorized", async (reason, hinted) => {
+    const { CeEndpointHost, CeHostRefusal } = await import("../../../dist/host/endpoint-host.js");
+    const begin = vi.spyOn(CeEndpointHost.prototype, "beginSession").mockImplementation(() => {
+      throw new CeHostRefusal("CE_HOST_AUTHORITY_ABSENT", false, reason);
+    });
+    const h = await runtime();
+    await h.start();
+    expect(begin).toHaveBeenCalledTimes(1);
+    const notices = h.ctx.ui.notify.mock.calls.map(([text]) => String(text)).join("\n");
+    expect(notices).toContain(`session start failed closed (CE_HOST_AUTHORITY_ABSENT / ${reason})`);
+    expect(notices.includes("operator-only stale-ownership recovery")).toBe(hinted);
+    expect(notices).not.toContain("session-process mutex");
+    expect((await h.invoke()).details).toMatchObject({ code: "CE_HOST_AUTHORITY_ABSENT", reason });
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it("invalidates stale heartbeat and tools before a reentrant shutdown, then waits for renew to finish", async () => {
     const h = await runtime();
     const interval = vi.spyOn(globalThis, "setInterval");
