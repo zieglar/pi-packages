@@ -1,6 +1,7 @@
 {
   "name": "@zieglar/pi-chat-exchange",
   "version": "0.2.0",
+  "private": true,
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"

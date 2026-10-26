@@ -80,12 +80,18 @@ def verify_durable():
 
 def verify_module_origin():
     """Every filesystem module resolution the Host performed must stay inside
-    this run's installed trees (consumer/host/node/run). Read-only analysis of
-    the trace the committed preload recorded during the run."""
+    this run's installed trees (consumer/host/bin/run/node). Read-only analysis
+    of the trace the committed preload recorded during the run.
+
+    The native managed tree is a legitimate origin ONLY under managed npm; the
+    tarball route keeps its strict original allowlist so a managed-root load
+    there is still an escape rather than a silently accepted second route."""
     trace = r / 'run/module-resolution.jsonl'
     if not trace.is_file():
         raise RuntimeError('module resolution trace missing')
-    allowed = [str(r / 'agent/npm') + '/', str(r / 'consumer') + '/', str(r / 'host') + '/', str(r / 'bin') + '/', str(r / 'run') + '/', str(node)]
+    allowed = [str(r / 'consumer') + '/', str(r / 'host') + '/', str(r / 'bin') + '/', str(r / 'run') + '/', str(node)]
+    if managed:
+        allowed.insert(0, str(r / 'agent/npm') + '/')
     total = 0
     outside = []
     for line in trace.read_text(errors='replace').splitlines():
@@ -163,18 +169,27 @@ if (r / 'node-version.log').read_text().strip() != 'v24.21.0':
 (r / 'archive-sha256.txt').write_text(hashlib.sha256(archive.read_bytes()).hexdigest() + '\n')
 command('npm-version', [node, npm_source, '--version'])
 command('host-install', [node, npm_source, 'install', '--prefix', r / 'host', '--ignore-scripts', '--save-exact', '@earendil-works/pi-coding-agent@1.3.0'])
-cli = r / 'host/node_modules/@earendil-works/pi-coding-agent/dist/cli.js'
+# Bootstrap CLI needed BEFORE the guide ships with the candidate; the shipped
+# guide's own route is compared against it below so a doc/bootstrap divergence
+# cannot hide behind a hardcoded path.
+bootstrap_cli = r / 'host/node_modules/@earendil-works/pi-coding-agent/dist/cli.js'
+cli = bootstrap_cli
 
 def native_install(label):
     # Installation phase only: own loopback candidate plus explicitly selected
     # npmjs dependency registry. Runtime below is offline and Seatbelt denied.
+    # The private registry npmrc and offline flag are restored in `finally` so a
+    # failed install cannot leave a dead loopback port configured for later
+    # stages; only this private ephemeral root is ever affected.
     env.pop('npm_config_offline', None)
-    with CandidateRegistry(archive, r / 'registry-requests.jsonl') as registry:
-        (r / 'home/npmrc').write_text('@zieglar:registry=' + registry.url + '/\n')
-        (r / (label + '-registry.json')).write_text(json.dumps(registry.metadata, indent=2))
-        owned_command(label, [node, cli, 'install', source], timeout=150)
-    (r / 'home/npmrc').write_text('')
-    env['npm_config_offline'] = 'true'
+    try:
+        with CandidateRegistry(archive, r / 'registry-requests.jsonl') as registry:
+            (r / 'home/npmrc').write_text('@zieglar:registry=' + registry.url + '/\n')
+            (r / (label + '-registry.json')).write_text(json.dumps(registry.metadata, indent=2))
+            owned_command(label, [node, cli, 'install', source], timeout=150)
+    finally:
+        (r / 'home/npmrc').write_text('')
+        env['npm_config_offline'] = 'true'
 
 if managed:
     native_install('pi-managed-install')
@@ -238,6 +253,11 @@ if not cli_match:
 cli = r / cli_match.group(1)
 if not cli.is_file() or not cli.resolve().is_relative_to(r / 'host'):
     raise RuntimeError('Shipped guide CLI route is not inside the installed host')
+if cli.resolve(strict=True) != bootstrap_cli.resolve(strict=True):
+    raise RuntimeError('Shipped guide CLI route differs from the bootstrap CLI used for managed install: '
+                       + str(cli) + ' vs ' + str(bootstrap_cli))
+(r / 'guide-cli-route.json').write_text(json.dumps({'guideDerived': str(cli),
+    'bootstrapUsedForInstall': str(bootstrap_cli), 'identical': True}, indent=2))
 assert not package.is_symlink() and (package / 'dist/bin/mcp-stdio.js').is_file()
 env.update({'PI_OFFLINE': '1', 'PI_SKIP_VERSION_CHECK': '1', 'PI_TELEMETRY': '0', 'CE_NODE_PATH': str(node), 'CE_TUNNEL_CLIENT_PATH': str(r / 'run/absent-synthetic-client'), 'CE_TUNNEL_PROFILE': str(r / 'run/profile/tunnel.yaml')})
 (r / 'runtime-env.json').write_text(json.dumps(env, indent=2))
@@ -365,11 +385,25 @@ def verify_native_lifecycle():
     before = snapshot()
     if not before or not any('/.credentials/' in path for path in before):
         raise RuntimeError('Missing retained credential/history fixture')
+    # Observe the PERSISTED registration before removal so the post-remove
+    # settings clause is falsifiable instead of vacuous on a renamed key.
+    declared_before = json.loads((r / 'agent/settings.json').read_text()).get('packages', [])
+    if source not in json.dumps(declared_before):
+        raise RuntimeError('Managed declaration absent from settings BEFORE remove; '
+                           'removal predicate would be vacuous: ' + json.dumps(declared_before)[:400])
     owned_command('pi-native-remove', sandbox + [node, cli, 'remove', source])
     listing = command('pi-list-removed', sandbox + [node, cli, 'list'])
     settings = json.loads((r / 'agent/settings.json').read_text())
     if source in json.dumps(settings.get('packages', [])) or source in listing or package.exists():
         raise RuntimeError('Native remove did not remove both declaration and managed files')
+    # Reassert the approved copied npm closure before reinstall: a reinstall must
+    # not silently fall back to some other resolver after removal.
+    if settings.get('npmCommand') != [str(node), str(npm_source)]:
+        raise RuntimeError('Approved copied npm closure lost from settings after remove: '
+                           + json.dumps(settings.get('npmCommand')))
+    (r / 'managed-declaration.json').write_text(json.dumps({'declaredBeforeRemove': declared_before,
+        'declaredAfterRemove': settings.get('packages', []),
+        'npmCommandReassertedBeforeReinstall': settings.get('npmCommand')}, indent=2))
     after_remove = snapshot()
     if str(unrelated) not in listing or before != after_remove:
         raise RuntimeError('Native remove changed retained or unrelated fixture state')

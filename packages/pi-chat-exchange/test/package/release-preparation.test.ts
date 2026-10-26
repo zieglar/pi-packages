@@ -8,8 +8,13 @@ const read = (path: string) => readFileSync(resolve(root, path), "utf8");
 it("prepares the exact npm candidate without consumer hooks or invented licensing", () => {
   const manifest = JSON.parse(read("package.json"));
   expect(manifest.version).toBe("0.2.0");
-  expect(manifest.private).not.toBe(true);
+  // npm's OWN mechanical publication refusal stays in force while license and
+  // rights-owner authority are absent. Version, repository and publishConfig are
+  // INACTIVE candidate metadata; pack and the owned loopback install route work
+  // while private, so nothing required lifting the refusal before licensing.
+  expect(manifest.private).toBe(true);
   expect(manifest.publishConfig).toEqual({ access: "public", registry: "https://registry.npmjs.org/" });
+  expect(manifest.repository.directory).toBe("packages/pi-chat-exchange");
   expect(manifest.license).toBeUndefined(); // User authority is still pending.
   expect(manifest.scripts["test:distribution-npm"]).toContain("CE_DISTRIBUTION_MODE=managed-npm");
   expect(manifest.exports).toBeUndefined(); // Pi manifest is the entry, not a public library API.
@@ -37,9 +42,25 @@ it("documents stop and normal release BEFORE native removal, preserving durable 
 
 it("keeps license and cloud publication blockers explicit in draft release materials", () => {
   const notes = read("docs/releases/0.2.0.md");
-  for (const token of ["DRAFT", "LICENSE PENDING", "NOT_VERIFIED", "24.21.0", "1.3.0", "macOS arm64", "npm:@zieglar/pi-chat-exchange@0.2.0"])
+  for (const token of ["DRAFT", "LICENSE PENDING", "NOT_VERIFIED", "24.21.0", "1.3.0", "macOS arm64", "npm:@zieglar/pi-chat-exchange@0.2.0", "private"])
     expect(notes).toContain(token);
+  // No corrupted-SRI consumer rejection negative exists. Only metadata plus
+  // installed-payload byte identity may be claimed.
+  expect(notes).toContain("integrity-rejection negative");
+  expect(notes).toContain("repo-only");
   expect(read("CHANGELOG.md")).toContain("UNRELEASED");
+});
+
+it("records the candidate's actual user-visible feature delta, not only packaging", () => {
+  const changelog = read("CHANGELOG.md");
+  for (const token of ["ce_ack", "/ce-tunnel deactivate", "/ce-tunnel doctor", "24.22.1", "24.21.0"])
+    expect(changelog, token).toContain(token);
+  // 0.1.1 was never published; no entry may imply a prior public release.
+  expect(changelog).not.toMatch(/0\.1\.1[^\n]*\b(released|available|published)\b/i);
+  // The queued ACK changeset is DESCRIBED here and consumed by a future
+  // Changesets version PR; this delta never consumes or edits root changesets.
+  expect(changelog).toContain(".changeset/ce-e2b-ack-mcp.md");
+  expect(changelog).toContain("Changesets");
 });
 
 it("reports the candidate version through MCP server metadata", async () => {

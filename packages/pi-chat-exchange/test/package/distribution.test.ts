@@ -70,8 +70,18 @@ it("never publishes final PASS after validator, cleanup or identity failure", ()
   expect(result.status, result.stderr).toBe(0);
 });
 
-it("origin validation refuses CJS, URL and symlink escapes", () => {
+it("origin validation refuses CJS, URL, symlink and non-managed managed-root escapes", () => {
   const result = spawnSync("/usr/bin/python3", ["-B", join(root, "test/package/support/module-origin.test.py")], { encoding: "utf8", timeout: 30_000 });
+  expect(result.status, result.stderr).toBe(0);
+});
+
+/** Regression: an unresolved fixture root made the 500-record positive control reject itself. */
+it("origin validation stays canonical under a symlinked temp root", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ce-origin-link-"));
+  fixtures.push(dir);
+  mkdirSync(join(dir, "real"));
+  symlinkSync(join(dir, "real"), join(dir, "link"));
+  const result = spawnSync("/usr/bin/python3", ["-B", join(root, "test/package/support/module-origin.test.py")], { encoding: "utf8", timeout: 30_000, env: { ...process.env, TMPDIR: join(dir, "link") } });
   expect(result.status, result.stderr).toBe(0);
 });
 
