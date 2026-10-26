@@ -32,7 +32,7 @@ node --version
 pnpm install --frozen-lockfile
 pnpm --dir packages/pi-chat-exchange run package:pi-extension
 # 产物：packages/pi-chat-exchange/.pi-artifacts/zieglar-pi-chat-exchange-0.1.1.tgz
-# 可选自定义输出目录：node scripts/package-pi-extension.mjs /path/to/out
+# 可选自定义输出目录：node packages/pi-chat-exchange/scripts/package-pi-extension.mjs /path/to/out
 ```
 
 该命令依次执行：`tsc` 构建 → 载荷校验（本地运行时 import 闭包、`new URL` 运行时资产、必需 native/运维脚本、无消费者 lifecycle hook）→ `npm pack --ignore-scripts` 前再校验原生清单，任何缺项都会 fail closed。**裸 `npm pack` 不是受支持的作者命令**：现在 `files` 白名单已覆盖，裸 pack 会包含 `dist/`，但它跳过上述全部载荷/闭包/清单校验，也无法产出可追溯的制品 SHA。
@@ -71,12 +71,15 @@ tar tzf ~/ce-install/zieglar-pi-chat-exchange-0.1.1.tgz | sort
 ## 3. 消费者：注册到 Pi 并验证
 
 ```sh
-# 本机前缀安装的 Host CLI（下文统一用这个绝对入口；全局安装时可换成 `pi`）
-~/ce-install/host/bin/pi install ~/ce-install/consumer/node_modules/@zieglar/pi-chat-exchange
-~/ce-install/host/bin/pi list   # 应列出上述物理安装目录
+# 填入本机批准 Node 的绝对路径（不是任意 PATH 中的 node）
+CE_APPROVED_NODE=/absolute/path/to/approved/node
+CE_PI_CLI="$HOME/ce-install/host/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
+"$CE_APPROVED_NODE" --version  # 必须精确为 v24.21.0 或 v24.22.1
+"$CE_APPROVED_NODE" "$CE_PI_CLI" install ~/ce-install/consumer/node_modules/@zieglar/pi-chat-exchange
+"$CE_APPROVED_NODE" "$CE_PI_CLI" list   # 应列出上述物理安装目录
 ```
 
-`pi install` 只登记已物理安装的本地包（Pi 不会替你安装依赖）；不要对同一包再叠 `-e` 加载第二份。若使用 `~/ce-install/host` 前缀安装，后续所有 `pi` 命令请用 `~/ce-install/host/bin/pi`（或等效的 `node <host>/node_modules/@earendil-works/pi-coding-agent/dist/cli.js`），避免误用另一个全局 Pi 版本。
+`pi install` 只登记已物理安装的本地包（Pi 不会替你安装依赖）；不要对同一包再叠 `-e` 加载第二份。本地 `npm install --prefix` 的 bin 链接在 `host/node_modules/.bin/pi`，不是 `host/bin/pi`。下文所有 `pi` 命令统一使用 `"$CE_APPROVED_NODE" "$CE_PI_CLI"`（无子命令即启动 TUI），避免 shebang 误用 PATH 中未批准的 Node 或另一个全局 Pi。Host 与 MCP child 均须分别通过运行时资格诊断；本路径实测 Node 24.21.0，24.22.1 是批准版本但不在此次安装实测范围。
 
 首次运行（在工作目录启动 `pi`，交互 TUI 中按顺序执行；每步都有显式确认）：
 
@@ -84,13 +87,16 @@ tar tzf ~/ce-install/zieglar-pi-chat-exchange-0.1.1.tgz | sort
 /ce-tunnel doctor        # 只读资格诊断；client 未装 → 安全拒绝是预期，不算失败
 /ce-tunnel setup         # Tunnel ID → Organization(可空) → masked API key → Advanced ·
                          #   Messaging 授权本 Session → Review → Confirm → Save
-/ce-tunnel convert       # 把首配的单 Session 登记转为 multi-session 模式
-/ce-tunnel register <你的稳定 endpoint>   # 例如 pi/main；仅登记，不启动传输
+/ce-tunnel convert       # 转为 multi-session；保留当前 native Session 的原 endpoint
+/new                     # 若要登记不同 endpoint，必须先新建 native Session
+/ce-tunnel register pi/distribution  # 为新 Session 登记不同的稳定 endpoint；不启动传输
 /reload                  # 载入新 policy（首 reload 可能报 mapping 拒绝，随后显式 activate）
 /ce-tunnel activate      # 确认框默认 Cancel，必须下移选择 "Activate current session"
 /ce-status
 /ce-tunnel deactivate    # 正常释放本 Session 绑定；登记与历史保留
 ```
+
+`convert` 不会清空或重命名原登记：若复用原 Session 和原 endpoint，省略 `/new` 与不同 endpoint 的 `register`，继续 reload/activate 即可；同一 native Session 尝试登记另一个 endpoint 会被拒绝。上列实测流程选择 `/new` 后为新 Session 登记 `pi/distribution`，原登记保留。
 
 Setup 保存的 profile/凭据在 `CE_TUNNEL_PROFILE` 指定目录（默认见 [Tunnel 指南](tunnel-setup.md#配置模型与生成文件)）；凭据以 owner-only 文件（0600，0700 目录）落盘，绝不明文进 profile。Configured ≠ Pi-bound ≠ Connected；启动真实 Tunnel 仍需 `CE_TUNNEL_BACKGROUND_ALLOW=1` 与显式 `/ce-tunnel start`，见 [Tunnel 用户指南](tunnel-setup.md)。
 

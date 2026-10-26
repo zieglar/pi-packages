@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -47,15 +48,16 @@ function fixture(tables = STORE_TABLES): { root: string; facts: Facts } {
   dirs.push(root);
   const profileDir = join(root, "profile");
   const bindings = join(profileDir, ".ce-bindings");
-  for (const path of [profileDir, join(profileDir, ".credentials"), bindings, join(bindings, ".ce-session-process-mutex", "scope1", "1")]) {
+  for (const path of [profileDir, join(profileDir, ".credentials"), bindings, join(bindings, ".ce-session-process-mutex", scopeFor(bindings), "1")]) {
     mkdirSync(path, { recursive: true, mode: 0o700 });
     chmodSync(path, 0o700);
   }
   const keyFile = join(profileDir, ".credentials", "credential-fixed-id");
-  const binding = join(bindings, "ce-tion01-none.yaml");
+  const binding = join(bindings, "messaging-placeholder.yaml");
   const mcpScript = join(root, "node_modules", "@zieglar", "pi-chat-exchange", "dist", "bin", "mcp-stdio.js");
   mkdirSync(join(mcpScript, ".."), { recursive: true });
-  privateFile(mcpScript, "// synthetic entry\n");
+  cpSync(new URL("../../dist/", import.meta.url), join(mcpScript, "../.."), { recursive: true });
+  cpSync(new URL("../../node_modules/@sinclair/typebox/", import.meta.url), join(root, "node_modules/@sinclair/typebox"), { recursive: true, dereference: true });
   privateFile(keyFile, SYNTHETIC_KEY);
   privateFile(binding, "{}\n");
   privateFile(join(profileDir, "tunnel.yaml"), [
@@ -64,23 +66,57 @@ function fixture(tables = STORE_TABLES): { root: string; facts: Facts } {
     '  base_url: "https://api.openai.com"',
     `  tunnel_id: "${TUNNEL_ID}"`,
     `  api_key: "file:${keyFile}"`,
+    "health:",
+    '  listen_addr: "127.0.0.1:0"',
+    `  url_file: "${join(profileDir, "health.url")}"`,
+    "admin_ui:",
+    "  open_browser: false",
+    "harpoon:",
+    "  capture_payloads: false",
+    "log:",
+    "  level: info",
+    "  format: json",
+    "  http_raw_unsafe: false",
     "mcp:",
     "  commands:",
     "    - channel: main",
     `      command: "${process.execPath} ${mcpScript} --config ${binding}"`,
     "",
   ].join("\n"));
-  const allowlist = join(bindings, "messaging-fixed.yaml");
-  privateFile(allowlist, "{}\n");
-  privateFile(`${allowlist}.pi-allowlist.json`, JSON.stringify({ registrations: [
-    { endpointId: ENDPOINT, runtimeSessionId: SESSION_ID, payloadRead: false, ack: false, epoch: 1, status: "active" },
-  ] }));
-  const slot = join(bindings, ".ce-session-process-mutex", "scope1", "1");
-  const token = { version: 1, scope: "scope1", pid: process.pid, birth: "now", processToken: "proc-token", handleToken: "handle-token" };
+  const slot = join(bindings, ".ce-session-process-mutex", scopeFor(bindings), "1");
+  const token = { version: 1, scope: scopeFor(bindings), pid: process.pid, birth: "Mon Oct 26 12:00:00 2026", processToken: "proc-token", handleToken: "handle-token" };
   privateFile(join(slot, "owner.json"), JSON.stringify(token));
   privateFile(join(slot, "released.json"), JSON.stringify(token));
   storeAt(join(bindings, "ce-store.sqlite"), tables);
-  return { root, facts: { profileDir, tunnelId: TUNNEL_ID, credential: SYNTHETIC_KEY, nodePath: process.execPath, mcpScript, endpoint: ENDPOINT, sessionId: SESSION_ID } };
+  const state = { root, facts: { profileDir, tunnelId: TUNNEL_ID, credential: SYNTHETIC_KEY, nodePath: process.execPath, mcpScript, endpoint: ENDPOINT, sessionId: SESSION_ID } };
+  selectGeneration(state);
+  rmSync(binding);
+  return state;
+}
+
+function scopeFor(bindings: string): string {
+  return createHash("sha256").update(JSON.stringify([bindings, "ce-store.sqlite", ENDPOINT, SESSION_ID])).digest("hex");
+}
+
+// Real immutable pair format/digest, including all production parser fields.
+function selectGeneration(state: { facts: Facts }, fault = ""): string {
+  const profile = join(state.facts.profileDir, "tunnel.yaml");
+  const bindings = join(state.facts.profileDir, ".ce-bindings");
+  const store = { directory: bindings, file: "ce-store.sqlite" };
+  const exchange = { namespace: "fixture", idempotencyKey: "fixture" };
+  const endpoint = { adapter: "chatgpt", endpointId: "chatgpt/main" };
+  const registrations = [{ endpointId: fault === "missing-registration" ? "pi/other" : ENDPOINT, runtimeSessionId: SESSION_ID, payloadRead: false, ack: false, epoch: 1, status: "active" }];
+  const config = { version: 1, store, exchange, endpoint, recipients: registrations.map((r) => ({ adapter: "pi", endpointId: r.endpointId })), lease: { ttlSeconds: 120, renewIntervalSeconds: 30 }, payloadRead: { enabled: false }, ack: { enabled: false }, debugExecutionGuard: { enabled: false }, managed: { tunnelId: TUNNEL_ID, adapter: "chatgpt" }, admissionPolicy: { kind: "ce-multi-session-v1", profilePath: profile } };
+  const manifest = { kind: "ce-multi-session-v1", version: 1, identity: { tunnelId: fault === "wrong-identity" ? "tunnel_Foreign001" : TUNNEL_ID, organizationId: null }, store, exchange, chatgptEndpoint: endpoint, mcp: { payloadRead: false, ack: false }, registrations };
+  const bindingBytes = JSON.stringify(fault === "corrupt-binding" ? {} : fault === "wrong-store" ? { ...config, store: { ...store, file: "other.sqlite" } } : config);
+  const manifestBytes = JSON.stringify(manifest);
+  const digest = createHash("sha256").update(bindingBytes).update("\0").update(manifestBytes).digest("hex");
+  const binding = join(bindings, `messaging-${digest}.yaml`);
+  privateFile(binding, bindingBytes);
+  privateFile(`${binding}.pi-allowlist.json`, manifestBytes);
+  const text = readFileSync(profile, "utf8").replace(/--config [^"\n]+/, `--config ${binding}`);
+  privateFile(profile, text);
+  return binding;
 }
 
 function verify(mode: string, state: { root: string; facts: Facts }, override?: Partial<Facts>) {
@@ -124,15 +160,81 @@ it("refuses an unregistered endpoint or a foreign runtime-session binding", () =
 
 it("refuses an unreleased mutex or a token mismatch between owner and released", () => {
   const state = fixture();
-  rmSync(join(state.facts.profileDir, ".ce-bindings/.ce-session-process-mutex/scope1/1/released.json"));
+  rmSync(join(state.facts.profileDir, `.ce-bindings/.ce-session-process-mutex/${scopeFor(join(state.facts.profileDir, ".ce-bindings"))}/1/released.json`));
   let result = verify("mutex", state);
   expect(result.status).not.toBe(0);
   const state2 = fixture();
-  const releasedPath = join(state2.facts.profileDir, ".ce-bindings/.ce-session-process-mutex/scope1/1/released.json");
-  privateFile(releasedPath, JSON.stringify({ version: 1, scope: "scope1", pid: process.pid, birth: "now", processToken: "proc-token", handleToken: "TAMPERED" }));
+  const releasedPath = join(state2.facts.profileDir, `.ce-bindings/.ce-session-process-mutex/${scopeFor(join(state2.facts.profileDir, ".ce-bindings"))}/1/released.json`);
+  const token = JSON.parse(readFileSync(releasedPath, "utf8"));
+  privateFile(releasedPath, JSON.stringify({ ...token, handleToken: "TAMPERED" }));
   result = verify("mutex", state2);
   expect(result.status).not.toBe(0);
   expect(result.stderr).toContain("handleToken");
+});
+
+it.each(["missing-registration", "corrupt-binding", "wrong-identity", "wrong-store"])("refuses selected %s even when an old generation is valid", (fault) => {
+  const state = fixture();
+  selectGeneration(state, fault); // leaves the valid old pair intact, but unselected
+  const result = verify("policy", state);
+  expect(result.status, result.stderr).not.toBe(0);
+  expect(result.stderr).toContain(fault === "missing-registration" ? "no durable registration" : "selected policy/binding invalid");
+});
+
+it.each(["scope", "birth", "processToken", "handleToken", "pid", "version"])("refuses paired mutex records both missing %s", (field) => {
+  const state = fixture();
+  const slot = join(state.facts.profileDir, ".ce-bindings/.ce-session-process-mutex", scopeFor(join(state.facts.profileDir, ".ce-bindings")), "1");
+  for (const name of ["owner.json", "released.json"]) {
+    const record = JSON.parse(readFileSync(join(slot, name), "utf8"));
+    delete record[field];
+    privateFile(join(slot, name), JSON.stringify(record));
+  }
+  expect(verify("mutex", state).status).not.toBe(0);
+});
+
+it.each(["scope", "birth", "processToken", "handleToken", "pid", "version"])("refuses paired mutex records with invalid %s types/values", (field) => {
+  const state = fixture();
+  const slot = join(state.facts.profileDir, ".ce-bindings/.ce-session-process-mutex", scopeFor(join(state.facts.profileDir, ".ce-bindings")), "1");
+  for (const name of ["owner.json", "released.json"]) {
+    const record = JSON.parse(readFileSync(join(slot, name), "utf8"));
+    privateFile(join(slot, name), JSON.stringify({ ...record, [field]: field === "pid" || field === "version" ? true : "" }));
+  }
+  expect(verify("mutex", state).status).not.toBe(0);
+});
+
+it("refuses a release receipt missing its own version", () => {
+  const state = fixture();
+  const path = join(state.facts.profileDir, ".ce-bindings/.ce-session-process-mutex", scopeFor(join(state.facts.profileDir, ".ce-bindings")), "1/released.json");
+  const record = JSON.parse(readFileSync(path, "utf8"));
+  delete record.version;
+  privateFile(path, JSON.stringify(record));
+  expect(verify("mutex", state).status).not.toBe(0);
+});
+
+it("refuses paired mutex records associated with a different scope", () => {
+  const state = fixture();
+  const slot = join(state.facts.profileDir, ".ce-bindings/.ce-session-process-mutex", scopeFor(join(state.facts.profileDir, ".ce-bindings")), "1");
+  for (const name of ["owner.json", "released.json"]) {
+    const record = JSON.parse(readFileSync(join(slot, name), "utf8"));
+    privateFile(join(slot, name), JSON.stringify({ ...record, scope: "foreign" }));
+  }
+  expect(verify("mutex", state).status).not.toBe(0);
+});
+
+it.each([false, true])("removes only its own read-only Store copy (corrupt=%s)", (corrupt) => {
+  const state = fixture();
+  if (corrupt) privateFile(join(state.facts.profileDir, ".ce-bindings/ce-store.sqlite"), "not sqlite");
+  const tmp = join(state.root, "tmp");
+  mkdirSync(tmp);
+  const sentinel = join(tmp, "ce-store-copy-not-owned");
+  mkdirSync(sentinel);
+  privateFile(join(sentinel, "keep"), "untouched");
+  const expectPath = join(state.root, "expect.json");
+  writeFileSync(expectPath, JSON.stringify(state.facts));
+  const result = spawnSync("/usr/bin/python3", ["-B", verifier, "store", expectPath], { encoding: "utf8", env: { PATH: process.env.PATH, HOME: state.root, TMPDIR: tmp }, timeout: 120_000 });
+  expect(result.status).toBe(corrupt ? 1 : 0);
+  if (corrupt) expect(result.stderr).toContain("read-only");
+  expect(readdirSync(tmp)).toEqual(["ce-store-copy-not-owned"]);
+  expect(readFileSync(join(sentinel, "keep"), "utf8")).toBe("untouched");
 });
 
 it("refuses an incomplete synthetic Store schema", () => {

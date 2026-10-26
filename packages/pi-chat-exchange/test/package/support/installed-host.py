@@ -32,6 +32,7 @@ if not stat.S_ISDIR(_base_stat.st_mode) or _base_stat.st_uid != os.geteuid() or 
     raise RuntimeError('Unsafe shared evidence base: ' + str(base))
 r = pathlib.Path(tempfile.mkdtemp(prefix='installed-host-', dir=base))
 r.chmod(448)
+(r / 'result.json').write_text(json.dumps({'PACKAGE_INSTALL': 'INCOMPLETE', 'REAL_HOST_LOAD': 'INCOMPLETE', 'FIRST_RUN': 'INCOMPLETE', 'CLOUD_TRANSPORT': 'NOT_VERIFIED'}, indent=2))
 print('Installed-host evidence:', r, flush=True)
 for d in ['bin', 'home', 'agent', 'tmp', 'cache', 'xdg/config', 'xdg/data', 'xdg/cache', 'consumer', 'host', 'run']:
     (r / d).mkdir(parents=True, exist_ok=True)
@@ -51,7 +52,7 @@ def verify_durable():
         'profileDir': str(r / 'run/profile'), 'tunnelId': 'tunnel_Distribution01',
         'credential': 'distribution-fixture-not-a-real-key', 'nodePath': str(node),
         'mcpScript': str(package / 'dist/bin/mcp-stdio.js'), 'endpoint': 'pi/distribution',
-        'sessionId': session_match.group(1),
+        'sessionId': session_match.group(1), 'nodeArgvPrefix': list(map(str, sandbox)),
     }
     (r / 'durable-expect.json').write_text(json.dumps(expect, indent=2))
     module = str(pathlib.Path(__file__).resolve().parent / 'durable_state.py')
@@ -127,8 +128,16 @@ for tree in ['consumer', 'host']:
     (r / (tree + '-lifecycle.json')).write_text(json.dumps(hooks, indent=2))
     for lock in (r / tree / 'node_modules').glob('.package-lock.json'):
         shutil.copy2(lock, r / (tree + '-package-lock.json'))
-cli = r / 'host/node_modules/@earendil-works/pi-coding-agent/dist/cli.js'
 package = r / 'consumer/node_modules/@zieglar/pi-chat-exchange'
+# Execute the shipped guide's actual local-prefix entry with the copied approved
+# Node, not an independently hardcoded alternative that could hide a doc defect.
+guide = (package / 'docs/independent-install.md').read_text()
+cli_match = re.search(r'^CE_PI_CLI="\$HOME/ce-install/(host/[^"\n]+)"$', guide, re.MULTILINE)
+if not cli_match:
+    raise RuntimeError('Shipped guide has no explicit local-prefix CLI route')
+cli = r / cli_match.group(1)
+if not cli.is_file() or not cli.resolve().is_relative_to(r / 'host'):
+    raise RuntimeError('Shipped guide CLI route is not inside the installed host')
 assert not package.is_symlink() and (package / 'dist/bin/mcp-stdio.js').is_file()
 env.update({'PI_OFFLINE': '1', 'PI_SKIP_VERSION_CHECK': '1', 'PI_TELEMETRY': '0', 'CE_NODE_PATH': str(node), 'CE_TUNNEL_CLIENT_PATH': str(r / 'run/absent-synthetic-client'), 'CE_TUNNEL_PROFILE': str(r / 'run/profile/tunnel.yaml')})
 (r / 'runtime-env.json').write_text(json.dumps(env, indent=2))
@@ -151,6 +160,8 @@ def ps_identity(label):
     (r / (label + '.json')).write_text(json.dumps(data, indent=2))
     return data
 ps_before = ps_identity('ps-before')
+if ps_before != {'sha256': 'a06fe087161557f1f8c030672eaedcd90bc6a8e92b8f2d44e07cffedc3349205', 'mode': '0o104755', 'uid': 0}:
+    raise RuntimeError('OS ps is not the preapproved utility identity')
 command('owned-ps-probe', sandbox + ['/bin/ps', '-p', str(os.getpid()), '-o', 'pid=,lstart='])
 command('pi-version', sandbox + [node, cli, '--version'])
 command('pi-install', sandbox + [node, cli, 'install', package])
@@ -226,6 +237,7 @@ def slash(s):
     at = len(text())
     send((s + '\r').encode())
     return at
+failures = []
 try:
     pump(3)
     if p.poll() is not None:
@@ -292,16 +304,33 @@ try:
     code = p.wait(timeout=10)
     if code != 0:
         raise RuntimeError('Host exit ' + str(code))
-    (r / 'result.json').write_text(json.dumps({'PACKAGE_INSTALL': 'PASS', 'REAL_HOST_LOAD': 'PASS', 'FIRST_RUN': 'PASS', 'CLOUD_TRANSPORT': 'NOT_VERIFIED'}, indent=2))
     verify_durable()
     verify_module_origin()
+except BaseException as error:
+    failures.append(('run/validation', error))
 finally:
+    # Attempt every owned cleanup/evidence step, retaining the original error
+    # AND subsequent cleanup failures. No saved PID or process group is signalled.
     try:
         p.close()
-    finally:
+    except BaseException as error:
+        failures.append(('guardian cleanup', error))
+    try:
         os.close(master)
+    except BaseException as error:
+        failures.append(('PTY close', error))
+    try:
         ps_after = ps_identity('ps-after')
         if ps_after != ps_before:
             raise RuntimeError('OS ps identity drift')
+    except BaseException as error:
+        failures.append(('ps identity', error))
+    try:
         (r / 'host.txt').write_text(text())
         (r / 'pty-actions.json').write_text(json.dumps({'argv': argv, 'pid': p.pid, 'exit': p.poll(), 'guardianOutcome': 'raw/guardian-outcome.json', 'actions': actions}, indent=2))
+    except BaseException as error:
+        failures.append(('PTY evidence', error))
+    status = 'FAILED' if failures else 'PASS'
+    (r / 'result.json').write_text(json.dumps({'PACKAGE_INSTALL': status, 'REAL_HOST_LOAD': status, 'FIRST_RUN': status, 'CLOUD_TRANSPORT': 'NOT_VERIFIED', 'errors': [{'stage': stage, 'error': repr(error)} for stage, error in failures]}, indent=2))
+    if failures:
+        raise RuntimeError('; '.join(stage + ': ' + repr(error) for stage, error in failures)) from failures[0][1]

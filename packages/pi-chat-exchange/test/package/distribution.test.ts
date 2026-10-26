@@ -45,6 +45,25 @@ function npmEnv(dir: string): NodeJS.ProcessEnv {
 function runValidator(dir: string, arg: string) {
   return spawnSync(process.execPath, [join(dir, "scripts/package-pi-extension.mjs"), arg], { cwd: dir, encoding: "utf8", env: npmEnv(dir) });
 }
+it("the documented local-prefix CLI points to the installed package entry", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ce-guide-cli-")); fixtures.push(dir);
+  const entry = join(dir, "host/node_modules/@earendil-works/pi-coding-agent/dist/cli.js");
+  mkdirSync(resolve(entry, ".."), { recursive: true });
+  writeFileSync(entry, 'console.log("synthetic installed CLI reached")');
+  const guide = readFileSync(join(root, "docs/independent-install.md"), "utf8");
+  const relative = guide.match(/CE_PI_CLI="\$HOME\/ce-install\/([^"\n]+)"/)?.[1]
+    ?? guide.match(/~\/ce-install\/(host\/\S+) install/)?.[1];
+  expect(relative).toBeDefined();
+  const result = spawnSync(process.execPath, [join(dir, relative!)], { encoding: "utf8" });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout.trim()).toBe("synthetic installed CLI reached");
+});
+
+it("never publishes final PASS after validator, cleanup or identity failure", () => {
+  const result = spawnSync("/usr/bin/python3", ["-B", join(root, "test/package/support/installed-result.test.py")], { encoding: "utf8", timeout: 60_000 });
+  expect(result.status, result.stderr).toBe(0);
+});
+
 it("native pack carries the runtime closure and no author/private state", () => {
   expect(existsSync(join(root, "dist/bin/mcp-stdio.js")), "author must build before this regression").toBe(true);
   const dir = fixture();

@@ -7,6 +7,7 @@ The same predicates back the default-suite fault-detection lane
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
@@ -103,16 +104,34 @@ def verify_profile(expect: dict) -> None:
 def verify_policy(expect: dict) -> None:
     bindings = pathlib.Path(expect["profileDir"]) / ".ce-bindings"
     private_dir(bindings, 0o700)
-    documents = sorted(bindings.glob("messaging-*.yaml.pi-allowlist.json"))
-    if not documents:
-        refuse("no durable messaging/multi-session allowlist generation")
-    registrations = []
-    for document in documents:
-        regular_file(document, 0o600)
-        regular_file(document.with_name(document.name[:-len(".pi-allowlist.json")]), 0o600)
-        parsed = json.loads(regular_file(document, 0o600))
-        registrations.extend(parsed.get("registrations", []))
-    match = [row for row in registrations if row.get("endpointId") == expect["endpoint"]]
+    # Use the actual installed production parser, not another YAML/command or
+    # policy grammar. It follows ONLY the profile-selected --config pair and
+    # verifies its digest, closed schemas, identity and config/manifest coherence.
+    runtime = pathlib.Path(expect["mcpScript"]).parent.parent
+    probe = """
+        import {pathToFileURL} from 'node:url';
+        import fs from 'node:fs';
+        const [runtime, profile, node, script] = process.argv.slice(1);
+        const {readSelectedMultiSessionPolicy} = await import(pathToFileURL(runtime+'/tunnel/multi-session-policy.js'));
+        const {parseTunnelProfile} = await import(pathToFileURL(runtime+'/tunnel/background-manager.js'));
+        const {parseTunnelMcpCommand} = await import(pathToFileURL(runtime+'/tunnel/profile.js'));
+        const command = parseTunnelMcpCommand(parseTunnelProfile(fs.readFileSync(profile,'utf8')).mcpCommand);
+        if(command.nodePath!==node || command.scriptPath!==script) throw Error('installed runtime entrypoints mismatch');
+        process.stdout.write(JSON.stringify(readSelectedMultiSessionPolicy(profile)));
+    """
+    result = subprocess.run(expect.get("nodeArgvPrefix", []) + [expect["nodePath"], "--input-type=module", "-e", probe,
+                             str(runtime), str(bindings.parent / "tunnel.yaml"),
+                             expect["nodePath"], expect["mcpScript"]],
+                            capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        refuse("selected policy/binding invalid: " + result.stderr[:400])
+    selected = json.loads(result.stdout)
+    manifest, config = selected["manifest"], selected["config"]
+    if manifest["identity"]["tunnelId"] != expect["tunnelId"] or config.get("managed", {}).get("tunnelId") != expect["tunnelId"]:
+        refuse("selected binding identity differs from fixture")
+    if manifest["store"] != {"directory": str(bindings), "file": expect.get("storeFile", "ce-store.sqlite")}:
+        refuse("selected policy Store differs from fixture")
+    match = [row for row in manifest["registrations"] if row.get("endpointId") == expect["endpoint"]]
     if not match:
         refuse(f"endpoint {expect['endpoint']} has no durable registration")
     row = match[0]
@@ -134,11 +153,24 @@ def verify_mutex(expect: dict) -> None:
     for slot in slots:
         owner = json.loads(regular_file(slot / "owner.json", 0o600))
         released = json.loads(regular_file(slot / "released.json", 0o600))
-        for field in ("scope", "pid", "birth", "processToken", "handleToken"):
-            if owner.get(field) != released.get(field):
+        for record in (owner, released):
+            if not isinstance(record, dict):
+                refuse("mutex record shape invalid")
+            for field in ("scope", "birth", "processToken", "handleToken"):
+                if not isinstance(record.get(field), str) or not record[field].strip():
+                    refuse(f"mutex record invalid {field}")
+            if type(record.get("version")) is not int or record["version"] != 1 or type(record.get("pid")) is not int or not 0 < record["pid"] <= 2**53 - 1:
+                refuse("mutex record version/pid invalid")
+            if record["scope"] != slot.parent.name or not slot.name.isdecimal() or int(slot.name) < 1:
+                refuse("mutex scope/slot association invalid")
+        for field in ("version", "scope", "pid", "birth", "processToken", "handleToken"):
+            if owner[field] != released[field]:
                 refuse(f"owner/released mismatch on {field}")
-        if owner.get("version") != 1 or not isinstance(owner.get("pid"), int):
-            refuse("owner record shape invalid")
+    expected_scope = hashlib.sha256(json.dumps([
+        str(mutex.parent), expect.get("storeFile", "ce-store.sqlite"),
+        expect["endpoint"], expect["sessionId"]], separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    if not any(slot.parent.name == expected_scope for slot in slots):
+        refuse("fixture session mutex scope missing")
 
 
 def verify_store(expect: dict) -> None:
@@ -148,13 +180,18 @@ def verify_store(expect: dict) -> None:
         "const{DatabaseSync}=require('node:sqlite');"
         "const fs=require('node:fs'),os=require('node:os'),path=require('node:path');"
         "const d=fs.mkdtempSync(path.join(os.tmpdir(),'ce-store-copy-'));"
-        "const src=process.argv[1];"
-        "for(const s of ['','-wal','-shm']){try{fs.copyFileSync(src+s,path.join(d,'copy.sqlite'+s))}catch{}}"
-        "const db=new DatabaseSync(path.join(d,'copy.sqlite'),{readOnly:true});"
+        "const src=process.argv[1];let db;const errors=[];"
+        "try{"
+        "for(const s of ['','-wal','-shm']){try{fs.copyFileSync(src+s,path.join(d,'copy.sqlite'+s))}catch(e){if(s===''||e.code!=='ENOENT')throw e}}"
+        "db=new DatabaseSync(path.join(d,'copy.sqlite'),{readOnly:true});"
         "const rows=db.prepare('SELECT name FROM sqlite_master WHERE type=?').all('table');"
-        "process.stdout.write(JSON.stringify(rows.map(r=>r.name)));db.close();"
+        "process.stdout.write(JSON.stringify(rows.map(r=>r.name)));"
+        "}catch(e){errors.push(e)}finally{"
+        "try{db?.close()}catch(e){errors.push(e)}"
+        "try{fs.rmSync(d,{recursive:true,force:true})}catch(e){errors.push(e)}"
+        "}if(errors.length)throw new AggregateError(errors,'Store copy probe failed: '+errors.map(e=>e.message).join('; '));"
     )
-    result = subprocess.run([expect["nodePath"], "-e", probe, str(store)],
+    result = subprocess.run(expect.get("nodeArgvPrefix", []) + [expect["nodePath"], "-e", probe, str(store)],
                             capture_output=True, text=True, timeout=60)
     if result.returncode != 0:
         refuse("synthetic store cannot be opened read-only: " + result.stderr[:200])
