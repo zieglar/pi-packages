@@ -11,6 +11,8 @@
 
 ## 安装 Pi 扩展
 
+正式日常使用请用**独立安装路径**：作者交付预构建私有 tarball，消费者物理安装后 `pi install` 注册，无需仓库/build，见 [独立安装指南](docs/independent-install.md)。下面是开发者源码路径。
+
 先安装 Pi **1.3.0**、pnpm **12.9.1** 和批准的 Node **24.21.0 或 24.22.1**。Node 还必须通过完整 SQLite 身份、编译选项与 API 门槛，不是任意 `24.x`。Pi host 与 MCP child 分别校验；mise 或其他版本管理器均不是必需品。
 
 从仓库根目录，在已选中批准 Node 的 shell 中执行：

@@ -34,7 +34,8 @@ try {
     if (manifest.scripts?.[hook]) fail(`consumer lifecycle hook ${hook}`);
   const modules = [...walk(join(root, "dist")).filter((p) => p.endsWith(".js")),
     ...walk(join(root, "pi-extension")).filter((p) => p.endsWith(".ts"))];
-  for (const path of ["dist/bin/mcp-stdio.js", "dist/tunnel/multi-session-policy.js", "pi-extension/index.ts", "native/tunnel-keychain.swift", "scripts/recover-stale-ownership.mjs", "scripts/reconcile-session-process-mutex.mjs"])
+  const required = ["dist/bin/mcp-stdio.js", "dist/tunnel/multi-session-policy.js", "pi-extension/index.ts", "native/tunnel-keychain.swift", "scripts/recover-stale-ownership.mjs", "scripts/reconcile-session-process-mutex.mjs"];
+  for (const path of required)
     regular(join(root, path));
   for (const path of modules) {
     regular(path);
@@ -57,7 +58,8 @@ try {
     const inventory = JSON.parse(execFileSync("npm", ["pack", "--ignore-scripts", "--json", "--dry-run"], options))[0].files;
     const allowed = /^(?:package\.json|README\.md|LICENSE(?:\.[^/]+)?|pi-extension\/[^/]+\.ts|pi-extension\/(?:README\.md|allowlist\.example\.json)|dist\/.+\.js|native\/tunnel-keychain\.swift|scripts\/(?:recover-stale-ownership|reconcile-session-process-mutex)\.mjs|docs\/[^/]+\.md)$/;
     for (const entry of inventory) if (!allowed.test(entry.path)) fail(`unexpected native pack entry ${entry.path}`);
-    for (const path of modules) if (!inventory.some((entry) => entry.path === relative(root, path))) fail(`native pack excludes ${relative(root, path)}`);
+    for (const path of [...modules.map((path) => relative(root, path)), ...required])
+      if (!inventory.some((entry) => entry.path === path)) fail(`native pack excludes ${path}`);
     const packed = execFileSync("npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", out], options);
     console.log(packed);
   }

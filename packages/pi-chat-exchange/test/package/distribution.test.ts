@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, expect, it } from "vitest";
 
-const root = resolve(import.meta.dirname, "../..");
+const root = resolve(import.meta.dirname, "../.."); // Author workspace only; never the installed-host entry
 const fixtures: string[] = [];
 afterEach(() => { for (const path of fixtures.splice(0)) rmSync(path, { recursive: true, force: true }); });
 function fixture() {
@@ -54,6 +54,16 @@ it("author command validates the native inventory before packing", () => {
   const result = spawnSync(process.execPath, [join(dir, "scripts/package-pi-extension.mjs"), join(dir, "out")], { cwd: dir, encoding: "utf8" });
   expect(result.status, result.stderr).toBe(0);
   expect(readdirSync(join(dir, "out"))).toEqual(["zieglar-pi-chat-exchange-0.1.1.tgz"]);
+});
+it.each(["native/tunnel-keychain.swift", "scripts/recover-stale-ownership.mjs", "scripts/reconcile-session-process-mutex.mjs"])("refuses native pack excluding required %s despite disk presence", (missing) => {
+  const dir = fixture();
+  const manifest = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+  manifest.files = manifest.files.filter((path: string) => path !== missing);
+  writeFileSync(join(dir, "package.json"), JSON.stringify(manifest));
+  const result = spawnSync(process.execPath, [join(dir, "scripts/package-pi-extension.mjs"), join(dir, "out")], { cwd: dir, encoding: "utf8" });
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain(`native pack excludes ${missing}`);
+  expect(readdirSync(join(dir, "out"))).toEqual([]);
 });
 it("author validator accepts complete outputs without consumer hooks", () => {
   const dir = fixture();

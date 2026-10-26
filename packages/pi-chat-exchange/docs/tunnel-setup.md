@@ -1,6 +1,6 @@
 # ChatGPT ↔ Pi：Tunnel 用户指南、配置与排障
 
-这是 Secure MCP Tunnel 路径；不需要 Desktop stdio 插件。只用本地插件请走[独立安装路径](chatgpt-installation.md)。示例均为占位值，不是已生效配置。
+这是 Secure MCP Tunnel 路径；不需要 Desktop stdio 插件。只用本地插件请走[独立安装路径](chatgpt-installation.md)。正式安装给日常使用请用预构建私有 tarball 的[独立安装指南](independent-install.md)，无需本页的仓库构建。示例均为占位值，不是已生效配置。
 
 ## 1. 前提与安装
 

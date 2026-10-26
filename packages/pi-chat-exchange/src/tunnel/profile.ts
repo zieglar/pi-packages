@@ -62,7 +62,10 @@ const CREDENTIAL_SHAPED = /(sk-[A-Za-z0-9_-]{8,})|(cap_[0-9a-f]{16,})|(BEGIN [A-
 // never accepted. This encoding is safe for a shell and for quote-aware argv
 // splitters. R5 Lane A F1: a space-bearing path may not contain a segment that
 // starts with '-', so even a naive whitespace split cannot forge an option.
-const COMMAND_PATH = /^\/[A-Za-z0-9_./ -]+$/;
+// `@` is admitted ONLY as an ordinary absolute-path character so a normally
+// scoped npm install (node_modules/@scope/pkg) can express its real runtime
+// paths; absolute-path, normalization, quoting and argv rules are unchanged.
+const COMMAND_PATH = /^\/[A-Za-z0-9_./@ -]+$/;
 function isCommandPath(path: string): boolean {
   if (!COMMAND_PATH.test(path)) return false;
   return !path.includes(" ") || !path.split(" ").some((segment) => segment.startsWith("-"));

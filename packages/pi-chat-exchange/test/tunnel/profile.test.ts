@@ -24,6 +24,7 @@ import {
   resolveMcpNodePath,
   REQUIRED_MCP_NODE_VERSION,
   buildTunnelMcpCommand,
+  parseTunnelMcpCommand,
   TunnelConfigError,
 } from "../../src/tunnel/profile.js";
 
@@ -268,6 +269,55 @@ describe("replaceTunnelMcpNodePath", () => {
   it("round-trips through buildTunnelMcpCommand", () => {
     const built = buildTunnelMcpCommand({ nodePath: "/a/node", scriptPath: "/b/mcp-stdio.js", bindingPath: "/c/binding.yaml" });
     expect(replaceTunnelMcpNodePath(built, "/d/node")).toBe("/d/node /b/mcp-stdio.js --config /c/binding.yaml");
+  });
+});
+
+describe("mcp command grammar — scoped npm installation paths", () => {
+  const scopedScript = "/private/tmp/ce/consumer/node_modules/@zieglar/pi-chat-exchange/dist/bin/mcp-stdio.js";
+  const scopedNode = "/private/tmp/ce/tools/node_modules/@scope/runtime/bin/node";
+  const scopedBinding = "/private/tmp/ce/consumer/node_modules/@zieglar/pi-chat-exchange/.ce-bindings/messaging-abc.yaml";
+
+  it("round-trips a scoped script path through the builder and parser", () => {
+    const built = buildTunnelMcpCommand({ nodePath: "/private/tmp/ce/bin/node", scriptPath: scopedScript, bindingPath: "/private/tmp/ce/run/binding.yaml" });
+    expect(built).toBe(`/private/tmp/ce/bin/node ${scopedScript} --config /private/tmp/ce/run/binding.yaml`);
+    expect(parseTunnelMcpCommand(built)).toEqual({ nodePath: "/private/tmp/ce/bin/node", scriptPath: scopedScript, bindingPath: "/private/tmp/ce/run/binding.yaml" });
+  });
+
+  it("round-trips scoped node and binding paths where the grammar is shared", () => {
+    const built = buildTunnelMcpCommand({ nodePath: scopedNode, scriptPath: "/private/tmp/ce/dist/bin/mcp-stdio.js", bindingPath: scopedBinding });
+    expect(parseTunnelMcpCommand(built)).toEqual({ nodePath: scopedNode, scriptPath: "/private/tmp/ce/dist/bin/mcp-stdio.js", bindingPath: scopedBinding });
+    expect(parseTunnelMcpCommand(`${built} --channel main`)).toEqual({ nodePath: scopedNode, scriptPath: "/private/tmp/ce/dist/bin/mcp-stdio.js", bindingPath: scopedBinding });
+  });
+
+  it("round-trips a space-bearing scoped path using single quotes only where required", () => {
+    const scriptPath = "/private/tmp/My CE/consumer/node_modules/@zieglar/pi-chat-exchange/dist/bin/mcp-stdio.js";
+    const built = buildTunnelMcpCommand({ nodePath: "/private/tmp/ce/bin/node", scriptPath, bindingPath: "/private/tmp/ce/run/binding.yaml" });
+    expect(built).toBe(`/private/tmp/ce/bin/node '${scriptPath}' --config /private/tmp/ce/run/binding.yaml`);
+    expect(parseTunnelMcpCommand(built)).toEqual({ nodePath: "/private/tmp/ce/bin/node", scriptPath, bindingPath: "/private/tmp/ce/run/binding.yaml" });
+  });
+
+  it("refuses shell metacharacters, escapes and expansions in scoped paths", () => {
+    for (const poison of [";", "&", "|", "$", "`", "\\", '"', "'", "~", "*", "?", "[", "]", "(", ")", "\n", "\t", "!", "#"]) {
+      const scriptPath = `/private/tmp/ce/node_modules/@zieglar/x${poison}/dist/bin/mcp-stdio.js`;
+      expect(() => buildTunnelMcpCommand({ nodePath: "/private/tmp/ce/bin/node", scriptPath, bindingPath: "/private/tmp/ce/run/binding.yaml" }), poison).toThrow(TunnelConfigError);
+      expect(() => parseTunnelMcpCommand(`/private/tmp/ce/bin/node ${scriptPath} --config /private/tmp/ce/run/binding.yaml`), poison).toThrow(TunnelConfigError);
+    }
+  });
+
+  it("refuses option-forging space segments inside a scoped path", () => {
+    const scriptPath = "/private/tmp/ce -config/node_modules/@zieglar/x/dist/bin/mcp-stdio.js";
+    expect(() => buildTunnelMcpCommand({ nodePath: "/private/tmp/ce/bin/node", scriptPath, bindingPath: "/private/tmp/ce/run/binding.yaml" })).toThrow(TunnelConfigError);
+  });
+
+  it("refuses relative, non-normalized, truncated and credential-shaped scoped commands", () => {
+    expect(() => parseTunnelMcpCommand("node_modules/@zieglar/pi-chat-exchange/dist/bin/mcp-stdio.js x --config y")).toThrow(TunnelConfigError);
+    expect(() => parseTunnelMcpCommand("/private/tmp//node_modules/@x/dist//mcp-stdio.js --config /b.yaml")).toThrow(TunnelConfigError);
+    expect(() => parseTunnelMcpCommand("/private/tmp/ce/node_modules/@x/sk-abcdefgh1234 --config /b.yaml")).toThrow(TunnelConfigError);
+    expect(() => parseTunnelMcpCommand("/n/node /s/node_modules/@x/mcp-stdio.js --config /b.yaml extra --config /c.yaml")).toThrow(TunnelConfigError);
+  });
+
+  it("accepts @ only inside an absolute, normalized path — never as the leading character", () => {
+    expect(() => parseTunnelMcpCommand("/n/node @scope/x/mcp-stdio.js --config /b.yaml")).toThrow(TunnelConfigError);
   });
 });
 
