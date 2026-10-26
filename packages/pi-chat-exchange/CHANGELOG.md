@@ -5,7 +5,7 @@
 First packaged candidate. Version 0.1.1 was an internal private version only; it
 was never published to npm, so nothing below is an upgrade from a public release.
 CE's own code is owner-authorized MIT, Copyright (c) 2026 zieglar.
-The package stays `private: true` pending third-party LICENSE evidence; no publication is authorized.
+Third-party license evidence is complete and `private: true` is removed; publication itself still requires separate authorization.
 
 ### Messaging
 
@@ -44,9 +44,8 @@ The package stays `private: true` pending third-party LICENSE evidence; no publi
 
 - Prepare the prebuilt Pi extension npm candidate and consumer documentation
   closure. Candidate `version`, `repository` and public `publishConfig` are
-  INACTIVE metadata; `private: true` keeps npm's own publication refusal in force
-  while third-party LICENSE evidence remains insufficient. Include the
-  owner-authorized MIT LICENSE in the prebuilt tarball; dependency licenses
+  metadata; `private: true` was removed once the third-party audit closed with three-layer evidence. The
+  owner-authorized MIT LICENSE ships in the prebuilt tarball; dependency licenses
   remain separate and must be preserved at installation/redistribution.
 - Document owned transport Stop, independently confirmed STOPPED, normal binding
   release and then native Pi removal; Store, profile, credentials and history are
@@ -63,11 +62,8 @@ deliberately **not** consumed here: Changesets remains the repository's version
 authority, and a future Changesets version PR must reconcile and consume it —
 together with this hand-written 0.2.0 entry and the candidate version pins —
 before any public release. Root Changesets configuration and queued entries are
-untouched by this delta, and `privatePackages.version: false` keeps the queued
-entry inert for this private package.
+untouched by this delta. With `private` now removed, `privatePackages.version: false`
+no longer keeps the queued changeset inert — the next Changesets version PR owns that
+reconciliation explicitly.
 
-**Publication blocker: THIRD-PARTY EVIDENCE PENDING.** Exact-version registry
-metadata declares MIT for pi-tui and the Host peer, but their installed packages
-lack LICENSE files. Retain `private: true` until evidence is sufficient; see
-[license audit](docs/license-audit.md) (repo-only). CE's owner authorization is
-resolved, not a grant to relicense dependencies or publish.
+**Third-party evidence complete; `private: true` removed; publication still unauthorized.** The 101-item dependency closure is fully audited: the two former evidence gaps (pi-tui and the Host peer) closed with three-layer exact-version evidence — registry tarball MIT declarations plus the upstream `v1.3.0` tag root LICENSE (MIT, (c) 2025 Mario Zechner); their artifacts omit license text (upstream packaging omission, not incompatibility). See [license audit](docs/license-audit.md) (repo-only). Owner authorization covers CE's own code only — not a grant to relicense dependencies; push/tag/npm publish/GitHub Release each require separate explicit authorization.

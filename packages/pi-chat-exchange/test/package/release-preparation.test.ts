@@ -8,9 +8,10 @@ const read = (path: string) => readFileSync(resolve(root, path), "utf8");
 it("prepares the owner-authorized MIT candidate without consumer hooks", () => {
   const manifest = JSON.parse(read("package.json"));
   expect(manifest.version).toBe("0.2.0");
-  // Owner authorization covers CE, not third-party scopes. Preserve npm's own
-  // refusal until the exact-version third-party license evidence gaps close.
-  expect(manifest.private).toBe(true);
+  // Owner authorization plus the completed third-party audit meet the
+  // handoff's private-removal condition. Publication itself still needs
+  // separate explicit authorization (push/tag/publish/Release).
+  expect(manifest.private).toBeUndefined();
   expect(manifest.publishConfig).toEqual({ access: "public", registry: "https://registry.npmjs.org/" });
   expect(manifest.repository.directory).toBe("packages/pi-chat-exchange");
   expect(manifest.license).toBe("MIT");
@@ -43,7 +44,7 @@ it("documents stop and normal release BEFORE native removal, preserving durable 
 
 it("keeps third-party evidence and cloud publication gates explicit in draft release materials", () => {
   const notes = read("docs/releases/0.2.0.md");
-  for (const token of ["DRAFT", "MIT", "THIRD-PARTY EVIDENCE PENDING", "NOT_VERIFIED", "24.21.0", "1.3.0", "macOS arm64", "npm:@zieglar/pi-chat-exchange@0.2.0", "private"])
+  for (const token of ["DRAFT", "MIT", "third-party evidence complete", "NOT_VERIFIED", "24.21.0", "1.3.0", "macOS arm64", "npm:@zieglar/pi-chat-exchange@0.2.0", "private: true` is removed", "separate explicit authorization"])
     expect(notes).toContain(token);
   // No corrupted-SRI consumer rejection negative exists. Only metadata plus
   // installed-payload byte identity may be claimed.

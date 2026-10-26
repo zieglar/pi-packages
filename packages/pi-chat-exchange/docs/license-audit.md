@@ -8,7 +8,7 @@ The owner authorized MIT for CE own code only: Copyright (c) 2026 zieglar. No ro
 
 `@narumitw/pi-tui-kit@0.66.0` is THIRD-PARTY, not owner code. All dependency bytes/pins, name/version/exports and the lockfile remain unchanged.
 
-**Keep `private: true`.** Runtime dependency pi-tui and the exact Host peer declare MIT in the registry but their installed packages lack LICENSE files. Classify these as 证据不足, not 确认不兼容. Do not invent upstream copyright notices. Obtain exact-version upstream license/copyright evidence (and determine any notice remedy) before reconsidering publication. Owner authorization is resolved; third-party evidence is not. No publishing, push, tag, PR, merge or GitHub Release authority is granted.
+**`private: true` removed (owner-authorized condition met).** The two former evidence gaps closed with three-layer exact-version evidence, recorded at `/private/tmp/ce-release-license/evidence/upstream/`: (1) registry tarballs `@earendil-works/pi-tui@1.3.0` (SHA-256 1ef7b630…42ef5d) and `@earendil-works/pi-coding-agent@1.3.0` (SHA-256 ae2785e8…d3c0) declare `license: MIT` in package.json but ship no license text file; (2) upstream source at github.com/earendil-works/pi tag `v1.3.0` (commit 71023aec…) carries the monorepo root `LICENSE`: MIT License, Copyright (c) 2025 Mario Zechner, covering packages/tui and packages/coding-agent, which have no separate license file — consistent with the tarballs; (3) author/holder Mario Zechner per both package.json files. Classification moves from 证据不足 to 已验证兼容: the missing text is an upstream packaging omission, not incompatible terms; no upstream copyright line is invented beyond the verbatim root LICENSE. CE's tarball bundles none of their code, so no CE-side notice obligation is triggered by this artifact; redistribution of an installed tree or future bundled code still requires re-audit. Publication (push/tag/publish/Release/merge) remains unauthorized this round and requires separate authority.
 
 ## Exact dependency scope and evidence
 
@@ -18,16 +18,16 @@ The retained pnpm install uses a byte-identical repo pnpm-lock.yaml: SHA-256 `47
 
 ## Notice reasoning
 
-MIT is a permission grant with copyright and permission notice preservation, not a requirement that dependency copyrights be replaced by CE copyright. ISC and BSD-2/3-Clause notices must likewise remain with dependency copies; Apache-2.0 grok-mermaid retains its own LICENSE and any applicable NOTICE (none present at package root). These are compatible separate dependency licenses, not relicensed under CE MIT. Installed dependency packages carry their own notices except the two explicit gaps. The TypeScript build emits CE modules with external bare imports; npm pack does not bundle dependency implementations/assets. Thus no third-party code copy in the CE tarball requires an additional CE-shipped notice now. If future bundling or redistribution of an installed tree occurs, preserve each applicable license/copyright/NOTICE and re-audit that artifact.
+MIT is a permission grant with copyright and permission notice preservation, not a requirement that dependency copyrights be replaced by CE copyright. ISC and BSD-2/3-Clause notices must likewise remain with dependency copies; Apache-2.0 grok-mermaid retains its own LICENSE and any applicable NOTICE (none present at package root). These are compatible separate dependency licenses, not relicensed under CE MIT. Installed dependency packages carry their own notices except the two @earendil-works items, whose exact-version artifacts omit license text (upstream packaging omission; see the three-layer evidence in the publication-decision section). The TypeScript build emits CE modules with external bare imports; npm pack does not bundle dependency implementations/assets. Thus no third-party code copy in the CE tarball requires an additional CE-shipped notice now. If future bundling or redistribution of an installed tree occurs, preserve each applicable license/copyright/NOTICE and re-audit that artifact.
 
-已验证兼容 means registry declaration plus installed license text evidence for this unbundled distribution; 需要补充声明 applies to an actual bundled/redistributed copy requiring a missing notice (none found here); 证据不足 is retained where exact-version license text is absent; 确认不兼容 requires actual contradictory terms (none found).
+已验证兼容 means registry declaration plus license-text evidence for this unbundled distribution (installed text, or — for the two @earendil-works items — the exact-version registry tarball plus the upstream v1.3.0 tag root LICENSE); 需要补充声明 applies to an actual bundled/redistributed copy requiring a missing notice (none found here); 确认不兼容 requires actual contradictory terms (none found). 证据不足 is now an empty class.
 
 ## Per-item matrix
 
 | Exact item | Registry license | Installed license/notice files | Classification |
 |---|---|---|---|
-| `@earendil-works/pi-coding-agent@1.3.0` | MIT | **absent** | 证据不足 |
-| `@earendil-works/pi-tui@1.3.0` | MIT | **absent** | 证据不足 |
+| `@earendil-works/pi-coding-agent@1.3.0` | MIT | **absent** (tarball) — verified via tag `v1.3.0` root LICENSE: MIT, (c) 2025 Mario Zechner | 已验证兼容（上游文本省略注记） |
+| `@earendil-works/pi-tui@1.3.0` | MIT | **absent** (tarball) — verified via tag `v1.3.0` root LICENSE: MIT, (c) 2025 Mario Zechner | 已验证兼容（上游文本省略注记） |
 | `@hono/node-server@2.1.3` | MIT | LICENSE | 已验证兼容 |
 | `@modelcontextprotocol/sdk@1.30.1` | MIT | LICENSE | 已验证兼容 |
 | `@narumitw/pi-tui-kit@0.66.0` | MIT | LICENSE | 已验证兼容 |
@@ -132,4 +132,4 @@ MIT is a permission grant with copyright and permission notice preservation, not
 
 The new tarball contains 87 files (69 dist JS), including CE LICENSE, compiled runtime, Pi entry and consumer docs. All archive files were compared byte-for-byte to CE's build/source tree; no bundled third-party code/assets were found. The exact inventory and SHA-256 are recorded in the handoff report, not embedded in the artifact itself. The earlier non-bundling finding is not a licensing violation.
 
-The queued `.changeset/ce-e2b-ack-mcp.md` and hardcoded `0.2.0.md` literals are deferred to a future version PR and remain untouched. Support certification stays Pi 1.3.0 / Node 24.21.0 / macOS arm64 (24.22.1 historical only). Cloud transport was verified in prior E2E evidence, not repeated or certified for this new artifact; existing draft cloud NOT_VERIFIED labels remain conservative artifact-specific gates. Independent review, license-evidence closure and explicit release/publish authorizations are still required.
+The queued `.changeset/ce-e2b-ack-mcp.md` and hardcoded `0.2.0.md` literals are deferred to a future version PR and remain untouched. Support certification stays Pi 1.3.0 / Node 24.21.0 / macOS arm64 (24.22.1 historical only). Cloud transport was verified in prior E2E evidence, not repeated or certified for this new artifact; existing draft cloud NOT_VERIFIED labels remain conservative artifact-specific gates. License-evidence closure is complete as of this delta; independent review of this delta and every explicit release/publish authorization (push, tag, npm publish, GitHub Release, merge to main) remain required.

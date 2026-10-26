@@ -1,7 +1,6 @@
 {
   "name": "@zieglar/pi-chat-exchange",
   "version": "0.2.0",
-  "private": true,
   "license": "MIT",
   "publishConfig": {
     "access": "public",
