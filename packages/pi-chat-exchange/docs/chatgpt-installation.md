@@ -84,7 +84,7 @@ test ! -e "$HOME/.config/pi-chat-exchange/mcp-binding.json" && \
 }
 ```
 
-Store directory 必须为规范化绝对 POSIX 路径且不是 `/`，本地文件系统与权限门槛见[Storage security](storage-security.md)。lease renewal interval 不超过 TTL 一半。双方 Store directory/file、Exchange namespace/idempotencyKey 四项必须一致；Endpoint 与 Ownership 各自独立。模板中的旧标签不是强制名称。
+Store directory 必须为规范化绝对 POSIX 路径且不是 `/`，本地文件系统与权限门槛见[Storage security](storage-security.md)（仅仓库，不随 tarball 分发）。lease renewal interval 不超过 TTL 一半。双方 Store directory/file、Exchange namespace/idempotencyKey 四项必须一致；Endpoint 与 Ownership 各自独立。模板中的旧标签不是强制名称。
 
 launcher 固定读取 `~/.config/pi-chat-exchange/mcp-binding.json`，不从模型参数或环境变量选身份。仅本地包诊断支持 strict normalized absolute `--config`；shipped `mcp.json` 不传这个 override。缺失/非法配置为 `CE_MCP_CONFIG_INVALID`，不降级成任意身份。
 

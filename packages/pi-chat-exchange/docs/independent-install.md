@@ -35,7 +35,7 @@ pnpm --dir packages/pi-chat-exchange run package:pi-extension
 # 可选自定义输出目录：node scripts/package-pi-extension.mjs /path/to/out
 ```
 
-该命令依次执行：`tsc` 构建 → 载荷校验（本地运行时 import 闭包、必需 native/运维脚本、无消费者 lifecycle hook）→ `npm pack --ignore-scripts` 前再校验原生清单，任何缺项都会 fail closed。**裸 `npm pack` 不是受支持的作者命令**（gitignore 回退会静默剔除 `dist/`）。
+该命令依次执行：`tsc` 构建 → 载荷校验（本地运行时 import 闭包、`new URL` 运行时资产、必需 native/运维脚本、无消费者 lifecycle hook）→ `npm pack --ignore-scripts` 前再校验原生清单，任何缺项都会 fail closed。**裸 `npm pack` 不是受支持的作者命令**：现在 `files` 白名单已覆盖，裸 pack 会包含 `dist/`，但它跳过上述全部载荷/闭包/清单校验，也无法产出可追溯的制品 SHA。
 
 记录并随私有渠道交付：
 
@@ -71,11 +71,12 @@ tar tzf ~/ce-install/zieglar-pi-chat-exchange-0.1.1.tgz | sort
 ## 3. 消费者：注册到 Pi 并验证
 
 ```sh
-pi install ~/ce-install/consumer/node_modules/@zieglar/pi-chat-exchange
-pi list   # 应列出上述物理安装目录
+# 本机前缀安装的 Host CLI（下文统一用这个绝对入口；全局安装时可换成 `pi`）
+~/ce-install/host/bin/pi install ~/ce-install/consumer/node_modules/@zieglar/pi-chat-exchange
+~/ce-install/host/bin/pi list   # 应列出上述物理安装目录
 ```
 
-`pi install` 只登记已物理安装的本地包（Pi 不会替你安装依赖）；不要对同一包再叠 `-e` 加载第二份。
+`pi install` 只登记已物理安装的本地包（Pi 不会替你安装依赖）；不要对同一包再叠 `-e` 加载第二份。若使用 `~/ce-install/host` 前缀安装，后续所有 `pi` 命令请用 `~/ce-install/host/bin/pi`（或等效的 `node <host>/node_modules/@earendil-works/pi-coding-agent/dist/cli.js`），避免误用另一个全局 Pi 版本。
 
 首次运行（在工作目录启动 `pi`，交互 TUI 中按顺序执行；每步都有显式确认）：
 
@@ -95,6 +96,10 @@ Setup 保存的 profile/凭据在 `CE_TUNNEL_PROFILE` 指定目录（默认见 [
 
 多 Endpoint / 多 Session 的注册、解绑与撤销语义见 [多 Session 使用指南](multi-session-usage.md)。
 
+### 本指南已验证的范围与未验证项
+
+上述首次运行序列已在真实安装 + 独立 Pi 1.3.0 + 真实 PTY 上验证到：安装、Host 加载、首次保存、转换、注册、激活、停用，以及磁盘持久状态（profile/凭据权限、策略登记、互斥释放、合成 Store 模式）。验证环境为**离线合成模式**：`PI_OFFLINE=1`、未安装真实 Tunnel client（doctor 会给出 `CE_EXECUTABLE_UNTRUSTED` 安全拒绝，这是预期诊断，不是兼容性或就绪证据）。**真实云传输（CLOUD_TRANSPORT）未验证**：需要单独安装可信 client、`CE_TUNNEL_BACKGROUND_ALLOW=1` 与显式 `/ce-tunnel start`，不属于本指南的验证范围。
+
 ## 4. 信任与安全注意
 
 - tarball 为私有交付；安装前核对 SHA256，必要时 `tar tzf` 抽查（上面的必需文件清单即核对锚点）。
@@ -102,3 +107,7 @@ Setup 保存的 profile/凭据在 `CE_TUNNEL_PROFILE` 指定目录（默认见 [
 - 安装后的依赖树全部物理存在于 consumer 前缀内（内部 bin symlink 属正常；不应出现指向外部/开发树的链接）。
 - Desktop ZIP 与本路径不通用；不要混装同一 Endpoint。
 - 卸载：`pi remove` 取消注册，再删除 consumer 前缀即可；不动任何全局配置。
+
+### 依赖与 Host 提供的运行时包
+
+本包声明 `peerDependencies: { "@earendil-works/pi-coding-agent": "1.3.0" }`：安装时 npm 会把该精确版本装入 consumer 树，满足 `pi-tui-kit` 的 `"*"` peer，避免自动拉入与 Host 不同代的完整 Pi 运行时（例如 1.4.x）。`@earendil-works/pi-tui` 与 `@sinclair/typebox` 保留为**锁定版本的 dependencies**（不是 peer）：编译后的 ESM（TUI 键序、TypeBox 运行时校验）在本地包模式下必须能从安装树物理解析，盲改为 `"*"` peer 会让 npm 拉最新版本、引入与 1.3.0 Host 的代差。代价是 Pi 启动时会提示“Host 提供的包应声明为 peerDependencies”的警告——这是当前分发架构的已知权衡（两份同版本运行时代码副本），不影响加载与首次运行；重新设计 host 映射不属于本指南范围。

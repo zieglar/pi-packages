@@ -51,7 +51,16 @@ const INSTALLED_CLIENT_TEST_FILES = [
  * clean-machine default gate. Pinning it here keeps every default exclusion
  * explicit and reviewed instead of silently accumulating. */
 const HOST_REGRESSION_TEST_FILE = "test/host-regression/real-host-recovery.test.ts" as const;
-const DEFAULT_EXCLUDED_TEST_FILES = [...INSTALLED_CLIENT_TEST_FILES, HOST_REGRESSION_TEST_FILE] as const;
+
+/** Distribution-fix Task 2: the installed-distribution heavy lane is excluded
+ *  from the default `pnpm test` for the same clean-machine reason as the
+ *  real-host lane — it npm-installs the private tarball plus an independent
+ *  Pi host from the network and drives a real PTY first-run (minutes, registry
+ *  access). It keeps its own loud opt-in precheck (CE_DISTRIBUTION_HOST_TEST)
+ *  in `pnpm run test:distribution-host`; pinning the exclusion here keeps it
+ *  explicit and reviewed, exactly like the real-host lane above. */
+const DISTRIBUTION_HOST_TEST_FILE = "test/package/installed-host.test.ts" as const;
+const DEFAULT_EXCLUDED_TEST_FILES = [...INSTALLED_CLIENT_TEST_FILES, HOST_REGRESSION_TEST_FILE, DISTRIBUTION_HOST_TEST_FILE] as const;
 
 const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")) as {
   scripts: Record<string, string>;
@@ -82,7 +91,7 @@ function sentinelFixture(executable: boolean): { sentinel: string; ranMarker: st
 }
 
 describe("default test lane is isolated from the installed tunnel-client", () => {
-  it("excludes exactly the installed-client files and the real-host lane, and sets the guard env on the default `pnpm test`", () => {
+  it("excludes exactly the installed-client files, the real-host lane and the distribution heavy lane, and sets the guard env on the default `pnpm test`", () => {
     expect(manifest.scripts.test).toBe(
       `CE_DEFAULT_CLIENT_GUARD=1 vitest run${DEFAULT_EXCLUDED_TEST_FILES.map((file) => ` --exclude ${file}`).join("")}`,
     );

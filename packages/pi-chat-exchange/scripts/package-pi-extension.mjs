@@ -34,17 +34,21 @@ try {
     if (manifest.scripts?.[hook]) fail(`consumer lifecycle hook ${hook}`);
   const modules = [...walk(join(root, "dist")).filter((p) => p.endsWith(".js")),
     ...walk(join(root, "pi-extension")).filter((p) => p.endsWith(".ts"))];
-  const required = ["dist/bin/mcp-stdio.js", "dist/tunnel/multi-session-policy.js", "pi-extension/index.ts", "native/tunnel-keychain.swift", "scripts/recover-stale-ownership.mjs", "scripts/reconcile-session-process-mutex.mjs"];
+  const required = ["dist/bin/mcp-stdio.js", "dist/tunnel/multi-session-policy.js", "dist/tunnel/offline-client.js", "pi-extension/index.ts", "native/tunnel-keychain.swift", "scripts/recover-stale-ownership.mjs", "scripts/reconcile-session-process-mutex.mjs"];
   for (const path of required)
     regular(join(root, path));
   for (const path of modules) {
     regular(path);
     const text = readFileSync(path, "utf8");
     // Relative static imports/re-exports/dynamic imports; type-only .js TS
-    // references resolve to their local .ts source in the Pi loader.
-    for (const match of text.matchAll(/(?:from\s*|import\s*\(\s*|import\s*)["'](\.[^"']+)["']/g)) {
-      let target = resolve(dirname(path), match[1]);
-      if (!target.startsWith(root + "/")) fail(`escaping import ${match[1]}`);
+    // references resolve to their local .ts source in the Pi loader. Runtime
+    // asset references (`new URL("./x", import.meta.url)`) are validated the
+    // same way so a URL-resolved module/asset can never be missing on disk.
+    const specifiers = [...text.matchAll(/(?:from\s*|import\s*\(\s*|import\s*)["'](\.[^"']+)["']/g)].map((m) => m[1]);
+    for (const match of text.matchAll(/new\s+URL\(\s*["'](\.[^"']+)["']\s*,\s*import\.meta\.url\s*\)/g)) specifiers.push(match[1]);
+    for (const specifier of specifiers) {
+      let target = resolve(dirname(path), specifier);
+      if (!target.startsWith(root + "/")) fail(`escaping import ${specifier}`);
       if (path.endsWith(".ts") && target.endsWith(".js") && !target.includes("/dist/")) target = target.slice(0, -3) + ".ts";
       regular(target);
     }
@@ -56,7 +60,7 @@ try {
     mkdirSync(out, { recursive: true });
     const options = { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] };
     const inventory = JSON.parse(execFileSync("npm", ["pack", "--ignore-scripts", "--json", "--dry-run"], options))[0].files;
-    const allowed = /^(?:package\.json|README\.md|LICENSE(?:\.[^/]+)?|pi-extension\/[^/]+\.ts|pi-extension\/(?:README\.md|allowlist\.example\.json)|dist\/.+\.js|native\/tunnel-keychain\.swift|scripts\/(?:recover-stale-ownership|reconcile-session-process-mutex)\.mjs|docs\/[^/]+\.md)$/;
+    const allowed = /^(?:package\.json|README\.md|LICENSE(?:\.[^/]+)?|pi-extension\/[^/]+\.ts|pi-extension\/(?:README\.md|allowlist\.example\.json)|dist\/.+\.js|native\/tunnel-keychain\.swift|scripts\/(?:recover-stale-ownership|reconcile-session-process-mutex)\.mjs|docs\/(?:independent-install|tunnel-setup|multi-session-usage|chatgpt-installation)\.md)$/;
     for (const entry of inventory) if (!allowed.test(entry.path)) fail(`unexpected native pack entry ${entry.path}`);
     for (const path of [...modules.map((path) => relative(root, path)), ...required])
       if (!inventory.some((entry) => entry.path === path)) fail(`native pack excludes ${path}`);

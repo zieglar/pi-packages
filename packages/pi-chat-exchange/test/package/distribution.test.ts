@@ -6,6 +6,11 @@ import { join, resolve } from "node:path";
 import { afterEach, expect, it } from "vitest";
 
 const root = resolve(import.meta.dirname, "../.."); // Author workspace only; never the installed-host entry
+const authorManifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { name: string; version: string };
+/** npm's pack naming rule for scoped names: @scope/name -> scope-name. */
+const archiveName = `${authorManifest.name.replace(/^@/, "").replace(/\//g, "-")}-${authorManifest.version}.tgz`;
+/** The deliberate consumer documentation closure: exactly these ship, nothing else from docs/. */
+const consumerDocs = ["docs/chatgpt-installation.md", "docs/independent-install.md", "docs/multi-session-usage.md", "docs/tunnel-setup.md"] as const;
 const fixtures: string[] = [];
 afterEach(() => { for (const path of fixtures.splice(0)) rmSync(path, { recursive: true, force: true }); });
 function fixture() {
@@ -17,10 +22,28 @@ function fixture() {
 }
 function pack(dir: string) {
   const out = join(dir, "artifacts"); mkdirSync(out);
-  // npm is supplied by the invoking author environment, never downloaded by this test.
-  execFileSync("npm", ["pack", "--ignore-scripts", "--pack-destination", out], { cwd: dir, stdio: "pipe" });
+  // npm itself is supplied by the invoking author environment, but every npm
+  // invocation runs with a fresh private HOME/cache/userconfig (offline, no
+  // lifecycle scripts) so the default suite never touches the real user's
+  // npm state and never downloads anything.
+  const safe = npmEnv(dir);
+  execFileSync("npm", ["pack", "--ignore-scripts", "--offline", "--pack-destination", out], { cwd: dir, stdio: "pipe", env: safe });
   const archive = join(out, readdirSync(out)[0]!);
   return execFileSync("tar", ["tzf", archive], { encoding: "utf8" }).trim().split("\n");
+}
+function npmEnv(dir: string): NodeJS.ProcessEnv {
+  const home = join(dir, "npm-home"); const cache = join(dir, "npm-cache"); const tmp = join(dir, "npm-tmp");
+  for (const path of [home, cache, tmp]) mkdirSync(path, { recursive: true });
+  writeFileSync(join(home, ".npmrc"), ""); writeFileSync(join(home, "global-npmrc"), "");
+  return {
+    PATH: process.env.PATH, HOME: home, TMPDIR: tmp,
+    npm_config_cache: cache, npm_config_userconfig: join(home, ".npmrc"), npm_config_globalconfig: join(home, "global-npmrc"),
+    npm_config_registry: "https://registry.npmjs.org/", npm_config_ignore_scripts: "true", npm_config_offline: "true",
+    npm_config_audit: "false", npm_config_fund: "false", npm_config_update_notifier: "false",
+  };
+}
+function runValidator(dir: string, arg: string) {
+  return spawnSync(process.execPath, [join(dir, "scripts/package-pi-extension.mjs"), arg], { cwd: dir, encoding: "utf8", env: npmEnv(dir) });
 }
 it("native pack carries the runtime closure and no author/private state", () => {
   expect(existsSync(join(root, "dist/bin/mcp-stdio.js")), "author must build before this regression").toBe(true);
@@ -29,15 +52,29 @@ it("native pack carries the runtime closure and no author/private state", () => 
     const target = join(dir, path); mkdirSync(resolve(target, ".."), { recursive: true }); writeFileSync(target, "CE_SECRET_SENTINEL");
   }
   const files = pack(dir);
-  for (const path of ["pi-extension/index.ts", "dist/bin/mcp-stdio.js", "dist/tunnel/multi-session-policy.js", "native/tunnel-keychain.swift", "scripts/recover-stale-ownership.mjs", "scripts/reconcile-session-process-mutex.mjs"])
+  for (const path of ["pi-extension/index.ts", "dist/bin/mcp-stdio.js", "dist/tunnel/multi-session-policy.js", "dist/tunnel/offline-client.js", "native/tunnel-keychain.swift", "scripts/recover-stale-ownership.mjs", "scripts/reconcile-session-process-mutex.mjs"])
     expect(files).toContain(`package/${path}`);
   expect(files.filter((p) => /(?:node_modules|\/test\/|\/src\/|\.env|store\.sqlite|tsconfig)/.test(p))).toEqual([]);
+  // URL-asset boundary: the bundled offline simulator ships, no real native
+  // client binary (or any .node addon) may ever ride the consumer tarball.
+  expect(files.some((p) => p.split("/").pop() === "tunnel-client" || p.endsWith(".node")), "native client binary shipped").toBe(false);
+});
+it("ships exactly the consumer documentation closure and no internal docs", () => {
+  const files = pack(fixture());
+  const docs = files.filter((p) => p.startsWith("package/docs/")).sort();
+  expect(docs).toEqual([...consumerDocs].map((doc) => `package/${doc}`).sort());
 });
 it.each(["dist", "dist/bin/mcp-stdio.js", "dist/tunnel/multi-session-policy.js"])("author validator fails closed with missing %s", (missing) => {
   const dir = fixture(); rmSync(join(dir, missing), { recursive: true, force: true });
-  const result = spawnSync(process.execPath, [join(dir, "scripts/package-pi-extension.mjs"), "--validate-only"], { cwd: dir, encoding: "utf8" });
+  const result = spawnSync(process.execPath, [join(dir, "scripts/package-pi-extension.mjs"), "--validate-only"], { cwd: dir, encoding: "utf8", env: npmEnv(dir) });
   expect(result.status).not.toBe(0);
   expect(result.stderr).toContain("Incomplete Pi payload");
+});
+it("fails closed when the runtime-URL-resolved offline client asset is missing on disk", () => {
+  const dir = fixture(); rmSync(join(dir, "dist/tunnel/offline-client.js"));
+  const result = runValidator(dir, "--validate-only");
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain("dist/tunnel/offline-client.js");
 });
 it("rejects a missing transitive module and symlinked payload roots", () => {
   const dir = fixture();
@@ -51,23 +88,33 @@ it("rejects a missing transitive module and symlinked payload roots", () => {
 });
 it("author command validates the native inventory before packing", () => {
   const dir = fixture();
-  const result = spawnSync(process.execPath, [join(dir, "scripts/package-pi-extension.mjs"), join(dir, "out")], { cwd: dir, encoding: "utf8" });
+  const result = runValidator(dir, join(dir, "out"));
   expect(result.status, result.stderr).toBe(0);
-  expect(readdirSync(join(dir, "out"))).toEqual(["zieglar-pi-chat-exchange-0.1.1.tgz"]);
+  expect(readdirSync(join(dir, "out"))).toEqual([archiveName]);
 });
 it.each(["native/tunnel-keychain.swift", "scripts/recover-stale-ownership.mjs", "scripts/reconcile-session-process-mutex.mjs"])("refuses native pack excluding required %s despite disk presence", (missing) => {
   const dir = fixture();
   const manifest = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
   manifest.files = manifest.files.filter((path: string) => path !== missing);
   writeFileSync(join(dir, "package.json"), JSON.stringify(manifest));
-  const result = spawnSync(process.execPath, [join(dir, "scripts/package-pi-extension.mjs"), join(dir, "out")], { cwd: dir, encoding: "utf8" });
+  const result = runValidator(dir, join(dir, "out"));
   expect(result.status).not.toBe(0);
   expect(result.stderr).toContain(`native pack excludes ${missing}`);
   expect(readdirSync(join(dir, "out"))).toEqual([]);
 });
+it("refuses a native pack that excludes the runtime-URL offline client asset", () => {
+  const dir = fixture();
+  const manifest = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+  manifest.files = [...manifest.files.filter((path: string) => path !== "dist/**/*.js"), "dist/**/*.js", "!dist/tunnel/offline-client.js"];
+  writeFileSync(join(dir, "package.json"), JSON.stringify(manifest));
+  const result = runValidator(dir, join(dir, "out"));
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain("dist/tunnel/offline-client.js");
+  expect(readdirSync(join(dir, "out"))).toEqual([]);
+});
 it("author validator accepts complete outputs without consumer hooks", () => {
   const dir = fixture();
-  const result = spawnSync(process.execPath, [join(dir, "scripts/package-pi-extension.mjs"), "--validate-only"], { cwd: dir, encoding: "utf8" });
+  const result = runValidator(dir, "--validate-only");
   expect(result.status, result.stderr).toBe(0);
   const manifest = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
   for (const hook of ["prepare", "prepack", "postpack", "preinstall", "install", "postinstall"])

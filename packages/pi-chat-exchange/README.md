@@ -54,13 +54,16 @@ Setup 的 Advanced · Messaging 必须显式授权当前 Session；只保存基�
 
 | 目标 | 文档 |
 |---|---|
+| **独立安装（正式日常使用，预构建 tarball）** | [独立安装指南](docs/independent-install.md) |
 | 首次设置、可信安装诊断、ChatGPT 连接、启动与排障 | [Tunnel 用户指南](docs/tunnel-setup.md) |
 | Desktop stdio 打包与本机配置 | [ChatGPT 安装](docs/chatgpt-installation.md) |
 | 工具参数、Inbox、payload/ACK、生命周期 | [Pi 扩展指南](pi-extension/README.md) |
 | 多项目/Session 注册、解绑、撤销 | [多 Session 使用](docs/multi-session-usage.md) |
-| 分层、身份、授权、验证与扩展点 | [架构指南](docs/architecture.md) |
-| 后台进程所有权与停止约束 | [后台 Manager](docs/tunnel-manager-background.md) |
-| 精确安全契约 | [协议 v2](docs/protocol-v2.md) · [Ownership](docs/ownership-contract.md) · [Storage](docs/storage-contract.md) · [ACK](docs/delivery-ack-contract.md) |
+| 分层、身份、授权、验证与扩展点 | [架构指南](docs/architecture.md)（仅仓库，不随 tarball 分发） |
+| 后台进程所有权与停止约束 | [后台 Manager](docs/tunnel-manager-background.md)（仅仓库，不随 tarball 分发） |
+| 精确安全契约（仅仓库，不随 tarball 分发） | [协议 v2](docs/protocol-v2.md) · [Ownership](docs/ownership-contract.md) · [Storage](docs/storage-contract.md) · [ACK](docs/delivery-ack-contract.md) |
+
+独立安装包（tarball）仅随包分发上述前 5 篇消费者文档；标注“仅仓库”的条目留在仓库内，不进入消费者制品。
 
 ## 边界与验证
 
@@ -70,6 +73,6 @@ Setup 的 Advanced · Messaging 必须显式授权当前 Session；只保存基�
 
 Store 平台 allowlist 为 macOS arm64 / Linux x64；两种批准 Node 的实测为 macOS arm64，不等于 Linux 或每种 Desktop UI 均已验收。已有本地人工双向消息与 Tunnel 启停验收不替代本次变更的隔离测试，也不证明机器冷启动或所有终端交互。
 
-开发检查：从包目录执行 `pnpm run verify`（check → typecheck → build → test → plugin-package test）；扩展测试前须 build。证据层次见[架构指南](docs/architecture.md#验证层次)。
+开发检查：从包目录执行 `pnpm run verify`（check → typecheck → build → test → plugin-package test）；扩展测试前须 build。证据层次见[架构指南](docs/architecture.md#验证层次)（仅仓库，不随 tarball 分发）。
 
 许可证：bootstrap 期间保持 private；首选 Apache-2.0，仍待同等来源审查，不授权发布。

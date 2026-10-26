@@ -101,7 +101,7 @@ CE_TUNNEL_BACKGROUND_ALLOW=1 \
 | `/ce-status` | 查看经当前 admission 校验的 Pi / CE 身份、Exchange、Owner lease/fencing |
 | `/ce-tunnel deactivate` | 确认后正常结束当前本地 CE binding；不改 registration/历史、不 Stop Tunnel |
 
-后台 daemon 可跨 Pi Session 存活；退出 Pi 不等于 Stop。默认启动预算 45 秒，不是成功保证；client 初始 long-poll 可能约 30 秒。未知进程/lease 不能用第二次 Start、删锁或 bulk kill 解决。详见[后台 Manager](tunnel-manager-background.md)。
+后台 daemon 可跨 Pi Session 存活；退出 Pi 不等于 Stop。默认启动预算 45 秒，不是成功保证；client 初始 long-poll 可能约 30 秒。未知进程/lease 不能用第二次 Start、删锁或 bulk kill 解决。详见[后台 Manager](tunnel-manager-background.md)（仅仓库，不随 tarball 分发）。
 
 **Configured ≠ Pi-bound ≠ Connected ≠ 消息实证。** Configured 是配置；Pi-bound 是当前 CE authority；CONNECTED 仅为及时测得的健康与控制面 polling；STOPPED 不表示 CE 已释放，UNKNOWN 更不等于 STOPPED。任何一项都不证明 ACK 或任务完成。
 

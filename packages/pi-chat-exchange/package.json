@@ -44,8 +44,14 @@
     "native/tunnel-keychain.swift",
     "scripts/recover-stale-ownership.mjs",
     "scripts/reconcile-session-process-mutex.mjs",
-    "docs/*.md"
+    "docs/independent-install.md",
+    "docs/tunnel-setup.md",
+    "docs/multi-session-usage.md",
+    "docs/chatgpt-installation.md"
   ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "1.3.0"
+  },
   "pi": {
     "extensions": [
       "./pi-extension/index.ts"
