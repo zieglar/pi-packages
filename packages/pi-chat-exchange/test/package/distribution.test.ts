@@ -10,13 +10,13 @@ const authorManifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8
 /** npm's pack naming rule for scoped names: @scope/name -> scope-name. */
 const archiveName = `${authorManifest.name.replace(/^@/, "").replace(/\//g, "-")}-${authorManifest.version}.tgz`;
 /** The deliberate consumer documentation closure: exactly these ship, nothing else from docs/. */
-const consumerDocs = ["docs/chatgpt-installation.md", "docs/independent-install.md", "docs/multi-session-usage.md", "docs/tunnel-setup.md"] as const;
+const consumerDocs = ["docs/chatgpt-installation.md", "docs/independent-install.md", "docs/multi-session-usage.md", "docs/tunnel-setup.md", "docs/releases/0.2.0.md"] as const;
 const fixtures: string[] = [];
 afterEach(() => { for (const path of fixtures.splice(0)) rmSync(path, { recursive: true, force: true }); });
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "ce-distribution-"));
   fixtures.push(dir);
-  for (const path of ["package.json", ".gitignore", "README.md", "pi-extension", "dist", "native", "scripts", "docs"])
+  for (const path of ["package.json", ".gitignore", "README.md", "CHANGELOG.md", "pi-extension", "dist", "native", "scripts", "docs"])
     if (existsSync(join(root, path))) cpSync(join(root, path), join(dir, path), { recursive: true, dereference: false });
   return dir;
 }
@@ -70,6 +70,16 @@ it("never publishes final PASS after validator, cleanup or identity failure", ()
   expect(result.status, result.stderr).toBe(0);
 });
 
+it("origin validation refuses CJS, URL and symlink escapes", () => {
+  const result = spawnSync("/usr/bin/python3", ["-B", join(root, "test/package/support/module-origin.test.py")], { encoding: "utf8", timeout: 30_000 });
+  expect(result.status, result.stderr).toBe(0);
+});
+
+it("loopback registry serves only the exact candidate with integrity and refuses publication", () => {
+  const result = spawnSync("/usr/bin/python3", ["-B", join(root, "test/package/support/loopback-registry.test.py")], { encoding: "utf8", timeout: 30_000 });
+  expect(result.status, result.stderr).toBe(0);
+});
+
 it("native pack carries the runtime closure and no author/private state", () => {
   expect(existsSync(join(root, "dist/bin/mcp-stdio.js")), "author must build before this regression").toBe(true);
   const dir = fixture();
@@ -117,7 +127,7 @@ it("author command validates the native inventory before packing", () => {
   expect(result.status, result.stderr).toBe(0);
   expect(readdirSync(join(dir, "out"))).toEqual([archiveName]);
 });
-it.each(["native/tunnel-keychain.swift", "scripts/recover-stale-ownership.mjs", "scripts/reconcile-session-process-mutex.mjs"])("refuses native pack excluding required %s despite disk presence", (missing) => {
+it.each(["native/tunnel-keychain.swift", "scripts/recover-stale-ownership.mjs", "scripts/reconcile-session-process-mutex.mjs", "CHANGELOG.md", "docs/releases/0.2.0.md"])("refuses native pack excluding required %s despite disk presence", (missing) => {
   const dir = fixture();
   const manifest = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
   manifest.files = manifest.files.filter((path: string) => path !== missing);

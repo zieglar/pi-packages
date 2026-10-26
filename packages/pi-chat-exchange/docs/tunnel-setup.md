@@ -141,6 +141,10 @@ ChatGPT 独立 list → 选择 Message ID → 授权 payload read。MCP 不提�
 
 Pi 文本直接显示 `ACK input metadata (reception only)`。MCP 的 payload read metadata 将 Message 创建 Audit 命名为 `auditSequence`，须原样映射为 ACK 的 `messageCreatedAuditSequence`；它不是 receipt 或 Inbox continuation。首次为 CREATED，已有为 REPLAYED。list/read 不消费、不 ACK、不推进 delivery cursor。ACK 仅 reception，不证明 delivery/read/processing/completion。完整参数和分页见[Pi 指南](../pi-extension/README.md)。
 
+## 卸载或升级前
+
+先按[安全卸载、升级与回滚](independent-install.md#5-安全卸载升级与回滚)执行：仅 owned Manager Stop → 独立 status 证明 STOPPED → 相关 binding 正常 deactivate/release → 确认其他使用者不依赖共享资源（不明即 STOP）→ 退出自己相关 Hosts → 原生 Pi remove 精确 source。不是退出 Pi 后直接删目录，也不是批量停止其他 Session。保留 Store/profile/凭据/history；外部 Owner、UNKNOWN 或释放未确认时不移除文件、不 Recovery、不重试未知结果。
+
 ## 5. Pi 重启、恢复与安全编辑
 
 - **有效 binding 的 `/reload`**：停旧 timer、drain、丢弃旧 capability；保留 durable Ownership，新代重新 resume 校验。

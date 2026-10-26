@@ -2,7 +2,7 @@
 
 让 ChatGPT 与 Pi 通过显式工具交换持久化消息：发送、发现收件箱、授权读取，以及独立授权的接收回执（ACK）。它不是自动任务调度器，也不把 ACK 或对话回复当作任务完成。
 
-当前为 **private / Local Dogfood，0.1.1**，尚未正式发布。
+当前为 **0.2.0 DRAFT / UNRELEASED 候选**，尚未公开发布。**LICENSE PENDING**：等待用户提供既有许可和权利人授权，publication blocked。候选元数据不等于发布批准。
 
 ## 选择连接方式
 
@@ -63,7 +63,7 @@ Setup 的 Advanced · Messaging 必须显式授权当前 Session；只保存基�
 | 后台进程所有权与停止约束 | [后台 Manager](docs/tunnel-manager-background.md)（仅仓库，不随 tarball 分发） |
 | 精确安全契约（仅仓库，不随 tarball 分发） | [协议 v2](docs/protocol-v2.md) · [Ownership](docs/ownership-contract.md) · [Storage](docs/storage-contract.md) · [ACK](docs/delivery-ack-contract.md) |
 
-独立安装包（tarball）仅随包分发上述前 5 篇消费者文档；标注“仅仓库”的条目留在仓库内，不进入消费者制品。
+独立安装包（tarball）随包分发上述前 5 篇消费者文档、CHANGELOG 与当前版本草稿 release notes；标注“仅仓库”的条目留在仓库内，不进入消费者制品。
 
 ## 边界与验证
 
@@ -75,4 +75,4 @@ Store 平台 allowlist 为 macOS arm64 / Linux x64；两种批准 Node 的实测
 
 开发检查：从包目录执行 `pnpm run verify`（check → typecheck → build → test → plugin-package test）；扩展测试前须 build。证据层次见[架构指南](docs/architecture.md#验证层次)（仅仓库，不随 tarball 分发）。
 
-许可证：bootstrap 期间保持 private；首选 Apache-2.0，仍待同等来源审查，不授权发布。
+许可证：**LICENSE PENDING**；尚无已提供的既有授权，不选择或杜撰许可证。发布前还须独立第三方审计。候选认证仅 Node 24.21.0 / Pi 1.3.0 / macOS arm64；cloud NOT_VERIFIED，Linux 未验证。见 [0.2.0 草稿](docs/releases/0.2.0.md) 与 [安全卸载/升级/回滚](docs/independent-install.md#5-安全卸载升级与回滚)。

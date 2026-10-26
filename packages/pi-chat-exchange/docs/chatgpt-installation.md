@@ -33,7 +33,7 @@ pnpm run package:desktop-plugin
 
 生成的 ignored artifacts：
 
-- `.plugin-build/pi-chat-exchange-0.1.1.zip`：单根 ZIP。
+- `.plugin-build/pi-chat-exchange-0.2.0.zip`：单根 ZIP。
 - `.plugin-build/marketplace/`：可注册的本地 marketplace。
 - `.plugin-build/pi-chat-exchange/`：解包检查副本。
 

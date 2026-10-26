@@ -15,7 +15,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 
 
 class FinalizationTest(unittest.TestCase):
-    def exercise(self, validator_fault=False, cleanup_fault=False, identity_fault=False):
+    def exercise(self, validator_fault=False, cleanup_fault=False, identity_fault=False, native_fault=False):
         source = pathlib.Path(__file__).with_name('installed-host.py').read_text()
         tree = ast.parse(source)
         block = tree.body[-1]
@@ -37,6 +37,10 @@ class FinalizationTest(unittest.TestCase):
             calls.append('validator')
             if validator_fault:
                 raise RuntimeError('injected validator failure')
+        def native():
+            calls.append('native')
+            if native_fault:
+                raise RuntimeError('injected native lifecycle failure')
         class Handle:
             pid = 1
             def close(self):
@@ -52,7 +56,8 @@ class FinalizationTest(unittest.TestCase):
             root = pathlib.Path(directory)
             namespace = {'__builtins__': vars(builtins), 'r': root, 'json': json, 'p': Handle(), 'os': type('OS', (), {'close': staticmethod(lambda fd: calls.append('fd-close'))}),
                          'master': 42, 'ps_identity': identity, 'ps_before': 'trusted', 'text': lambda: '', 'argv': [], 'actions': [],
-                         'verify_durable': validate, 'verify_module_origin': lambda: calls.append('module'), 'failures': []}
+                         'verify_durable': validate, 'verify_module_origin': lambda: calls.append('module'),
+                         'verify_native_lifecycle': native, 'managed': True, 'failures': []}
             failure = None
             try:
                 # Trusted checked-in harness AST only; never input or profile code.
@@ -61,7 +66,7 @@ class FinalizationTest(unittest.TestCase):
                 failure = error
             self.assertTrue((root / 'result.json').is_file(), repr(failure))
             result = json.loads((root / 'result.json').read_text())
-            if validator_fault or cleanup_fault or identity_fault:
+            if validator_fault or cleanup_fault or identity_fault or native_fault:
                 self.assertIsNotNone(failure)
                 self.assertNotEqual(result.get('FIRST_RUN'), 'PASS', result)
                 if validator_fault:
@@ -82,6 +87,8 @@ class FinalizationTest(unittest.TestCase):
         self.exercise(cleanup_fault=True)
     def test_both_failures_preserved(self):
         self.exercise(validator_fault=True, cleanup_fault=True)
+    def test_native_failure(self):
+        self.exercise(native_fault=True)
     def test_identity_failure(self):
         self.exercise(identity_fault=True)
 

@@ -11,7 +11,9 @@ it("installs the native archive and exercises real Pi first-run on an isolated P
   const npm = process.env.CE_DISTRIBUTION_NPM_CLI;
   if (process.platform !== "darwin" || process.version !== "v24.21.0" || !archive || !npm || !existsSync(archive) || !existsSync(npm))
     throw new Error("Requires macOS sandbox-exec, approved Node24.21.0, Python3, native archive and npm CLI absolute paths");
-  execFileSync("/usr/bin/python3", ["-B", new URL("./support/installed-host.py", import.meta.url).pathname, process.execPath, npm, archive], {
-    stdio: "inherit", timeout: 300_000,
+  const mode = process.env.CE_DISTRIBUTION_MODE ?? "tarball";
+  if (!["tarball", "managed-npm"].includes(mode)) throw new Error("Unknown distribution mode");
+  execFileSync("/usr/bin/python3", ["-B", new URL("./support/installed-host.py", import.meta.url).pathname, process.execPath, npm, archive, mode], {
+    stdio: "inherit", timeout: 420_000,
   });
-}, 310_000);
+}, 430_000);

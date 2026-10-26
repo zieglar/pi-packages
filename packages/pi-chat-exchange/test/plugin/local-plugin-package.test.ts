@@ -34,7 +34,7 @@ describe("ChatGPT Desktop local plugin source package", () => {
     expect(manifest).toMatchObject({
       $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
       name: "pi-chat-exchange",
-      version: "0.1.1",
+      version: packageManifest.version,
     });
     expect(manifest.version).toBe(packageManifest.version);
 

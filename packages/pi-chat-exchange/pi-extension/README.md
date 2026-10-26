@@ -101,6 +101,10 @@ Storage 在读取任何正文 bytes 前检查 payload_read scope、ATTACHED Sess
 
 `CE_HOST_AUTHORITY_ABSENT`、UNKNOWN、映射写入失败都不是盲重试信号。BUSY 只有在明确确认适合时才由调用者手动重试；INDETERMINATE 要先停止、另行核实 durable 状态。operator-only 恢复 CLI 不注册为 Pi command/model tool。
 
+## 安全卸载
+
+遵守[独立安装指南的停止、释放、原生移除流程](../docs/independent-install.md#5-安全卸载升级与回滚)。deactivate 不停止后台 Tunnel；退出 Pi 也不等于 STOPPED。确认相关使用者与共享资源前置条件、正常 release 后再退出自己的 Hosts，用 Pi 原生 remove 精确 source；不增加卸载 hook/CLI，不删除 Store/profile/凭据/history，不操作无关 Session，UNKNOWN 即停止。
+
 ## Inbox advisory 不等于自动接收
 
 开启 `inboxNotification.enabled` 后，成功绑定与 `agent_settled` 各可执行一次有界的授权 Inbox 检查，并发布 count-only 通知：

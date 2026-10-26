@@ -1,8 +1,16 @@
 {
   "name": "@zieglar/pi-chat-exchange",
-  "version": "0.1.1",
-  "private": true,
-  "description": "Generic chat-exchange protocol with pure core rules, a private durable SQLite foundation, and a minimal MCP ping smoke.",
+  "version": "0.2.0",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "description": "Pi extension for explicit ChatGPT message exchange with durable SQLite storage and Secure MCP Tunnel management.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zieglar/pi-packages.git",
+    "directory": "packages/pi-chat-exchange"
+  },
   "type": "module",
   "engines": {
     "node": "24.21.0 || 24.22.1"
@@ -10,6 +18,7 @@
   "scripts": {
     "test": "CE_DEFAULT_CLIENT_GUARD=1 vitest run --exclude test/tunnel/real-client-compat.test.ts --exclude test/tunnel/offline.integration.test.ts --exclude test/host-regression/real-host-recovery.test.ts --exclude test/package/installed-host.test.ts",
     "test:distribution-host": "CE_DISTRIBUTION_HOST_TEST=1 vitest run test/package/installed-host.test.ts",
+    "test:distribution-npm": "CE_DISTRIBUTION_HOST_TEST=1 CE_DISTRIBUTION_MODE=managed-npm vitest run test/package/installed-host.test.ts",
     "test:installed-client": "vitest run test/tunnel/real-client-compat.test.ts test/tunnel/offline.integration.test.ts",
     "test:host-regression": "CE_HOST_REGRESSION_TEST=1 vitest run test/host-regression/real-host-recovery.test.ts",
     "test:storage": "vitest run test/storage",
@@ -47,7 +56,9 @@
     "docs/independent-install.md",
     "docs/tunnel-setup.md",
     "docs/multi-session-usage.md",
-    "docs/chatgpt-installation.md"
+    "docs/chatgpt-installation.md",
+    "CHANGELOG.md",
+    "docs/releases/0.2.0.md"
   ],
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "1.3.0"
