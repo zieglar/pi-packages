@@ -2,7 +2,7 @@
 
 让 ChatGPT 与 Pi 通过显式工具交换持久化消息：发送、发现收件箱、授权读取，以及独立授权的接收回执（ACK）。它不是自动任务调度器，也不把 ACK 或对话回复当作任务完成。
 
-当前为 **0.2.0 DRAFT / UNRELEASED 候选**，尚未公开发布。**LICENSE PENDING**：等待用户提供既有许可和权利人授权，publication blocked。候选元数据不等于发布批准。
+当前为 **0.2.0 DRAFT / UNRELEASED 候选**，尚未公开发布。CE 自有代码已获所有者授权采用 **MIT**（见 [LICENSE](LICENSE)）；第三方许可证证据仍有缺口，保留 `private: true`，publication blocked。候选元数据不等于发布批准。
 
 ## 选择连接方式
 
@@ -75,4 +75,4 @@ Store 平台 allowlist 为 macOS arm64 / Linux x64；两种批准 Node 的实测
 
 开发检查：从包目录执行 `pnpm run verify`（check → typecheck → build → test → plugin-package test）；扩展测试前须 build。证据层次见[架构指南](docs/architecture.md#验证层次)（仅仓库，不随 tarball 分发）。
 
-许可证：**LICENSE PENDING**；尚无已提供的既有授权，不选择或杜撰许可证。发布前还须独立第三方审计。候选认证仅 Node 24.21.0 / Pi 1.3.0 / macOS arm64；cloud NOT_VERIFIED，Linux 未验证。见 [0.2.0 草稿](docs/releases/0.2.0.md) 与 [安全卸载/升级/回滚](docs/independent-install.md#5-安全卸载升级与回滚)。
+许可证：**MIT**，Copyright (c) 2026 zieglar。第三方依赖保留各自许可，不由 CE 的 MIT 重新授权；`@earendil-works/pi-tui@1.3.0` 与 Host peer 的安装内容缺少 LICENSE，故仍保留 `private: true`。完整逐版本审计见 [许可审计](docs/license-audit.md)（仅仓库，不随 tarball 分发）。发布仍须关闭证据缺口并另获批准。候选认证仅 Node 24.21.0 / Pi 1.3.0 / macOS arm64；cloud NOT_VERIFIED，Linux 未验证。见 [0.2.0 草稿](docs/releases/0.2.0.md) 与 [安全卸载/升级/回滚](docs/independent-install.md#5-安全卸载升级与回滚)。

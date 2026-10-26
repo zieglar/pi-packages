@@ -34,7 +34,7 @@ try {
     if (manifest.scripts?.[hook]) fail(`consumer lifecycle hook ${hook}`);
   const modules = [...walk(join(root, "dist")).filter((p) => p.endsWith(".js")),
     ...walk(join(root, "pi-extension")).filter((p) => p.endsWith(".ts"))];
-  const required = ["dist/bin/mcp-stdio.js", "dist/tunnel/multi-session-policy.js", "dist/tunnel/offline-client.js", "pi-extension/index.ts", "native/tunnel-keychain.swift", "scripts/recover-stale-ownership.mjs", "scripts/reconcile-session-process-mutex.mjs", "CHANGELOG.md", "docs/releases/0.2.0.md"];
+  const required = ["LICENSE", "dist/bin/mcp-stdio.js", "dist/tunnel/multi-session-policy.js", "dist/tunnel/offline-client.js", "pi-extension/index.ts", "native/tunnel-keychain.swift", "scripts/recover-stale-ownership.mjs", "scripts/reconcile-session-process-mutex.mjs", "CHANGELOG.md", "docs/releases/0.2.0.md"];
   for (const path of required)
     regular(join(root, path));
   for (const path of modules) {

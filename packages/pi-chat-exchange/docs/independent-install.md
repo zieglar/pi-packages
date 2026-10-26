@@ -8,7 +8,7 @@
 | 仓库源码 build + `pi install <目录>` | 开发者/Dogfood | 引用开发树目录，见 [README](../README.md) |
 | Desktop 插件 ZIP | ChatGPT Desktop stdio MCP | 另一个打包脚本，见 [ChatGPT 安装](chatgpt-installation.md) |
 
-当前为 **0.2.0 DRAFT / UNRELEASED 候选**，**没有公开 npm 发布**。LICENSE PENDING：等待用户提供既有许可及权利人授权；移除 manifest 的 private 和配置 public publishConfig 只是候选元数据，不授权发布。
+当前为 **0.2.0 DRAFT / UNRELEASED 候选**，**没有公开 npm 发布**。CE 自有代码已获所有者 MIT 授权（Copyright (c) 2026 zieglar，见包内 LICENSE）；第三方 LICENSE 证据不足，manifest 保留 `private: true`。public publishConfig 只是候选元数据，不授权发布。
 
 未来经独立发布批准后，原生 managed npm 路径为：先按下面步骤安装独立 Pi 1.3.0、设置批准 Node 与 npm，再执行 `"$CE_APPROVED_NODE" "$CE_PI_CLI" install npm:@zieglar/pi-chat-exchange@0.2.0`。Pi 将依赖物理安装到其作用域内的 npm 根；不要另装 consumer 目录或叠加 `-e`。候选阶段仅在隔离 loopback 测试 registry 验证此命令，不指向公共未发布版本。
 
@@ -71,7 +71,7 @@ npm install --prefix ~/ce-install/host --ignore-scripts --save-exact \
 
 ```sh
 tar tzf ~/ce-install/zieglar-pi-chat-exchange-0.2.0.tgz | sort
-# 必须看到 package/pi-extension/index.ts、package/dist/bin/mcp-stdio.js、
+# 必须看到 package/LICENSE、package/pi-extension/index.ts、package/dist/bin/mcp-stdio.js、
 # package/dist/tunnel/multi-session-policy.js、package/native/tunnel-keychain.swift、
 # package/scripts/recover-stale-ownership.mjs、package/scripts/reconcile-session-process-mutex.mjs
 ```

@@ -5,17 +5,18 @@ import { expect, it } from "vitest";
 const root = resolve(import.meta.dirname, "../..");
 const read = (path: string) => readFileSync(resolve(root, path), "utf8");
 
-it("prepares the exact npm candidate without consumer hooks or invented licensing", () => {
+it("prepares the owner-authorized MIT candidate without consumer hooks", () => {
   const manifest = JSON.parse(read("package.json"));
   expect(manifest.version).toBe("0.2.0");
-  // npm's OWN mechanical publication refusal stays in force while license and
-  // rights-owner authority are absent. Version, repository and publishConfig are
-  // INACTIVE candidate metadata; pack and the owned loopback install route work
-  // while private, so nothing required lifting the refusal before licensing.
+  // Owner authorization covers CE, not third-party scopes. Preserve npm's own
+  // refusal until the exact-version third-party license evidence gaps close.
   expect(manifest.private).toBe(true);
   expect(manifest.publishConfig).toEqual({ access: "public", registry: "https://registry.npmjs.org/" });
   expect(manifest.repository.directory).toBe("packages/pi-chat-exchange");
-  expect(manifest.license).toBeUndefined(); // User authority is still pending.
+  expect(manifest.license).toBe("MIT");
+  expect(read("LICENSE")).toContain("Copyright (c) 2026 zieglar");
+  expect(read("LICENSE")).toContain("The above copyright notice and this permission notice shall be included in all");
+  expect(read("LICENSE")).toContain('THE SOFTWARE IS PROVIDED "AS IS"');
   expect(manifest.scripts["test:distribution-npm"]).toContain("CE_DISTRIBUTION_MODE=managed-npm");
   expect(manifest.exports).toBeUndefined(); // Pi manifest is the entry, not a public library API.
   for (const hook of ["prepare", "prepack", "postpack", "preinstall", "install", "postinstall"])
@@ -40,9 +41,9 @@ it("documents stop and normal release BEFORE native removal, preserving durable 
     expect(procedure).toContain(token);
 });
 
-it("keeps license and cloud publication blockers explicit in draft release materials", () => {
+it("keeps third-party evidence and cloud publication gates explicit in draft release materials", () => {
   const notes = read("docs/releases/0.2.0.md");
-  for (const token of ["DRAFT", "LICENSE PENDING", "NOT_VERIFIED", "24.21.0", "1.3.0", "macOS arm64", "npm:@zieglar/pi-chat-exchange@0.2.0", "private"])
+  for (const token of ["DRAFT", "MIT", "THIRD-PARTY EVIDENCE PENDING", "NOT_VERIFIED", "24.21.0", "1.3.0", "macOS arm64", "npm:@zieglar/pi-chat-exchange@0.2.0", "private"])
     expect(notes).toContain(token);
   // No corrupted-SRI consumer rejection negative exists. Only metadata plus
   // installed-payload byte identity may be claimed.

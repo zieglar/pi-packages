@@ -4,7 +4,8 @@
 
 First packaged candidate. Version 0.1.1 was an internal private version only; it
 was never published to npm, so nothing below is an upgrade from a public release.
-The package stays `private: true` and no publication is authorized.
+CE's own code is owner-authorized MIT, Copyright (c) 2026 zieglar.
+The package stays `private: true` pending third-party LICENSE evidence; no publication is authorized.
 
 ### Messaging
 
@@ -44,7 +45,9 @@ The package stays `private: true` and no publication is authorized.
 - Prepare the prebuilt Pi extension npm candidate and consumer documentation
   closure. Candidate `version`, `repository` and public `publishConfig` are
   INACTIVE metadata; `private: true` keeps npm's own publication refusal in force
-  while license and rights-owner authority are absent.
+  while third-party LICENSE evidence remains insufficient. Include the
+  owner-authorized MIT LICENSE in the prebuilt tarball; dependency licenses
+  remain separate and must be preserved at installation/redistribution.
 - Document owned transport Stop, independently confirmed STOPPED, normal binding
   release and then native Pi removal; Store, profile, credentials and history are
   retained.
@@ -63,6 +66,8 @@ before any public release. Root Changesets configuration and queued entries are
 untouched by this delta, and `privatePackages.version: false` keeps the queued
 entry inert for this private package.
 
-**Publication blocker: LICENSE PENDING.** Await existing license and
-rights-owner authority from the user. No license choice or publication is
-authorized by these materials.
+**Publication blocker: THIRD-PARTY EVIDENCE PENDING.** Exact-version registry
+metadata declares MIT for pi-tui and the Host peer, but their installed packages
+lack LICENSE files. Retain `private: true` until evidence is sufficient; see
+[license audit](docs/license-audit.md) (repo-only). CE's owner authorization is
+resolved, not a grant to relicense dependencies or publish.

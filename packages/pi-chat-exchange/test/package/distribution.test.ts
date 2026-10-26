@@ -16,7 +16,7 @@ afterEach(() => { for (const path of fixtures.splice(0)) rmSync(path, { recursiv
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "ce-distribution-"));
   fixtures.push(dir);
-  for (const path of ["package.json", ".gitignore", "README.md", "CHANGELOG.md", "pi-extension", "dist", "native", "scripts", "docs"])
+  for (const path of ["package.json", ".gitignore", "README.md", "CHANGELOG.md", "LICENSE", "pi-extension", "dist", "native", "scripts", "docs"])
     if (existsSync(join(root, path))) cpSync(join(root, path), join(dir, path), { recursive: true, dereference: false });
   return dir;
 }
@@ -97,7 +97,7 @@ it("native pack carries the runtime closure and no author/private state", () => 
     const target = join(dir, path); mkdirSync(resolve(target, ".."), { recursive: true }); writeFileSync(target, "CE_SECRET_SENTINEL");
   }
   const files = pack(dir);
-  for (const path of ["pi-extension/index.ts", "dist/bin/mcp-stdio.js", "dist/tunnel/multi-session-policy.js", "dist/tunnel/offline-client.js", "native/tunnel-keychain.swift", "scripts/recover-stale-ownership.mjs", "scripts/reconcile-session-process-mutex.mjs"])
+  for (const path of ["LICENSE", "pi-extension/index.ts", "dist/bin/mcp-stdio.js", "dist/tunnel/multi-session-policy.js", "dist/tunnel/offline-client.js", "native/tunnel-keychain.swift", "scripts/recover-stale-ownership.mjs", "scripts/reconcile-session-process-mutex.mjs"])
     expect(files).toContain(`package/${path}`);
   expect(files.filter((p) => /(?:node_modules|\/test\/|\/src\/|\.env|store\.sqlite|tsconfig)/.test(p))).toEqual([]);
   // URL-asset boundary: the bundled offline simulator ships, no real native
@@ -109,7 +109,7 @@ it("ships exactly the consumer documentation closure and no internal docs", () =
   const docs = files.filter((p) => p.startsWith("package/docs/")).sort();
   expect(docs).toEqual([...consumerDocs].map((doc) => `package/${doc}`).sort());
 });
-it.each(["dist", "dist/bin/mcp-stdio.js", "dist/tunnel/multi-session-policy.js"])("author validator fails closed with missing %s", (missing) => {
+it.each(["LICENSE", "dist", "dist/bin/mcp-stdio.js", "dist/tunnel/multi-session-policy.js"])("author validator fails closed with missing %s", (missing) => {
   const dir = fixture(); rmSync(join(dir, missing), { recursive: true, force: true });
   const result = spawnSync(process.execPath, [join(dir, "scripts/package-pi-extension.mjs"), "--validate-only"], { cwd: dir, encoding: "utf8", env: npmEnv(dir) });
   expect(result.status).not.toBe(0);
