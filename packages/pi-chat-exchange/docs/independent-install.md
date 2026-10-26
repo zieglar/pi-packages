@@ -54,7 +54,7 @@ shasum -a 256 packages/pi-chat-exchange/.pi-artifacts/zieglar-pi-chat-exchange-0
 npm install --prefix ~/ce-install/consumer --omit=dev --ignore-scripts --save-exact \
   ~/ce-install/zieglar-pi-chat-exchange-0.1.1.tgz
 
-# 独立 Pi 本体（若尚未全局安装；同样禁用 lifecycle scripts）
+# 独立 Pi 本体（本指南必需，即使已有全局 Pi；同样禁用 lifecycle scripts）
 npm install --prefix ~/ce-install/host --ignore-scripts --save-exact \
   @earendil-works/pi-coding-agent@1.3.0
 ```

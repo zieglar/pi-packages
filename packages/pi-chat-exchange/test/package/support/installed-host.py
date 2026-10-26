@@ -58,7 +58,7 @@ def verify_durable():
     module = str(pathlib.Path(__file__).resolve().parent / 'durable_state.py')
     outcomes = {}
     for mode in ['profile', 'policy', 'mutex', 'store']:
-        result = subprocess.run(['/usr/bin/python3', '-B', module, mode, str(r / 'durable-expect.json')], capture_output=True, text=True, timeout=120)
+        result = subprocess.run(['/usr/bin/python3', '-B', module, mode, str(r / 'durable-expect.json')], env=env, cwd=r / 'run', capture_output=True, text=True, timeout=120)
         outcomes[mode] = {'exit': result.returncode, 'stderr': (result.stderr or '').strip()[:400]}
         if result.returncode != 0:
             raise RuntimeError('durable ' + mode + ' refused: ' + outcomes[mode]['stderr'] + '; evidence ' + str(r))

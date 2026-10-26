@@ -51,12 +51,18 @@ it("the documented local-prefix CLI points to the installed package entry", () =
   mkdirSync(resolve(entry, ".."), { recursive: true });
   writeFileSync(entry, 'console.log("synthetic installed CLI reached")');
   const guide = readFileSync(join(root, "docs/independent-install.md"), "utf8");
+  expect(guide).toContain("独立 Pi 本体（本指南必需，即使已有全局 Pi；同样禁用 lifecycle scripts）");
   const relative = guide.match(/CE_PI_CLI="\$HOME\/ce-install\/([^"\n]+)"/)?.[1]
     ?? guide.match(/~\/ce-install\/(host\/\S+) install/)?.[1];
   expect(relative).toBeDefined();
   const result = spawnSync(process.execPath, [join(dir, relative!)], { encoding: "utf8" });
   expect(result.status, result.stderr).toBe(0);
   expect(result.stdout.trim()).toBe("synthetic installed CLI reached");
+});
+
+it("durable validators and Node probes inherit only the private environment and cwd", () => {
+  const result = spawnSync("/usr/bin/python3", ["-B", join(root, "test/package/support/durable-env.test.py"), process.execPath], { encoding: "utf8", timeout: 60_000 });
+  expect(result.status, result.stderr).toBe(0);
 });
 
 it("never publishes final PASS after validator, cleanup or identity failure", () => {
