@@ -94,8 +94,14 @@ describe("qualified Node selection", () => {
   it("fails closed for invalid explicit settings rather than falling back", () => {
     expect(() => resolveApprovedNode({ env: { CE_NODE_PATH: "node" } })).toThrow("CE_EXECUTABLE_UNTRUSTED");
   });
-  it("qualifies the actual current runtime, not a caller-supplied version label", () => {
-    expect(resolveApprovedNode({ env: {}, systemDirectories: [] })).toBe(realpathSync(process.execPath));
+  it("qualifies a privately installed current runtime, not a caller-supplied version label", () => {
+    const root = fixture(); const path = binary(root);
+    expect(resolveApprovedNode({ env: {}, execPath: path, homeDir: root, systemDirectories: [] })).toBe(path);
+  });
+  it("rejects an unsafe current-runtime installation instead of assuming CI paths are trusted", () => {
+    const root = fixture(); const dir = join(root, "hostedtoolcache"); mkdirSync(dir, { mode: 0o700 });
+    const path = binary(dir); chmodSync(dir, 0o777);
+    expect(resolveApprovedNode({ env: {}, execPath: path, homeDir: root, systemDirectories: [] })).toBeUndefined();
   });
   it("discovers only from controlled directories", () => {
     const root = fixture(); const path = binary(root);

@@ -130,6 +130,29 @@ print(json.dumps({'cases':cases,'refusals':refusals}))
   });
 });
 
+it("accepts Linux kernel PGID zero only as unrelated and refuses invalid identities", () => {
+  const program = `
+import importlib.util,json,subprocess
+spec=importlib.util.spec_from_file_location('driver',${JSON.stringify(driverPath)})
+m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+def snapshot(text):
+ return lambda *a,**k: subprocess.CompletedProcess([],0,text,'')
+rows=m.members(43,snapshot('2 0 0 S\\n43 1 43 Z\\n'))
+refused=[]
+for target,text in [(0,'2 0 0 S\\n'),(-1,'43 1 43 Z\\n'),(43,'0 0 0 S\\n'),(43,'2 0 -1 S\\n'),(43,'2 0 0 bogus!\\n')]:
+ try:
+  m.members(target,snapshot(text)); refused.append(False)
+ except (ValueError,RuntimeError): refused.append(True)
+print(json.dumps({'rows':rows,'refused':refused}))
+`;
+  const result = spawnSync("/usr/bin/python3", ["-c", program], { encoding: "utf8", timeout: 5_000 });
+  expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+  expect(JSON.parse(result.stdout)).toEqual({
+    rows: [{ pid: 43, ppid: 1, pgid: 43, state: "Z", dead: true, reaped: false }],
+    refused: [true, true, true, true, true],
+  });
+});
+
 it("bounded polling refuses while an owned member stays in an unknown state, and confirms only on positive dead evidence", () => {
   const program = `
 import importlib.util,json,subprocess
@@ -315,7 +338,7 @@ def spy_killpg(pid,sig):
     entry['action']='passed'; note(entry); return real_killpg(pid,sig)
 os.killpg=spy_killpg
 def spy_open(path,flags,*args,**kwargs):
-    if str(path).startswith('/dev/ttys'):
+    if str(path).startswith(('/dev/ttys', '/dev/pts/')):
         counters['tty']+=1
         if MODE=='replacement-open' and counters['tty']==2:
             note({'kind':'slave-open','action':'injected-failure','path':str(path)})
