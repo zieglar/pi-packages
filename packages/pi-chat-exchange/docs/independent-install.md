@@ -1,4 +1,4 @@
-# 独立安装 Pi 扩展（0.2.0 候选与 tarball 回退）
+# 独立安装 Pi 扩展（0.2.0：managed npm 与 tarball 回退）
 
 本指南是 **`@zieglar/pi-chat-exchange` 的正式独立分发方式**：消费者拿到一个预先构建的 npm tarball，物理安装后用 Pi 注册。它与两条旧路径互不替代：
 
@@ -8,11 +8,11 @@
 | 仓库源码 build + `pi install <目录>` | 开发者/Dogfood | 引用开发树目录，见 [README](../README.md) |
 | Desktop 插件 ZIP | ChatGPT Desktop stdio MCP | 另一个打包脚本，见 [ChatGPT 安装](chatgpt-installation.md) |
 
-当前为 **0.2.0 DRAFT / UNRELEASED 候选**，**没有公开 npm 发布**。CE 自有代码已获所有者 MIT 授权（Copyright (c) 2026 zieglar，见包内 LICENSE）；第三方许可证证据已闭合，manifest 已按所有者条件移除 `private: true`。public publishConfig 只是候选元数据，不授权发布。
+本包版本为 **0.2.0**。CE 自有代码已获所有者 MIT 授权（Copyright (c) 2026 zieglar，见包内 LICENSE）；第三方许可证证据已闭合，manifest 已按所有者条件移除 `private: true`。
 
-未来经独立发布批准后，原生 managed npm 路径为：先按下面步骤安装独立 Pi 1.3.0、设置批准 Node 与 npm，再执行 `"$CE_APPROVED_NODE" "$CE_PI_CLI" install npm:@zieglar/pi-chat-exchange@0.2.0`。Pi 将依赖物理安装到其作用域内的 npm 根；不要另装 consumer 目录或叠加 `-e`。候选阶段仅在隔离 loopback 测试 registry 验证此命令，不指向公共未发布版本。
+原生 managed npm 路径为：先按下面步骤安装独立 Pi 1.3.0、设置批准 Node 与 npm，再执行 `"$CE_APPROVED_NODE" "$CE_PI_CLI" install npm:@zieglar/pi-chat-exchange@0.2.0`。Pi 将依赖物理安装到其作用域内的 npm 根；不要另装 consumer 目录或叠加 `-e`。0.2.0 的此命令证据是在隔离 loopback 测试 registry 上取得的，不是公共 npm 证据；依赖前先自行确认该精确版本在你信任的 registry 上确实可解析。
 
-下文 tarball 是独立的资产回退：从发布方提供的 GitHub release asset（获准发布后）或私有安全交付取得预构建 `.tgz`，先核对 SHA256 再物理安装。不要把 asset URL 直接传给 Pi（URL 是 Git source），也不要将 monorepo Git source 当作本包 npm 安装。源码开发路径仍引用开发树。
+下文 tarball 是独立的资产回退：从发布方提供的 GitHub release asset 或私有安全交付取得预构建 `.tgz`，先核对 SHA256 再物理安装。不要把 asset URL 直接传给 Pi（URL 是 Git source），也不要将 monorepo Git source 当作本包 npm 安装。源码开发路径仍引用开发树。
 
 ## 0. 消费者前提
 
@@ -26,7 +26,7 @@
 
 不需要：仓库 clone、pnpm、TypeScript、任何 consumer 侧 build/lifecycle 脚本（包内没有 install hooks；全程 `--ignore-scripts`）。
 
-本候选认证目标仅 **Node 24.21.0 + Pi 1.3.0 + macOS arm64**；24.22.1 是已有运行时批准版本，不是本候选认证；Linux 未验证，cloud NOT_VERIFIED。
+0.2.0 的认证目标仅 **Node 24.21.0 + Pi 1.3.0 + macOS arm64**；24.22.1 是已有运行时批准版本，不属于 0.2.0 的认证范围；Linux 未验证，cloud NOT_VERIFIED。
 
 包管理器也必须使用批准 Node：将其 bin 目录置于 PATH 首位，先核对 `node --version` 为 v24.21.0、`npm --version` 为随该 Node 分发的 11.x；不要借用另一个全局 npm/Node。使用自己控制的 npm userconfig/globalconfig/cache，设置 `npm_config_ignore_scripts=true`，不要继承其他 registry 的 token；安装阶段才允许明确的 registry 下载，运行时不需要 registry 网络。本包无消费者 build 或 lifecycle hooks。
 
@@ -140,7 +140,7 @@ CE_PI_CLI="$HOME/ce-install/host/node_modules/@earendil-works/pi-coding-agent/di
 5. 使用记录的原生 Pi source 和同一作用域移除：
 
 ```sh
-# 仅适用于原生 managed npm 安装（未公开发布；候选测试使用私有 loopback registry）
+# 仅适用于原生 managed npm 安装（0.2.0 的安装证据来自私有 loopback registry）
 "$CE_APPROVED_NODE" "$CE_PI_CLI" remove "npm:@zieglar/pi-chat-exchange@0.2.0"
 "$CE_APPROVED_NODE" "$CE_PI_CLI" list
 # 若原来是 --local 安装，remove 同样加 --local，勿扩大到其他作用域。
@@ -153,4 +153,4 @@ Pi 1.3.0 的 `removeAndPersist` 先执行原生 remove 再取消声明；npm sou
 
 升级：先记录并保留原精确版本制品、SHA256、安装 source、锁文件与配置位置，按上述停止/释放/退出流程，再用原生 Pi remove 旧精确 source、install 新精确版本；tarball 路线物理安装到新的独占 consumer 前缀再注册，避免覆盖仍使用的目录。重新启动 Host 后 doctor/status，核对选中配置和 Store，再显式 activate，不自动 Start。
 
-回滚/重装：先确认目标版本的 Store/schema/运行时兼容性；未知即 STOP，不降级、覆盖或删除 Store。兼容且获准后按同一停止/释放/退出流程移除候选、重装留存的精确旧制品/版本、核对真实加载路径与配置。重装 0.2.0 使用相同精确 npm source；保留配置不等于自动重新授权，仍须显式 activate。缺 ACK、超时或 DELIVERY_UNKNOWN 不是重试许可。
+回滚/重装：先确认目标版本的 Store/schema/运行时兼容性；未知即 STOP，不降级、覆盖或删除 Store。兼容且获准后按同一停止/释放/退出流程移除当前版本、重装留存的精确旧制品/版本、核对真实加载路径与配置。重装 0.2.0 使用相同精确 npm source；保留配置不等于自动重新授权，仍须显式 activate。缺 ACK、超时或 DELIVERY_UNKNOWN 不是重试许可。

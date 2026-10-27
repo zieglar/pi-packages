@@ -1,11 +1,12 @@
 # Changelog
 
-## 0.2.0 — UNRELEASED / DRAFT
+## 0.2.0
 
-First packaged candidate. Version 0.1.1 was an internal private version only; it
-was never published to npm, so nothing below is an upgrade from a public release.
+First packaged release line of this extension. Version 0.1.1 was an internal
+private version only; it was never published to npm, so nothing below is an
+upgrade from a public release.
 CE's own code is owner-authorized MIT, Copyright (c) 2026 zieglar.
-Third-party license evidence is complete and `private: true` is removed; publication itself still requires separate authorization.
+Third-party license evidence is complete and `private: true` is removed from the manifest.
 
 ### Messaging
 
@@ -34,17 +35,18 @@ Third-party license evidence is complete and `private: true` is removed; publica
 
 ### Runtime qualification
 
-- This candidate's certification target is exactly **Node 24.21.0 + Pi 1.3.0 +
+- The 0.2.0 certification target is exactly **Node 24.21.0 + Pi 1.3.0 +
   macOS arm64**.
 - Node **24.22.1** was admitted earlier as a second permitted runtime and remains
-  declared in `engines`. That historical admission is **not** part of this
-  candidate's certification. Linux is experimental and unverified.
+  declared in `engines`. That historical admission is **not** part of 0.2.0's
+  certification. Linux is experimental and unverified.
 
 ### Packaging and documentation
 
-- Prepare the prebuilt Pi extension npm candidate and consumer documentation
-  closure. Candidate `version`, `repository` and public `publishConfig` are
-  metadata; `private: true` was removed once the third-party audit closed with three-layer evidence. The
+- Prepare the prebuilt Pi extension npm distribution and consumer documentation
+  closure. The consumer tarball ships the operating guides plus the protocol,
+  ownership, storage, ACK and Store-security contracts, so no repository access
+  is required to operate the package safely. `private: true` was removed once the third-party audit closed with three-layer evidence. The
   owner-authorized MIT LICENSE ships in the prebuilt tarball; dependency licenses
   remain separate and must be preserved at installation/redistribution.
 - Document owned transport Stop, independently confirmed STOPPED, normal binding
@@ -57,13 +59,12 @@ Third-party license evidence is complete and `private: true` is removed; publica
 ### Release-process note
 
 The queued `.changeset/ce-e2b-ack-mcp.md` patch entry describes the same `ce_ack`
-behavior change, and its content is already reflected in this DRAFT. It is
-deliberately **not** consumed here: Changesets remains the repository's version
-authority, and a future Changesets version PR must reconcile and consume it —
-together with this hand-written 0.2.0 entry and the candidate version pins —
-before any public release. Root Changesets configuration and queued entries are
-untouched by this delta. With `private` now removed, `privatePackages.version: false`
-no longer keeps the queued changeset inert — the next Changesets version PR owns that
-reconciliation explicitly.
+behavior change, and its content is already reflected in this 0.2.0 entry. It is
+deliberately **not** consumed by this entry: Changesets remains the repository's
+version authority, and a future Changesets version PR must reconcile and consume
+it together with this hand-written 0.2.0 entry and the 0.2.0 version pins. Root
+Changesets configuration and queued entries are untouched by this delta. With
+`private` now removed, `privatePackages.version: false` no longer keeps the queued
+changeset inert — the next Changesets version PR owns that reconciliation explicitly.
 
-**Third-party evidence complete; `private: true` removed; publication still unauthorized.** The 101-item dependency closure is fully audited: the two former evidence gaps (pi-tui and the Host peer) closed with three-layer exact-version evidence — registry tarball MIT declarations plus the upstream `v1.3.0` tag root LICENSE (MIT, (c) 2025 Mario Zechner); their artifacts omit license text (upstream packaging omission, not incompatibility). See [license audit](docs/license-audit.md) (repo-only). Owner authorization covers CE's own code only — not a grant to relicense dependencies; push/tag/npm publish/GitHub Release each require separate explicit authorization.
+**Third-party evidence complete; `private: true` removed.** The 101-item dependency closure is fully audited: the two former evidence gaps (pi-tui and the Host peer) closed with three-layer exact-version evidence — registry tarball MIT declarations plus the upstream `v1.3.0` tag root LICENSE (MIT, (c) 2025 Mario Zechner); their artifacts omit license text (upstream packaging omission, not incompatibility). The per-version audit record is `docs/license-audit.md`, which is repo-only and not distributed in the tarball. Owner authorization covers CE's own code only — not a grant to relicense dependencies.

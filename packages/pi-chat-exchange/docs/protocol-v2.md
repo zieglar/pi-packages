@@ -4,16 +4,19 @@ Frozen 2026-10-06 by PH-0002 (the approved architecture correction of
 PH-0001). Changes require an explicit contract revision. Machine-readable
 forms live in `src/protocol/` (schemas, lifecycle requirement table) and
 `src/core/rules.ts` (pure enforcement). See [architecture.md](architecture.md)
-for layering and [protocol-v1.md](protocol-v1.md) for the superseded v1.
+for layering; the superseded v1 is recorded in `docs/protocol-v1.md` (repo-only,
+not distributed).
 
 **Authorized PH-0003 amendment:** the owner-abandonment cancellation exception
-is superseded by [quarantine-hotfix-ph0003.md](quarantine-hotfix-ph0003.md).
+is superseded by the amendment recorded in `docs/quarantine-hotfix-ph0003.md`
+(repo-only, not distributed). The amended rule itself is stated in this contract.
 No identity format, outcome vocabulary or normal close precondition changes.
 
 **Approved PH-0003 convergence:** Client/Agent labels become scoped action grants;
 MCP is a control surface, not conversation delivery. Peer endpoint support is
 independent of authorization and factual evidence. Entity/identity schemas and
-the corrected lifecycle edges remain unchanged. See [chat-bridge-audit-ph0003.md](chat-bridge-audit-ph0003.md).
+the corrected lifecycle edges remain unchanged. The underlying audit is recorded
+in `docs/chat-bridge-audit-ph0003.md` (repo-only, not distributed).
 
 ## 1. Identity (compatibility preserved)
 
@@ -27,8 +30,8 @@ the corrected lifecycle edges remain unchanged. See [chat-bridge-audit-ph0003.md
 | Event | `evt_<ULID>` | additive v2 |
 
 All ids: Crockford Base32 ULID (48-bit ms timestamp + 80-bit CSPRNG
-randomness, losslessly encoded — see
-[identity-hotfix-ph0002.md](identity-hotfix-ph0002.md)), opaque, unique,
+randomness, losslessly encoded — derivation recorded in
+`docs/identity-hotfix-ph0002.md`, repo-only, not distributed), opaque, unique,
 immutable, non-secret, independent of payload contents. Display suffixes are
 never authoritative.
 

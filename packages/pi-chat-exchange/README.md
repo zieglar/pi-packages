@@ -2,7 +2,7 @@
 
 让 ChatGPT 与 Pi 通过显式工具交换持久化消息：发送、发现收件箱、授权读取，以及独立授权的接收回执（ACK）。它不是自动任务调度器，也不把 ACK 或对话回复当作任务完成。
 
-当前为 **0.2.0 DRAFT / UNRELEASED 候选**，尚未公开发布。CE 自有代码已获所有者授权采用 **MIT**（见 [LICENSE](LICENSE)）；第三方许可证证据已按三层证据闭合（见 [许可审计](docs/license-audit.md)，仅仓库、不随 tarball 分发），`private: true` 已按所有者条件移除；发布本身仍需单独授权。候选元数据不等于发布批准。
+本包版本为 **0.2.0**。CE 自有代码已获所有者授权采用 **MIT**（见 [LICENSE](LICENSE)）；第三方许可证证据已按三层证据闭合（逐版本审计记录为 `docs/license-audit.md`，仅仓库保留、不随 tarball 分发）。0.2.0 的认证范围仅 **Node 24.21.0 / Pi 1.3.0 / macOS arm64**；cloud transport 为 NOT_VERIFIED，Linux 未验证。
 
 ## 当前能力与典型用法
 
@@ -36,7 +36,7 @@ pi -e ./packages/pi-chat-exchange/pi-extension/index.ts
 
 扩展入口会导入包内 `dist/`；修改源码后须重新运行上述 build，再在已加载的 Session 中 `/reload`。`/reload` 不会编译源码，旧 `dist/` 会继续运行旧逻辑。
 
-这是临时加载。若要长期从不同项目使用，在 build 后执行 `pi install /absolute/path/to/packages/pi-chat-exchange` 注册本地包，再正常启动 Pi。本地安装引用该目录，不复制源码；不要同时安装和 `-e` 加载第二份。当前包没有独立的 `ce` 安装 CLI，也没有公开 npm 安装包。
+这是临时加载。若要长期从不同项目使用，在 build 后执行 `pi install /absolute/path/to/packages/pi-chat-exchange` 注册本地包，再正常启动 Pi。本地安装引用该目录，不复制源码；不要同时安装和 `-e` 加载第二份。本包不提供独立的 `ce` 安装 CLI；安装只经 Pi 的 managed npm / tarball / 本地目录三条路径。
 
 进入交互 TUI 后：
 
@@ -71,11 +71,11 @@ Setup 的 Advanced · Messaging 必须显式授权当前 Session；只保存基�
 | Desktop stdio 打包与本机配置 | [ChatGPT 安装](docs/chatgpt-installation.md) |
 | 工具参数、Inbox、payload/ACK、生命周期 | [Pi 扩展指南](pi-extension/README.md) |
 | 多项目/Session 注册、解绑、撤销 | [多 Session 使用](docs/multi-session-usage.md) |
-| 分层、身份、授权、验证与扩展点 | [架构指南](docs/architecture.md)（仅仓库，不随 tarball 分发） |
-| 后台进程所有权与停止约束 | [后台 Manager](docs/tunnel-manager-background.md)（仅仓库，不随 tarball 分发） |
-| 精确安全契约（仅仓库，不随 tarball 分发） | [协议 v2](docs/protocol-v2.md) · [Ownership](docs/ownership-contract.md) · [Storage](docs/storage-contract.md) · [ACK](docs/delivery-ack-contract.md) |
+| 分层、身份、授权、验证与扩展点 | [架构指南](docs/architecture.md) |
+| 后台进程所有权与停止约束 | [后台 Manager](docs/tunnel-manager-background.md) |
+| 精确安全契约 | [协议 v2](docs/protocol-v2.md) · [Ownership](docs/ownership-contract.md) · [Storage](docs/storage-contract.md) · [ACK](docs/delivery-ack-contract.md) · [Store 安全边界](docs/storage-security.md) |
 
-独立安装包（tarball）随包分发上述前 5 篇消费者文档、CHANGELOG 与当前版本草稿 release notes；标注“仅仓库”的条目留在仓库内，不进入消费者制品。
+独立安装包（tarball）随包分发上表所有文档、CHANGELOG 与本版本 release notes，消费者无需访问仓库即可取得操作与安全契约。仅作者侧的治理与证据记录（如 `docs/license-audit.md`、`docs/runtime-qualification.md` 及各阶段审计记录）仅仓库保留，不进入消费者制品。
 
 ## 边界与验证
 
@@ -85,6 +85,6 @@ Setup 的 Advanced · Messaging 必须显式授权当前 Session；只保存基�
 
 Store 平台 allowlist 为 macOS arm64 / Linux x64；两种批准 Node 的实测为 macOS arm64，不等于 Linux 或每种 Desktop UI 均已验收。已有本地人工双向消息与 Tunnel 启停验收不替代本次变更的隔离测试，也不证明机器冷启动或所有终端交互。
 
-开发检查：从包目录执行 `pnpm run verify`（check → typecheck → build → test → plugin-package test）；扩展测试前须 build。证据层次见[架构指南](docs/architecture.md#验证层次)（仅仓库，不随 tarball 分发）。
+开发检查：从包目录执行 `pnpm run verify`（check → typecheck → build → test → plugin-package test）；扩展测试前须 build。证据层次见[架构指南](docs/architecture.md#验证层次)。
 
-许可证：**MIT**，Copyright (c) 2026 zieglar。第三方依赖保留各自许可，不由 CE 的 MIT 重新授权；`@earendil-works/pi-tui@1.3.0` 与 Host peer 的制品未随包附带 LICENSE 文本（上游打包省略；经 registry 制品与上游 v1.3.0 标签根 LICENSE 三层核实为 MIT）。完整逐版本审计见 [许可审计](docs/license-audit.md)（仅仓库，不随 tarball 分发）。发布仍须另获批准。候选认证仅 Node 24.21.0 / Pi 1.3.0 / macOS arm64；cloud NOT_VERIFIED，Linux 未验证。见 [0.2.0 草稿](docs/releases/0.2.0.md) 与 [安全卸载/升级/回滚](docs/independent-install.md#5-安全卸载升级与回滚)。
+许可证：**MIT**，Copyright (c) 2026 zieglar。第三方依赖保留各自许可，不由 CE 的 MIT 重新授权；`@earendil-works/pi-tui@1.3.0` 与 Host peer 的制品未随包附带 LICENSE 文本（上游打包省略；经 registry 制品与上游 v1.3.0 标签根 LICENSE 三层核实为 MIT）。完整逐版本审计记录为 `docs/license-audit.md`（仅仓库保留，不随 tarball 分发）。0.2.0 的认证范围仅 Node 24.21.0 / Pi 1.3.0 / macOS arm64；cloud NOT_VERIFIED，Linux 未验证。见 [0.2.0 release notes](docs/releases/0.2.0.md) 与 [安全卸载/升级/回滚](docs/independent-install.md#5-安全卸载升级与回滚)。

@@ -58,6 +58,13 @@
     "docs/tunnel-setup.md",
     "docs/multi-session-usage.md",
     "docs/chatgpt-installation.md",
+    "docs/architecture.md",
+    "docs/tunnel-manager-background.md",
+    "docs/protocol-v2.md",
+    "docs/ownership-contract.md",
+    "docs/storage-contract.md",
+    "docs/delivery-ack-contract.md",
+    "docs/storage-security.md",
     "CHANGELOG.md",
     "docs/releases/0.2.0.md"
   ],
