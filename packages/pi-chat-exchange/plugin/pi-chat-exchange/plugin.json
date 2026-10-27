@@ -1,0 +1,21 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "pi-chat-exchange",
+  "version": "0.2.0",
+  "description": "Exchange messages between ChatGPT Desktop and a locally running Pi endpoint through the existing pi-chat-exchange MCP server.",
+  "author": {
+    "name": "zieglar"
+  },
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Pi Chat Exchange",
+        "shortDescription": "Local ChatGPT ↔ Pi exchange",
+        "longDescription": "Send messages to an allowlisted Pi endpoint and inspect the bound ChatGPT endpoint inbox through a local stdio MCP server.",
+        "developerName": "zieglar",
+        "category": "Productivity",
+        "defaultPrompt": "Show the Pi Chat Exchange inbox."
+      }
+    }
+  }
+}

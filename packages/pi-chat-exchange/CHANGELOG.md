@@ -1,0 +1,70 @@
+# Changelog
+
+## 0.2.0
+
+First packaged release line of this extension. Version 0.1.1 was an internal
+private version only; it was never published to npm, so nothing below is an
+upgrade from a public release.
+CE's own code is owner-authorized MIT, Copyright (c) 2026 zieglar.
+Third-party license evidence is complete and `private: true` is removed from the manifest.
+
+### Messaging
+
+- Add the default-disabled, opt-in `ce_ack` MCP tool, advertised only when the
+  binding declares the Session-authorized ACK capability. The host supplies all
+  authority fields and equivalent calls replay the original receipt. An ACK
+  records a recipient reception statement — not proof of delivery, reading,
+  processing or task completion. BUSY rollback and uncertain outcomes never grant
+  retry permission.
+
+### Tunnel lifecycle commands
+
+- Add `/ce-tunnel doctor`: read-only qualification diagnostics. With no trusted
+  client installed it reports a safe refusal such as `CE_EXECUTABLE_UNTRUSTED`.
+  That refusal is the expected diagnosis, not an install failure, and `doctor` is
+  never an exit proof.
+- Add `/ce-tunnel deactivate`: bounded, normal release of this Session's own
+  binding, retaining registration and history. It is not revoke and not Recovery.
+
+### Multi-session and runtime
+
+- Support independent Pi Sessions on a shared Tunnel: `/ce-tunnel convert` keeps
+  the current native Session's original endpoint and `/ce-tunnel register` gives a
+  new Session its own stable endpoint without starting transport.
+- Support trusted portable runtime installations for the pinned Node launch path.
+
+### Runtime qualification
+
+- The 0.2.0 certification target is exactly **Node 24.21.0 + Pi 1.3.0 +
+  macOS arm64**.
+- Node **24.22.1** was admitted earlier as a second permitted runtime and remains
+  declared in `engines`. That historical admission is **not** part of 0.2.0's
+  certification. Linux is experimental and unverified.
+
+### Packaging and documentation
+
+- Prepare the prebuilt Pi extension npm distribution and consumer documentation
+  closure. The consumer tarball ships the operating guides plus the protocol,
+  ownership, storage, ACK and Store-security contracts, so no repository access
+  is required to operate the package safely. `private: true` was removed once the third-party audit closed with three-layer evidence. The
+  owner-authorized MIT LICENSE ships in the prebuilt tarball; dependency licenses
+  remain separate and must be preserved at installation/redistribution.
+- Document owned transport Stop, independently confirmed STOPPED, normal binding
+  release and then native Pi removal; Store, profile, credentials and history are
+  retained.
+- Keep managed npm, physical tarball fallback and monorepo source development
+  routes distinct.
+- Cloud transport is NOT_VERIFIED; offline synthetic fixtures only.
+
+### Release-process note
+
+The queued `.changeset/ce-e2b-ack-mcp.md` patch entry describes the same `ce_ack`
+behavior change, and its content is already reflected in this 0.2.0 entry. It is
+deliberately **not** consumed by this entry: Changesets remains the repository's
+version authority, and a future Changesets version PR must reconcile and consume
+it together with this hand-written 0.2.0 entry and the 0.2.0 version pins. Root
+Changesets configuration and queued entries are untouched by this delta. With
+`private` now removed, `privatePackages.version: false` no longer keeps the queued
+changeset inert — the next Changesets version PR owns that reconciliation explicitly.
+
+**Third-party evidence complete; `private: true` removed.** The 101-item dependency closure is fully audited: the two former evidence gaps (pi-tui and the Host peer) closed with three-layer exact-version evidence — registry tarball MIT declarations plus the upstream `v1.3.0` tag root LICENSE (MIT, (c) 2025 Mario Zechner); their artifacts omit license text (upstream packaging omission, not incompatibility). The per-version audit record is `docs/license-audit.md`, which is repo-only and not distributed in the tarball. Owner authorization covers CE's own code only — not a grant to relicense dependencies.

@@ -1,0 +1,5 @@
+# Runtime artifacts of the ce-chat-exchange extension must never be committed:
+# the CE SQLite store and, critically, the mode-600 host-secret bearer file
+# live here by default, and allowlist.json is operator-local configuration.
+store/
+allowlist.json

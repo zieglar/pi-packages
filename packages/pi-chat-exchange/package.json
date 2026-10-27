@@ -1,0 +1,79 @@
+{
+  "name": "@zieglar/pi-chat-exchange",
+  "version": "0.2.0",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "description": "Pi extension for explicit ChatGPT message exchange with durable SQLite storage and Secure MCP Tunnel management.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zieglar/pi-packages.git",
+    "directory": "packages/pi-chat-exchange"
+  },
+  "type": "module",
+  "engines": {
+    "node": "24.21.0 || 24.22.1"
+  },
+  "scripts": {
+    "test": "CE_DEFAULT_CLIENT_GUARD=1 vitest run --exclude test/tunnel/real-client-compat.test.ts --exclude test/tunnel/offline.integration.test.ts --exclude test/host-regression/real-host-recovery.test.ts --exclude test/package/installed-host.test.ts",
+    "test:distribution-host": "CE_DISTRIBUTION_HOST_TEST=1 vitest run test/package/installed-host.test.ts",
+    "test:distribution-npm": "CE_DISTRIBUTION_HOST_TEST=1 CE_DISTRIBUTION_MODE=managed-npm vitest run test/package/installed-host.test.ts",
+    "test:installed-client": "vitest run test/tunnel/real-client-compat.test.ts test/tunnel/offline.integration.test.ts",
+    "test:host-regression": "CE_HOST_REGRESSION_TEST=1 vitest run test/host-regression/real-host-recovery.test.ts",
+    "test:storage": "vitest run test/storage",
+    "test:plugin-package": "CE_PLUGIN_PACKAGE_TEST=1 vitest run test/plugin/local-plugin-package.test.ts",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
+    "package:pi-extension": "pnpm run build && node scripts/package-pi-extension.mjs",
+    "package:desktop-plugin": "node scripts/package-local-plugin.mjs",
+    "recover:ownership": "node scripts/recover-stale-ownership.mjs",
+    "reconcile:session-mutex": "node scripts/reconcile-session-process-mutex.mjs",
+    "check": "node scripts/check-contract.mjs",
+    "verify": "pnpm run check && pnpm run typecheck && pnpm run build && pnpm test && pnpm run test:plugin-package"
+  },
+  "dependencies": {
+    "@earendil-works/pi-tui": "1.3.0",
+    "@modelcontextprotocol/sdk": "1.30.1",
+    "@narumitw/pi-tui-kit": "0.66.0",
+    "@sinclair/typebox": "0.34.52"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.3.0",
+    "@types/node": "24.19.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11"
+  },
+  "files": [
+    "pi-extension/*.ts",
+    "pi-extension/README.md",
+    "pi-extension/allowlist.example.json",
+    "dist/**/*.js",
+    "native/tunnel-keychain.swift",
+    "scripts/recover-stale-ownership.mjs",
+    "scripts/reconcile-session-process-mutex.mjs",
+    "docs/independent-install.md",
+    "docs/tunnel-setup.md",
+    "docs/multi-session-usage.md",
+    "docs/chatgpt-installation.md",
+    "docs/architecture.md",
+    "docs/tunnel-manager-background.md",
+    "docs/protocol-v2.md",
+    "docs/ownership-contract.md",
+    "docs/storage-contract.md",
+    "docs/delivery-ack-contract.md",
+    "docs/storage-security.md",
+    "CHANGELOG.md",
+    "docs/releases/0.2.0.md"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "1.3.0"
+  },
+  "pi": {
+    "extensions": [
+      "./pi-extension/index.ts"
+    ]
+  }
+}

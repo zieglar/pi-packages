@@ -1,0 +1,574 @@
+{
+  "provenance": "Static independently inventoried final definitions, frozen receipt DDL; Python SQLite, not initializeStore output. Parent review pending.",
+  "ledger": {
+    "version": 7,
+    "name": "b3-p3b-direct-current-ack-foundation",
+    "checksum": "fd07d7a0e65183700c7f71e1f5522c59ef053f1e316eb4bb93596f5b3309b5b1"
+  },
+  "objects": [
+    {
+      "type": "index",
+      "name": "idx_attempt_message",
+      "tbl_name": "attempt",
+      "sql": "CREATE INDEX idx_attempt_message ON attempt(message_id, created_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_audit_event_correlation",
+      "tbl_name": "audit_event",
+      "sql": "CREATE INDEX idx_audit_event_correlation ON audit_event(exchange_id, kind, subject_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_audit_event_exchange",
+      "tbl_name": "audit_event",
+      "sql": "CREATE INDEX idx_audit_event_exchange ON audit_event(exchange_id, sequence)"
+    },
+    {
+      "type": "index",
+      "name": "idx_evidence_envelope_correlation",
+      "tbl_name": "evidence_envelope",
+      "sql": "CREATE INDEX idx_evidence_envelope_correlation ON evidence_envelope(exchange_id, message_id, attempt_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_message_exchange",
+      "tbl_name": "message",
+      "sql": "CREATE INDEX idx_message_exchange ON message(exchange_id, created_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_reconciliation_message",
+      "tbl_name": "reconciliation",
+      "sql": "CREATE INDEX idx_reconciliation_message ON reconciliation(message_id, attempt_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_result_correlation",
+      "tbl_name": "result",
+      "sql": "CREATE INDEX idx_result_correlation ON result(exchange_id, message_id, attempt_id)"
+    },
+    {
+      "type": "index",
+      "name": "participant_session_unique_session_id",
+      "tbl_name": "participant_session",
+      "sql": "CREATE UNIQUE INDEX participant_session_unique_session_id ON participant_session(session_id)"
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_attempt_1",
+      "tbl_name": "attempt",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_attempt_2",
+      "tbl_name": "attempt",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_audit_event_1",
+      "tbl_name": "audit_event",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_audit_event_2",
+      "tbl_name": "audit_event",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_current_claim_1",
+      "tbl_name": "current_claim",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_delivery_ack_receipt_1",
+      "tbl_name": "delivery_ack_receipt",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_delivery_ack_receipt_2",
+      "tbl_name": "delivery_ack_receipt",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_delivery_cursor_1",
+      "tbl_name": "delivery_cursor",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_disposition_1",
+      "tbl_name": "disposition",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_disposition_2",
+      "tbl_name": "disposition",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_evidence_application_1",
+      "tbl_name": "evidence_application",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_evidence_application_2",
+      "tbl_name": "evidence_application",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_evidence_envelope_1",
+      "tbl_name": "evidence_envelope",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_evidence_envelope_2",
+      "tbl_name": "evidence_envelope",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_exchange_1",
+      "tbl_name": "exchange",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_exchange_membership_1",
+      "tbl_name": "exchange_membership",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_fencing_high_water_1",
+      "tbl_name": "fencing_high_water",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_idempotency_record_1",
+      "tbl_name": "idempotency_record",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_message_1",
+      "tbl_name": "message",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_message_2",
+      "tbl_name": "message",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_message_3",
+      "tbl_name": "message",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_participant_1",
+      "tbl_name": "participant",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_participant_2",
+      "tbl_name": "participant",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_participant_capability_1",
+      "tbl_name": "participant_capability",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_participant_fencing_high_water_1",
+      "tbl_name": "participant_fencing_high_water",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_participant_ownership_1",
+      "tbl_name": "participant_ownership",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_participant_session_1",
+      "tbl_name": "participant_session",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_reconciliation_1",
+      "tbl_name": "reconciliation",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_reconciliation_2",
+      "tbl_name": "reconciliation",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_reconciliation_3",
+      "tbl_name": "reconciliation",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_result_1",
+      "tbl_name": "result",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_result_2",
+      "tbl_name": "result",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_result_3",
+      "tbl_name": "result",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_schema_migrations_1",
+      "tbl_name": "schema_migrations",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_store_metadata_1",
+      "tbl_name": "store_metadata",
+      "sql": null
+    },
+    {
+      "type": "table",
+      "name": "attempt",
+      "tbl_name": "attempt",
+      "sql": "CREATE TABLE attempt (\n  attempt_id TEXT PRIMARY KEY,\n  message_id TEXT NOT NULL REFERENCES message(message_id) ON DELETE RESTRICT,\n  endpoint_json TEXT NOT NULL CHECK (json_valid(endpoint_json) AND json_type(endpoint_json) = 'object'),\n  consumer_id TEXT NOT NULL,\n  instance_id TEXT NOT NULL,\n  fencing_token INTEGER NOT NULL CHECK (fencing_token >= 1),\n  lease_expires_at TEXT NOT NULL,\n  dispatch TEXT NOT NULL CHECK (dispatch IN ('not_attempted', 'started')),\n  transport TEXT NOT NULL CHECK (transport IN ('pending', 'delivered', 'ambiguous', 'failed')),\n  created_at TEXT NOT NULL,\n  private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1),\n  UNIQUE (message_id, attempt_id)\n) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "audit_event",
+      "tbl_name": "audit_event",
+      "sql": "CREATE TABLE audit_event (\n  event_id TEXT PRIMARY KEY,\n  exchange_id TEXT NOT NULL REFERENCES exchange(exchange_id) ON DELETE RESTRICT,\n  sequence INTEGER NOT NULL CHECK (sequence >= 1),\n  kind TEXT NOT NULL,\n  subject_id TEXT NOT NULL,\n  created_at TEXT NOT NULL,\n  digest TEXT CHECK (digest IS NULL OR length(digest) = 64),\n  length INTEGER CHECK (length IS NULL OR length >= 0),\n  outcome TEXT,\n  private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1),\n  UNIQUE (exchange_id, sequence)\n) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "current_claim",
+      "tbl_name": "current_claim",
+      "sql": "CREATE TABLE current_claim (\n  message_id TEXT PRIMARY KEY REFERENCES message(message_id) ON DELETE RESTRICT,\n  consumer_id TEXT NOT NULL,\n  instance_id TEXT NOT NULL,\n  fencing_token INTEGER NOT NULL CHECK (fencing_token >= 1),\n  expires_at TEXT NOT NULL,\n  private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1)\n) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "delivery_ack_receipt",
+      "tbl_name": "delivery_ack_receipt",
+      "sql": "CREATE TABLE delivery_ack_receipt (\n  receipt_id TEXT PRIMARY KEY,\n  exchange_id TEXT NOT NULL,\n  message_id TEXT NOT NULL,\n  recipient_participant_id TEXT NOT NULL REFERENCES participant(participant_id) ON DELETE RESTRICT,\n  ack_session_id TEXT NOT NULL,\n  ack_fencing_token INTEGER NOT NULL CHECK (ack_fencing_token BETWEEN 1 AND 9007199254740991),\n  trust_generation INTEGER NOT NULL CHECK (trust_generation BETWEEN 1 AND 9007199254740991),\n  payload_digest TEXT NOT NULL CHECK (\n    length(payload_digest) = 64 AND payload_digest NOT GLOB '*[^0-9a-f]*'\n  ),\n  payload_length INTEGER NOT NULL CHECK (payload_length BETWEEN 0 AND 9007199254740991),\n  message_created_audit_seq INTEGER NOT NULL CHECK (message_created_audit_seq BETWEEN 1 AND 9007199254740991),\n  created_at TEXT NOT NULL CHECK (\n    created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'\n    AND created_at IS strftime('%Y-%m-%dT%H:%M:%fZ', created_at)\n    AND substr(created_at, 12, 2) < '24'\n  ),\n  private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision = 1),\n  FOREIGN KEY (exchange_id, message_id) REFERENCES message(exchange_id, message_id) ON DELETE RESTRICT,\n  FOREIGN KEY (recipient_participant_id, ack_session_id)\n    REFERENCES participant_session(participant_id, session_id) ON DELETE RESTRICT,\n  FOREIGN KEY (exchange_id, message_created_audit_seq)\n    REFERENCES audit_event(exchange_id, sequence) ON DELETE RESTRICT,\n  UNIQUE (exchange_id, message_id, recipient_participant_id)\n) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "delivery_cursor",
+      "tbl_name": "delivery_cursor",
+      "sql": "CREATE TABLE delivery_cursor (\n  exchange_id TEXT NOT NULL REFERENCES exchange(exchange_id) ON DELETE RESTRICT,\n  participant_id TEXT NOT NULL REFERENCES participant(participant_id) ON DELETE RESTRICT,\n  acked_audit_seq INTEGER NOT NULL CHECK (acked_audit_seq >= 0),\n  private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1),\n  PRIMARY KEY (exchange_id, participant_id)\n) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "disposition",
+      "tbl_name": "disposition",
+      "sql": "CREATE TABLE disposition (\n  exchange_id TEXT PRIMARY KEY REFERENCES exchange(exchange_id) ON DELETE RESTRICT,\n  status TEXT NOT NULL CHECK (status = 'ABANDONED_UNRESOLVED'),\n  owner_id TEXT NOT NULL,\n  recorded_at TEXT NOT NULL,\n  reason TEXT NOT NULL CHECK (length(reason) > 0),\n  reconciliation_id TEXT NOT NULL UNIQUE REFERENCES reconciliation(reconciliation_id) ON DELETE RESTRICT,\n  unresolved_json TEXT NOT NULL CHECK (json_valid(unresolved_json) AND json_type(unresolved_json) = 'array'),\n  private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1)\n) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "evidence_application",
+      "tbl_name": "evidence_application",
+      "sql": "CREATE TABLE evidence_application (\n  application_id TEXT PRIMARY KEY,\n  envelope_id TEXT NOT NULL UNIQUE REFERENCES evidence_envelope(envelope_id) ON DELETE RESTRICT,\n  result_id TEXT REFERENCES result(result_id) ON DELETE RESTRICT,\n  application_json TEXT NOT NULL CHECK (json_valid(application_json)),\n  applied_at TEXT NOT NULL,\n  private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1)\n) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "evidence_envelope",
+      "tbl_name": "evidence_envelope",
+      "sql": "CREATE TABLE evidence_envelope (\n  envelope_id TEXT PRIMARY KEY,\n  exchange_id TEXT NOT NULL,\n  message_id TEXT NOT NULL,\n  attempt_id TEXT NOT NULL,\n  evidence_kind TEXT NOT NULL,\n  evidence_digest TEXT NOT NULL CHECK (length(evidence_digest) = 64),\n  evidence_json TEXT NOT NULL CHECK (json_valid(evidence_json)),\n  observed_at TEXT NOT NULL,\n  private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1),\n  FOREIGN KEY (exchange_id, message_id) REFERENCES message(exchange_id, message_id) ON DELETE RESTRICT,\n  FOREIGN KEY (message_id, attempt_id) REFERENCES attempt(message_id, attempt_id) ON DELETE RESTRICT,\n  UNIQUE (attempt_id, evidence_kind, evidence_digest)\n) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "exchange",
+      "tbl_name": "exchange",
+      "sql": "CREATE TABLE exchange (\n  exchange_id TEXT PRIMARY KEY,\n  state TEXT NOT NULL CHECK (state IN ('OPEN', 'CLOSED')),\n  created_at TEXT NOT NULL,\n  closed_at TEXT,\n  private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1),\n  CHECK ((state = 'OPEN' AND closed_at IS NULL) OR (state = 'CLOSED' AND closed_at IS NOT NULL))\n) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "exchange_membership",
+      "tbl_name": "exchange_membership",
+      "sql": "CREATE TABLE exchange_membership (\n  exchange_id TEXT NOT NULL REFERENCES exchange(exchange_id) ON DELETE RESTRICT,\n  participant_id TEXT NOT NULL REFERENCES participant(participant_id) ON DELETE RESTRICT,\n  join_boundary_seq INTEGER NOT NULL CHECK (join_boundary_seq >= 1),\n  created_at TEXT NOT NULL,\n  private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1),\n  PRIMARY KEY (exchange_id, participant_id)\n) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "fencing_high_water",
+      "tbl_name": "fencing_high_water",
+      "sql": "CREATE TABLE fencing_high_water (\n  message_id TEXT PRIMARY KEY REFERENCES message(message_id) ON DELETE RESTRICT,\n  fencing_token INTEGER NOT NULL CHECK (fencing_token >= 1),\n  private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1)\n) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "host_trust_root",
+      "tbl_name": "host_trust_root",
+      "sql": "CREATE TABLE host_trust_root (\n  generation INTEGER PRIMARY KEY CHECK (generation >= 1),\n  secret_digest TEXT NOT NULL CHECK (length(secret_digest) = 64),\n  created_at TEXT NOT NULL,\n  private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1)\n) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "idempotency_record",
+      "tbl_name": "idempotency_record",
+      "sql": "CREATE TABLE idempotency_record (\n  namespace TEXT NOT NULL,\n  idempotency_key TEXT NOT NULL,\n  request_digest TEXT NOT NULL CHECK (length(request_digest) = 64),\n  entity_id TEXT NOT NULL,\n  created_at TEXT NOT NULL,\n  private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1),\n  PRIMARY KEY (namespace, idempotency_key)\n) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "message",
+      "tbl_name": "message",
+      "sql": "CREATE TABLE message (\n  message_id TEXT PRIMARY KEY,\n  exchange_id TEXT NOT NULL REFERENCES exchange(exchange_id) ON DELETE RESTRICT,\n  from_endpoint_json TEXT NOT NULL CHECK (json_valid(from_endpoint_json) AND json_type(from_endpoint_json) = 'object'),\n  to_endpoint_json TEXT NOT NULL CHECK (json_valid(to_endpoint_json) AND json_type(to_endpoint_json) = 'object'),\n  state TEXT NOT NULL CHECK (state IN (\n    'CREATED', 'QUEUED', 'CLAIMED', 'DISPATCHING', 'ACCEPTED', 'RUNNING', 'SETTLED',\n    'RESULT_AVAILABLE', 'DELIVERY_UNKNOWN', 'FAILED', 'CANCEL_REQUESTED', 'CANCELLED'\n  )),\n  payload_digest TEXT NOT NULL CHECK (length(payload_digest) = 64),\n  payload_length INTEGER NOT NULL CHECK (payload_length >= 0),\n  payload_body BLOB,\n  created_at TEXT NOT NULL,\n  idempotency_key TEXT,\n  private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1),\n  UNIQUE (exchange_id, message_id),\n  UNIQUE (exchange_id, idempotency_key)\n) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "participant",
+      "tbl_name": "participant",
+      "sql": "CREATE TABLE participant (\n  participant_id TEXT PRIMARY KEY,\n  endpoint_adapter TEXT NOT NULL,\n  endpoint_id TEXT NOT NULL,\n  created_at TEXT NOT NULL,\n  private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1),\n  UNIQUE (endpoint_adapter, endpoint_id)\n) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "participant_capability",
+      "tbl_name": "participant_capability",
+      "sql": "CREATE TABLE participant_capability (\n  capability_digest TEXT PRIMARY KEY CHECK (length(capability_digest) = 64),\n  participant_id TEXT NOT NULL REFERENCES participant(participant_id) ON DELETE RESTRICT,\n  scope TEXT NOT NULL CHECK (scope IN ('create', 'bind', 'join', 'attach', 'resume', 'takeover', 'send', 'ack', 'read', 'payload_read')),\n  trust_generation INTEGER NOT NULL CHECK (trust_generation >= 1),\n  created_at TEXT NOT NULL,\n  expires_at TEXT,\n  revoked_at TEXT,\n  private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1),\n  session_id TEXT\n) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "participant_fencing_high_water",
+      "tbl_name": "participant_fencing_high_water",
+      "sql": "CREATE TABLE participant_fencing_high_water (\n  participant_id TEXT PRIMARY KEY REFERENCES participant(participant_id) ON DELETE RESTRICT,\n  fencing_token INTEGER NOT NULL CHECK (fencing_token >= 1),\n  private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1)\n) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "participant_ownership",
+      "tbl_name": "participant_ownership",
+      "sql": "CREATE TABLE participant_ownership (\n  participant_id TEXT PRIMARY KEY REFERENCES participant(participant_id) ON DELETE RESTRICT,\n  session_id TEXT NOT NULL,\n  fencing_token INTEGER NOT NULL CHECK (fencing_token >= 1),\n  expires_at TEXT NOT NULL,\n  private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1),\n  lease_started_at TEXT\n) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "participant_session",
+      "tbl_name": "participant_session",
+      "sql": "CREATE TABLE participant_session (\n  participant_id TEXT NOT NULL REFERENCES participant(participant_id) ON DELETE RESTRICT,\n  session_id TEXT NOT NULL,\n  bound_at TEXT NOT NULL,\n  detached_at TEXT,\n  private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1),\n  PRIMARY KEY (participant_id, session_id)\n) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "reconciliation",
+      "tbl_name": "reconciliation",
+      "sql": "CREATE TABLE reconciliation (\n  reconciliation_id TEXT PRIMARY KEY,\n  exchange_id TEXT NOT NULL,\n  message_id TEXT NOT NULL,\n  attempt_id TEXT NOT NULL,\n  evidence_envelope_id TEXT NOT NULL UNIQUE REFERENCES evidence_envelope(envelope_id) ON DELETE RESTRICT,\n  basis TEXT NOT NULL CHECK (length(basis) > 0),\n  resolved_at TEXT NOT NULL,\n  private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1),\n  FOREIGN KEY (exchange_id, message_id) REFERENCES message(exchange_id, message_id) ON DELETE RESTRICT,\n  FOREIGN KEY (message_id, attempt_id) REFERENCES attempt(message_id, attempt_id) ON DELETE RESTRICT,\n  UNIQUE (message_id)\n) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "restore_hold",
+      "tbl_name": "restore_hold",
+      "sql": "CREATE TABLE restore_hold (\n  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),\n  held INTEGER NOT NULL DEFAULT 0 CHECK (held IN (0, 1)),\n  reason TEXT,\n  detected_at TEXT,\n  CHECK ((held = 0 AND reason IS NULL AND detected_at IS NULL) OR\n         (held = 1 AND length(reason) > 0 AND detected_at IS NOT NULL))\n) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "result",
+      "tbl_name": "result",
+      "sql": "CREATE TABLE result (\n  result_id TEXT PRIMARY KEY,\n  exchange_id TEXT NOT NULL,\n  message_id TEXT NOT NULL UNIQUE,\n  attempt_id TEXT NOT NULL UNIQUE,\n  source_endpoint_json TEXT NOT NULL CHECK (json_valid(source_endpoint_json) AND json_type(source_endpoint_json) = 'object'),\n  transport TEXT NOT NULL CHECK (transport IN ('delivered', 'ambiguous', 'failed')),\n  runtime TEXT NOT NULL CHECK (runtime IN ('accepted', 'running', 'settled', 'runtime_error', 'cancelled', 'interrupted')),\n  body TEXT NOT NULL,\n  result_digest TEXT NOT NULL CHECK (length(result_digest) = 64),\n  settled_at TEXT NOT NULL,\n  private_revision INTEGER NOT NULL DEFAULT 1 CHECK (private_revision >= 1),\n  FOREIGN KEY (exchange_id, message_id) REFERENCES message(exchange_id, message_id) ON DELETE RESTRICT,\n  FOREIGN KEY (message_id, attempt_id) REFERENCES attempt(message_id, attempt_id) ON DELETE RESTRICT\n) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "schema_migrations",
+      "tbl_name": "schema_migrations",
+      "sql": "CREATE TABLE schema_migrations (\n  version INTEGER PRIMARY KEY CHECK (version >= 1),\n  name TEXT NOT NULL UNIQUE,\n  checksum TEXT NOT NULL CHECK (length(checksum) = 64),\n  applied_at TEXT NOT NULL\n) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "store_metadata",
+      "tbl_name": "store_metadata",
+      "sql": "CREATE TABLE store_metadata (\n  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),\n  store_uuid TEXT NOT NULL UNIQUE,\n  application_id TEXT NOT NULL,\n  schema_version INTEGER NOT NULL CHECK (schema_version >= 1),\n  created_at TEXT NOT NULL\n) STRICT"
+    },
+    {
+      "type": "trigger",
+      "name": "attempt_identity_immutable",
+      "tbl_name": "attempt",
+      "sql": "CREATE TRIGGER attempt_identity_immutable\nBEFORE UPDATE OF attempt_id, message_id ON attempt\nWHEN NEW.attempt_id IS NOT OLD.attempt_id OR NEW.message_id IS NOT OLD.message_id\nBEGIN SELECT RAISE(ABORT, 'attempt identity is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "audit_event_immutable",
+      "tbl_name": "audit_event",
+      "sql": "CREATE TRIGGER audit_event_immutable\nBEFORE UPDATE ON audit_event BEGIN SELECT RAISE(ABORT, 'audit event is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "audit_event_nodelete",
+      "tbl_name": "audit_event",
+      "sql": "CREATE TRIGGER audit_event_nodelete\nBEFORE DELETE ON audit_event BEGIN SELECT RAISE(ABORT, 'audit event is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "current_claim_identity_immutable",
+      "tbl_name": "current_claim",
+      "sql": "CREATE TRIGGER current_claim_identity_immutable\nBEFORE UPDATE OF message_id ON current_claim\nWHEN NEW.message_id IS NOT OLD.message_id\nBEGIN SELECT RAISE(ABORT, 'claim identity is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "delivery_ack_receipt_immutable",
+      "tbl_name": "delivery_ack_receipt",
+      "sql": "CREATE TRIGGER delivery_ack_receipt_immutable\nBEFORE UPDATE ON delivery_ack_receipt\nBEGIN SELECT RAISE(ABORT, 'delivery ACK receipt is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "delivery_ack_receipt_nodelete",
+      "tbl_name": "delivery_ack_receipt",
+      "sql": "CREATE TRIGGER delivery_ack_receipt_nodelete\nBEFORE DELETE ON delivery_ack_receipt\nBEGIN SELECT RAISE(ABORT, 'delivery ACK receipt is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "exchange_identity_immutable",
+      "tbl_name": "exchange",
+      "sql": "CREATE TRIGGER exchange_identity_immutable\nBEFORE UPDATE OF exchange_id ON exchange\nWHEN NEW.exchange_id IS NOT OLD.exchange_id\nBEGIN SELECT RAISE(ABORT, 'exchange identity is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "exchange_membership_immutable",
+      "tbl_name": "exchange_membership",
+      "sql": "CREATE TRIGGER exchange_membership_immutable\nBEFORE UPDATE ON exchange_membership BEGIN SELECT RAISE(ABORT, 'exchange membership is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "exchange_membership_nodelete",
+      "tbl_name": "exchange_membership",
+      "sql": "CREATE TRIGGER exchange_membership_nodelete\nBEFORE DELETE ON exchange_membership BEGIN SELECT RAISE(ABORT, 'exchange membership is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "fencing_high_water_identity_immutable",
+      "tbl_name": "fencing_high_water",
+      "sql": "CREATE TRIGGER fencing_high_water_identity_immutable\nBEFORE UPDATE OF message_id ON fencing_high_water\nWHEN NEW.message_id IS NOT OLD.message_id\nBEGIN SELECT RAISE(ABORT, 'fencing identity is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "host_trust_root_immutable",
+      "tbl_name": "host_trust_root",
+      "sql": "CREATE TRIGGER host_trust_root_immutable\nBEFORE UPDATE ON host_trust_root BEGIN SELECT RAISE(ABORT, 'host trust root is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "host_trust_root_nodelete",
+      "tbl_name": "host_trust_root",
+      "sql": "CREATE TRIGGER host_trust_root_nodelete\nBEFORE DELETE ON host_trust_root BEGIN SELECT RAISE(ABORT, 'host trust root is append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "message_identity_immutable",
+      "tbl_name": "message",
+      "sql": "CREATE TRIGGER message_identity_immutable\nBEFORE UPDATE OF message_id, exchange_id ON message\nWHEN NEW.message_id IS NOT OLD.message_id OR NEW.exchange_id IS NOT OLD.exchange_id\nBEGIN SELECT RAISE(ABORT, 'message identity is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "participant_identity_immutable",
+      "tbl_name": "participant",
+      "sql": "CREATE TRIGGER participant_identity_immutable\nBEFORE UPDATE OF participant_id, endpoint_adapter, endpoint_id ON participant\nWHEN NEW.participant_id IS NOT OLD.participant_id\n  OR NEW.endpoint_adapter IS NOT OLD.endpoint_adapter\n  OR NEW.endpoint_id IS NOT OLD.endpoint_id\nBEGIN SELECT RAISE(ABORT, 'participant identity and binding are immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "participant_ownership_session_attached_insert",
+      "tbl_name": "participant_ownership",
+      "sql": "CREATE TRIGGER participant_ownership_session_attached_insert\nBEFORE INSERT ON participant_ownership\nWHEN EXISTS (\n  SELECT 1 FROM participant_session WHERE session_id = NEW.session_id AND detached_at IS NOT NULL\n)\nBEGIN SELECT RAISE(ABORT, 'ownership cannot reference a detached Session'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "participant_ownership_session_attached_update",
+      "tbl_name": "participant_ownership",
+      "sql": "CREATE TRIGGER participant_ownership_session_attached_update\nBEFORE UPDATE ON participant_ownership\nWHEN EXISTS (\n  SELECT 1 FROM participant_session WHERE session_id = NEW.session_id AND detached_at IS NOT NULL\n)\nBEGIN SELECT RAISE(ABORT, 'ownership cannot reference a detached Session'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "participant_session_detach_not_owner",
+      "tbl_name": "participant_session",
+      "sql": "CREATE TRIGGER participant_session_detach_not_owner\nBEFORE UPDATE OF detached_at ON participant_session\nWHEN NEW.detached_at IS NOT NULL AND EXISTS (\n  SELECT 1 FROM participant_ownership WHERE session_id = OLD.session_id\n)\nBEGIN SELECT RAISE(ABORT, 'the current Owner Session cannot be detached'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "participant_session_detach_once",
+      "tbl_name": "participant_session",
+      "sql": "CREATE TRIGGER participant_session_detach_once\nBEFORE UPDATE ON participant_session\nWHEN NOT (OLD.detached_at IS NULL AND OLD.private_revision IS 1\n  AND NEW.detached_at IS NOT NULL AND NEW.private_revision IS 2\n  AND NEW.detached_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'\n  AND NEW.detached_at IS strftime('%Y-%m-%dT%H:%M:%fZ', NEW.detached_at)\n  AND substr(NEW.detached_at, 12, 2) < '24'\n  AND OLD.bound_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'\n  AND OLD.bound_at IS strftime('%Y-%m-%dT%H:%M:%fZ', OLD.bound_at)\n  AND substr(OLD.bound_at, 12, 2) < '24'\n  AND NEW.detached_at >= OLD.bound_at)\nBEGIN SELECT RAISE(ABORT, 'Session detach is one-way and irreversible'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "participant_session_identity_immutable",
+      "tbl_name": "participant_session",
+      "sql": "CREATE TRIGGER participant_session_identity_immutable\nBEFORE UPDATE OF participant_id, session_id, bound_at ON participant_session\nWHEN NEW.participant_id IS NOT OLD.participant_id\n  OR NEW.session_id IS NOT OLD.session_id\n  OR NEW.bound_at IS NOT OLD.bound_at\nBEGIN SELECT RAISE(ABORT, 'Session binding identity is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "participant_session_insert_attached",
+      "tbl_name": "participant_session",
+      "sql": "CREATE TRIGGER participant_session_insert_attached\nBEFORE INSERT ON participant_session\nWHEN NEW.detached_at IS NOT NULL OR NEW.private_revision IS NOT 1\nBEGIN SELECT RAISE(ABORT, 'a Session binding is created attached'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "participant_session_nodelete",
+      "tbl_name": "participant_session",
+      "sql": "CREATE TRIGGER participant_session_nodelete\nBEFORE DELETE ON participant_session BEGIN SELECT RAISE(ABORT, 'Session bindings are permanent history'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "result_immutable",
+      "tbl_name": "result",
+      "sql": "CREATE TRIGGER result_immutable\nBEFORE UPDATE ON result BEGIN SELECT RAISE(ABORT, 'result is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "result_nodelete",
+      "tbl_name": "result",
+      "sql": "CREATE TRIGGER result_nodelete\nBEFORE DELETE ON result BEGIN SELECT RAISE(ABORT, 'result is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "schema_migrations_immutable",
+      "tbl_name": "schema_migrations",
+      "sql": "CREATE TRIGGER schema_migrations_immutable\nBEFORE UPDATE ON schema_migrations BEGIN SELECT RAISE(ABORT, 'migration ledger is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "schema_migrations_nodelete",
+      "tbl_name": "schema_migrations",
+      "sql": "CREATE TRIGGER schema_migrations_nodelete\nBEFORE DELETE ON schema_migrations BEGIN SELECT RAISE(ABORT, 'migration ledger is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "store_metadata_immutable",
+      "tbl_name": "store_metadata",
+      "sql": "CREATE TRIGGER store_metadata_immutable\nBEFORE UPDATE ON store_metadata BEGIN SELECT RAISE(ABORT, 'store metadata is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "store_metadata_nodelete",
+      "tbl_name": "store_metadata",
+      "sql": "CREATE TRIGGER store_metadata_nodelete\nBEFORE DELETE ON store_metadata BEGIN SELECT RAISE(ABORT, 'store metadata is immutable'); END"
+    }
+  ]
+}

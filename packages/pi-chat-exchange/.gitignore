@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.plugin-build/
+*.tsbuildinfo
+.pi-artifacts/

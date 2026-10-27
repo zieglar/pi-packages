@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "store": {
+    "directory": "/absolute/path/to/pi-chat-exchange-data",
+    "file": "ce-store.sqlite"
+  },
+  "exchange": {
+    "namespace": "local",
+    "idempotencyKey": "chatgpt-pi"
+  },
+  "endpoint": {
+    "adapter": "mcp",
+    "endpointId": "chatgpt-desktop"
+  },
+  "recipients": [
+    {
+      "adapter": "pi",
+      "endpointId": "pi-main"
+    }
+  ],
+  "lease": {
+    "ttlSeconds": 120,
+    "renewIntervalSeconds": 30
+  },
+  "payloadRead": {
+    "enabled": false
+  },
+  "ack": {
+    "enabled": false
+  }
+}
