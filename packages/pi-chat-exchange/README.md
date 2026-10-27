@@ -2,7 +2,15 @@
 
 让 ChatGPT 与 Pi 通过显式工具交换持久化消息：发送、发现收件箱、授权读取，以及独立授权的接收回执（ACK）。它不是自动任务调度器，也不把 ACK 或对话回复当作任务完成。
 
-当前为 **0.2.0 DRAFT / UNRELEASED 候选**，尚未公开发布。CE 自有代码已获所有者授权采用 **MIT**（见 [LICENSE](LICENSE)）；第三方许可证证据已按三层证据闭合（见 [许可审计](docs/license-audit.md)），`private: true` 已按所有者条件移除；发布本身仍需单独授权。候选元数据不等于发布批准。
+当前为 **0.2.0 DRAFT / UNRELEASED 候选**，尚未公开发布。CE 自有代码已获所有者授权采用 **MIT**（见 [LICENSE](LICENSE)）；第三方许可证证据已按三层证据闭合（见 [许可审计](docs/license-audit.md)，仅仓库、不随 tarball 分发），`private: true` 已按所有者条件移除；发布本身仍需单独授权。候选元数据不等于发布批准。
+
+## 当前能力与典型用法
+
+- **持久化消息**：ChatGPT 发来计划或问题，Pi 显式查看 inbox、授权读取，再以新 Message 回复检查结果。
+- **独立接收回执**：按需授权 payload read 与 ACK；接收回执不等于任务完成，也不触发正文执行。
+- **多 Session**：多个项目中的真实 Pi Session 使用独立 Endpoint，共享 Tunnel；ChatGPT inbox 仍不隔离对话。
+
+当前不提供自动任务调度、自动执行或 exactly-once delivery/execution。只需自动远端执行而不逐次授权时，本项目不适用。
 
 ## 选择连接方式
 
@@ -10,6 +18,8 @@
 - **Desktop 本地 stdio 插件。** 由支持本地插件的 ChatGPT Desktop 启动 bundled MCP server；需配置本机 Node 与外置 binding。见 [ChatGPT 安装](docs/chatgpt-installation.md)。不要与 Tunnel 同时争用同一 Endpoint。
 
 ## 安装 Pi 扩展
+
+**信任提示：Pi 扩展以你的完整用户权限运行。安装前审查源码与制品来源；消息授权门槛不等于操作系统沙箱。**
 
 正式日常使用请用**独立安装路径**：作者交付预构建私有 tarball，消费者物理安装后 `pi install` 注册，无需仓库/build，见 [独立安装指南](docs/independent-install.md)。下面是开发者源码路径。
 
@@ -23,6 +33,8 @@ pnpm install --frozen-lockfile
 pnpm --dir packages/pi-chat-exchange run build
 pi -e ./packages/pi-chat-exchange/pi-extension/index.ts
 ```
+
+扩展入口会导入包内 `dist/`；修改源码后须重新运行上述 build，再在已加载的 Session 中 `/reload`。`/reload` 不会编译源码，旧 `dist/` 会继续运行旧逻辑。
 
 这是临时加载。若要长期从不同项目使用，在 build 后执行 `pi install /absolute/path/to/packages/pi-chat-exchange` 注册本地包，再正常启动 Pi。本地安装引用该目录，不复制源码；不要同时安装和 `-e` 加载第二份。当前包没有独立的 `ce` 安装 CLI，也没有公开 npm 安装包。
 

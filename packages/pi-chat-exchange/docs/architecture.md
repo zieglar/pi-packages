@@ -59,7 +59,7 @@ MCP 身份固定于 operator-owned `--config`，不是由一次 MCP invocation �
 
 ## Message、DeliveryAttempt、Receipt、Result 的分离
 
-1. `ce_send` 将一次逻辑发送持久化为独立 Message；反向回复/后续追问也是新 Message，不是 Result 的变形。
+1. `ce_send` 将一次逻辑发送持久化为独立 Message；Message、幂等记录与创建 Audit 在本地 Store 同一事务提交，不证明云端传输或对端接收。key 在 Exchange 内作用域化，相同 key/请求重放原记录，改变正文或 Endpoint 则冲突；这不授予未知结果重试许可，也不承诺 exactly-once delivery/execution。反向回复/后续追问也是新 Message，不是 Result 的变形。
 2. Inbox 按 creation Audit 有界扫描并应用 recipient/membership/join boundary，不 ACK、不消费、不推进 delivery cursor。
 3. metadata read 与 payload read 是不同权限；后者在 materialize bytes 前完成 Storage 授权。
 4. ACK 追加 immutable reception receipt，第一次 CREATED、已有则 REPLAYED。Message 创建 Audit sequence 与 receipt Audit sequence 是不同证据。

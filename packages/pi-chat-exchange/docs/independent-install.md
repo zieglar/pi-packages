@@ -104,9 +104,11 @@ CE_PI_CLI="$HOME/ce-install/host/node_modules/@earendil-works/pi-coding-agent/di
 /ce-tunnel deactivate    # 正常释放本 Session 绑定；登记与历史保留
 ```
 
+最后的 `/ce-tunnel deactivate` 是验证正常解绑的演示，不是发消息前置步骤。若接下来要做首次消息验证，暂不执行该行、保持已授权 binding；若已停用则重新显式 activate。安装本身不证明云端可用：另行获准后按 [Tunnel 双向消息验证](tunnel-setup.md#4-双向-send--inbox--read--ack)完成 client/ChatGPT 连接、显式 Start 与独立 read/ACK；不得把离线合成流程当作真实云端验收。
+
 `convert` 不会清空或重命名原登记：若复用原 Session 和原 endpoint，省略 `/new` 与不同 endpoint 的 `register`，继续 reload/activate 即可；同一 native Session 尝试登记另一个 endpoint 会被拒绝。上列实测流程选择 `/new` 后为新 Session 登记 `pi/distribution`，原登记保留。
 
-Setup 保存的 profile/凭据在 `CE_TUNNEL_PROFILE` 指定目录（默认见 [Tunnel 指南](tunnel-setup.md#配置模型与生成文件)）；凭据以 owner-only 文件（0600，0700 目录）落盘，绝不明文进 profile。Configured ≠ Pi-bound ≠ Connected；启动真实 Tunnel 仍需 `CE_TUNNEL_BACKGROUND_ALLOW=1` 与显式 `/ce-tunnel start`，见 [Tunnel 用户指南](tunnel-setup.md)。
+`CE_TUNNEL_PROFILE` 指定 profile 文件的规范化绝对路径（不是目录）；Setup 将凭据保存在该文件所在目录的 `.credentials/` 下（默认见 [Tunnel 指南](tunnel-setup.md#配置模型与生成文件)）；凭据以 owner-only 文件（0600，0700 目录）落盘，绝不明文进 profile。Configured ≠ Pi-bound ≠ Connected；启动真实 Tunnel 仍需 `CE_TUNNEL_BACKGROUND_ALLOW=1` 与显式 `/ce-tunnel start`，见 [Tunnel 用户指南](tunnel-setup.md)。
 
 多 Endpoint / 多 Session 的注册、解绑与撤销语义见 [多 Session 使用指南](multi-session-usage.md)。
 
@@ -116,6 +118,7 @@ Setup 保存的 profile/凭据在 `CE_TUNNEL_PROFILE` 指定目录（默认见 [
 
 ## 4. 信任与安全注意
 
+- Pi 扩展以你的完整用户权限运行；安装前审查源码与制品来源。`--ignore-scripts` 只限制安装脚本，不会隔离扩展运行时权限。
 - tarball 为私有交付；安装前核对 SHA256，必要时 `tar tzf` 抽查（上面的必需文件清单即核对锚点）。
 - 全程 `--ignore-scripts`：本包没有也不需要任何 install/prepack/prepare hook。
 - 安装后的依赖树全部物理存在于 consumer 前缀内（内部 bin symlink 属正常；不应出现指向外部/开发树的链接）。

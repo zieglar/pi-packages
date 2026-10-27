@@ -1,6 +1,6 @@
 # ChatGPT ↔ Pi：Tunnel 用户指南、配置与排障
 
-这是 Secure MCP Tunnel 路径；不需要 Desktop stdio 插件。只用本地插件请走[独立安装路径](chatgpt-installation.md)。正式安装给日常使用请用预构建私有 tarball 的[独立安装指南](independent-install.md)，无需本页的仓库构建。示例均为占位值，不是已生效配置。
+这是 Secure MCP Tunnel 路径；不需要 Desktop stdio 插件。只用 Desktop 本地插件请走 [Desktop stdio 指南](chatgpt-installation.md)。正式安装给日常使用请用预构建私有 tarball 的[独立安装指南](independent-install.md)，无需本页的仓库构建。示例均为占位值，不是已生效配置。
 
 ## 1. 前提与安装
 
@@ -23,7 +23,7 @@ pnpm --dir packages/pi-chat-exchange run build
 pi -e ./packages/pi-chat-exchange/pi-extension/index.ts
 ```
 
-长期跨项目使用可在 build 后执行 `pi install /absolute/path/to/packages/pi-chat-exchange`，以后从各项目正常运行 Pi。该本地包引用原目录；不要移动目录或重复用 `-e` 加载。`pi list` 可核对包声明。更新源码后先 build，再在需要更新的 Session 中 `/reload`。
+长期跨项目使用可在 build 后执行 `pi install /absolute/path/to/packages/pi-chat-exchange`，以后从各项目正常运行 Pi。该本地包引用原目录；不要移动目录或重复用 `-e` 加载。`pi list` 可核对包声明。扩展入口导入包内 `dist/`，不会现场编译源码；更新源码后先 build，再在需要更新的 Session 中 `/reload`，否则仍可能运行陈旧 `dist/`。
 
 如果 shell 中的 Pi 不由批准 Node 启动，使用本机可信绝对路径执行已安装 Pi 的实际 JavaScript 入口；所有路径须先替换为本机值：
 
@@ -109,6 +109,12 @@ CE_TUNNEL_BACKGROUND_ALLOW=1 \
 
 两端先加入同一 Exchange，核对已加载的 recipients/opt-in 和当前对话工具。每一步独立授权；不要为诊断读取真实 Inbox。
 
+`ce_send` 的 `CREATED` 表示 Message、幂等记录与创建 Audit 已在本地 Store 同一事务提交；`REPLAYED` 返回原 Message，不创建第二条。它们不是云端送达、对端读取或任务执行的证明。Tunnel 传输工具调用与响应，双方通过同一 Store 发现消息；CE 不承诺 exactly-once delivery/execution。
+
+`idempotencyKey` 在 Exchange 内标识一次逻辑发送：相同 key 与相同请求可重放原记录；同 key 换正文或 Endpoint 是不可重试的冲突，不是覆盖。新逻辑消息使用新 key。超时、缺 ACK、BUSY 或未知结果均不授权重试；不要换 key 重发，也不要把 `DELIVERY_UNKNOWN` 改写为 `CANCELLED`。
+
+首次人工验收仅在单独授权后使用无敏感信息的测试文字与本次唯一 nonce/key，记录两向 Message ID；逐向核对 send → 独立 inbox → 授权 payload read → 单独授权 ACK，不以 CONNECTED 或历史验收替代本次证据。
+
 ### ChatGPT → Pi
 
 `ce_send` 虚构参数：
@@ -186,6 +192,9 @@ Store directory/file 与 Exchange namespace/idempotencyKey 四项精确一致才
 
 | 症状 | 检查与安全处理 |
 |---|---|
+| 安装失败 / 缺少运行时文件 | 可能是错误 Node/npm、制品不完整或源码未 build；先 `node --version`、`npm --version` 并核对制品 SHA256；tarball 按[独立安装指南](independent-install.md)核对载荷，不在 consumer build；源码在仓库根目录重新执行 `pnpm --dir packages/pi-chat-exchange run build`。不要用关闭资格门槛或删 Store 修安装 |
+| Pi 中没有 `/ce-tunnel` / `/ce-status` | 可能未加载、加载失败或仍引用旧目录；先 `pi list` 对照原 source 与启动时 `-e`，查看加载拒绝码；仅保留一份扩展。源码先 build 再 `/reload`，已安装包则核对物理入口；不要再叠加第二份加载 |
+| 发送失败 / 发送响应丢失 | 可能是未绑定、recipient 未授权、四项配对不符或结果未知；先 `/ce-status`、`/ce-tunnel status` 与固定拒绝码，核对当前精确 Endpoint；保留原 key/Message ID，未知结果停止核实，不以新 key、缺 ACK 或再次 Start 作为重发许可 |
 | host / child Node 不合格 | doctor 分开看两者；批准 Node 必须通过 SQLite 全资格。host 需用正确 Node 启动；child canonical profile 修复用显式 migrate，先核实 STOPPED |
 | client 缺失或信任拒绝 | doctor；核实独立安装及全链权限，不复制绕过不可信 Homebrew 祖先、不运行未准入 binary、不放宽 guard |
 | `CE_TUNNEL_BACKGROUND_UNAUTHORIZED` | 核实父 Pi 的精确许可；在子 shell export 无效 |

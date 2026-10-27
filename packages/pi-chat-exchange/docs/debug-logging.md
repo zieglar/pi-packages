@@ -23,7 +23,8 @@ Treat native stderr separately when sharing evidence.
 ## Independent artifact
 
 Keep frozen `pi-chat-exchange-gate-b1` 0.1.5 unchanged. Build a separate
-`pi-chat-exchange-gate-b1-debug` (`0.1.0-debug.1`) after `pnpm run build`:
+`pi-chat-exchange-gate-b1-debug` (`0.1.0-debug.3`) after `pnpm run build`,
+with both commands run from `packages/pi-chat-exchange/`:
 
 ```sh
 node scripts/package-debug-plugin.mjs \
