@@ -1,5 +1,5 @@
 import { tmpdir } from "node:os";
-import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createTuiHarness } from "@narumitw/pi-tui-kit/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -45,6 +45,10 @@ async function inputUi(h: ReturnType<typeof createTuiHarness>, value: string) {
 describe("real tunnel manager extension routing", () => {
   it("Manager Setup saves a real isolated profile, returns fresh STOPPED, and Start still refuses the gate", async () => {
     const f = await fixture();
+    // Hosted toolcache ancestors need not satisfy executable admission.
+    const node = join(realpathSync(f.directory), "node");
+    copyFileSync(process.execPath, node); chmodSync(node, 0o700);
+    vi.stubEnv("CE_NODE_PATH", node);
     const binding = join(f.directory, "binding.json");
     const store = join(f.directory, "STORE-MUST-NOT-EXIST");
     writeFileSync(binding, JSON.stringify({ version: 1, store: { directory: store },
@@ -69,6 +73,7 @@ describe("real tunnel manager extension routing", () => {
       await activateUi(h); // Continue -> Save
       expect(existsSync(join(f.directory, "profile.yaml"))).toBe(false);
       await activateUi(h); // Save -> fresh Manager
+      await vi.waitFor(() => expect(existsSync(join(f.directory, "profile.yaml"))).toBe(true));
       await vi.waitFor(() => expect(h.render().join("\n")).toMatch(/State +STOPPED/));
       const text = readFileSync(join(f.directory, "profile.yaml"), "utf8");
       const { parseTunnelProfile } = await import("../../dist/tunnel/background-manager.js");

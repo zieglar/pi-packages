@@ -20,7 +20,11 @@ if [ ! -f "$root/bin/version-guard.cjs" ] || [ ! -f "$root/server/launch.mjs" ];
 MISE_EXEC_AUTO_INSTALL=0 MISE_AUTO_INSTALL=0 MISE_NOT_FOUND_AUTO_INSTALL=0 MISE_YES=0
 export MISE_EXEC_AUTO_INSTALL MISE_AUTO_INSTALL MISE_NOT_FOUND_AUTO_INSTALL MISE_YES
 # Wait/forward signals so launcher failures and exit are observable even if mise fails.
-"$mise" exec node@24.21.0 -- node --require "$root/bin/version-guard.cjs" "$root/server/launch.mjs" "$@" <&0 &
+# POSIX asynchronous lists can replace fd 0 with /dev/null before redirections.
+# Preserve the caller pipe before backgrounding; close the extra fd in the child.
+exec 3<&0
+"$mise" exec node@24.21.0 -- node --require "$root/bin/version-guard.cjs" "$root/server/launch.mjs" "$@" <&3 3<&- &
+exec 3<&-
 child=$!
 trap 'log PROCESS_SIGNAL; kill -TERM "$child" 2>/dev/null || :' TERM
 trap 'log PROCESS_SIGNAL; kill -INT "$child" 2>/dev/null || :' INT
