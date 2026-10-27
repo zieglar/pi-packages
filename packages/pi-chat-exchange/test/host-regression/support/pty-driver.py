@@ -67,6 +67,8 @@ def record_inspection(pgid, result, reason, detail):
 
 def members(pgid, inspect=None):
     """Numeric snapshot. A zombie is dead, NOT evidence of descendant reap."""
+    if type(pgid) is not int or pgid <= 0:
+        raise ValueError('invalid target process group')
     result = (inspect or subprocess.run)(
         INSPECTION_QUERY, capture_output=True, text=True, timeout=2, close_fds=True)
     if result.returncode != 0 or result.stderr or not result.stdout.strip():
@@ -87,9 +89,11 @@ def members(pgid, inspect=None):
                                'fields': fields[:4], 'why': 'row did not match the strict numeric identity/state row'})
             raise ValueError('malformed group inspection')
         pid, ppid, group = map(int, match.groups()[:3])
-        if min(pid, group) <= 0:
+        # Linux kernel threads legitimately have PGID 0. Parse these strictly,
+        # but they cannot belong to our already validated positive anchor PGID.
+        if pid <= 0:
             record_inspection(pgid, result, 'invalid process identity',
-                              {'lineIndex': index, 'line': repr(line), 'why': 'pid or pgid was not positive'})
+                              {'lineIndex': index, 'line': repr(line), 'why': 'pid was not positive'})
             raise ValueError('invalid process identity')
         if group == pgid:
             rows.append({'pid': pid, 'ppid': ppid, 'pgid': group,

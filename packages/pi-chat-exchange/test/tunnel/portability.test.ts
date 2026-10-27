@@ -47,8 +47,15 @@ it("invalid explicit Node refuses setup without publishing a profile", async () 
   expect(h.spawns()).toBe(0);
 });
 it("missing explicitly selected client refuses spawn while preserving inspection", async () => {
-  const h = harness({ CE_TUNNEL_CLIENT_PATH: "/missing/ce-tunnel-client", CE_TUNNEL_BACKGROUND_ALLOW: "1" });
+  const env = { CE_TUNNEL_CLIENT_PATH: "/missing/ce-tunnel-client", CE_TUNNEL_BACKGROUND_ALLOW: "1", CE_NODE_PATH: "" };
+  const h = harness(env);
+  const node = join(h.root, "node"); fs.copyFileSync(process.execPath, node); fs.chmodSync(node, 0o700);
+  env.CE_NODE_PATH = node;
   await h.save();
+  const saved = fs.readFileSync(h.profilePath, "utf8");
   await expect(h.manager.start()).rejects.toMatchObject({ code: "CE_TUNNEL_SPAWN_FAILED" });
   expect(h.spawns()).toBe(0);
+  expect(fs.readFileSync(h.profilePath, "utf8")).toBe(saved);
+  expect(parseTunnelProfile(saved).mcpCommand).toBeDefined();
+  expect(fs.existsSync(join(h.root, "UNOPENED-STORE"))).toBe(false);
 });

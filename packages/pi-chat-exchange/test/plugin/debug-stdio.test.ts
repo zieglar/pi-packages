@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { cpSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -6,6 +6,23 @@ import { createInterface } from "node:readline";
 import { expect, it } from "vitest";
 
 const pkg = resolve(import.meta.dirname, "../..");
+it("POSIX debug launcher forwards piped stdin to its background child", () => {
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "ce-debug-stdin-"));
+  try {
+    mkdirSync(join(root, "server")); mkdirSync(join(root, "bin"));
+    writeFileSync(join(root, "server/launch.mjs"), "");
+    writeFileSync(join(root, "bin/version-guard.cjs"), "");
+    const shim = join(root, "mise-fixture");
+    writeFileSync(shim, '#!/bin/sh\nexec /bin/cat\n', { mode: 0o700 });
+    const launcher = join(root, "bin/launch");
+    writeFileSync(launcher, readFileSync(join(pkg, "scripts/debug-plugin/launch"), "utf8").replace("/opt/homebrew/bin/mise", shim), { mode: 0o700 });
+    const input = '{"jsonrpc":"2.0","id":1,"method":"initialize"}\n';
+    const result = spawnSync("/bin/sh", [launcher], { input, encoding: "utf8", timeout: 5_000 });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe(input);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 // Debug-only launcher remains explicitly pinned to 24.21.0; production stdio is tested separately.
 it.skipIf(process.version !== "v24.21.0")("real launcher preserves JSON-RPC, logs stages and survives unavailable log files with clean signal shutdown", { timeout: 30_000 }, async () => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), "ce-debug-stdio-"));
