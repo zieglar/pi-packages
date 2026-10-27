@@ -86,6 +86,27 @@ else:
             child_env = json.loads(control.stdout)
             self.assertEqual({k: child_env[k] for k in private_env}, private_env)
             self.assertLessEqual(set(child_env) - set(private_env), {'__CF_USER_TEXT_ENCODING', 'SDKROOT', 'CPATH', 'LIBRARY_PATH', 'MANPATH'})
+            # Node itself may set UV_USE_IO_URING=0 on Linux kernels without
+            # io_uring (startup self-default only when unset; observed with
+            # ENOSYS io_uring_setup). That is runtime behavior, never caller-
+            # env leakage, so the Node runtime self-default is pinned by an
+            # exact Node control, and Node probes are held to the Python
+            # control env plus only that pinned self-default. The private-env
+            # contract and the leak checks below stay unchanged and strict.
+            node_control = subprocess.run([str(node), '-e', 'process.stdout.write(JSON.stringify(process.env))'],
+                                          env=private_env, cwd=root / 'run', check=True, capture_output=True, text=True)
+            node_env = json.loads(node_control.stdout)
+            self.assertEqual({k: node_env[k] for k in private_env}, private_env)
+            self.assertLessEqual(set(node_env) - set(child_env), {'UV_USE_IO_URING'})
+            if 'UV_USE_IO_URING' in node_env:
+                self.assertEqual(node_env['UV_USE_IO_URING'], '0')
+            # Node probes are launched through the real Python children and
+            # inherit that child's environment (child_env; on macOS the Xcode
+            # python3 shim adds SDKROOT/CPATH/LIBRARY_PATH/MANPATH). Expect
+            # exactly that inherited env plus the pinned Node self-default.
+            expected_env = dict(child_env)
+            if 'UV_USE_IO_URING' in node_env:
+                expected_env['UV_USE_IO_URING'] = node_env['UV_USE_IO_URING']
             launches = []
             class Launcher:
                 @staticmethod
@@ -118,7 +139,7 @@ else:
             self.assertEqual(len(probes), 4)
             for index, observed in enumerate(probes):
                 with self.subTest(node=index):
-                    self.assertEqual(observed, {'env': child_env, 'cwd': str(root / 'run'), 'tmp': str(root / 'tmp')})
+                    self.assertEqual(observed, {'env': expected_env, 'cwd': str(root / 'run'), 'tmp': str(root / 'tmp')})
             copies = [pathlib.Path(r['copy']) for r in records if 'copy' in r]
             self.assertEqual(len(copies), 1)
             with self.subTest(store_copy='private TMPDIR'):
