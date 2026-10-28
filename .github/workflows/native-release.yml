@@ -10,7 +10,11 @@ on:
         required: true
         type: boolean
         default: false
-
+      publish_sha:
+        description: "Exact public commit SHA authorized for publication"
+        required: false
+        type: string
+        default: ""
 permissions:
   contents: read
 
@@ -267,13 +271,16 @@ jobs:
     env:
       VERSION: ${{ needs.build.outputs.version }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      EXPECTED_SHA: ${{ inputs.publish_sha }}
     steps:
       - name: Checkout exact release orchestration
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Refuse existing version and require repository immutability
+      - name: Refuse existing version and require repository protections
+        env:
+          CE_RELEASE_ADMIN_TOKEN: ${{ secrets.CE_RELEASE_ADMIN_TOKEN }}
         run: node packages/pi-chat-exchange/scripts/native-release.mjs check
       - name: Download attested release set
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -281,18 +288,12 @@ jobs:
           name: native-release-bundle
           path: release-files
       - name: Verify provenance and checksum relation before publication
-        run: |
-          set -euo pipefail
-          cd release-files
-          sha256sum --check SHA256SUMS
-          for file in *.node SHA256SUMS native-*.json; do
-            gh attestation verify "$file" --repo "$GITHUB_REPOSITORY" \
-              --bundle provenance.jsonl --source-digest "$GITHUB_SHA" \
-              --source-ref refs/heads/main \
-              --signer-workflow \
-              "$GITHUB_REPOSITORY/.github/workflows/native-release.yml"
-          done
+        run: >-
+          node packages/pi-chat-exchange/scripts/verify-release-assets.mjs
+          release-files
       - name: Publish without replacing tag or assets
+        env:
+          CE_RELEASE_ADMIN_TOKEN: ${{ secrets.CE_RELEASE_ADMIN_TOKEN }}
         run: >-
           node packages/pi-chat-exchange/scripts/native-release.mjs
           publish release-files
