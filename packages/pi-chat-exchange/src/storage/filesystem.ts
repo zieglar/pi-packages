@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
   closeSync,
   constants,
@@ -19,8 +20,8 @@ export class FilesystemSafetyError extends Error {
   }
 }
 
+const DARWIN_LOCAL_FILESYSTEM_NAMES = new Set(["apfs", "hfs"]);
 const LOCAL_FILESYSTEM_TYPES: Readonly<Record<string, ReadonlySet<number>>> = {
-  darwin: new Set([17, 23, 26]), // HFS, HFS+, APFS
   linux: new Set([
     0xef53, // ext2/3/4
     0x58465342, // XFS
@@ -51,7 +52,50 @@ function isWithin(path: string, parent: string): boolean {
   return child === "" || (!child.startsWith(`..${sep}`) && child !== "..");
 }
 
-export function assertLocalFilesystemType(platform: string, type: number): void {
+function assertDarwinLocalFilesystem(directory: string | undefined): void {
+  if (directory === undefined || !isAbsolute(directory)) {
+    throw new FilesystemSafetyError("a real mounted directory is required to verify the Darwin filesystem");
+  }
+  let directoryDevice: number;
+  try { directoryDevice = lstatSync(directory).dev; } catch {
+    throw new FilesystemSafetyError("unable to verify the Darwin filesystem identity");
+  }
+  let output: string;
+  try {
+    output = execFileSync("/sbin/mount", {
+      encoding: "utf8", shell: false, timeout: 5_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024,
+      env: { PATH: "/usr/bin:/bin", LC_ALL: "C", LANG: "C" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    throw new FilesystemSafetyError("unable to verify the local Darwin filesystem");
+  }
+  let match: { point: string; name: string } | undefined;
+  for (const line of output.split(/\r?\n/)) {
+    const entry = /^.+? on (.+?) \(([^,\s]+)(?:,|\))/.exec(line);
+    if (entry === null) continue;
+    const point = entry[1];
+    const name = entry[2];
+    if (point === undefined || name === undefined) continue;
+    let mountedDevice: number;
+    try { mountedDevice = lstatSync(point).dev; } catch { continue; }
+    // st_dev identifies the filesystem. Longest point only orders duplicate records deterministically.
+    if (mountedDevice === directoryDevice) {
+      if (match === undefined || point.length > match.point.length) match = { point, name };
+    }
+  }
+  if (match === undefined || !DARWIN_LOCAL_FILESYSTEM_NAMES.has(match.name)) {
+    throw new FilesystemSafetyError("filesystem type is not approved as local on darwin");
+  }
+}
+
+export function assertLocalFilesystemType(platform: string, type: number, directory?: string): void {
+  if (platform === "darwin") {
+    // VFS type numbers are registration-dependent. Use mount identity instead of
+    // treating a hosted runner's 0x19 or this machine's 0x1a as APFS constants.
+    assertDarwinLocalFilesystem(directory);
+    return;
+  }
   const approved = LOCAL_FILESYSTEM_TYPES[platform];
   if (approved === undefined || !approved.has(type)) {
     throw new FilesystemSafetyError(
@@ -124,7 +168,7 @@ export function prepareDatabasePath(options: DatabasePathOptions): string {
   }
   assertOwned(directoryStat, "database directory");
   assertMode(directoryStat, 0o700, "database directory");
-  assertLocalFilesystemType(process.platform, statfsSync(directory).type);
+  assertLocalFilesystemType(process.platform, statfsSync(directory).type, directory);
 
   const databasePath = resolve(directory, options.filename);
   if (dirname(databasePath) !== directory) {
