@@ -37,7 +37,7 @@ try {
   const required = ["LICENSE", "dist/bin/mcp-stdio.js", "dist/tunnel/multi-session-policy.js", "dist/tunnel/offline-client.js", "pi-extension/index.ts", "native/tunnel-keychain.swift", "scripts/recover-stale-ownership.mjs", "scripts/reconcile-session-process-mutex.mjs", "CHANGELOG.md", "docs/releases/0.2.0.md",
     // Consumer-facing contract closure: public consumers must be able to operate
     // the package safely without access to the private repository.
-    "docs/architecture.md", "docs/tunnel-manager-background.md", "docs/protocol-v2.md", "docs/ownership-contract.md", "docs/storage-contract.md", "docs/delivery-ack-contract.md", "docs/storage-security.md"];
+    "docs/architecture.md", "docs/native-sqlite.md", "docs/tunnel-manager-background.md", "docs/protocol-v2.md", "docs/ownership-contract.md", "docs/storage-contract.md", "docs/delivery-ack-contract.md", "docs/storage-security.md"];
   for (const path of required)
     regular(join(root, path));
   for (const path of modules) {
@@ -63,7 +63,7 @@ try {
     mkdirSync(out, { recursive: true });
     const options = { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] };
     const inventory = JSON.parse(execFileSync("npm", ["pack", "--ignore-scripts", "--json", "--dry-run"], options))[0].files;
-    const allowed = /^(?:package\.json|README\.md|CHANGELOG\.md|docs\/releases\/0\.2\.0\.md|LICENSE(?:\.[^/]+)?|pi-extension\/[^/]+\.ts|pi-extension\/(?:README\.md|allowlist\.example\.json)|dist\/.+\.js|native\/tunnel-keychain\.swift|scripts\/(?:recover-stale-ownership|reconcile-session-process-mutex)\.mjs|docs\/(?:independent-install|tunnel-setup|multi-session-usage|chatgpt-installation|architecture|tunnel-manager-background|protocol-v2|ownership-contract|storage-contract|delivery-ack-contract|storage-security)\.md)$/;
+    const allowed = /^(?:package\.json|README\.md|CHANGELOG\.md|docs\/releases\/0\.2\.0\.md|LICENSE(?:\.[^/]+)?|pi-extension\/[^/]+\.ts|pi-extension\/(?:README\.md|allowlist\.example\.json)|dist\/.+\.js|native\/tunnel-keychain\.swift|scripts\/(?:recover-stale-ownership|reconcile-session-process-mutex)\.mjs|docs\/(?:independent-install|tunnel-setup|multi-session-usage|chatgpt-installation|architecture|native-sqlite|tunnel-manager-background|protocol-v2|ownership-contract|storage-contract|delivery-ack-contract|storage-security)\.md)$/;
     for (const entry of inventory) if (!allowed.test(entry.path)) fail(`unexpected native pack entry ${entry.path}`);
     for (const path of [...modules.map((path) => relative(root, path)), ...required])
       if (!inventory.some((entry) => entry.path === path)) fail(`native pack excludes ${path}`);

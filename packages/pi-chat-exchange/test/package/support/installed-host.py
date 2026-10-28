@@ -52,6 +52,31 @@ for name in ['npmrc', 'global-npmrc']:
     (r / 'home' / name).write_text('')
 (r / 'agent/settings.json').write_text(json.dumps({'npmCommand': [str(node), str(npm_source)]}))
 env = {'HOME': str(r / 'home'), 'TMPDIR': str(r / 'tmp') + '/', 'PI_CODING_AGENT_DIR': str(r / 'agent'), 'PATH': str(r / 'bin') + ':/usr/bin:/bin:/usr/sbin:/sbin', 'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8', 'XDG_CONFIG_HOME': str(r / 'xdg/config'), 'XDG_DATA_HOME': str(r / 'xdg/data'), 'XDG_CACHE_HOME': str(r / 'xdg/cache'), 'npm_config_cache': str(r / 'cache/npm'), 'npm_config_userconfig': str(r / 'home/npmrc'), 'npm_config_globalconfig': str(r / 'home/global-npmrc'), 'npm_config_registry': 'https://registry.npmjs.org/', 'npm_config_ignore_scripts': 'true', 'npm_config_audit': 'false', 'npm_config_fund': 'false', 'npm_config_update_notifier': 'false', 'PI_SKIP_VERSION_CHECK': '1', 'PI_TELEMETRY': '0'}
+# Optional isolated driver fixture: copy selection and verified Native cache into
+# the test HOME, never into the operator's actual configuration directory.
+driver_home = os.environ.get('CE_TEST_SQLITE_DRIVER_HOME')
+if driver_home:
+    source_home = pathlib.Path(driver_home) / '.config' / 'pi-chat-exchange'
+    destination_home = r / 'home' / '.config' / 'pi-chat-exchange'
+    if source_home.is_dir():
+        for source in source_home.rglob('*'):
+            if source.is_file():
+                target = destination_home / source.relative_to(source_home)
+                target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                shutil.copyfile(source, target)
+                target.chmod(0o600)
+        selection_path = destination_home / 'sqlite-driver.json'
+        if selection_path.is_file():
+            selection = json.loads(selection_path.read_text())
+            manifest_source = selection.get('manifestFile')
+            if manifest_source:
+                manifest_target = destination_home / 'native-manifest.json'
+                shutil.copyfile(manifest_source, manifest_target)
+                manifest_target.chmod(0o600)
+                selection['manifestFile'] = str(manifest_target)
+                selection_path.write_text(json.dumps(selection, indent=2) + '\n')
+                selection_path.chmod(0o600)
+
 (r / 'install-env.json').write_text(json.dumps(env, indent=2))
 
 def verify_durable():
@@ -90,6 +115,8 @@ def verify_module_origin():
     if not trace.is_file():
         raise RuntimeError('module resolution trace missing')
     allowed = [str(r / 'consumer') + '/', str(r / 'host') + '/', str(r / 'bin') + '/', str(r / 'run') + '/', str(node)]
+    if driver_home:
+        allowed.insert(0, str(r / 'home/.config/pi-chat-exchange/native') + '/')
     if managed:
         allowed.insert(0, str(r / 'agent/npm') + '/')
     total = 0

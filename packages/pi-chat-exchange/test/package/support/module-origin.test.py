@@ -27,7 +27,7 @@ def origin_fixture(raw_root, managed):
                     if isinstance(node, ast.FunctionDef) and node.name == 'verify_module_origin')
     compiled = compile(ast.Module(body=[function], type_ignores=[]), '<actual-origin-verifier>', 'exec')
     code = next(value for value in compiled.co_consts if isinstance(value, CodeType))
-    namespace = {'__builtins__': vars(builtins), 'r': root, 'node': root / 'bin/node', 'managed': managed,
+    namespace = {'__builtins__': vars(builtins), 'r': root, 'node': root / 'bin/node', 'managed': managed, 'driver_home': None,
                  'json': json, 'pathlib': pathlib, 'urllib': urllib}
     return FunctionType(code, namespace), root
 

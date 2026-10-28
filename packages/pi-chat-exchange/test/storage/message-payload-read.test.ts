@@ -8,6 +8,7 @@
  */
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { resolveSqliteDriver } from "../../src/storage/sqlite-driver-selection.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { createMessage } from "../../src/storage/creation.js";
 import { readMessageMetadata, readMessagePayload, sendMessage } from "../../src/storage/messaging.js";
@@ -535,7 +536,7 @@ describe("CE-0002 B3-P4D authorized durable payload read", () => {
     const w = payloadWorld();
     const messageId = sendOne(w);
     const before = rowCounts(w.active);
-    const blocker = new DatabaseSync(w.active.databasePath);
+    const blocker = resolveSqliteDriver().open(w.active.databasePath);
     try {
       blocker.exec("BEGIN IMMEDIATE");
       const error = expectRefusal(

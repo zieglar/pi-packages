@@ -7,7 +7,7 @@ import { cleanupFixtures, fixture } from "./support/participant-fixture.js";
 import { vi } from "vitest";
 import { V6_FOUNDATION_NAME,V6_FOUNDATION_CHECKSUM } from "../../src/storage/schema.js";
 afterEach(cleanupFixtures);
-const cases: [string,string,(db:DatabaseSync)=>void][]=[
+const cases: [string,string,(db:Pick<DatabaseSync, "exec">)=>void][]=[
  ["CUR-OPEN-02/missing-object","STORAGE_INCOMPATIBLE",db=>db.exec("DROP TRIGGER delivery_ack_receipt_nodelete")],
  ["CUR-OPEN-02/extra-object","STORAGE_INCOMPATIBLE",db=>db.exec("CREATE TABLE extra(x TEXT) STRICT")],
  ["CUR-OPEN-02/ledger-checksum","STORAGE_MIGRATION_CHECKSUM_MISMATCH",db=>db.exec("DROP TRIGGER schema_migrations_immutable; UPDATE schema_migrations SET checksum=replace(checksum,substr(checksum,1,1),'a')")],

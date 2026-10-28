@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import type { SQLInputValue } from "node:sqlite";
+import type { SqliteInputValue as SQLInputValue } from "./sqlite-driver.js";
 import { StoreLifecycleError } from "./errors.js";
 import { CAPABILITY_PATTERN, HOST_CAPABILITY_BYTES } from "./participant-identity.js";
 import { deriveCapabilityDigest, digestsMatch, readHostSecretDigest } from "./trust-root.js";

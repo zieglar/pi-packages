@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import type { SQLInputValue } from "node:sqlite";
+import type { SqliteInputValue } from "../../src/storage/sqlite-driver.js";
 import { generateEntityId } from "../../src/protocol/identity.js";
 import { recordDeliveryAck, reconcileDeliveryAck } from "../../src/storage/delivery-ack.js";
 import { cleanupFixtures, expectRefusal, capabilityFor } from "./support/participant-fixture.js";
@@ -15,17 +15,17 @@ const insert="INSERT INTO delivery_ack_receipt(receipt_id,exchange_id,message_id
 it("ACK-REC-01/foreign-keys: distinct restrictive tuple violations with successful rollback-only control",()=>{
  const w=ackWorld(),db=w.f.store.database;recordDeliveryAck(w.f.store,w.input,clockAt(10));const row=db.prepare("SELECT * FROM delivery_ack_receipt").get()!;
  const before=snapshot(w.f);
- for(const patch of [{message_id:generateEntityId("msg_")},{recipient_participant_id:"prt_01ARZ3NDEKTSV4RRFFQ69G5FAZ"},{ack_session_id:SENDER},{message_created_audit_seq:9999}] as Record<string,SQLInputValue>[]) {
+ for(const patch of [{message_id:generateEntityId("msg_")},{recipient_participant_id:"prt_01ARZ3NDEKTSV4RRFFQ69G5FAZ"},{ack_session_id:SENDER},{message_created_audit_seq:9999}] as Record<string,SqliteInputValue>[]) {
   db.exec("BEGIN; DROP TRIGGER delivery_ack_receipt_nodelete; DELETE FROM delivery_ack_receipt");
-  try {expect(()=>db.prepare(insert).run(...columns.map(k=>({...row,...patch})[k] as SQLInputValue))).toThrow(/FOREIGN KEY/);}finally{db.exec("ROLLBACK");}
+  try {expect(()=>db.prepare(insert).run(...columns.map(k=>({...row,...patch})[k] as SqliteInputValue))).toThrow(/FOREIGN KEY/);}finally{db.exec("ROLLBACK");}
  }
  db.exec("BEGIN; DROP TRIGGER delivery_ack_receipt_nodelete; DELETE FROM delivery_ack_receipt");
- try{expect(db.prepare(insert).run(...columns.map(k=>row[k] as SQLInputValue)).changes).toBe(1);}finally{db.exec("ROLLBACK");}
+ try{expect(db.prepare(insert).run(...columns.map(k=>row[k] as SqliteInputValue)).changes).toBe(1);}finally{db.exec("ROLLBACK");}
  expect(snapshot(w.f)).toBe(before);
 });
 it("ACK-REC-01/strict-checks: all safe-integer, digest, canonical-time and immutable revision gates",()=>{
  const w=ackWorld(),db=w.f.store.database;recordDeliveryAck(w.f.store,w.input,clockAt(10));const row=db.prepare("SELECT * FROM delivery_ack_receipt").get()!;const before=snapshot(w.f);
- const bad:Record<string,SQLInputValue>[]=[];
+ const bad:Record<string,unknown>[]=[];
  for(const field of ["ack_fencing_token","trust_generation","payload_length","message_created_audit_seq"])
   for(const value of [-1,1.5,9007199254740992n,"invalid"])bad.push({[field]:value});
  for(const field of ["ack_fencing_token","trust_generation","message_created_audit_seq"])bad.push({[field]:0});
@@ -33,7 +33,7 @@ it("ACK-REC-01/strict-checks: all safe-integer, digest, canonical-time and immut
  for(const value of ["2026-10-10","2026-10-10T24:00:00.000Z","2026-02-30T00:00:00.000Z","2026-10-10T00:00:00Z"])bad.push({created_at:value});
  for(const value of [0,2,1.5])bad.push({private_revision:value});
  for(const patch of bad){db.exec("BEGIN; DROP TRIGGER delivery_ack_receipt_nodelete; DELETE FROM delivery_ack_receipt");try{
-  expect(()=>db.prepare(insert).run(...columns.map(k=>({...row,...patch})[k] as SQLInputValue))).toThrow();
+  expect(()=>db.prepare(insert).run(...columns.map(k=>({...row,...patch})[k] as SqliteInputValue))).toThrow();
  }finally{db.exec("ROLLBACK");}}
  expect(snapshot(w.f)).toBe(before);
 });

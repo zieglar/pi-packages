@@ -1,9 +1,11 @@
+import type { SqliteConnection } from "../../src/storage/sqlite-driver.js";
 import { mkdtempSync, realpathSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { resolveSqliteDriver } from "../../src/storage/sqlite-driver-selection.js";
 import { Value } from "@sinclair/typebox/value";
 import { afterEach, expect, it } from "vitest";
 import { ExchangeSchema, EventSchema } from "../../src/protocol/entities.js";
@@ -27,11 +29,11 @@ function fixture() {
   fixtures.push(result);
   return result;
 }
-function snapshot(db: DatabaseSync) {
+function snapshot(db: Pick<DatabaseSync | SqliteConnection, "prepare">) {
   return ["exchange", "idempotency_record", "audit_event", "message"].map((table) =>
     db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
 }
-function changes(db: DatabaseSync) { return db.prepare("SELECT total_changes() AS n").get()!.n; }
+function changes(db: Pick<DatabaseSync | SqliteConnection, "prepare">) { return db.prepare("SELECT total_changes() AS n").get()!.n; }
 function failed(action: () => unknown, code: string, outcome = "ROLLED_BACK", retryable = false) {
   let caught: unknown;
   try { action(); } catch (error) { caught = error; }
@@ -203,7 +205,7 @@ it("committed-then-failed COMMIT does not expose a captured success or retry", (
 
 it("BUSY remains bounded and is never automatically retried", () => {
   const { store, reader, root } = fixture();
-  const blocker = new DatabaseSync(join(root, "db", "store.sqlite"));
+  const blocker = resolveSqliteDriver().open(join(root, "db", "store.sqlite"));
   let begins = 0;
   const original = store.database.exec.bind(store.database);
   store.database.exec = (sql) => { if (sql === "BEGIN IMMEDIATE") begins++; original(sql); };

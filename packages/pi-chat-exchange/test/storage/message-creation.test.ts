@@ -1,8 +1,10 @@
+import type { SqliteConnection } from "../../src/storage/sqlite-driver.js";
 import { createHash } from "node:crypto";
 import { mkdtempSync, realpathSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { resolveSqliteDriver } from "../../src/storage/sqlite-driver-selection.js";
 import { Value } from "@sinclair/typebox/value";
 import { afterEach, expect, it } from "vitest";
 import { EventSchema, MessageSchema } from "../../src/protocol/entities.js";
@@ -44,11 +46,11 @@ function fixture(): Fixture {
 }
 const request = (exchangeId: string, overrides: Record<string, unknown> = {}) =>
   ({ exchangeId, from, to, payload: bytes(), idempotencyKey: "message-key", ...overrides });
-function snapshot(db: DatabaseSync) {
+function snapshot(db: Pick<DatabaseSync | SqliteConnection, "prepare">) {
   return ["message", "idempotency_record", "audit_event", "exchange"].map((table) =>
     db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all().map((row) => ({ ...row })));
 }
-function changes(db: DatabaseSync) { return db.prepare("SELECT total_changes() AS n").get()!.n; }
+function changes(db: Pick<DatabaseSync | SqliteConnection, "prepare">) { return db.prepare("SELECT total_changes() AS n").get()!.n; }
 function failed(action: () => unknown, code: string, outcome = "ROLLED_BACK", retryable = false) {
   let caught: unknown;
   try { action(); } catch (error) { caught = error; }
@@ -525,7 +527,7 @@ it("T7 publishes nothing when the commit outcome is uncertain", () => {
 
 it("T8 attempts BEGIN IMMEDIATE exactly once when BUSY", () => {
   const { store, reader, root, exchangeId } = fixture();
-  const blocker = new DatabaseSync(join(root, "db", "store.sqlite"));
+  const blocker = resolveSqliteDriver().open(join(root, "db", "store.sqlite"));
   let begins = 0;
   const original = store.database.exec.bind(store.database);
   store.database.exec = (sql) => { if (sql === "BEGIN IMMEDIATE") begins++; original(sql); };
@@ -669,7 +671,7 @@ it("accepts bound SQL punctuation without injection", () => {
 });
 
 /** Quote every SQL value as text so corrupt int64 values remain observable. */
-function losslessSnapshot(db: DatabaseSync) {
+function losslessSnapshot(db: Pick<DatabaseSync | SqliteConnection, "prepare">) {
   return ["message", "idempotency_record", "exchange", "audit_event"].map((table) => {
     const columns = db.prepare(`PRAGMA table_info(${table})`).all().map((row) => {
       const name = String(row.name).replaceAll('"', '""');

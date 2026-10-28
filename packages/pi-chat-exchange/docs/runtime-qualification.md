@@ -1,3 +1,33 @@
+# Runtime decoupling — current development policy
+
+Handoff: `HANDOFF-PI-SQLITE-RUNTIME-DECOUPLE-01`. The sections below for COMPAT-02 and the original exact-runtime qualification are historical. Published npm 0.2.0 is unchanged.
+
+The current candidate policy removes exact SQLite 3.53.4 and source-ID equality as admission requirements. Runtime identities remain observable evidence; they are not substitutes for behavior checks. Node candidates are bounded to canonical stable 24 (>=24.12.0), 25 and 26, subject to all remaining safety gates and actual qualification. Future majors are not automatically supported.
+
+A necessary SQLite safety floor remains: **3.51.3 or newer**. SQLite's [WAL-reset bug](https://sqlite.org/wal.html#walresetbug) can corrupt WAL databases when multiple connections in separate processes/threads write or checkpoint concurrently. CE uses WAL and multiple processes, so affected SQLite 3.50.4 in actual Node 24.12.0 and 25.2.1 is refused even though the memory/API probes pass. Older fixed backports are conservatively outside this policy. The issue is upstream-confirmed; this work does not claim local corruption reproduction.
+
+A separate **locally reproduced native crash** blocks Node 24.19.0 (SQLite 3.53.3) and 25.9.0 (SQLite 3.51.3). The existing `transaction-security.test.ts` case `unreadable transaction state cannot escape outcome classification` closes a privileged connection inside an owned transaction. An independent process using the production transaction helper exits with SIGSEGV on these two binaries; 24.20.0, 24.21.0 and 26.12.1 instead return the required `STORAGE_TRANSACTION_FAILED / INDETERMINATE`. This is a process-crash finding, not evidence of disk corruption. Exact exclusions preserve that measured safety boundary; passing the SQLite floor and ordinary probes cannot override them.
+
+Platform and compile-safety requirements remain unchanged. Cheap shared Host/child memory probes must establish the required SQL/API behavior; file locks, WAL/FULL policies, schema v7, trust root, commit uncertainty and crash reconciliation require separate bounded real-runtime tests. Passing startup probes is not a full compatibility certificate.
+
+The package declaration is deliberately bounded to **`>=24.20.0 <=24.22.1`**. The four listed/tested releases (24.20.0, 24.21.0, 24.22.0, 24.22.1) are real Darwin arm64 binaries; the official Node release inventory at investigation time lists no other released patch in this interval. This is not qualification of later patches. Node 26.12.1 is a separately tested preview, excluded from formal engines; Node 25 has no supported declaration. Future releases, Linux and power-loss durability remain unverified.
+
+| Actual Node | SQLite | Disposition |
+| --- | --- | --- |
+| 24.12.0 | 3.50.4 | Refused: upstream WAL-reset defect |
+| 24.19.0 | 3.53.3 | Refused: locally reproduced native transaction-close SIGSEGV |
+| 24.20.0 / 24.21.0 / 24.22.0 / 24.22.1 | 3.53.4 | Bounded development support; targeted storage/runtime, protocol and real Pi 1.3.0 Host evidence |
+| 25.0.0 | API negative control | Refused: missing defensive API |
+| 25.2.1 | 3.50.4 | Refused: upstream WAL-reset defect |
+| 25.9.0 | 3.51.3 | Refused: locally reproduced native transaction-close SIGSEGV |
+| 26.12.1 | 3.54.0 | Preview: actual distinct SQLite engine, targeted/broader storage, protocol and real Host evidence; no LTS support claim |
+
+The final five-runtime matrix (24.20.0, 24.21.0, 24.22.0, 24.22.1, 26.12.1) verifies all 25 directed pairs: clean reopen/content preservation, precommit lock contention/SIGKILL rollback and postcommit lost-response reconciliation (75 tests). Actual MCP protocol runs cover all 25 parent/child combinations plus composed independent Pi factory processes. Each runtime's targeted suite passes 337 tests with no skips. The broader Node 26 storage/runtime suite passes 1043 tests without skips. Earlier broad-run failures from deprecated test loader warnings were corrected using synchronous `registerHooks`; disk-fault/crash injection was scoped to file connections so the new memory COMMIT probe cannot consume intended fault boundaries. First failing runs are evidence, not compatibility passes.
+
+Evidence: `~/Code/Pi-Project-Evidence/chat-exchange/sqlite-runtime-decouple-01/` contains acquisition/identity inventories, original refusal and RED evidence, per-runtime gates, known-WAL-defect evidence and fixed-target independent reviews. New official archives were compared to HTTPS SHASUMS; detached signatures were not verified.
+
+## Historical COMPAT-02 policy
+
 # Runtime capability admission — development candidate
 
 Handoff: `HANDOFF-PI-NODE-SQLITE-COMPAT-02`. This section supersedes the historical exact-Node admission policy for the local development candidate only. Published npm 0.2.0 is unchanged.

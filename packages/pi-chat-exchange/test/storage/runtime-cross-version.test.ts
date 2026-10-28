@@ -10,8 +10,11 @@ import type { RuntimeIdentity } from "../../src/storage/runtime.js";
 const nodeA = process.env.CE_TEST_NODE_A;
 const nodeB = process.env.CE_TEST_NODE_B;
 const nodeC = process.env.CE_TEST_NODE_C;
+const nodeD = process.env.CE_TEST_NODE_D;
+const nodeE = process.env.CE_TEST_NODE_E;
+const nodeF = process.env.CE_TEST_NODE_F;
 // Actual binary versions, never caller-supplied labels.
-const runtimes = new Map([["A", nodeA], ["B", nodeB], ["C", nodeC]]
+const runtimes = new Map([["A", nodeA], ["B", nodeB], ["C", nodeC], ["D", nodeD], ["E", nodeE], ["F", nodeF]]
   .filter((entry): entry is [string, string] => entry[1] !== undefined)
   .map(([name, executable]) => {
     const result = spawnSync(executable, ["--version"], { env: { PATH: "/usr/bin:/bin" }, encoding: "utf8", timeout: 5_000 });
@@ -23,7 +26,7 @@ const roots: string[] = [];
 const children: ChildProcess[] = [];
 const loader = fileURLToPath(new URL("./support/register-ts.mjs", import.meta.url));
 const worker = fileURLToPath(new URL("./support/runtime-cross-version-worker.mjs", import.meta.url));
-const env = { PATH: "/usr/bin:/bin" };
+const env = { PATH: "/usr/bin:/bin", ...(process.env.HOME === undefined ? {} : { HOME: process.env.HOME }) };
 interface Report {
   event: string; identity: RuntimeIdentity; executable: string;
   storeUuid: string; schemaVersion: number; applicationId: number; userVersion: number;
@@ -49,6 +52,8 @@ function proof(report: Report) {
 }
 function healthy(report: Report, count: number) {
   expect(report.event).toBe("result");
+  const expectedDriver = process.env.CE_TEST_EXPECT_DRIVER;
+  if (expectedDriver !== undefined) expect(report.identity.driver).toBe(expectedDriver);
   expect(report.integrity).toEqual([{ integrity_check: "ok" }]);
   expect(report.foreignKeys).toEqual([]);
   expect(report.policy).toEqual({ wal: "wal", synchronous: 2, foreignKeys: 1, trustedSchema: 0 });

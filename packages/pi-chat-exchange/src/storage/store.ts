@@ -2,7 +2,8 @@ import { constants, copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { DatabaseSync, type SQLOutputValue } from "node:sqlite";
+import { resolveSqliteDriver } from "./sqlite-driver-selection.js";
+import type { SqliteConnection as DatabaseSync, SqliteOutputValue as SQLOutputValue } from "./sqlite-driver.js";
 import { assertStorageRuntimeEligibility, openStorageConnection, type StorageConnectionOptions } from "./connection.js";
 import {
   FilesystemSafetyError,
@@ -65,8 +66,10 @@ export interface InitializeStoreOptions extends StorageConnectionOptions {
    * file and never persisted in SQLite. */
   readonly secretBytes?: () => Uint8Array;
 }
+export type StoreConnection = DatabaseSync;
+
 export interface DurableStore {
-  readonly database: DatabaseSync;
+  readonly database: StoreConnection;
   readonly storeUuid: string;
   readonly schemaVersion: number;
   /** Private host-local path of the validated database file. Required by the
@@ -127,7 +130,7 @@ const approvedManifests: Partial<Record<StoreShapeKind, string>> = {};
 function approvedManifest(version: StoreShapeKind): string {
   const cached = approvedManifests[version];
   if (cached !== undefined) return cached;
-  const reference = new DatabaseSync(":memory:");
+  const reference = resolveSqliteDriver().open(":memory:");
   try {
     reference.exec(
       version === "v1"
@@ -505,7 +508,7 @@ function withStoreSnapshot<T>(databasePath: string, validate: (reader: DatabaseS
     if (pathStat(`${databasePath}-wal`) !== undefined) {
       copyFileSync(`${databasePath}-wal`, `${snapshot}-wal`, constants.COPYFILE_EXCL);
     }
-    reader = withRestrictiveUmask(() => new DatabaseSync(snapshot, { readOnly: true, defensive: true }));
+    reader = withRestrictiveUmask(() => resolveSqliteDriver().open(snapshot, { readOnly: true, defensive: true }));
     reader.exec("PRAGMA trusted_schema=OFF; BEGIN;");
     return validate(reader);
   } catch (error) {

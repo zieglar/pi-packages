@@ -9,7 +9,7 @@ import { initializeStore, openStore } from "../../src/storage/store.js";
 import { readCurrentOwnership, readSessionBindings } from "../../src/storage/ownership.js";
 import { readParticipantByEndpoint } from "../../src/storage/participant.js";
 
-const qualificationChildren = [...new Set([process.env.CE_TEST_NODE_A, process.env.CE_TEST_NODE_B]
+const qualificationChildren = [...new Set(["A", "B", "C", "D", "E", "F", "G"].map((label) => process.env[`CE_TEST_NODE_${label}`])
   .filter((path): path is string => typeof path === "string" && path.length > 0))];
 if (qualificationChildren.length === 0) qualificationChildren.push(process.execPath);
 

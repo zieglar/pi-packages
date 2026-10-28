@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { resolveSqliteDriver } from "../../src/storage/sqlite-driver-selection.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { createMessage } from "../../src/storage/creation.js";
 import { joinExchange, readExchangeMembership } from "../../src/storage/participant.js";
@@ -337,7 +338,7 @@ describe("Exchange membership join (B3-P1B)", () => {
 
     // A separate writer holding the write lock makes the join fail BUSY with
     // the accepted retryable classification and zero writes.
-    const holder = new DatabaseSync(active.databasePath);
+    const holder = resolveSqliteDriver().open(active.databasePath);
     holder.exec("BEGIN IMMEDIATE");
     try {
       const error = expectRefusal(

@@ -1,4 +1,3 @@
-import { DatabaseSync, type SQLOutputValue } from "node:sqlite";
 import {
   assertSecureDatabaseArtifacts,
   prepareDatabasePath,
@@ -12,6 +11,8 @@ import {
   readRuntimeIdentity,
   type RuntimeIdentity,
 } from "./runtime.js";
+import { resolveSqliteDriver } from "./sqlite-driver-selection.js";
+import type { SqliteConnection, SqliteDriver, SqliteOutputValue } from "./sqlite-driver.js";
 
 export const DEFAULT_BUSY_TIMEOUT_MS = 1_000;
 export const MAX_BUSY_TIMEOUT_MS = 5_000;
@@ -30,17 +31,21 @@ export interface StorageConnectionOptions extends DatabasePathOptions {
   readonly busyTimeoutMs?: number;
   /** Private deterministic test seam; production callers omit this. */
   readonly runtimeIdentity?: () => RuntimeIdentity;
+  /** Explicit driver injection for qualification/tests; otherwise the operator
+   * selection file is used. No ambient environment fallback. */
+  readonly driver?: SqliteDriver;
 }
 
 export function assertStorageRuntimeEligibility(options: StorageConnectionOptions): void {
-  assertRuntimeEligibility((options.runtimeIdentity ?? readRuntimeIdentity)());
+  assertRuntimeEligibility((options.runtimeIdentity ?? (() => readRuntimeIdentity(options.driver)))());
 }
 
-function readPragma(db: DatabaseSync, name: string): SQLOutputValue | undefined {
+function readPragma(db: SqliteConnection, name: string): SqliteOutputValue | undefined {
   const row = db.prepare(`PRAGMA ${name}`).get();
   return row === undefined ? undefined : Object.values(row)[0];
 }
-function assertPragma(db: DatabaseSync, name: string, expected: string | number): void {
+
+function assertPragma(db: SqliteConnection, name: string, expected: string | number): void {
   const actual = readPragma(db, name);
   if (actual !== expected) {
     throw new ConnectionPolicyError(
@@ -49,7 +54,7 @@ function assertPragma(db: DatabaseSync, name: string, expected: string | number)
   }
 }
 
-function initializeWriterPolicy(db: DatabaseSync, busyTimeoutMs: number): void {
+function initializeWriterPolicy(db: SqliteConnection, busyTimeoutMs: number): void {
   db.enableDefensive(true);
   db.exec(`
     PRAGMA journal_mode=WAL;
@@ -79,9 +84,9 @@ function initializeWriterPolicy(db: DatabaseSync, busyTimeoutMs: number): void {
 
 export function openStorageConnection(
   options: StorageConnectionOptions,
-  validateExisting?: (db: DatabaseSync) => void,
+  validateExisting?: (db: SqliteConnection) => void,
   createExclusive = false,
-): DatabaseSync {
+): SqliteConnection {
   const busyTimeoutMs = options.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS;
   if (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 1 || busyTimeoutMs > MAX_BUSY_TIMEOUT_MS) {
     throw new ConnectionPolicyError(
@@ -98,10 +103,11 @@ export function openStorageConnection(
     exclusivelyCreateDatabase(databasePath);
   }
 
-  let db: DatabaseSync | undefined;
+  let db: SqliteConnection | undefined;
   try {
+    const driver = options.driver ?? resolveSqliteDriver();
     db = withRestrictiveUmask(
-      () => new DatabaseSync(databasePath, { defensive: true, timeout: busyTimeoutMs }),
+      () => driver.open(databasePath, { defensive: true, timeout: busyTimeoutMs }),
     );
     // Revalidate identity/compatibility before persistent writer PRAGMAs.
     // A read transaction gives these checks one consistent schema/data snapshot.

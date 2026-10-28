@@ -1,3 +1,4 @@
 // Test subprocesses only; production module resolution is unchanged.
-import { register } from "node:module";
-register(new URL("./ts-resolve.mjs", import.meta.url));
+import { registerHooks } from "node:module";
+import { resolve } from "./ts-resolve.mjs";
+registerHooks({ resolve });

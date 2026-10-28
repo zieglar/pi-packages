@@ -2,7 +2,8 @@ import { createHmac } from "node:crypto";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import type { SqliteConnection } from "../../../src/storage/sqlite-driver.js";
+import { resolveSqliteDriver } from "../../../src/storage/sqlite-driver-selection.js";
 import { expect } from "vitest";
 import { openStorageConnection } from "../../../src/storage/connection.js";
 import { createExchange } from "../../../src/storage/creation.js";
@@ -60,13 +61,13 @@ export function cleanupFixtures(): void {
 }
 
 /** Independent read-only view of durable state. */
-export function reader(active: Fixture): DatabaseSync {
-  return new DatabaseSync(active.databasePath, { readOnly: true, defensive: true });
+export function reader(active: Fixture): SqliteConnection {
+  return resolveSqliteDriver().open(active.databasePath, { readOnly: true, defensive: true });
 }
 
 /** Privileged raw connection: accepted test/setup authority used to tamper
  * with durable state in negative controls. */
-export function privileged(active: Fixture): DatabaseSync {
+export function privileged(active: Fixture): SqliteConnection {
   return openStorageConnection({ directory: active.directory, filename: active.filename });
 }
 

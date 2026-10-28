@@ -5,9 +5,9 @@ const sourceRoot = new URL("../../../src/", import.meta.url).href;
 
 /** Only fall back for missing relative .js imports within this package's src.
  * Built-ins, dependencies, existing JS files and unrelated errors pass through. */
-export async function resolve(specifier, context, nextResolve) {
+export function resolve(specifier, context, nextResolve) {
   try {
-    return await nextResolve(specifier, context);
+    return nextResolve(specifier, context);
   } catch (error) {
     if (error.code !== "ERR_MODULE_NOT_FOUND" ||
         !context.parentURL?.startsWith(sourceRoot) ||

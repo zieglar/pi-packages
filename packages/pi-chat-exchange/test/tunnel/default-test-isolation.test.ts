@@ -93,7 +93,7 @@ function sentinelFixture(executable: boolean): { sentinel: string; ranMarker: st
 describe("default test lane is isolated from the installed tunnel-client", () => {
   it("excludes exactly the installed-client files, the real-host lane and the distribution heavy lane, and sets the guard env on the default `pnpm test`", () => {
     expect(manifest.scripts.test).toBe(
-      `CE_DEFAULT_CLIENT_GUARD=1 vitest run${DEFAULT_EXCLUDED_TEST_FILES.map((file) => ` --exclude ${file}`).join("")}`,
+      `CE_DEFAULT_CLIENT_GUARD=1 vitest run${DEFAULT_EXCLUDED_TEST_FILES.map((file) => ` --exclude ${file}`).join("")} --exclude '**/native-{artifact,value-regression,cli}.test.ts' --exclude '**/sqlite-driver-cross.test.ts'`,
     );
   });
 

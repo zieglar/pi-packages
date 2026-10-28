@@ -1,3 +1,4 @@
+import type { SqliteConnection } from "../../src/storage/sqlite-driver.js";
 import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -111,7 +112,7 @@ function world(): World {
 
 /** The one permitted lifecycle transition, written by a privileged writer
  * (P2C-A defines no detach operation; this is test/setup authority only). */
-function rawDetach(db: DatabaseSync, participantId: string, sessionId: string, detachedAt: string): void {
+function rawDetach(db: Pick<DatabaseSync | SqliteConnection, "prepare">, participantId: string, sessionId: string, detachedAt: string): void {
   const result = db
     .prepare(
       "UPDATE participant_session SET detached_at = ?, private_revision = 2 WHERE participant_id = ? AND session_id = ?",
@@ -120,7 +121,7 @@ function rawDetach(db: DatabaseSync, participantId: string, sessionId: string, d
   expect(result.changes).toBe(1);
 }
 
-function withPrivileged<T>(active: Fixture, body: (db: DatabaseSync) => T): T {
+function withPrivileged<T>(active: Fixture, body: (db: Pick<DatabaseSync | SqliteConnection, "prepare" | "exec">) => T): T {
   const db = privileged(active);
   try {
     return body(db);
@@ -131,7 +132,7 @@ function withPrivileged<T>(active: Fixture, body: (db: DatabaseSync) => T): T {
 
 /** Drops the named v4 triggers, runs the tamper, then restores the exact
  * stored trigger SQL so the approved schema manifest is byte-identical. */
-function tamper(active: Fixture, triggers: readonly string[], body: (db: DatabaseSync) => void): void {
+function tamper(active: Fixture, triggers: readonly string[], body: (db: Pick<DatabaseSync | SqliteConnection, "prepare" | "exec">) => void): void {
   withPrivileged(active, (db) => {
     const saved = triggers.map((name) => {
       const row = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'trigger' AND name = ?").get(name);
@@ -925,7 +926,7 @@ describe("old v3 refusal and retained legacy preflight security (E2-A)", () => {
     expect(readdirSync(loc.directory).includes("host-secret")).toBe(false);
   });
 
-  const FOREIGN: readonly (readonly [string, (db: DatabaseSync) => void])[] = [
+  const FOREIGN: readonly (readonly [string, (db: Pick<DatabaseSync | SqliteConnection, "prepare" | "exec">) => void])[] = [
     ["a detached row at revision 2", (db) => rawDetach(db, P1, S2, at(5))],
     [
       "a detached row at revision 1",

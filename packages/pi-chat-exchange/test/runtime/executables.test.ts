@@ -123,7 +123,8 @@ describe("qualified Node selection", () => {
     try { qualifyNodeExecutable(path); } catch (error) { expect(String(error)).not.toContain("private-output-secret"); }
   });
   it.each([
-    { nodeVersion: "v24.20.9" }, { sqliteVersion: "unapproved" },
+    { nodeVersion: "v24.11.9" }, { nodeVersion: "v27.0.0" }, { sqliteVersion: "unapproved" },
+    { sqliteVersion: "3.50.4" }, // WAL-reset-affected engine (https://sqlite.org/wal.html section 11)
     { sqliteSourceId: "unapproved" }, { platform: "unsupported" },
     { compileOptions: undefined }, { compileOptions: ["THREADSAFE=0"] },
     { sqliteCapabilities: undefined }, { sqliteCapabilities: ["defensive"] },
@@ -132,7 +133,7 @@ describe("qualified Node selection", () => {
     const identity = { nodeVersion: APPROVED_NODE_VERSION, sqliteVersion: APPROVED_SQLITE_VERSION,
       sqliteSourceId: APPROVED_SQLITE_SOURCE_ID, platform: "linux", arch: "x64",
       compileOptions: ["THREADSAFE=1", "MUTEX_PTHREADS"],
-      sqliteCapabilities: ["defensive", "statement-get", "statement-all", "statement-run", "transaction-state", "authorizer-transaction", "authorizer-savepoint"], ...override };
+      sqliteCapabilities: ["defensive", "statement-get", "statement-all", "statement-run", "transaction-state", "authorizer-transaction", "authorizer-savepoint", "transaction-commit", "strict-tables", "json-functions", "check-constraints", "foreign-key-enforcement", "triggers"], ...override };
     writeFileSync(path, `#!/bin/sh\nprintf '%s' '${JSON.stringify(identity)}'\n`, { mode: 0o700 });
     expect(() => qualifyNodeExecutable(path)).toThrow("CE_NODE_INELIGIBLE");
   });
