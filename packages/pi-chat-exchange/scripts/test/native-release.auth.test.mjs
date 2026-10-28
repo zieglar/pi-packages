@@ -225,6 +225,45 @@ test("a missing ce-sqlite-v* tag ruleset refuses before any write", () => {
   assert.match(stderr, /tag ruleset must protect release tags/);
 });
 
+test("a tag ruleset that excludes the release tag refuses before any write", () => {
+  const routes = { ...healthyRoutes };
+  routes["GET repos/zieglar/pi-packages/rulesets/26078349"] = {
+    status: 200,
+    body: {
+      id: 26078349,
+      target: "tag",
+      enforcement: "active",
+      conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"], exclude: ["refs/tags/ce-sqlite-v0.1.0"] } },
+      rules: [{ type: "update" }, { type: "deletion" }],
+      bypass_actors: [],
+      current_user_can_bypass: "never",
+    },
+  };
+  const { status, stderr, calls } = invoke(["check"], { env: { CE_RELEASE_ADMIN_TOKEN: ADMIN }, routes });
+  assert.equal(status, 1);
+  assert.match(stderr, /tag ruleset must protect release tags/);
+  assert.equal(calls.filter(call => call.argv.includes("git/refs")).length, 0);
+});
+
+test("an absent bypass field is unreadable, not an empty list", () => {
+  const routes = { ...healthyRoutes };
+  routes["GET repos/zieglar/pi-packages/rulesets/26078349"] = {
+    status: 200,
+    body: {
+      id: 26078349,
+      target: "tag",
+      enforcement: "active",
+      conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"], exclude: [] } },
+      rules: [{ type: "update" }, { type: "deletion" }],
+      current_user_can_bypass: "never",
+    },
+  };
+  const { status, stderr, calls } = invoke(["check"], { env: { CE_RELEASE_ADMIN_TOKEN: ADMIN }, routes });
+  assert.equal(status, 1);
+  assert.match(stderr, /bypass actor list is unreadable/);
+  assert.equal(calls.filter(call => call.argv.includes("git/refs")).length, 0);
+});
+
 test("a bypassable tag ruleset refuses before any write", () => {
   const routes = { ...healthyRoutes };
   routes["GET repos/zieglar/pi-packages/rulesets/26078349"] = {

@@ -128,7 +128,14 @@ export function checkRepositoryControls({ repository, environment = ENVIRONMENT_
   for (const rule of tagRulesets) {
     const detail = apiGet(`repos/${repository}/rulesets/${rule.id}`, adminRun);
     const include = detail?.conditions?.ref_name?.include;
-    if (Array.isArray(include) && include.some(pattern => pattern === RELEASE_TAG_PATTERN)) applicable.push(detail);
+    const exclude = detail?.conditions?.ref_name?.exclude;
+    // A ruleset only counts as protecting release tags when it covers the
+    // release namespace and does not exclude any ref. A ruleset that names the
+    // namespace but excludes the release tag is not protection.
+    if (Array.isArray(include) && include.some(pattern => pattern === RELEASE_TAG_PATTERN)
+        && Array.isArray(exclude) && exclude.length === 0) {
+      applicable.push(detail);
+    }
   }
   if (applicable.length === 0) throw new Error("an active ce-sqlite-v* tag ruleset must protect release tags");
   for (const rule of applicable) {
@@ -137,8 +144,16 @@ export function checkRepositoryControls({ repository, environment = ENVIRONMENT_
     if (!ruleTypes.includes("update") || !ruleTypes.includes("deletion")) {
       throw new Error("release tag ruleset must block tag updates and deletions");
     }
-    if ((rule.bypass_actors ?? []).length > 0) throw new Error("release tag ruleset must not allow bypass actors");
-    if (rule.current_user_can_bypass === "always") throw new Error("release tag ruleset must not allow bypass");
+    // An absent bypass field is not proof of "no bypass": an unreadable
+    // response must not be treated as an empty one.
+    if (!Array.isArray(rule.bypass_actors)) throw new Error("release tag ruleset bypass actor list is unreadable; refusing release");
+    if (rule.bypass_actors.length > 0) throw new Error("release tag ruleset must not allow bypass actors");
+    if (rule.current_user_can_bypass === "always" || rule.current_user_can_bypass === "exempt") {
+      throw new Error("release tag ruleset must not allow bypass");
+    }
+    if (typeof rule.current_user_can_bypass !== "string" || rule.current_user_can_bypass === "") {
+      throw new Error("release tag ruleset bypass state is unreadable; refusing release");
+    }
   }
 
   const config = apiGet(`repos/${repository}/environments/${environment}`, run);
