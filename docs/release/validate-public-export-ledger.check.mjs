@@ -23,7 +23,7 @@ function run(events) {
     return spawnSync(process.execPath, [validator, file, "--git-verify"], { cwd: root, env, encoding: "utf8" });
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }
-const clone = () => structuredClone(records.filter(record => !(record.exportId === "PX-0004" && record.status === "COMMITTED")));
+const clone = () => structuredClone(records.filter(record => !(record.exportId === "PX-0004" && record.status !== "PENDING_EXPORT")));
 function pendingCommit(mutate) {
   const all = clone();
   const next = structuredClone(all.find(record => record.exportId === "PX-0004"));
