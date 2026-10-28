@@ -130,7 +130,7 @@ jobs:
           pnpm exec vitest run test/storage/sqlite-driver-cross.test.ts
       - name: Test release refusal and workflow policy
         working-directory: packages/pi-chat-exchange
-        run: node --test scripts/test/native-release.check.mjs
+        run: node --test scripts/test/native-release.check.mjs scripts/test/native-release.auth.test.mjs
       - name: Check Native compatibility
         working-directory: packages/pi-chat-exchange
         run: node scripts/check-native.mjs

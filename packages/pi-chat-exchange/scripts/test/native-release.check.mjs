@@ -91,6 +91,13 @@ test("a weakened tag ruleset refuses before any write", () => {
     response(200, { id: 26078349, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"] } }, rules: [{ type: "update" }, { type: "deletion" }], bypass_actors: [{ actor_id: 1, actor_type: "RepositoryRole" }], current_user_can_bypass: "never" }),
     response(200, { id: 26078349, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"] } }, rules: [{ type: "update" }, { type: "deletion" }], bypass_actors: [], current_user_can_bypass: "always" }),
     response(200, { id: 26078349, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/other-*"] } }, rules: [{ type: "update" }, { type: "deletion" }], bypass_actors: [], current_user_can_bypass: "never" }),
+    // include matches the namespace but exclude removes the release tag: not protection.
+    response(200, { id: 26078349, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"], exclude: ["refs/tags/ce-sqlite-v0.1.0"] } }, rules: [{ type: "update" }, { type: "deletion" }], bypass_actors: [], current_user_can_bypass: "never" }),
+    // bypass_actors is absent: unreadable, not an empty list.
+    response(200, { id: 26078349, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"] } }, rules: [{ type: "update" }, { type: "deletion" }], current_user_can_bypass: "never" }),
+    // current_user_can_bypass is absent: unreadable, not "never".
+    response(200, { id: 26078349, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"] } }, rules: [{ type: "update" }, { type: "deletion" }], bypass_actors: [] }),
+    response(200, { id: 26078349, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"] } }, rules: [{ type: "update" }, { type: "deletion" }], bypass_actors: [], current_user_can_bypass: "exempt" }),
   ]) {
     const f = fixture({ route: path => (path.endsWith("/rulesets/26078349") ? weakened : undefined) });
     assert.throws(() => publishRelease(options, [], f.deps), /ruleset/);
