@@ -16,7 +16,7 @@ permissions:
 
 concurrency:
   group: native-sqlite-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -114,7 +114,9 @@ jobs:
             test/storage/native-value-regression.test.ts \
             test/storage/native-artifact.test.ts --maxWorkers 1
       - name: Build TypeScript and verify cross-driver databases
-        if: matrix.target != 'aarch64-unknown-linux-gnu'
+        if: >-
+          matrix.target == 'aarch64-apple-darwin' ||
+          matrix.target == 'x86_64-unknown-linux-gnu'
         working-directory: packages/pi-chat-exchange
         env:
           ARTIFACT: ${{ steps.stage.outputs.artifact }}
@@ -122,6 +124,9 @@ jobs:
           export CE_TEST_NATIVE_MODULE="$GITHUB_WORKSPACE/dist-native/$ARTIFACT"
           pnpm run build
           pnpm exec vitest run test/storage/sqlite-driver-cross.test.ts
+      - name: Test release refusal and workflow policy
+        working-directory: packages/pi-chat-exchange
+        run: node --test scripts/test/native-release.check.mjs
       - name: Check Native compatibility
         working-directory: packages/pi-chat-exchange
         run: node scripts/check-native.mjs
@@ -150,17 +155,24 @@ jobs:
             dist-native/artifact-sha256.txt
           if-no-files-found: error
 
-  release:
-    name: Publish fixed release (explicit only)
+  attest:
+    name: Attest verified build outputs (no release credentials)
     if: >-
-      ${{ inputs.publish && success() &&
-          github.repository == 'zieglar/pi-packages' }}
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'zieglar/pi-packages' &&
+      github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
-    environment: native-sqlite-release
     permissions:
-      contents: write
+      contents: read
+      attestations: write
+      id-token: write
     steps:
+      - name: Checkout exact workflow commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Download verified artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -193,7 +205,13 @@ jobs:
                 .update(bytes).digest("hex");
               if (info.middlewareVersion !== version ||
                   info.abiVersion !== 1 ||
-                  typeof info.target !== "string") {
+                  info.buildId !== process.env.GITHUB_SHA ||
+                  info.sqliteVersion !== "3.54.1" ||
+                  !["aarch64-apple-darwin", "x86_64-apple-darwin",
+                    "x86_64-unknown-linux-gnu",
+                    "aarch64-unknown-linux-gnu"].includes(info.target) ||
+                  directory !== `ce-sqlite-${version}-${info.target}` ||
+                  assets[info.target]) {
                 throw new Error("Native identity/version/ABI mismatch");
               }
               assets[info.target]={asset, sha256};
@@ -219,15 +237,62 @@ jobs:
               `${entry.sha256}  ${entry.asset}`).sort().join("\n")+"\n";
             fs.writeFileSync("release-files/SHA256SUMS", checksums);
           '
-      - name: Create fixed GitHub Release
+      - name: Attest assets and checksum manifest
+        id: provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: release-files/*
+      - name: Preserve signed provenance bundle
         env:
-          VERSION: ${{ needs.build.outputs.version }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: cp "$BUNDLE" release-files/provenance.jsonl
+      - name: Upload attested release set
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-release-bundle
+          path: release-files/*
+          if-no-files-found: error
+
+  release:
+    name: Publish a new immutable version (explicit only)
+    if: >-
+      inputs.publish && github.event_name == 'workflow_dispatch' &&
+      github.repository == 'zieglar/pi-packages' &&
+      github.ref == 'refs/heads/main'
+    needs: [build, attest]
+    runs-on: ubuntu-latest
+    environment: native-sqlite-release
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout exact release orchestration
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Refuse existing version and require repository immutability
+        run: node packages/pi-chat-exchange/scripts/native-release.mjs check
+      - name: Download attested release set
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: native-release-bundle
+          path: release-files
+      - name: Verify provenance and checksum relation before publication
         run: |
-          gh release create "ce-sqlite-v${VERSION}" \
-            release-files/*.node release-files/SHA256SUMS \
-            release-files/native-identities.json \
-            release-files/native-manifest.json \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "CE SQLite Native ${VERSION}" \
-            --notes "Verified prebuilt middleware; pinned hashes required."
+          set -euo pipefail
+          cd release-files
+          sha256sum --check SHA256SUMS
+          for file in *.node SHA256SUMS native-*.json; do
+            gh attestation verify "$file" --repo "$GITHUB_REPOSITORY" \
+              --bundle provenance.jsonl --source-digest "$GITHUB_SHA" \
+              --source-ref refs/heads/main \
+              --signer-workflow \
+              "$GITHUB_REPOSITORY/.github/workflows/native-release.yml"
+          done
+      - name: Publish without replacing tag or assets
+        run: >-
+          node packages/pi-chat-exchange/scripts/native-release.mjs
+          publish release-files
