@@ -85,22 +85,23 @@ test("disabled repository immutable releases refuse", () => {
 });
 
 test("a weakened tag ruleset refuses before any write", () => {
-  for (const weakened of [
-    response(200, { id: 26078349, target: "tag", enforcement: "disabled", conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"] } }, rules: [{ type: "update" }, { type: "deletion" }], bypass_actors: [], current_user_can_bypass: "never" }),
-    response(200, { id: 26078349, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"] } }, rules: [{ type: "update" }], bypass_actors: [], current_user_can_bypass: "never" }),
-    response(200, { id: 26078349, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"] } }, rules: [{ type: "update" }, { type: "deletion" }], bypass_actors: [{ actor_id: 1, actor_type: "RepositoryRole" }], current_user_can_bypass: "never" }),
-    response(200, { id: 26078349, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"] } }, rules: [{ type: "update" }, { type: "deletion" }], bypass_actors: [], current_user_can_bypass: "always" }),
-    response(200, { id: 26078349, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/other-*"] } }, rules: [{ type: "update" }, { type: "deletion" }], bypass_actors: [], current_user_can_bypass: "never" }),
-    // include matches the namespace but exclude removes the release tag: not protection.
-    response(200, { id: 26078349, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"], exclude: ["refs/tags/ce-sqlite-v0.1.0"] } }, rules: [{ type: "update" }, { type: "deletion" }], bypass_actors: [], current_user_can_bypass: "never" }),
+  const cases = [
+    { body: { id: 26078349, target: "tag", enforcement: "disabled", conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"], exclude: [] } }, rules: [{ type: "update" }, { type: "deletion" }], bypass_actors: [], current_user_can_bypass: "never" }, reason: /must be active/ },
+    { body: { id: 26078349, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"], exclude: [] } }, rules: [{ type: "update" }], bypass_actors: [], current_user_can_bypass: "never" }, reason: /block tag updates and deletions/ },
+    { body: { id: 26078349, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"], exclude: [] } }, rules: [{ type: "update" }, { type: "deletion" }], bypass_actors: [{ actor_id: 1, actor_type: "RepositoryRole" }], current_user_can_bypass: "never" }, reason: /must not allow bypass actors/ },
+    { body: { id: 26078349, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"], exclude: [] } }, rules: [{ type: "update" }, { type: "deletion" }], bypass_actors: [], current_user_can_bypass: "always" }, reason: /must not allow bypass/ },
+    { body: { id: 26078349, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/other-*"], exclude: [] } }, rules: [{ type: "update" }, { type: "deletion" }], bypass_actors: [], current_user_can_bypass: "never" }, reason: /must protect release tags/ },
+    // include matches the namespace but exclude removes the release tag.
+    { body: { id: 26078349, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"], exclude: ["refs/tags/ce-sqlite-v0.1.0"] } }, rules: [{ type: "update" }, { type: "deletion" }], bypass_actors: [], current_user_can_bypass: "never" }, reason: /must protect release tags/ },
     // bypass_actors is absent: unreadable, not an empty list.
-    response(200, { id: 26078349, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"] } }, rules: [{ type: "update" }, { type: "deletion" }], current_user_can_bypass: "never" }),
+    { body: { id: 26078349, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"], exclude: [] } }, rules: [{ type: "update" }, { type: "deletion" }], current_user_can_bypass: "never" }, reason: /bypass actor list is unreadable/ },
     // current_user_can_bypass is absent: unreadable, not "never".
-    response(200, { id: 26078349, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"] } }, rules: [{ type: "update" }, { type: "deletion" }], bypass_actors: [] }),
-    response(200, { id: 26078349, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"] } }, rules: [{ type: "update" }, { type: "deletion" }], bypass_actors: [], current_user_can_bypass: "exempt" }),
-  ]) {
-    const f = fixture({ route: path => (path.endsWith("/rulesets/26078349") ? weakened : undefined) });
-    assert.throws(() => publishRelease(options, [], f.deps), /ruleset/);
+    { body: { id: 26078349, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"], exclude: [] } }, rules: [{ type: "update" }, { type: "deletion" }], bypass_actors: [] }, reason: /bypass state is unreadable/ },
+    { body: { id: 26078349, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/ce-sqlite-v*"], exclude: [] } }, rules: [{ type: "update" }, { type: "deletion" }], bypass_actors: [], current_user_can_bypass: "exempt" }, reason: /must not allow bypass/ },
+  ];
+  for (const { body, reason } of cases) {
+    const f = fixture({ route: path => (path.endsWith("/rulesets/26078349") ? response(200, body) : undefined) });
+    assert.throws(() => publishRelease(options, [], f.deps), reason, `unexpected refusal for ${JSON.stringify(body.conditions)}`);
     assert.equal(f.writes(), 0);
   }
 });
