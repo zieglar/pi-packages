@@ -287,8 +287,8 @@ try {
   console.error(`package.json: unreadable or malformed manifest: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
 }
-if (manifest.engines?.node !== "24.21.0 || 24.22.1") {
-  errors.push(`package.json: durable storage requires engines.node to be exactly "24.21.0 || 24.22.1", found "${String(manifest.engines?.node)}"`);
+if (manifest.engines?.node !== ">=24.20.0 <=24.22.1") {
+  errors.push(`package.json: validated runtime interval requires engines.node ">=24.20.0 <=24.22.1", found "${String(manifest.engines?.node)}"`);
 }
 for (const [name, version] of Object.entries(manifest.dependencies ?? {})) {
   if (!/^\d+\.\d+\.\d+$/.test(version)) {

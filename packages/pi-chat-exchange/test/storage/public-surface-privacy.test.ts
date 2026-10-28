@@ -2,6 +2,7 @@ import { mkdtempSync, realpathSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { resolveSqliteDriver } from "../../src/storage/sqlite-driver-selection.js";
 import { afterEach, expect, it } from "vitest";
 import { createExchange, createMessage } from "../../src/storage/creation.js";
 import { initializeStore, openStore, type DurableStore } from "../../src/storage/store.js";
@@ -179,7 +180,7 @@ it("admission rejection errors are fixed vocabulary with no cause", () => {
 
 it("BUSY classification errors stay sanitized with correct outcome and retryable", () => {
   const active = fixture();
-  const holder = new DatabaseSync(join(active.directory, "store.sqlite"));
+  const holder = resolveSqliteDriver().open(join(active.directory, "store.sqlite"));
   holder.exec("BEGIN IMMEDIATE");
   try {
     let caught: unknown;

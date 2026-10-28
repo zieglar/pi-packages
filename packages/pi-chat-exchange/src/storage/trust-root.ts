@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, constants, fsyncSync, openSync, readFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { DatabaseSync } from "node:sqlite";
+import type { SqliteConnection as DatabaseSync } from "./sqlite-driver.js";
 import { StoreLifecycleError } from "./errors.js";
 import { pathStat } from "./filesystem.js";
 

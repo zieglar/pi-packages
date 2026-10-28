@@ -1,6 +1,6 @@
 # Pi Chat Exchange 扩展指南
 
-当前运行基线：**Pi 1.3.0 / 精确 Node.js 24.21.0 或 24.22.1**，另须通过 Store SQLite tuple/API 门槛；Pi host 和 MCP child 分别校验，无需使用同一 executable。正式安装请用预构建私有 tarball 的[独立安装指南](../docs/independent-install.md)；开发者初次安装先走 [Tunnel 用户指南](../docs/tunnel-setup.md)；Desktop stdio 使用[独立安装路径](../docs/chatgpt-installation.md)。
+开发候选运行基线：**Pi 1.3.0 / Node.js >=24.20.0 <=24.22.1**，另须满足 SQLite >=3.51.3、平台/编译安全与共享行为探针；不再要求固定 SQLite/source ID。Node 24.19.0、25.9.0 因已复现的 native transaction-close crash 被拒绝，24.12.0、25.2.1 因旧 SQLite WAL 缺陷被拒绝。Node 26.12.1 仅作隔离预览；Pi host 和 MCP child 分别校验。实测平台为 macOS arm64；已发布 npm 0.2.0 不变。正式安装见[独立安装指南](../docs/independent-install.md)，源码开发见 [Tunnel 用户指南](../docs/tunnel-setup.md)，Desktop stdio 见[安装路径](../docs/chatgpt-installation.md)。
 
 ## 加载与两种配置方式
 

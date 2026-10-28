@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { admitExecutable, qualifyNodeExecutable, resolveApprovedNode, resolveTunnelClient, diagnoseTunnelClient } from "../../src/runtime/executables.js";
 
-import { APPROVED_NODE_VERSION, APPROVED_SQLITE_VERSION, APPROVED_SQLITE_SOURCE_ID } from "../../src/storage/runtime.js";
+import { APPROVED_NODE_VERSION, APPROVED_SQLITE_VERSION, APPROVED_SQLITE_SOURCE_ID, readRuntimeIdentity } from "../../src/storage/runtime.js";
 const roots: string[] = [];
 function fixture(): string {
   const root = mkdtempSync(join(realpathSync(tmpdir()), "ce-executable-"));
@@ -87,6 +87,10 @@ describe("executable admission", () => {
 });
 
 describe("qualified Node selection", () => {
+  it("collects identical Host and actual child capability evidence", () => {
+    const path = binary(fixture());
+    expect(qualifyNodeExecutable(path)).toEqual(readRuntimeIdentity());
+  });
   it("prefers an explicit approved absolute path without mise", () => {
     const path = binary(fixture());
     expect(resolveApprovedNode({ env: { CE_NODE_PATH: path }, execPath: "/missing/current", systemDirectories: [] })).toBe(path);
@@ -119,7 +123,8 @@ describe("qualified Node selection", () => {
     try { qualifyNodeExecutable(path); } catch (error) { expect(String(error)).not.toContain("private-output-secret"); }
   });
   it.each([
-    { nodeVersion: "v24.21.1" }, { sqliteVersion: "unapproved" },
+    { nodeVersion: "v24.11.9" }, { nodeVersion: "v27.0.0" }, { sqliteVersion: "unapproved" },
+    { sqliteVersion: "3.50.4" }, // WAL-reset-affected engine (https://sqlite.org/wal.html section 11)
     { sqliteSourceId: "unapproved" }, { platform: "unsupported" },
     { compileOptions: undefined }, { compileOptions: ["THREADSAFE=0"] },
     { sqliteCapabilities: undefined }, { sqliteCapabilities: ["defensive"] },
@@ -128,7 +133,7 @@ describe("qualified Node selection", () => {
     const identity = { nodeVersion: APPROVED_NODE_VERSION, sqliteVersion: APPROVED_SQLITE_VERSION,
       sqliteSourceId: APPROVED_SQLITE_SOURCE_ID, platform: "linux", arch: "x64",
       compileOptions: ["THREADSAFE=1", "MUTEX_PTHREADS"],
-      sqliteCapabilities: ["defensive", "statement-get", "statement-all", "statement-run", "transaction-state"], ...override };
+      sqliteCapabilities: ["defensive", "statement-get", "statement-all", "statement-run", "transaction-state", "authorizer-transaction", "authorizer-savepoint", "transaction-commit", "strict-tables", "json-functions", "check-constraints", "foreign-key-enforcement", "triggers"], ...override };
     writeFileSync(path, `#!/bin/sh\nprintf '%s' '${JSON.stringify(identity)}'\n`, { mode: 0o700 });
     expect(() => qualifyNodeExecutable(path)).toThrow("CE_NODE_INELIGIBLE");
   });

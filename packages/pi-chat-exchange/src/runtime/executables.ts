@@ -2,7 +2,11 @@ import { execFileSync } from "node:child_process";
 import { accessSync, constants, existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize, relative, sep } from "node:path";
-import { APPROVED_RUNTIME_TUPLES, REQUIRED_SQLITE_CAPABILITIES, assertRuntimeEligibility, type RuntimeIdentity } from "../storage/runtime.js";
+import { MISE_DISCOVERY_NODE_VERSIONS, probeSqliteCapabilities, assertRuntimeEligibility, type RuntimeIdentity } from "../storage/runtime.js";
+import { resolveSqliteDriver } from "../storage/sqlite-driver-selection.js";
+import { createNodeSqliteDriver } from "../storage/sqlite-driver-node.js";
+import { createRustNativeDriver } from "../storage/sqlite-driver-rust.js";
+import type { SqliteDriver } from "../storage/sqlite-driver.js";
 
 /** These are locations, not PATH search. Every discovered file still needs admission. */
 const SYSTEM_DIRECTORIES = ["/usr/local/bin", "/usr/bin", "/bin", "/opt/homebrew/bin"] as const;
@@ -91,35 +95,31 @@ export function admitInstallationDirectory(path: string, options: ExecutableTrus
   return admitPath(path, options, "directory");
 }
 
-// Inline probe imports builtins only; no project loader, package resolution,
-// configuration, Store, credentials, network or inherited Node options.
-const NODE_PROBE = `
-const { DatabaseSync } = require('node:sqlite');
-const db = new DatabaseSync(':memory:');
+// Inline probe uses only the selected factory and verified Native path. No project
+// loader, configuration, Store, credentials, network or inherited Node options.
+function buildNodeProbe(driver: SqliteDriver): string {
+  const factory = driver.kind === "node-sqlite"
+    ? `const driver = (${createNodeSqliteDriver.toString()})();`
+    : `const driver = (${createRustNativeDriver.toString()})(require, ${JSON.stringify(driver.nativePath)});`;
+  return `
+${factory}
+const db = driver.open(':memory:');
 try {
-  const row = db.prepare('SELECT sqlite_source_id() AS sourceId').get();
-  const compileOptions = db.prepare('PRAGMA compile_options').all().map(option => {
-    const value = Object.values(option)[0];
-    if (typeof value !== 'string') throw new Error('invalid compile option');
-    return value;
-  }).sort();
-  db.enableDefensive(true);
-  db.exec('PRAGMA writable_schema=ON');
-  if (db.prepare('PRAGMA writable_schema').get()?.writable_schema !== 0) throw new Error('defensive mode unavailable');
-  db.exec('CREATE TABLE runtime_probe (value INTEGER); BEGIN');
-  if (db.isTransaction !== true) throw new Error('transaction state unavailable');
-  if (db.prepare('INSERT INTO runtime_probe VALUES (?)').run(1).changes !== 1
-      || db.prepare('SELECT value FROM runtime_probe').get()?.value !== 1
-      || db.prepare('SELECT value FROM runtime_probe').all().length !== 1) throw new Error('statement APIs unavailable');
-  db.exec('ROLLBACK');
-  if (db.isTransaction !== false) throw new Error('transaction state unavailable');
-  process.stdout.write(JSON.stringify({nodeVersion:process.version,sqliteVersion:process.versions.sqlite,sqliteSourceId:row.sourceId,platform:process.platform,arch:process.arch,compileOptions,sqliteCapabilities:${JSON.stringify(REQUIRED_SQLITE_CAPABILITIES)}}));
+  const evidence = (${probeSqliteCapabilities.toString()})(db);
+  process.stdout.write(JSON.stringify({...evidence,driver:driver.kind,nodeVersion:process.version,napiVersion:process.versions.napi,sqliteVersion:driver.kind==='node-sqlite'?process.versions.sqlite:driver.nativeInfo.sqliteVersion,platform:process.platform,arch:process.arch,...(driver.nativeInfo?{native:driver.nativeInfo}:{})}));
 } finally { db.close(); }
 `;
-export function qualifyNodeExecutable(path: string, options: ExecutableTrustOptions = {}): RuntimeIdentity {
+}
+
+export interface QualifyNodeOptions extends ExecutableTrustOptions {
+  readonly driver?: SqliteDriver;
+}
+
+export function qualifyNodeExecutable(path: string, options: QualifyNodeOptions = {}): RuntimeIdentity {
   const canonical = admitExecutable(path, options);
   try {
-    const text = execFileSync(canonical, ["--input-type=commonjs", "-e", NODE_PROBE], {
+    const selected = options.driver ?? resolveSqliteDriver();
+    const text = execFileSync(canonical, ["--input-type=commonjs", "-e", buildNodeProbe(selected)], {
       cwd: "/", env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
       shell: false, timeout: 5_000, killSignal: "SIGKILL", maxBuffer: 16_384,
       encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
@@ -136,12 +136,14 @@ export interface ExecutableResolutionOptions extends ExecutableTrustOptions {
   /** Dependency injection for controlled discovery tests; never taken from PATH. */
   readonly systemDirectories?: readonly string[];
   readonly homeDir?: string;
+  readonly driver?: SqliteDriver;
 }
 export function resolveApprovedNode(options: ExecutableResolutionOptions = {}): string | undefined {
   const env = options.env ?? {};
+  const selected = options.driver ?? resolveSqliteDriver();
   const qualify = (path: string): string => {
     const canonical = admitExecutable(path, options);
-    qualifyNodeExecutable(canonical, options);
+    qualifyNodeExecutable(canonical, { ...options, driver: selected });
     return canonical;
   };
   if (env.CE_NODE_PATH !== undefined) return qualify(env.CE_NODE_PATH);
@@ -149,7 +151,7 @@ export function resolveApprovedNode(options: ExecutableResolutionOptions = {}): 
   const candidates = [
     options.execPath ?? process.execPath,
     ...(options.systemDirectories ?? SYSTEM_DIRECTORIES).map((directory) => join(directory, "node")),
-    ...(isAbsolute(legacyRoot) ? APPROVED_RUNTIME_TUPLES.map(({ nodeVersion }) => join(legacyRoot, "installs/node", nodeVersion.slice(1), "bin/node")) : []),
+    ...(isAbsolute(legacyRoot) ? MISE_DISCOVERY_NODE_VERSIONS.map((nodeVersion) => join(legacyRoot, "installs/node", nodeVersion.slice(1), "bin/node")) : []),
   ];
   for (const path of new Set(candidates)) {
     try { return qualify(path); } catch { /* Discovery candidates may be absent or unqualified. */ }

@@ -28,8 +28,8 @@ export async function launch(w:AckWorld,options:LaunchOptions){
  child.stdout!.on("data",chunk=>{pending+=chunk;while(pending.includes("\n")){const end=pending.indexOf("\n"),e=JSON.parse(pending.slice(0,end)) as WorkerEvent;pending=pending.slice(end+1);events.push(e);for(const waiter of [...waiters])if(e.event===waiter.event){clearTimeout(waiter.timer);waiters.splice(waiters.indexOf(waiter),1);waiter.resolve(e);}}});
  child.stderr!.on("data",chunk=>{stderr+=chunk;});
  const done=new Promise<{code:number|null;signal:NodeJS.Signals|null;stderr:string}>(resolve=>child.once("close",(code,signal)=>{
-   for(const waiter of waiters.splice(0)){clearTimeout(waiter.timer);waiter.reject(new Error("worker exited before boundary"));}
    resolve({code,signal,stderr});
+   for(const waiter of waiters.splice(0)){clearTimeout(waiter.timer);waiter.reject(new Error(`worker exited before boundary code=${code} signal=${signal} events=${JSON.stringify(events)}: ${stderr}`));}
  }));
  const wait=(event:string):Promise<WorkerEvent>=>{
   const existing=events.find(e=>e.event===event);if(existing)return Promise.resolve(existing);

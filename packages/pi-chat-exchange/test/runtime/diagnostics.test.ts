@@ -4,8 +4,8 @@ import { TunnelRefusal } from "../../src/tunnel/codes.js";
 it("explains host/child separation with the sanitized current Node", () => {
   const message = hostRuntimeRepairMessage("v25.2.1");
   expect(message).toContain("v25.2.1");
-  expect(message).toContain("v24.21.0");
-  expect(message).toContain("v24.22.1");
+  expect(message).toContain("v24.12.0");
+  expect(message).toContain("3.51.3");
   expect(message).toContain("independently");
   expect(message).toContain("restart Pi");
   expect(message).toContain("CE_NODE_PATH");

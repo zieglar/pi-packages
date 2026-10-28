@@ -7,10 +7,10 @@
 | 组件 | 要求 |
 |---|---|
 | Pi | 1.3.0；设置与确认操作使用交互 TUI |
-| Pi host / MCP child Node | 精确 **24.21.0 或 24.22.1**，分别通过完整 SQLite 身份、编译选项与 API 门槛；无需同一 executable |
+| Pi host / MCP child Node | 开发候选声明 **>=24.20.0 <=24.22.1**，分别满足 SQLite >=3.51.3、平台/编译安全与共享行为探针；不固定 SQLite/source ID。24.19.0、25.9.0 有已复现的 native crash，明确拒绝；已发布 npm 0.2.0 不变 |
 | 仓库构建工具 | pnpm 12.9.1；UI 依赖由包安装，不需另装 UI |
 | Tunnel client | 当前兼容基线 `tunnel-client` 0.0.16；可信绝对路径或受控系统目录发现 |
-| Store 平台 | allowlist 为 macOS arm64 / Linux x64；双 Node 资格实测为 macOS arm64，不表示 Linux 或所有客户端已验收 |
+| Store 平台 | allowlist 为 macOS arm64 / Linux x64；本轮实际回归为 macOS arm64，Node 26.12.1 仅作隔离预览，不表示未来版本、Linux 或所有客户端已验收 |
 
 ### 安装和加载扩展
 

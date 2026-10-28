@@ -1,0 +1,31 @@
+[package]
+name = "ce-sqlite-native"
+# Independent SemVer: the Native middleware version is NOT the CE npm version.
+# Keep in sync with ../../src/storage/native/native-compat.ts (checked by scripts/check-contract.mjs).
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+license = "MIT"
+description = "Synchronous SQLite driver for Pi Chat Exchange (napi-rs + rusqlite, bundled SQLite)."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "=3.15.0", default-features = false, features = ["napi8"] }
+napi-derive = "=3.6.13"
+rusqlite = { version = "=0.41.0", features = ["bundled", "hooks"] }
+serde_json = "1"
+
+[build-dependencies]
+napi-build = "=2.6.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = "debuginfo"
+# Unwinding stays enabled so #[napi(catch_unwind)] can convert ordinary panics to errors.
+# An aborting panic or memory fault still terminates the host process; see docs/native-sqlite.md.
+panic = "unwind"

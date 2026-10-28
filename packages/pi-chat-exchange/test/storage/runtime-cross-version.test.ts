@@ -9,11 +9,24 @@ import type { RuntimeIdentity } from "../../src/storage/runtime.js";
 
 const nodeA = process.env.CE_TEST_NODE_A;
 const nodeB = process.env.CE_TEST_NODE_B;
+const nodeC = process.env.CE_TEST_NODE_C;
+const nodeD = process.env.CE_TEST_NODE_D;
+const nodeE = process.env.CE_TEST_NODE_E;
+const nodeF = process.env.CE_TEST_NODE_F;
+// Actual binary versions, never caller-supplied labels.
+const runtimes = new Map([["A", nodeA], ["B", nodeB], ["C", nodeC], ["D", nodeD], ["E", nodeE], ["F", nodeF]]
+  .filter((entry): entry is [string, string] => entry[1] !== undefined)
+  .map(([name, executable]) => {
+    const result = spawnSync(executable, ["--version"], { env: { PATH: "/usr/bin:/bin" }, encoding: "utf8", timeout: 5_000 });
+    const version = result.stdout.trim();
+    if (result.status !== 0 || !/^v\d+\.\d+\.\d+$/.test(version)) throw new Error(`CE_TEST_NODE_${name} is not a runnable Node executable`);
+    return [name, { executable, version }] as const;
+  }));
 const roots: string[] = [];
 const children: ChildProcess[] = [];
 const loader = fileURLToPath(new URL("./support/register-ts.mjs", import.meta.url));
 const worker = fileURLToPath(new URL("./support/runtime-cross-version-worker.mjs", import.meta.url));
-const env = { PATH: "/usr/bin:/bin" };
+const env = { PATH: "/usr/bin:/bin", ...(process.env.HOME === undefined ? {} : { HOME: process.env.HOME }) };
 interface Report {
   event: string; identity: RuntimeIdentity; executable: string;
   storeUuid: string; schemaVersion: number; applicationId: number; userVersion: number;
@@ -39,6 +52,8 @@ function proof(report: Report) {
 }
 function healthy(report: Report, count: number) {
   expect(report.event).toBe("result");
+  const expectedDriver = process.env.CE_TEST_EXPECT_DRIVER;
+  if (expectedDriver !== undefined) expect(report.identity.driver).toBe(expectedDriver);
   expect(report.integrity).toEqual([{ integrity_check: "ok" }]);
   expect(report.foreignKeys).toEqual([]);
   expect(report.policy).toEqual({ wal: "wal", synchronous: 2, foreignKeys: 1, trustedSchema: 0 });
@@ -88,20 +103,22 @@ afterEach(async () => {
 });
 
 // Explicit binary paths are qualification inputs, never production runtime overrides.
-describe.skipIf(nodeA === undefined || nodeB === undefined)("real two-runtime CE Store persistence matrix", () => {
-  const pairs = [["A", "A"], ["A", "B"], ["B", "A"], ["B", "B"]] as const;
+describe.skipIf(runtimes.size < 2)("real multi-runtime CE Store persistence matrix", () => {
+  const names = [...runtimes.keys()];
+  const pairs = names.flatMap((left) => names.map((right) => [left, right] as const));
   for (const [left, right] of pairs) {
-    const node = (name: string) => (name === "A" ? nodeA : nodeB)!;
+    const node = (name: string) => runtimes.get(name)!.executable;
+    const version = (name: string) => runtimes.get(name)!.version;
     it(`${left}→${right}: close/reopen, writes and stable identity/ledger/trust root`, () => {
       const root = mkdtempSync(join(realpathSync(tmpdir()), "ce-runtime-pair-")); roots.push(root);
       const directory = join(root, "store");
       const first = run(node(left), directory, "baseline", true);
       expect(first.status).toBe(0);
       const initial = first.reports[0]!; healthy(initial, 1);
-      expect(initial.identity.nodeVersion).toBe(left === "A" ? "v24.21.0" : "v24.22.1");
+      expect(initial.identity.nodeVersion).toBe(version(left));
       const second = run(node(right), directory, "peer"); expect(second.status).toBe(0);
       const peer = second.reports[0]!; healthy(peer, 2);
-      expect(peer.identity.nodeVersion).toBe(right === "A" ? "v24.21.0" : "v24.22.1");
+      expect(peer.identity.nodeVersion).toBe(version(right));
       expect(proof(peer)).toEqual(proof(initial));
       unchangedBaseline(initial, peer);
       const reopened = run(node(left), directory, "peer"); expect(reopened.status).toBe(0);

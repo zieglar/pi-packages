@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { resolveSqliteDriver } from "../../src/storage/sqlite-driver-selection.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { createMessage, messageCreatedAuditSequence } from "../../src/storage/creation.js";
 import { readMessageMetadata, sendMessage } from "../../src/storage/messaging.js";
@@ -650,7 +651,7 @@ describe("CE-0002 B3-P3A authorized durable messaging", () => {
   it("attempts BEGIN once on BUSY and performs no messaging writes", () => {
     const w = messagingWorld();
     const before = rowCounts(w.active);
-    const blocker = new DatabaseSync(w.active.databasePath);
+    const blocker = resolveSqliteDriver().open(w.active.databasePath);
     let begins = 0;
     const original = w.active.store.database.exec.bind(w.active.store.database);
     w.active.store.database.exec = (sql) => {

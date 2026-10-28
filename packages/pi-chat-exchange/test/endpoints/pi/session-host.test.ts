@@ -304,8 +304,10 @@ describe("host adapter transaction-outcome mapping", () => {
     let commitFailed = false;
     const real = fx.store;
     const realDb = real.database;
-    const flakyDb = {
-      exec(sql: string): void {
+    const flakyDb = new Proxy(realDb, {
+      get(target, key) {
+        if (key !== "exec") return Reflect.get(target, key);
+        return (sql: string): void => {
         // The fencing read uses a deferred "BEGIN"; the write path uses
         // "BEGIN IMMEDIATE" (busy) and "COMMIT" (commit), so the fault only
         // fires on the authorized write transaction.
@@ -322,17 +324,9 @@ describe("host adapter transaction-outcome mapping", () => {
           throw new Error("disk failure during rollback (injected)");
         }
         realDb.exec(sql);
+        };
       },
-      prepare(sql: string) {
-        return realDb.prepare(sql);
-      },
-      setAuthorizer(authorizer: unknown) {
-        (realDb as unknown as { setAuthorizer(fn: unknown): void }).setAuthorizer(authorizer);
-      },
-      get isTransaction(): boolean {
-        return realDb.isTransaction;
-      },
-    };
+    });
     const flakyStore = new Proxy(real, {
       get(target, key) {
         return key === "database" ? flakyDb : Reflect.get(target, key);

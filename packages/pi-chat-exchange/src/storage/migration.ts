@@ -1,4 +1,4 @@
-import type { DatabaseSync } from "node:sqlite";
+import type { SqliteConnection as DatabaseSync } from "./sqlite-driver.js";
 import { assertStorageRuntimeEligibility, openStorageConnection, type StorageConnectionOptions } from "./connection.js";
 import { StoreLifecycleError } from "./errors.js";
 import { assertSecureDatabaseArtifacts, pathStat, prepareDatabasePath } from "./filesystem.js";

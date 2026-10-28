@@ -8,6 +8,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { expect, it } from "vitest";
 import { multiSessionFixture } from "../../tunnel/support/multi-session-fixture.js";
 import { initializeStore } from "../../../dist/storage/store.js";
+import { assertHostRuntimeEligibility } from "../../../dist/storage/runtime.js";
 
 type Reply = { result: any; notices: string[]; error?: string };
 function peer(session: string, profile: string, dir: string) {
@@ -55,7 +56,7 @@ function peer(session: string, profile: string, dir: string) {
 }
 
 it("composes independent Pi factory OS processes, current-policy gates and fixed-sender MCP with independent durable evidence", { timeout: 60_000 }, async () => {
-  expect(["v24.21.0", "v24.22.1"]).toContain(process.version);
+  expect(assertHostRuntimeEligibility().nodeVersion).toBe(process.version);
   const f = await multiSessionFixture();
   const peers: ReturnType<typeof peer>[] = [];
   let client: Client | undefined; let transport: StdioClientTransport | undefined;

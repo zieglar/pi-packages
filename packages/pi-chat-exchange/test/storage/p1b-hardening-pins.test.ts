@@ -1,3 +1,4 @@
+import type { SqliteConnection } from "../../src/storage/sqlite-driver.js";
 import { rmSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
@@ -65,7 +66,7 @@ function snapshot(active: Fixture): string {
  * triggers on one table for a single tampering statement, then restore them
  * byte-identically so the schema manifest still validates. */
 function tamper(active: Fixture, table: string, sql: string, ...values: string[]): void {
-  const db: DatabaseSync = privileged(active);
+  const db: Pick<DatabaseSync | SqliteConnection, "prepare" | "exec" | "close"> = privileged(active);
   try {
     const triggers = db
       .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?")

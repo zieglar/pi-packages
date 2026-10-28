@@ -1,3 +1,4 @@
+import type { SqliteConnection } from "../../src/storage/sqlite-driver.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -31,7 +32,7 @@ interface Fixture {
   directory: string;
   path: string;
   store: DurableStore;
-  raw: DatabaseSync;
+  raw: Pick<DatabaseSync | SqliteConnection, "prepare" | "exec" | "close">;
   reader: DatabaseSync;
   exchangeId: string;
 }
@@ -52,7 +53,7 @@ function fixture(): Fixture {
   const directory = join(root, "db");
   const path = join(directory, "store.sqlite");
   let store: DurableStore | undefined;
-  let raw: DatabaseSync | undefined;
+  let raw: Pick<DatabaseSync | SqliteConnection, "prepare" | "exec" | "close"> | undefined;
   let reader: DatabaseSync | undefined;
   try {
     store = initializeStore({ directory, filename: "store.sqlite", busyTimeoutMs: BUSY_MS });

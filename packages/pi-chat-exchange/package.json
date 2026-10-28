@@ -14,15 +14,17 @@
   },
   "type": "module",
   "engines": {
-    "node": "24.21.0 || 24.22.1"
+    "node": ">=24.20.0 <=24.22.1"
   },
   "scripts": {
-    "test": "CE_DEFAULT_CLIENT_GUARD=1 vitest run --exclude test/tunnel/real-client-compat.test.ts --exclude test/tunnel/offline.integration.test.ts --exclude test/host-regression/real-host-recovery.test.ts --exclude test/package/installed-host.test.ts",
+    "test": "CE_DEFAULT_CLIENT_GUARD=1 vitest run --exclude test/tunnel/real-client-compat.test.ts --exclude test/tunnel/offline.integration.test.ts --exclude test/host-regression/real-host-recovery.test.ts --exclude test/package/installed-host.test.ts --exclude '**/native-{artifact,value-regression,cli}.test.ts' --exclude '**/sqlite-driver-cross.test.ts'",
     "test:distribution-host": "CE_DISTRIBUTION_HOST_TEST=1 vitest run test/package/installed-host.test.ts",
     "test:distribution-npm": "CE_DISTRIBUTION_HOST_TEST=1 CE_DISTRIBUTION_MODE=managed-npm vitest run test/package/installed-host.test.ts",
     "test:installed-client": "vitest run test/tunnel/real-client-compat.test.ts test/tunnel/offline.integration.test.ts",
     "test:host-regression": "CE_HOST_REGRESSION_TEST=1 vitest run test/host-regression/real-host-recovery.test.ts",
-    "test:storage": "vitest run test/storage",
+    "test:storage": "vitest run test/storage --exclude '**/native-{artifact,value-regression,cli}.test.ts' --exclude '**/sqlite-driver-cross.test.ts'",
+    "native": "node dist/bin/ce-native.js",
+    "test:rust-native": "vitest run --config test/rust-native.vitest.config.ts --dir test/storage --testTimeout 120000 --hookTimeout 120000 --exclude '**/runtime-cross-version.test.ts' --exclude '**/runtime-wal-safety.test.ts' --exclude '**/inbox-ack-volume.test.ts'",
     "test:plugin-package": "CE_PLUGIN_PACKAGE_TEST=1 vitest run test/plugin/local-plugin-package.test.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit -p tsconfig.json",
@@ -31,7 +33,7 @@
     "package:desktop-plugin": "node scripts/package-local-plugin.mjs",
     "recover:ownership": "node scripts/recover-stale-ownership.mjs",
     "reconcile:session-mutex": "node scripts/reconcile-session-process-mutex.mjs",
-    "check": "node scripts/check-contract.mjs",
+    "check": "node scripts/check-contract.mjs && node scripts/check-native.mjs",
     "verify": "pnpm run check && pnpm run typecheck && pnpm run build && pnpm test && pnpm run test:plugin-package"
   },
   "dependencies": {
@@ -59,6 +61,7 @@
     "docs/multi-session-usage.md",
     "docs/chatgpt-installation.md",
     "docs/architecture.md",
+    "docs/native-sqlite.md",
     "docs/tunnel-manager-background.md",
     "docs/protocol-v2.md",
     "docs/ownership-contract.md",

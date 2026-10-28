@@ -36,7 +36,7 @@ const approvedIdentity: RuntimeIdentity = {
   platform: process.platform,
   arch: process.arch,
   compileOptions: ["THREADSAFE=1", "MUTEX_PTHREADS"],
-  sqliteCapabilities: ["defensive", "statement-get", "statement-all", "statement-run", "transaction-state"],
+  sqliteCapabilities: ["defensive", "statement-get", "statement-all", "statement-run", "transaction-state", "authorizer-transaction", "authorizer-savepoint", "transaction-commit", "strict-tables", "json-functions", "check-constraints", "foreign-key-enforcement", "triggers"],
 };
 
 afterEach(() => {
@@ -125,7 +125,7 @@ describe("private SQLite connection policy", () => {
     expect(() =>
       openStorageConnection({
         ...location,
-        runtimeIdentity: () => ({ ...approvedIdentity, sqliteVersion: "3.53.5" }),
+        runtimeIdentity: () => ({ ...approvedIdentity, sqliteVersion: "3.50.4" }),
       }),
     ).toThrow(RuntimeEligibilityError);
   });

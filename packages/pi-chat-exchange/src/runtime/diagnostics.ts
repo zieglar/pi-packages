@@ -1,4 +1,4 @@
-import { APPROVED_RUNTIME_TUPLES, assertHostRuntimeEligibility } from "../storage/runtime.js";
+import { CANDIDATE_NODE_RANGE, MINIMUM_SQLITE_VERSION, assertHostRuntimeEligibility } from "../storage/runtime.js";
 import { ExecutableRefusal, diagnoseTunnelClient, resolveApprovedNode, type ExecutableResolutionOptions, type TunnelClientDiagnosis } from "./executables.js";
 
 export interface InstallationDiagnosis {
@@ -29,5 +29,5 @@ export function installationDiagnosticMessage(result: InstallationDiagnosis): st
 /** No raw subprocess output, paths, configuration values or exception causes. */
 export function hostRuntimeRepairMessage(nodeVersion: string = process.version): string {
   const current = /^v\d+\.\d+\.\d+$/.test(nodeVersion) ? nodeVersion : "unrecognized";
-  return `current Pi Node ${current}; requires approved Node ${APPROVED_RUNTIME_TUPLES.map(({ nodeVersion: version }) => version).join(" or ")} with approved SQLite; restart Pi using a trusted absolute approved Node executable. CE_NODE_PATH selects the MCP child only, not the running Pi host; each qualifies independently and need not use the same executable; mise is not required`;
+  return `current Pi Node ${current}; requires a candidate Node >=${CANDIDATE_NODE_RANGE.minimum} within majors 24/25/26 with SQLite >=${MINIMUM_SQLITE_VERSION} (upstream WAL-reset fix) and proven capabilities; restart Pi using a trusted absolute approved Node executable. CE_NODE_PATH selects the MCP child only, not the running Pi host; each qualifies independently and need not use the same executable; mise is not required`;
 }

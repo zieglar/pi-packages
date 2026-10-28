@@ -1,5 +1,7 @@
 # 独立安装 Pi 扩展（0.2.0：managed npm 与 tarball 回退）
 
+Development candidate notice (`HANDOFF-PI-SQLITE-RUNTIME-DECOUPLE-01`): the historical 0.2.0 instructions and certification below describe the unchanged published artifact. A locally built candidate declares Node `>=24.20.0 <=24.22.1` and requires SQLite >=3.51.3, platform/compile safety and shared behavioral checks; exact SQLite/source equality is removed. Node 24.19.0/25.9.0 are refused after reproduced native crashes; 26.12.1 is preview only. Candidate tests use isolated Stores and real Pi 1.3.0 on macOS arm64. Do not apply these candidate claims to npm 0.2.0.
+
 本指南是 **`@zieglar/pi-chat-exchange` 的正式独立分发方式**：消费者拿到一个预先构建的 npm tarball，物理安装后用 Pi 注册。它与两条旧路径互不替代：
 
 | 路径 | 用途 | 区别 |
@@ -18,7 +20,7 @@
 
 | 组件 | 要求 |
 |---|---|
-| Node | 精确 **24.21.0 或 24.22.1**（用户本地安装即可；mise 不是要求）。Pi host 与 MCP child 分别过 SQLite/运行时资格门槛 |
+| Node（已发布 0.2.0） | 精确 **24.21.0 或 24.22.1**（用户本地安装即可；mise 不是要求）。Pi host 与 MCP child 分别过原 SQLite/运行时资格门槛；本地开发候选要求见页首 notice |
 | npm | 11.x（随批准 Node 分发） |
 | Pi | **1.3.0**，`pi` 可执行（全局安装或本地前缀均可） |
 | 平台 | macOS arm64（Store allowlist；Linux x64 未在本路径验收） |

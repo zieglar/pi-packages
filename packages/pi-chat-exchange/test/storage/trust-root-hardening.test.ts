@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { resolveSqliteDriver } from "../../src/storage/sqlite-driver-selection.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { openStorageConnection } from "../../src/storage/connection.js";
 import { migrateStore } from "../../src/storage/migration.js";
@@ -287,7 +288,7 @@ describe("P1A hardening C: entry-point transaction outcome propagation", () => {
     const loc = location();
     v1Store(loc);
 
-    const holder = new DatabaseSync(loc.databasePath);
+    const holder = resolveSqliteDriver().open(loc.databasePath);
     holder.exec("BEGIN IMMEDIATE");
     let error: unknown;
     try {
@@ -347,7 +348,7 @@ describe("P1A hardening C: entry-point transaction outcome propagation", () => {
     v2Store(loc);
     rmSync(hostSecretPath(loc.databasePath));
 
-    const holder = new DatabaseSync(loc.databasePath);
+    const holder = resolveSqliteDriver().open(loc.databasePath);
     holder.exec("BEGIN IMMEDIATE");
     let error: unknown;
     try {

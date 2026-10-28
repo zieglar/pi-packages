@@ -1,3 +1,4 @@
+import type { SqliteConnection } from "../../src/storage/sqlite-driver.js";
 import type { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { readCapabilityStatus, revokeCapability } from "../../src/storage/participant.js";
@@ -82,7 +83,7 @@ function world(): World {
   };
 }
 
-function sessionRows(db: DatabaseSync): unknown[] {
+function sessionRows(db: Pick<DatabaseSync | SqliteConnection, "prepare">): unknown[] {
   return db
     .prepare(
       "SELECT participant_id, session_id, bound_at, detached_at, private_revision FROM participant_session ORDER BY participant_id, session_id",
@@ -90,7 +91,7 @@ function sessionRows(db: DatabaseSync): unknown[] {
     .all();
 }
 
-function capabilityRows(db: DatabaseSync): unknown[] {
+function capabilityRows(db: Pick<DatabaseSync | SqliteConnection, "prepare">): unknown[] {
   return db
     .prepare(
       "SELECT capability_digest, participant_id, scope, trust_generation, created_at, expires_at, revoked_at, session_id, private_revision FROM participant_capability ORDER BY capability_digest",

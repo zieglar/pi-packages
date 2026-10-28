@@ -20,9 +20,10 @@ const transactionUrl = new URL("../../src/storage/transaction.ts", import.meta.u
 /** Strict subprocesses prove process-level rejection behavior without crashing this suite. */
 function strictSubprocess(body: string, options: { directory: string; filename: string }) {
   return spawnSync(process.execPath, ["--unhandled-rejections=strict", "--input-type=module", "-e", `
-    import { DatabaseSync } from 'node:sqlite';
+    import { createRequire } from 'node:module';
+    import { createNodeSqliteDriver } from ${JSON.stringify(new URL("../../src/storage/sqlite-driver-node.ts", import.meta.url).href)};
     import { withImmediateTransaction } from ${JSON.stringify(transactionUrl)};
-    const db = new DatabaseSync(${JSON.stringify(join(options.directory, options.filename))});
+    const db = createNodeSqliteDriver(createRequire(import.meta.url)("node:sqlite")).open(${JSON.stringify(join(options.directory, options.filename))});
     db.exec('CREATE TABLE item(id TEXT PRIMARY KEY)');
     let propertyCalls = 0, failure, retained, statement;
     ${body}

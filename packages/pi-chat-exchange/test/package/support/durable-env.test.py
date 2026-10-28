@@ -31,7 +31,7 @@ class DurableEnvironmentTest(unittest.TestCase):
         compiled = compile(ast.Module(body=[function], type_ignores=[]), '<actual-verify-durable>', 'exec')
         code = next(c for c in compiled.co_consts if isinstance(c, CodeType))
         with tempfile.TemporaryDirectory(prefix='ce-durable-env-') as directory:
-            root = pathlib.Path(directory)
+            root = pathlib.Path(directory).resolve()
             for name in ['bin', 'home', 'tmp', 'run/profile/.ce-bindings', 'support', 'parent/home', 'parent/tmp', 'parent/cwd']:
                 (root / name).mkdir(parents=True)
             node = root / 'bin/node'

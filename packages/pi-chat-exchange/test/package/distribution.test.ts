@@ -16,7 +16,7 @@ const archiveName = `${authorManifest.name.replace(/^@/, "").replace(/\//g, "-")
  * evidence records stay repo-only and are referenced as plain text, never as links.
  */
 const consumerDocs = ["docs/chatgpt-installation.md", "docs/independent-install.md", "docs/multi-session-usage.md", "docs/tunnel-setup.md", "docs/releases/0.2.0.md",
-  "docs/architecture.md", "docs/tunnel-manager-background.md", "docs/protocol-v2.md", "docs/ownership-contract.md", "docs/storage-contract.md", "docs/delivery-ack-contract.md", "docs/storage-security.md"] as const;
+  "docs/architecture.md", "docs/native-sqlite.md", "docs/tunnel-manager-background.md", "docs/protocol-v2.md", "docs/ownership-contract.md", "docs/storage-contract.md", "docs/delivery-ack-contract.md", "docs/storage-security.md"] as const;
 /** Author-side records that must never enter the consumer tarball. */
 const repoOnlyDocs = ["docs/license-audit.md", "docs/runtime-qualification.md", "docs/protocol-v1.md", "docs/quarantine-hotfix-ph0003.md", "docs/chat-bridge-audit-ph0003.md", "docs/identity-hotfix-ph0002.md"] as const;
 const fixtures: string[] = [];
@@ -173,7 +173,7 @@ it("author command validates the native inventory before packing", () => {
   expect(result.status, result.stderr).toBe(0);
   expect(readdirSync(join(dir, "out"))).toEqual([archiveName]);
 });
-it.each(["native/tunnel-keychain.swift", "scripts/recover-stale-ownership.mjs", "scripts/reconcile-session-process-mutex.mjs", "CHANGELOG.md", "docs/releases/0.2.0.md", "docs/architecture.md", "docs/tunnel-manager-background.md", "docs/protocol-v2.md", "docs/ownership-contract.md", "docs/storage-contract.md", "docs/delivery-ack-contract.md", "docs/storage-security.md"])("refuses native pack excluding required %s despite disk presence", (missing) => {
+it.each(["native/tunnel-keychain.swift", "scripts/recover-stale-ownership.mjs", "scripts/reconcile-session-process-mutex.mjs", "CHANGELOG.md", "docs/releases/0.2.0.md", "docs/architecture.md", "docs/native-sqlite.md", "docs/tunnel-manager-background.md", "docs/protocol-v2.md", "docs/ownership-contract.md", "docs/storage-contract.md", "docs/delivery-ack-contract.md", "docs/storage-security.md"])("refuses native pack excluding required %s despite disk presence", (missing) => {
   const dir = fixture();
   const manifest = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
   manifest.files = manifest.files.filter((path: string) => path !== missing);

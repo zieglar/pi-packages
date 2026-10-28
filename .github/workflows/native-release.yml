@@ -1,0 +1,298 @@
+name: Native SQLite Release
+
+# Build and qualify artifacts locally in CI. Publication is a separate,
+# environment-protected action requiring an explicit operator choice.
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the fixed middleware release after verification"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-sqlite-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-15
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+    env:
+      CE_TARGET: ${{ matrix.target }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Read middleware version
+        id: version
+        shell: bash
+        run: >-
+          echo "version=$(sed -n 's/^version = \"\([^\"]*\)\"$/\1/p'
+          packages/pi-chat-exchange/native/ce-sqlite/Cargo.toml |
+          head -1)" >> "$GITHUB_OUTPUT"
+      - name: Install pinned Rust toolchain and target
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: 1.98.1
+          targets: ${{ matrix.target }}
+          components: rustfmt, clippy
+      - name: Cache Cargo registry
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ~/.cargo/registry
+          key: >-
+            cargo-${{ matrix.target }}-${{ hashFiles(
+            'packages/pi-chat-exchange/native/ce-sqlite/Cargo.lock') }}
+      - name: Build Native module
+        working-directory: packages/pi-chat-exchange/native/ce-sqlite
+        env:
+          CE_BUILD_ID: ${{ github.sha }}
+        run: cargo build --release --locked --target "$CE_TARGET"
+      - name: Install Node 24.21.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.21.0
+      - name: Install package test dependencies
+        run: >-
+          corepack enable && corepack prepare pnpm@12.9.1 --activate &&
+          pnpm install --frozen-lockfile --ignore-scripts
+      - name: Stage versioned artifact
+        id: stage
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        working-directory: packages/pi-chat-exchange/native/ce-sqlite
+        run: |
+          set -euo pipefail
+          version="$VERSION"
+          artifact="ce-sqlite-${version}-${CE_TARGET}.node"
+          mkdir -p "$GITHUB_WORKSPACE/dist-native"
+          case "$CE_TARGET" in
+            *-apple-darwin)
+              cp "target/${CE_TARGET}/release/libce_sqlite_native.dylib" \
+                "$GITHUB_WORKSPACE/dist-native/${artifact}"
+              ;;
+            *-linux-gnu)
+              cp "target/${CE_TARGET}/release/libce_sqlite_native.so" \
+                "$GITHUB_WORKSPACE/dist-native/${artifact}"
+              ;;
+            *)
+              echo "unsupported target ${CE_TARGET}" >&2
+              exit 1
+              ;;
+          esac
+          chmod 600 "$GITHUB_WORKSPACE/dist-native/${artifact}"
+          echo "artifact=${artifact}" >> "$GITHUB_OUTPUT"
+      - name: Run driver conformance against built artifact
+        working-directory: packages/pi-chat-exchange
+        env:
+          ARTIFACT: ${{ steps.stage.outputs.artifact }}
+        run: |
+          export CE_TEST_NATIVE_MODULE="$GITHUB_WORKSPACE/dist-native/$ARTIFACT"
+          pnpm exec vitest run \
+            test/storage/sqlite-driver-conformance.test.ts \
+            test/storage/native-value-regression.test.ts \
+            test/storage/native-artifact.test.ts --maxWorkers 1
+      - name: Build TypeScript and verify cross-driver databases
+        if: >-
+          matrix.target == 'aarch64-apple-darwin' ||
+          matrix.target == 'x86_64-unknown-linux-gnu'
+        working-directory: packages/pi-chat-exchange
+        env:
+          ARTIFACT: ${{ steps.stage.outputs.artifact }}
+        run: |
+          export CE_TEST_NATIVE_MODULE="$GITHUB_WORKSPACE/dist-native/$ARTIFACT"
+          pnpm run build
+          pnpm exec vitest run test/storage/sqlite-driver-cross.test.ts
+      - name: Test release refusal and workflow policy
+        working-directory: packages/pi-chat-exchange
+        run: node --test scripts/test/native-release.check.mjs
+      - name: Check Native compatibility
+        working-directory: packages/pi-chat-exchange
+        run: node scripts/check-native.mjs
+      - name: Record artifact identity and hash
+        shell: bash
+        env:
+          ARTIFACT: ${{ steps.stage.outputs.artifact }}
+        working-directory: packages/pi-chat-exchange/native/ce-sqlite
+        run: |
+          set -euo pipefail
+          artifact="$ARTIFACT"
+          node --input-type=commonjs -e \
+            'const m=require(process.argv[1]); console.log(m.info())' \
+            "$GITHUB_WORKSPACE/dist-native/${artifact}" \
+            | tee "$GITHUB_WORKSPACE/dist-native/artifact-info.json"
+          shasum -a 256 "$GITHUB_WORKSPACE/dist-native/${artifact}" \
+            | tee "$GITHUB_WORKSPACE/dist-native/artifact-sha256.txt"
+      - name: Upload verified artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: >-
+            ce-sqlite-${{ steps.version.outputs.version }}-${{ matrix.target }}
+          path: |
+            dist-native/${{ steps.stage.outputs.artifact }}
+            dist-native/artifact-info.json
+            dist-native/artifact-sha256.txt
+          if-no-files-found: error
+
+  attest:
+    name: Attest verified build outputs (no release credentials)
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'zieglar/pi-packages' &&
+      github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    steps:
+      - name: Checkout exact workflow commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download verified artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: ce-sqlite-*
+          path: release-assets
+      - name: Generate fixed compatibility manifest and checksums
+        shell: bash
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-files
+          find release-assets -mindepth 2 -maxdepth 2 -type f -name '*.node' \
+            -exec cp {} release-files/ \;
+          node --input-type=commonjs -e '
+            const fs=require("node:fs");
+            const path=require("node:path");
+            const crypto=require("node:crypto");
+            const version=process.env.VERSION;
+            const assets={};
+            const identities=[];
+            for (const directory of fs.readdirSync("release-assets")) {
+              const root=path.join("release-assets", directory);
+              const infoPath=path.join(root, "artifact-info.json");
+              if (!fs.existsSync(infoPath)) continue;
+              const info=JSON.parse(fs.readFileSync(infoPath, "utf8"));
+              const asset=`ce-sqlite-${version}-${info.target}.node`;
+              const bytes=fs.readFileSync(path.join("release-files", asset));
+              const sha256=crypto.createHash("sha256")
+                .update(bytes).digest("hex");
+              if (info.middlewareVersion !== version ||
+                  info.abiVersion !== 1 ||
+                  info.buildId !== process.env.GITHUB_SHA ||
+                  info.sqliteVersion !== "3.54.1" ||
+                  !["aarch64-apple-darwin", "x86_64-apple-darwin",
+                    "x86_64-unknown-linux-gnu",
+                    "aarch64-unknown-linux-gnu"].includes(info.target) ||
+                  directory !== `ce-sqlite-${version}-${info.target}` ||
+                  assets[info.target]) {
+                throw new Error("Native identity/version/ABI mismatch");
+              }
+              assets[info.target]={asset, sha256};
+              identities.push({...info, asset, sha256});
+            }
+            if (Object.keys(assets).length !== 4) {
+              throw new Error("expected four target artifacts");
+            }
+            const manifest={
+              abiVersion:1, defaultVersion:version,
+              repository:"zieglar/pi-packages",
+              versions:{[version]:{assets}}
+            };
+            fs.writeFileSync(
+              "release-files/native-manifest.json",
+              JSON.stringify(manifest, null, 2)+"\n"
+            );
+            fs.writeFileSync(
+              "release-files/native-identities.json",
+              JSON.stringify(identities, null, 2)+"\n"
+            );
+            const checksums=Object.values(assets).map((entry) =>
+              `${entry.sha256}  ${entry.asset}`).sort().join("\n")+"\n";
+            fs.writeFileSync("release-files/SHA256SUMS", checksums);
+          '
+      - name: Attest assets and checksum manifest
+        id: provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: release-files/*
+      - name: Preserve signed provenance bundle
+        env:
+          BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: cp "$BUNDLE" release-files/provenance.jsonl
+      - name: Upload attested release set
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-release-bundle
+          path: release-files/*
+          if-no-files-found: error
+
+  release:
+    name: Publish a new immutable version (explicit only)
+    if: >-
+      inputs.publish && github.event_name == 'workflow_dispatch' &&
+      github.repository == 'zieglar/pi-packages' &&
+      github.ref == 'refs/heads/main'
+    needs: [build, attest]
+    runs-on: ubuntu-latest
+    environment: native-sqlite-release
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout exact release orchestration
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Refuse existing version and require repository immutability
+        run: node packages/pi-chat-exchange/scripts/native-release.mjs check
+      - name: Download attested release set
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: native-release-bundle
+          path: release-files
+      - name: Verify provenance and checksum relation before publication
+        run: |
+          set -euo pipefail
+          cd release-files
+          sha256sum --check SHA256SUMS
+          for file in *.node SHA256SUMS native-*.json; do
+            gh attestation verify "$file" --repo "$GITHUB_REPOSITORY" \
+              --bundle provenance.jsonl --source-digest "$GITHUB_SHA" \
+              --source-ref refs/heads/main \
+              --signer-workflow \
+              "$GITHUB_REPOSITORY/.github/workflows/native-release.yml"
+          done
+      - name: Publish without replacing tag or assets
+        run: >-
+          node packages/pi-chat-exchange/scripts/native-release.mjs
+          publish release-files
