@@ -105,8 +105,10 @@ describe("durable storage filesystem safety", () => {
     expect(process.umask()).toBe(before);
   });
 
-  it("accepts approved local filesystem identifiers and rejects remote or unknown ones", () => {
-    expect(() => assertLocalFilesystemType("darwin", 26)).not.toThrow();
+  it.runIf(process.platform === "darwin")("accepts the approved local Darwin filesystem by mount identity", () => {
+    expect(() => assertLocalFilesystemType("darwin", 26, temporaryRoot())).not.toThrow();
+  });
+  it("accepts approved local Linux filesystem identifiers and rejects remote or unknown ones", () => {
     expect(() => assertLocalFilesystemType("linux", 0xef53)).not.toThrow();
     expect(() => assertLocalFilesystemType("linux", 0x6969)).toThrow(FilesystemSafetyError);
     expect(() => assertLocalFilesystemType("linux", 0x12345678)).toThrow(FilesystemSafetyError);
