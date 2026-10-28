@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "public-export-ledger.schema.json",
+  "title": "Private Public Export Ledger Event",
+  "type": "object",
+  "required": [
+    "schema",
+    "exportId",
+    "seq",
+    "recordedAt",
+    "backfilled",
+    "status",
+    "sourceRepository",
+    "sourceCommits",
+    "sourceHead",
+    "targetRepository",
+    "targetBase",
+    "targetCommit",
+    "exportedPaths",
+    "contentDigest",
+    "verification",
+    "evidence"
+  ],
+  "properties": {
+    "schema": { "const": 1 },
+    "exportId": { "type": "string", "pattern": "^PX-[0-9]{4}$" },
+    "seq": { "type": "integer", "minimum": 1 },
+    "recordedAt": { "type": "string", "format": "date-time" },
+    "backfilled": { "type": "boolean" },
+    "status": {
+      "enum": [
+        "PENDING_EXPORT",
+        "COMMITTED",
+        "VERIFIED",
+        "UNKNOWN",
+        "PUSHED",
+        "CI_VERIFIED"
+      ]
+    },
+    "sourceRepository": { "const": "zieglar/pi-packages-dev" },
+    "sourceCommits": { "type": "array", "items": { "$ref": "#/$defs/sha" } },
+    "sourceHead": { "anyOf": [{ "$ref": "#/$defs/sha" }, { "type": "null" }] },
+    "targetRepository": { "const": "zieglar/pi-packages" },
+    "targetBase": { "anyOf": [{ "$ref": "#/$defs/sha" }, { "type": "null" }] },
+    "targetCommit": { "anyOf": [{ "$ref": "#/$defs/sha" }, { "type": "null" }] },
+    "exportedPaths": { "type": "array", "items": { "$ref": "#/$defs/path" } },
+    "contentDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "verification": { "type": "object" },
+    "evidence": { "type": "array", "minItems": 1, "items": { "type": "object" } }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "PENDING_EXPORT" } } },
+      "then": { "properties": { "targetCommit": { "type": "null" } } }
+    },
+    {
+      "if": { "properties": { "status": { "enum": ["COMMITTED", "PUSHED", "CI_VERIFIED"] } } },
+      "then": { "properties": { "targetCommit": { "$ref": "#/$defs/sha" } } }
+    }
+  ],
+  "$defs": {
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "path": {
+      "type": "object",
+      "required": ["path", "sourceCommit", "blob"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^[^\\x00\\r\\n]+$" },
+        "sourceCommit": { "$ref": "#/$defs/sha" },
+        "blob": { "$ref": "#/$defs/sha" },
+        "operation": { "enum": ["A", "M", "D"] },
+        "targetBaseBlob": { "anyOf": [{ "$ref": "#/$defs/sha" }, { "type": "null" }] }
+      }
+    }
+  }
+}
