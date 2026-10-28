@@ -5,6 +5,7 @@ Authoritative record of accepted governance exceptions for Public releases of th
 ## EXC-001 — Release Approval Exception: Single Maintainer
 
 - Status: **ACCEPTED** (recorded 2026-10-29, Private audit trail).
+- Superseded in part by **EXC-002** (automated release gate): the environment no longer has a required reviewer, so item 2 (an explicit approval record) no longer applies. The single-maintainer facts in items 1, 3 and 5 are unchanged.
 - Applies to: repository `zieglar/pi-packages`, GitHub Environment `native-sqlite-release` (ID `25622680254`), Native middleware `0.1.0` / ABI `1`, Export-ID `PX-0005`, Public Source SHA `f68f9899e83e175bb8fcb9a85345fbf0f7fb0e3f`.
 - Decision: the release trigger and the required reviewer may be the same person.
 
@@ -29,3 +30,25 @@ Gate effect: G6 is recorded as `PASS_WITH_SINGLE_MAINTAINER_EXCEPTION`. It is no
 Change provenance: the exception is realized by setting `prevent_self_review=false` on the environment via `PUT /repos/zieglar/pi-packages/environments/native-sqlite-release`. Required reviewer (`zieglar`), `can_admins_bypass=false`, the `main`-only deployment branch policy and the environment name are unchanged. No environment was deleted, recreated or stripped of its approval requirement, and no other repository administration setting was modified in the same step.
 
 Not verified by configuration alone: this exception does not prove that a future real deployment approval will succeed, and no `publish=true` run was triggered to test it. Actual Release execution remains separately authorized.
+
+## EXC-002 — Automated Release Gate (no human approval)
+
+- Status: **ACCEPTED**, supersedes the approval-record premise of EXC-001 for the CE Native SQLite release path.
+
+- Applies to: repository `zieglar/pi-packages`, GitHub Environment `native-sqlite-release` (ID `25622680254`), Native middleware `0.1.0` / ABI `1`, the authorization/automation repair of the failed publish run `40774757239`.
+
+- Decision: the environment's `required_reviewers` protection rule is removed. Publication is authorized by an explicit `workflow_dispatch` with `publish=true` and an exact `publish_sha` on `main` by the repository's only write-capable maintainer, plus the mandatory in-workflow release gate. The Environment itself, its `main`-only deployment branch policy and `can_admins_bypass=false` are unchanged.
+
+Honest statement of what this is and is not:
+
+1. This is an **automated gate**, not a human approval. No approval event is recorded in the environment deployment history anymore, and there is no independent second approver. The repository still has exactly one collaborator (`zieglar`, `admin`).
+
+2. Nothing here claims independent two-person review, and nothing uses a personal access token to simulate a human approval. A GitHub App that would approve pending deployments was evaluated and rejected: it would only reproduce a self-approval with extra infrastructure and would need a hosted webhook service, and it cannot supply independence.
+
+3. The gate that replaces the click is machine-verified, not a rubber stamp. Before any write the release job must confirm: the operator-supplied `publish_sha` equals the dispatched commit SHA; immutable releases are enabled; the `ce-sqlite-v*` tag ruleset `26078349` is active, blocks update/deletion and has no bypass; the environment deploys from `main` only and `can_admins_bypass=false`; the version's tag and Release are absent; the exact eight-file inventory matches; SHA256SUMS matches the bytes; and all seven attestation subjects verify against the repository, signer workflow, source ref and exact source SHA. Any failure stops the release before any write.
+
+4. Credential boundary added in the same change: repository-control reads (immutable releases and the tag ruleset) use a separate repository-scoped administration-read credential stored as the environment secret `CE_RELEASE_ADMIN_TOKEN`, and that credential is never used for any write. The ordinary publish token remains the workflow `GITHUB_TOKEN` with `contents: write` and is used for every version-specific read and for every write. The two values must differ, or the release refuses.
+
+5. Reverting condition: when a second trusted maintainer exists and can be registered as a required reviewer, the required reviewer may be restored with `prevent_self_review=true` to reintroduce independent approval. This exception is not a blanket policy for later releases or for other repositories.
+
+Evidence: `environment-before.json`, `environment-after.json` and `branch-policies-after.json` in the Private evidence record for this handoff. The before/after API reads confirm `required_reviewers` was removed while `can_admins_bypass=false` and the `main`-only branch policy were preserved.
