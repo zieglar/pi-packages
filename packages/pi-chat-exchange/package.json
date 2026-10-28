@@ -14,7 +14,7 @@
   },
   "type": "module",
   "engines": {
-    "node": "24.21.0 || 24.22.1"
+    "node": ">=24.21.0 <=24.22.1"
   },
   "scripts": {
     "test": "CE_DEFAULT_CLIENT_GUARD=1 vitest run --exclude test/tunnel/real-client-compat.test.ts --exclude test/tunnel/offline.integration.test.ts --exclude test/host-regression/real-host-recovery.test.ts --exclude test/package/installed-host.test.ts",

@@ -1,3 +1,19 @@
+# Runtime capability admission — development candidate
+
+Handoff: `HANDOFF-PI-NODE-SQLITE-COMPAT-02`. This section supersedes the historical exact-Node admission policy for the local development candidate only. Published npm 0.2.0 is unchanged.
+
+The Node candidate gate is `>=24.21.0 <25`, excluding prereleases, custom suffixes and noncanonical versions. Passing it is necessary but insufficient: SQLite must remain exactly 3.53.4 with source ID `2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc`, supported platform/architecture and the existing required/forbidden compile-option checks. No SQLite identity expansion is authorized.
+
+The package declaration is deliberately narrower: `>=24.21.0 <=24.22.1`. Actual tested binaries are 24.21.0, 24.22.0 and 24.22.1 on Darwin arm64. This is not certification of future Node 24 releases or Linux. A later candidate outside this declaration must pass qualification and receive separate regression evidence before extending the declaration.
+
+Host and MCP child execute the same self-contained, compiled in-memory probe function. It proves defensive mode, statement get/all/run, transaction state, transaction and preprepared-savepoint authorizer denial, authorizer reset and rollback with no retained row. Failure refuses before persistent Store-path preparation; no environment version override or fallback weakens this gate. Child executable ownership/path/ACL admission is unchanged.
+
+Current v7 schema validation, old-schema refusal, persistence, locking, SIGKILL and uncertain-outcome reconciliation remain separate disk-based regressions. No schema, ledger, recovery protocol or message format changed. Process-kill testing does not prove power-loss durability. Real Host testing uses Pi 1.3.0 and synthetic isolated configuration/Store; it does not execute a real Tunnel client.
+
+Evidence is retained outside both repositories at `~/Code/Pi-Project-Evidence/chat-exchange/node-sqlite-compat-02/`: runtime acquisition/identity records, RED/GREEN logs, final targeted command envelopes, installed-Host evidence and fixed-target independent review. The new 24.22.0 official archive was checked against HTTPS SHASUMS; detached signatures were not verified.
+
+The following report is historical evidence for `HANDOFF-CE-RUNTIME-QUALIFICATION-01`; its exact-whitelist language and previous counts do not describe this candidate.
+
 # Exact runtime qualification evidence
 
 Task: `HANDOFF-CE-RUNTIME-QUALIFICATION-01`. This record describes observed qualification evidence, not a broad Node 24 support claim. Final acceptance also requires the fixed-target four-lane review and operator acceptance.

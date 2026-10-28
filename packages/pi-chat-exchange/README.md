@@ -4,6 +4,8 @@
 
 本包版本为 **0.2.0**。CE 自有代码已获所有者授权采用 **MIT**（见 [LICENSE](LICENSE)）；第三方许可证证据已按三层证据闭合（逐版本审计记录为 `docs/license-audit.md`，仅仓库保留、不随 tarball 分发）。0.2.0 的认证范围仅 **Node 24.21.0 / Pi 1.3.0 / macOS arm64**；cloud transport 为 NOT_VERIFIED，Linux 未验证。
 
+Development candidate (`HANDOFF-PI-NODE-SQLITE-COMPAT-02`): runtime admission is being changed to a Node 24 candidate window plus unchanged SQLite identity/platform/compile requirements and behavioral probes. This does not change the published npm 0.2.0 artifact or its historical qualification scope. See [runtime qualification](docs/runtime-qualification.md) for the final tested versions, declaration and limitations.
+
 ## 当前能力与典型用法
 
 - **持久化消息**：ChatGPT 发来计划或问题，Pi 显式查看 inbox、授权读取，再以新 Message 回复检查结果。
@@ -23,7 +25,7 @@
 
 正式日常使用请用**独立安装路径**：作者交付预构建私有 tarball，消费者物理安装后 `pi install` 注册，无需仓库/build，见 [独立安装指南](docs/independent-install.md)。下面是开发者源码路径。
 
-先安装 Pi **1.3.0**、pnpm **12.9.1** 和批准的 Node **24.21.0 或 24.22.1**。Node 还必须通过完整 SQLite 身份、编译选项与 API 门槛，不是任意 `24.x`。Pi host 与 MCP child 分别校验；mise 或其他版本管理器均不是必需品。
+开发候选版本使用 Pi **1.3.0**、pnpm **12.9.1**，Node 声明为 **>=24.21.0 <=24.22.1**。内部候选门禁为 Node 24 >=24.21.0，且必须通过精确 SQLite 身份、编译安全要求与共享行为探针；这不证明未来 Node 24 版本兼容。Pi host 与 MCP child 分别校验。已发布 npm 0.2.0 仍使用原精确白名单。
 
 从仓库根目录，在已选中批准 Node 的 shell 中执行：
 
@@ -83,7 +85,7 @@ Setup 的 Advanced · Messaging 必须显式授权当前 Session；只保存基�
 
 不自动启动/重连、接管过期 Owner、排空 Inbox、执行 payload、合并 Store 或重试未知结果。`DELIVERY_UNKNOWN != CANCELLED`。凭据文件不是加密保险箱；不要把 key、capability、正文或完整日志贴入诊断。
 
-Store 平台 allowlist 为 macOS arm64 / Linux x64；两种批准 Node 的实测为 macOS arm64，不等于 Linux 或每种 Desktop UI 均已验收。已有本地人工双向消息与 Tunnel 启停验收不替代本次变更的隔离测试，也不证明机器冷启动或所有终端交互。
+Store 平台 allowlist 为 macOS arm64 / Linux x64；本开发候选的 Node 24.21.0、24.22.0、24.22.1 实测为 macOS arm64，不等于 Linux 或每种 Desktop UI 均已验收。已有本地人工双向消息与 Tunnel 启停验收不替代本次变更的隔离测试，也不证明机器冷启动或所有终端交互。
 
 开发检查：从包目录执行 `pnpm run verify`（check → typecheck → build → test → plugin-package test）；扩展测试前须 build。证据层次见[架构指南](docs/architecture.md#验证层次)。
 

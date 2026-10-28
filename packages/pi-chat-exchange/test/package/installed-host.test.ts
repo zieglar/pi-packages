@@ -9,8 +9,8 @@ if (process.env.CE_DISTRIBUTION_HOST_TEST !== "1")
 it("installs the native archive and exercises real Pi first-run on an isolated PTY", () => {
   const archive = process.env.CE_DISTRIBUTION_ARCHIVE;
   const npm = process.env.CE_DISTRIBUTION_NPM_CLI;
-  if (process.platform !== "darwin" || process.version !== "v24.21.0" || !archive || !npm || !existsSync(archive) || !existsSync(npm))
-    throw new Error("Requires macOS sandbox-exec, approved Node24.21.0, Python3, native archive and npm CLI absolute paths");
+  if (process.platform !== "darwin" || !archive || !npm || !existsSync(archive) || !existsSync(npm))
+    throw new Error("Requires macOS sandbox-exec, Python3, native archive and npm CLI absolute paths; the installed candidate qualifies the selected Node");
   const mode = process.env.CE_DISTRIBUTION_MODE ?? "tarball";
   if (!["tarball", "managed-npm"].includes(mode)) throw new Error("Unknown distribution mode");
   execFileSync("/usr/bin/python3", ["-B", new URL("./support/installed-host.py", import.meta.url).pathname, process.execPath, npm, archive, mode], {

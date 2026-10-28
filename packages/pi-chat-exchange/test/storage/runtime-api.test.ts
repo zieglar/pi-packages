@@ -40,6 +40,21 @@ describe("in-memory runtime API qualification fails closed", () => {
     fault.transactionState = true;
     expect(readRuntimeIdentity).toThrow(RuntimeEligibilityError);
   });
+  it("refuses a missing authorizer API", () => {
+    vi.spyOn(DatabaseSync.prototype, "setAuthorizer").mockImplementation(() => { throw new TypeError("unavailable"); });
+    expect(readRuntimeIdentity).toThrow(RuntimeEligibilityError);
+  });
+  it.each(["all", "transaction-only", "savepoint-only"])("refuses ineffective %s authorizer denial", (kind) => {
+    const original = DatabaseSync.prototype.setAuthorizer;
+    vi.spyOn(DatabaseSync.prototype, "setAuthorizer").mockImplementation(function (this: DatabaseSync, callback) {
+      if (callback === null) return original.call(this, null);
+      return original.call(this, (action, ...args) => {
+        if (kind === "all" || (kind === "transaction-only" && action === 22) || (kind === "savepoint-only" && action === 32)) return 0;
+        return callback(action, ...args);
+      });
+    });
+    expect(readRuntimeIdentity).toThrow(RuntimeEligibilityError);
+  });
   it("refuses unavailable statement APIs", () => {
     vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(() => { throw new TypeError("unavailable"); });
     expect(readRuntimeIdentity).toThrow(RuntimeEligibilityError);

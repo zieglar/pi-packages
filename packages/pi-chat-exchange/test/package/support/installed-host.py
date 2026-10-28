@@ -164,8 +164,8 @@ def owned_command(label, args, timeout=150):
             (r / (label + '.log')).write_bytes(output)
 
 command('node-version', [node, '--version'])
-if (r / 'node-version.log').read_text().strip() != 'v24.21.0':
-    raise RuntimeError('Unapproved Node')
+# Admission is verified by the installed candidate below, rather than a second
+# standalone Node patch whitelist in this integration harness.
 (r / 'archive-sha256.txt').write_text(hashlib.sha256(archive.read_bytes()).hexdigest() + '\n')
 command('npm-version', [node, npm_source, '--version'])
 command('host-install', [node, npm_source, 'install', '--prefix', r / 'host', '--ignore-scripts', '--save-exact', '@earendil-works/pi-coding-agent@1.3.0'])
@@ -244,6 +244,10 @@ def verify_installed_payload(label):
     (r / (label + '-payload-sha256.json')).write_text(json.dumps(hashes, indent=2))
 
 verify_installed_payload('initial')
+# Execute the production in-memory policy from the exact installed payload.
+command('installed-runtime-qualification', [node, '--input-type=module', '-e',
+    'const m = await import(process.argv[1]); console.log(JSON.stringify(m.assertHostRuntimeEligibility()));',
+    (package / 'dist/storage/runtime.js').as_uri()])
 # Execute the shipped guide's actual local-prefix entry with the copied approved
 # Node, not an independently hardcoded alternative that could hide a doc defect.
 guide = (package / 'docs/independent-install.md').read_text()

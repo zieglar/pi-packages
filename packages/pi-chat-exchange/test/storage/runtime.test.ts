@@ -17,7 +17,7 @@ const approved: RuntimeIdentity = {
   platform: "darwin",
   arch: "arm64",
   compileOptions: ["THREADSAFE=1", "MUTEX_PTHREADS"],
-  sqliteCapabilities: ["defensive", "statement-get", "statement-all", "statement-run", "transaction-state"],
+  sqliteCapabilities: ["defensive", "statement-get", "statement-all", "statement-run", "transaction-state", "authorizer-transaction", "authorizer-savepoint"],
 };
 
 describe("durable storage runtime eligibility", () => {
@@ -29,11 +29,17 @@ describe("durable storage runtime eligibility", () => {
   });
 
 
-  it("accepts only the second explicitly qualified Node patch", () => {
-    expect(() => assertRuntimeEligibility({ ...approved, nodeVersion: "v24.22.1" })).not.toThrow();
-    for (const nodeVersion of ["v24.22.0", "v24.22.2", "v24.23.0", "v25.2.1"]) {
-      expect(() => assertRuntimeEligibility({ ...approved, nodeVersion })).toThrow(RuntimeEligibilityError);
-    }
+  it.each(["v24.21.0", "v24.21.1", "v24.22.0", "v24.22.1", "v24.22.2", "v24.23.0", "v24.999.999"])("admits candidate %s only with complete SQLite evidence", (nodeVersion) => {
+    expect(() => assertRuntimeEligibility({ ...approved, nodeVersion })).not.toThrow();
+    expect(() => assertRuntimeEligibility({ ...approved, nodeVersion, sqliteSourceId: "wrong" })).toThrow(RuntimeEligibilityError);
+  });
+
+  it.each(["v24.20.99", "v25.0.0", "v26.0.0", "v23.99.0", "24.21.0", "v24.021.0", "v24.21.0-rc.1", "v24.21.0+custom", "v24.21.0\n", "v24.9007199254740992.0"])("refuses noncandidate %j", (nodeVersion) => {
+    expect(() => assertRuntimeEligibility({ ...approved, nodeVersion })).toThrow(RuntimeEligibilityError);
+  });
+
+  it.each(["authorizer-transaction", "authorizer-savepoint"])("requires %s evidence", (missing) => {
+    expect(() => assertRuntimeEligibility({ ...approved, sqliteCapabilities: approved.sqliteCapabilities.filter((label) => label !== missing) })).toThrow(RuntimeEligibilityError);
   });
 
   it.each([undefined, null, "THREADSAFE=1", [], ["THREADSAFE=0", "MUTEX_PTHREADS"], ["THREADSAFE=1"]])(
@@ -54,7 +60,7 @@ describe("durable storage runtime eligibility", () => {
     },
   );
   it.each([
-    ["nodeVersion", "v24.21.1"],
+    ["nodeVersion", "v24.20.1"],
     ["nodeVersion", "v25.0.0"],
     ["sqliteVersion", "3.53.5"],
     ["sqliteSourceId", `${approved.sqliteSourceId}-different`],

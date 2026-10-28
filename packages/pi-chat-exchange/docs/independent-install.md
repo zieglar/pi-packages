@@ -1,5 +1,7 @@
 # 独立安装 Pi 扩展（0.2.0：managed npm 与 tarball 回退）
 
+Development candidate notice (`HANDOFF-PI-NODE-SQLITE-COMPAT-02`): the historical 0.2.0 instructions and certification below describe the published artifact. A locally built candidate uses capability-based runtime admission with the same SQLite identity, platform and compile-safety requirements; its tested Node versions and supported declaration are recorded in the repository's `docs/runtime-qualification.md`. Do not apply a candidate compatibility claim to the unchanged npm 0.2.0 package.
+
 本指南是 **`@zieglar/pi-chat-exchange` 的正式独立分发方式**：消费者拿到一个预先构建的 npm tarball，物理安装后用 Pi 注册。它与两条旧路径互不替代：
 
 | 路径 | 用途 | 区别 |

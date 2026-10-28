@@ -36,7 +36,7 @@ const approvedIdentity: RuntimeIdentity = {
   platform: process.platform,
   arch: process.arch,
   compileOptions: ["THREADSAFE=1", "MUTEX_PTHREADS"],
-  sqliteCapabilities: ["defensive", "statement-get", "statement-all", "statement-run", "transaction-state"],
+  sqliteCapabilities: ["defensive", "statement-get", "statement-all", "statement-run", "transaction-state", "authorizer-transaction", "authorizer-savepoint"],
 };
 
 afterEach(() => {
