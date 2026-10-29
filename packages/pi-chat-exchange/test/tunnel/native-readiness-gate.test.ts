@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { RuntimeEligibilityError } from "../../dist/storage/runtime.js";
 
 const seam = vi.hoisted(() => ({
   gate: vi.fn(),
@@ -71,6 +72,17 @@ describe("Tunnel Native readiness gate", () => {
     expect(f.ctx.ui.notify.mock.calls.some(([text]) => String(text).includes(code) && String(text).includes("/ce-native"))).toBe(true);
   });
 
+  it("preserves Store runtime refusal when Native is ready before creating a manager", async () => {
+    seam.gate.mockImplementation(() => { throw new RuntimeEligibilityError("private probe detail"); });
+    const f = await fixture();
+    await f.command.handler("start", f.ctx);
+    const text = f.ctx.ui.notify.mock.calls.map(([message]) => String(message)).join("\n");
+    expect(text).toContain("STORAGE_RUNTIME_INELIGIBLE");
+    expect(text).not.toContain("CE_NATIVE_INITIALIZATION_FAILED");
+    expect(text).not.toContain("private probe detail");
+    expect(seam.manager).not.toHaveBeenCalled();
+    expect(f.start).not.toHaveBeenCalled();
+  });
   it("revalidates on every start and refuses after Native disappears", async () => {
     const f = await fixture();
     seam.gate.mockReturnValueOnce({ state: "READY", code: "CE_NATIVE_READY" })

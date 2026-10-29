@@ -2075,6 +2075,9 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         if (sub === "start") {
           try { assertNativeReadyForTunnel(); }
           catch (error) {
+            if (error instanceof RuntimeEligibilityError) {
+              notify(ctx, `ce-tunnel: start refused ${error.code}; ${hostRuntimeRepairMessage()}`, "warning"); return;
+            }
             const code = error instanceof Error && "code" in error && typeof error.code === "string" && /^CE_NATIVE_/.test(error.code) ? error.code : "CE_NATIVE_INITIALIZATION_FAILED";
             notify(ctx, `ce-tunnel: start refused ${code}; run /ce-native to inspect or install the trusted driver`, "warning"); return;
           }
