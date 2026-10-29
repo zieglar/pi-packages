@@ -38,7 +38,7 @@ export function readPackageMetadata(directory) {
   try { pkg = JSON.parse(readFileSync(join(directory, "package.json"), "utf8")); }
   catch { throw new Error("package.json is unreadable or invalid JSON; refusing release"); }
   if (pkg.name !== PACKAGE_NAME) throw new Error("unexpected npm package name; refusing release");
-  if (!/^\d+\.\d+\.\d+$/.test(pkg.version ?? "")) throw new Error("package version must be a concrete semver version");
+  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(pkg.version ?? "")) throw new Error("package version must be a concrete semver version");
   if (pkg.repository?.url !== REPOSITORY_URL) {
     throw new Error("package.json repository.url must exactly match the GitHub repository");
   }
@@ -64,7 +64,9 @@ export function assertVersionAbsent(pkg, directory, run = runNpm) {
   const result = run(["view", `${pkg.name}@${pkg.version}`, "version", "--json"], directory);
   if (result.status === 0) throw new Error("version already exists on npm; no overwrite or retry");
   const evidence = `${result.stdout ?? ""}${result.stderr ?? ""}`.toLowerCase();
-  if (!/404|not found|e404/.test(evidence)) {
+  // Only an explicit npm E404 (the package/version is absent) is accepted. Any
+  // other failure — including proxy text containing 404 — is not proof of absence.
+  if (!/\be404\b/i.test(evidence)) {
     throw new Error("npm registry version state is unreadable; refusing release");
   }
 }
@@ -82,7 +84,7 @@ export function preflight({ directory = process.cwd(), expectedSha = process.env
 export function publishOnce({ directory = process.cwd(), env = process.env, run = runNpm } = {}) {
   if (env.NPM_TOKEN) throw new Error("long-lived NPM_TOKEN must not be used; refusing release");
   const result = run(["publish"], directory, env);
-  if (result.status !== 0) throw new Error("npm publish failed; no retry and no dist-tag changes");
+  if (result.status !== 0) throw new Error("npm publish failed; no retry and no explicit dist-tag commands");
   return result;
 }
 
@@ -92,6 +94,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       const result = preflight();
       console.log(`preflight passed for ${result.name}@${result.version} (${result.fileCount} files)`);
     } else if (process.argv[2] === "publish") {
+      // Refuse long-lived credentials before any registry or pack invocation.
+      if (process.env.NPM_TOKEN) throw new Error("long-lived NPM_TOKEN must not be used; refusing release");
+      // The publish entry point cannot bypass the preflight: identity, package
+      // contents and duplicate-version checks always run before the single attempt.
+      preflight();
       publishOnce();
       console.log("npm publish completed once via trusted publishing");
     } else {

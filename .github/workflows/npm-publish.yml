@@ -53,7 +53,6 @@ jobs:
           corepack enable
           corepack prepare pnpm@12.9.1 --activate
           pnpm install --frozen-lockfile --ignore-scripts
-      - name: Build, typecheck and test package
       - name: Check contract, build, typecheck and release suites
         working-directory: packages/pi-chat-exchange
         run: |
