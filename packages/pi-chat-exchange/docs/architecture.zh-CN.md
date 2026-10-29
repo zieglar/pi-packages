@@ -105,7 +105,7 @@ Native 是目标默认驱动：没有选择文件时，使用声明的默认版�
 
 当前 Node engines 为 `>=22.19.0`，与已安装 Pi 1.3.0 Host manifest 一致。Native 使用内置 SQLite 3.54.1，检查 Node-API >=8、真实模块、ABI、目标与可信缓存，不依赖 `process.versions.sqlite`。内置 `node:sqlite` 的候选版本、SQLite 安全下限和已知 transaction-close 缺陷拒绝规则仅约束显式兼容路径；共享 SQLite 身份、编译选项和行为探针仍有效。平台 allowlist 仍为 macOS arm64 / Linux x64。文件系统、ownership、0700/0600、symlink、WAL/FULL、foreign keys、trusted-schema OFF、有界 busy wait 与 macOS fullfsync/checkpoint_fullfsync 要求不变。
 
-本地 Native 矩阵、历史制品证据与待验证项见[运行时支持](runtime-support.zh-CN.md)和 [Native SQLite](native-sqlite.zh-CN.md)。Pi Host 首跑待完成；新增 Linux x64 Node 22.19.0 / 24.22.2 Native job 的 hosted 执行仍为 UNVERIFIED。npm 0.2.0 未改变。
+本地 Native 矩阵、历史制品证据与待验证项见[运行时支持](runtime-support.zh-CN.md)和 [Native SQLite](native-sqlite.zh-CN.md)。隔离离线 Pi Host 首跑已在 Node 22.19.0、24.22.2、25.2.1、25.9.0、26.12.1 全部通过；新增 Linux x64 Node 22.19.0 / 24.22.2 Native job 的 hosted 执行仍为 UNVERIFIED。npm 0.2.0 未改变。
 
 migration ledger/checksum、application/store identity、integrity 与 restore hold 会拒绝 foreign/newer/corrupt Store，不自动 reset。能执行 Pi UI 不代表能打开 CE Store。实际准入以 `src/storage/runtime.ts` 与 [Storage contract](storage-contract.zh-CN.md) 为准；内存探针不证明磁盘锁或崩溃耐久，文件权限不能消除所有 TOCTOU、mount substitution、OS crash/power loss 风险。
 

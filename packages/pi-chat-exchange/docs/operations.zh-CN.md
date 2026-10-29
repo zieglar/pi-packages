@@ -81,7 +81,7 @@ pnpm --dir packages/pi-chat-exchange run verify
 
 `verify` 串行运行 contract/native check、typecheck、build、默认 tests 与 packaged-plugin tests。Installed-client、real-host、distribution、native-specific lane 分开执行，证据与前置条件见[架构验证层次](architecture.zh-CN.md#验证层次)。跳过/可选 lane 不算通过，隔离测试不算 dogfooding。本次文档变更不重新执行这些门禁。
 
-默认测试 lane 在每次调用的私有 HOME 中显式选择 `node-sqlite`。Rust lane 使用操作员已验证的 HOME、manifest 和缓存。Pi Host 首跑待完成；新增 Linux x64 Node 22.19.0 / 24.22.2 Native job 的 hosted 执行为 UNVERIFIED。本地矩阵见[运行时支持](runtime-support.zh-CN.md)。
+默认测试 lane 在每次调用的私有 HOME 中显式选择 `node-sqlite`。Rust lane 使用操作员已验证的 HOME、manifest 和缓存。隔离离线 Pi Host 首跑已在 Node 22.19.0、24.22.2、25.2.1、25.9.0、26.12.1 全部通过；新增 Linux x64 Node 22.19.0 / 24.22.2 Native job 的 hosted 执行为 UNVERIFIED。本地矩阵见[运行时支持](runtime-support.zh-CN.md)。
 
 贡献须保留向内依赖、封闭 schema、独立 payload/ACK grants、可信 Session lookup 与最终 Storage authority。复用 Host/Storage seam，不另建消息系统。保留 intent 先于 effect、显式未知结果和正常释放路径。新 runtime/client/platform 支持需要独立真实资格验证。测试应检查可观察行为、隐私/拒绝、失败证据与生命周期边界，不用真实消息、私有路径或 Session 标识作公开 fixture/证据。回归入口与已知债务见[架构指南](architecture.zh-CN.md)。
 
