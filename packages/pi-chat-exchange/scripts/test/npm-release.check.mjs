@@ -11,7 +11,7 @@ const stub = resolve(import.meta.dirname, "support/npm-stub.mjs");
 const workflowPath = resolve(import.meta.dirname, "../../../../.github/workflows/npm-publish.yml");
 const SHA = "a".repeat(40);
 const OTHER_SHA = "b".repeat(40);
-const packageDirectory = resolve(import.meta.dirname, "../..");
+const packageDirectory = tempPackage();
 
 function harness(routes) {
   const directory = mkdtempSync(join(tmpdir(), "ce-npm-"));
@@ -60,6 +60,10 @@ function tempPackage(fields = {}) {
     repository: { type: "git", url: "git+https://github.com/zieglar/pi-packages.git", directory: "packages/pi-chat-exchange" },
     ...fields,
   }));
+  const targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"];
+  const versions = { "0.1.0": { assets: Object.fromEntries(targets.map(target => [target, { asset: `ce-sqlite-0.1.0-${target}.node`, sha256: "a".repeat(64) }])) } };
+  mkdirSync(join(directory, "src/storage"), { recursive: true });
+  writeFileSync(join(directory, "src/storage/native-compat.ts"), `export const NATIVE_COMPAT: NativeCompat = ${JSON.stringify({ versions })};`);
   return directory;
 }
 
@@ -147,6 +151,35 @@ test("leading-zero semver is refused", () => {
   assert.equal(result.calls.length, 0);
 });
 
+test("Native-default publication with unpinned production assets refuses", () => {
+  const directory = tempPackage();
+  writeFileSync(join(directory, "package.json"), JSON.stringify({
+    name: "@zieglar/pi-chat-exchange", version: "0.2.0",
+    repository: { type: "git", url: "git+https://github.com/zieglar/pi-packages.git", directory: "packages/pi-chat-exchange" },
+  }));
+  // Default Native path exists, but the production trust pin is null. No npm call is allowed.
+  const targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"];
+  const versions = { "0.1.0": { assets: Object.fromEntries(targets.map(target => [target, { asset: `ce-sqlite-0.1.0-${target}.node`, sha256: null }])) } };
+  writeFileSync(join(directory, "src/storage/native-compat.ts"), `export const NATIVE_COMPAT: NativeCompat = ${JSON.stringify({ versions })};`);
+  const result = invoke(["preflight"], { cwd: directory, routes: healthyRoutes() });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Native default requires verified production trust pins/);
+  assert.equal(result.calls.length, 0);
+});
+test("fully pinned production assets pass the publish trust gate", async () => {
+  const { assertNativeDefaultPublishable } = await import("../npm-release.mjs");
+  const all = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"];
+  const assets = { "0.1.0": { assets: Object.fromEntries(all.map(t => [t, { asset: `ce-sqlite-0.1.0-${t}.node`, sha256: "a".repeat(64) }])) } };
+  assert.doesNotThrow(() => assertNativeDefaultPublishable({
+    nativeCompatSource: `export const NATIVE_COMPAT: NativeCompat = ${JSON.stringify({ versions: assets })};` }));
+  for (const t of all) {
+    const broken = structuredClone(assets); broken["0.1.0"].assets[t].sha256 = null;
+    assert.throws(() => assertNativeDefaultPublishable({
+      nativeCompatSource: `export const NATIVE_COMPAT: NativeCompat = ${JSON.stringify({ versions: broken })};` }),
+      /Native default requires verified production trust pins/);
+  }
+  assert.throws(() => assertNativeDefaultPublishable({ nativeCompatSource: "" }), /Native default requires verified production trust pins/);
+});
 test("a new version with a clean pack passes preflight", () => {
   const result = invoke(["preflight"], { routes: healthyRoutes() });
   assert.equal(result.status, 0);

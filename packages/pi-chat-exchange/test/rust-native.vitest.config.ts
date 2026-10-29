@@ -7,6 +7,8 @@ export default defineConfig({
   ...baseConfig,
   test: {
     ...baseConfig.test,
+    // Use the operator's verified HOME (selection plus pinned cache), never the Node compat HOME.
+    env: { HOME: process.env.HOME ?? "" },
     setupFiles: [
       "test/support/default-client-guard.ts",
       fileURLToPath(new URL("./support/dev-native-setup.ts", import.meta.url)),

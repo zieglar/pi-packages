@@ -150,6 +150,9 @@ it("opens and reopens a real temporary Store using copied approved Node with no 
   const root = fixture(); const node = binary(root);
   const moduleUrl = new URL("../../dist/storage/store.js", import.meta.url).href;
   const location = { directory: join(root, "store"), filename: "store.sqlite" };
+  const selectionDirectory = join(root, ".config/pi-chat-exchange");
+  mkdirSync(selectionDirectory, { recursive: true, mode: 0o700 });
+  writeFileSync(join(selectionDirectory, "sqlite-driver.json"), `${JSON.stringify({ version: 1, driver: "node-sqlite" })}\n`, { mode: 0o600 });
   const source = `import { initializeStore, openStore } from ${JSON.stringify(moduleUrl)};
 const location = ${JSON.stringify(location)};
 const first = initializeStore(location); const id = first.storeUuid; first.close();

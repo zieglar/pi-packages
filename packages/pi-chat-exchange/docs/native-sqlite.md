@@ -6,9 +6,9 @@ Current source supports the built-in `node:sqlite` driver and independent Rust N
 
 ## Release and consumer trust
 
-[Native Release `ce-sqlite-v0.1.0`](https://github.com/zieglar/pi-packages/releases/tag/ce-sqlite-v0.1.0) is published and immutable. Its middleware version is `0.1.0`, ABI `1`, bundled SQLite `3.54.1`, and exact source SHA `a8386aafd657c84825b2905847f34a43d5b91e1e`. The formal [release workflow run](https://github.com/zieglar/pi-packages/actions/runs/40813628775) succeeded. Published assets were downloaded separately from CI and their checksums, identities and seven subject attestations verified during release acceptance. That is historical release evidence, not a fresh consumer or runtime test in this documentation change.
+[Native Release `ce-sqlite-v0.1.0`](https://github.com/zieglar/pi-packages/releases/tag/ce-sqlite-v0.1.0) is published and immutable. Its middleware version is `0.1.0`, ABI `1`, bundled SQLite `3.54.1`, and exact source SHA `a8386aafd657c84825b2905847f34a43d5b91e1e`. The formal [release workflow run](https://github.com/zieglar/pi-packages/actions/runs/40813628775) succeeded. Published assets were downloaded separately from CI and their checksums, identities and seven subject attestations with source-digest binding verified during release acceptance. That is historical release evidence, not a fresh consumer or runtime test in this documentation change.
 
-**Production asset hashes in `src/storage/native-compat.ts` remain `null`.** A null hash means unpinned and refuses both prepare and load. It does not mean the GitHub Release is absent. Publication, attestation verification and promotion into CE's consumer trust manifest are separate decisions. The default remains `node-sqlite`; these docs do not authorize a pin update.
+**Production asset hashes in `src/storage/native-compat.ts` remain `null`.** A null hash means unpinned and refuses both prepare and load. It does not mean the GitHub Release is absent. Publication, attestation verification and promotion into CE's consumer trust manifest are separate decisions. Native is the target default: absent selection chooses `rust-native` at the declared default version `0.1.0`. `node-sqlite` is an explicitly selected, lazily loaded, nonproduction compatibility driver and is never a fallback. Native load/trust failures fail closed. Production `NATIVE_COMPAT` pins remain null: the default build cannot be released and production is not enabled. Native default and production pins must be delivered as one publish unit, only after separate pin authorization.
 
 The exact eight assets are:
 
@@ -38,7 +38,7 @@ The Store allowlist remains macOS arm64 / Linux x64. Artifact qualification on a
 
 ## Driver selection
 
-Both Pi Host and MCP child read `~/.config/pi-chat-exchange/sqlite-driver.json`. Selection is explicit; it is not inferred from PATH, the working directory or a caller-supplied version. Choosing Rust never silently falls back to Node.
+Both Pi Host and MCP child read `~/.config/pi-chat-exchange/sqlite-driver.json`. Absent selection chooses `rust-native` at `NATIVE_COMPAT.defaultVersion` (`0.1.0`). Explicit selection is not inferred from PATH, the working directory or a caller-supplied version. Node is never a fallback.
 
 ```json
 {
@@ -55,22 +55,24 @@ Both Pi Host and MCP child read `~/.config/pi-chat-exchange/sqlite-driver.json`.
 
 These commands apply to a built current-source checkout, from the package directory after `pnpm run build`. They are conditional operator procedures, not an enabled default installation path: first obtain an independently verified manifest and authorize its use.
 
+First set `CE_NATIVE_TEST_HOME` to the absolute path of a private isolated HOME prepared for this qualification and populate its verified cache. Use that same HOME throughout; this example supplies no authority over the production HOME.
+
 ```sh
-node dist/bin/ce-native.js prepare \
+HOME="$CE_NATIVE_TEST_HOME" node dist/bin/ce-native.js prepare \
   --version 0.1.0 \
   --manifest /absolute/path/to/verified-native-manifest.json
-node dist/bin/ce-native.js select --driver rust-native \
+HOME="$CE_NATIVE_TEST_HOME" node dist/bin/ce-native.js select --driver rust-native \
   --version 0.1.0 \
   --manifest /absolute/path/to/verified-native-manifest.json
-node dist/bin/ce-native.js status
+HOME="$CE_NATIVE_TEST_HOME" node dist/bin/ce-native.js status
 ```
 
 `prepare` is explicitly network-capable. It downloads the fixed target asset, checks SHA-256 in a private temporary file and atomically installs a versioned cache entry. It does not run install scripts, compile on the consumer, overwrite another version or expose a partial loadable file. Concurrent preparation does not replace a valid existing entry. The default download URL is `https://github.com/zieglar/pi-packages/releases/download/ce-sqlite-v<version>/<asset>`.
 
-`select` verifies the cached artifact before persisting selection. `status` is offline and reports the selected driver, target, cache root, module/SQLite identity or a closed error code. To return to Node, stop every Store user first, then explicitly run:
+`select` verifies the cached artifact before persisting selection. `status` is offline and reports the selected driver, target, cache root, module/SQLite identity or a closed error code. For explicit nonproduction Node compatibility, stop every Store user first, then explicitly run:
 
 ```sh
-node dist/bin/ce-native.js select --driver node-sqlite
+HOME="$CE_NATIVE_TEST_HOME" node dist/bin/ce-native.js select --driver node-sqlite
 ```
 
 `select` uses the selected HOME's runtime cache. A custom `--root` is for explicit prepare/status qualification only; select rejects it. Manifest paths are persisted as absolute paths.
@@ -85,7 +87,7 @@ node dist/bin/ce-native.js select --driver node-sqlite
 
 Runtime loading checks the cache directory chain for symlinks, ownership and group/other write access. It then checks file ownership/mode, SHA-256, middleware SemVer, ABI and target before `require()`. Missing or incompatible artifacts fail closed. Verification and `dlopen` are separate operations; replacement by the same OS user is outside the claimed boundary.
 
-Rust admission checks the actual module, Node-API >= 8, SQLite identity, compile options and shared behavior probes. It uses bundled SQLite, retaining the >=3.51.3 safety floor. Node keeps its own version and known-defect rules. Shared conformance covers statements, transactions, authorizer/defensive mode, extended errors, BLOB, NULL, changes and closed-state handling. Rust prepares/finalizes statements per operation and does not re-enter JavaScript from the authorizer. A panic or native memory fault can still terminate the host.
+Rust admission checks the actual module, Node-API >= 8, SQLite identity, compile options and shared behavior probes. It uses bundled SQLite 3.54.1 independently of `process.versions.sqlite`, retaining the >=3.51.3 safety floor. Node keeps its own version and known-defect rules. Shared conformance covers statements, transactions, authorizer/defensive mode, extended errors, BLOB, NULL, changes and closed-state handling. Rust prepares/finalizes statements per operation and does not re-enter JavaScript from the authorizer. A panic or native memory fault can still terminate the host.
 
 Use exactly one SQLite implementation per live database within a process. Node and Native contain separate SQLite libraries; opening/closing the same database through both on POSIX can release process-owned locks. Switch only after stopping every process using the Store. Cross-driver tests close connections between implementations.
 

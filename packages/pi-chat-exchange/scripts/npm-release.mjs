@@ -74,10 +74,31 @@ export function assertVersionAbsent(pkg, directory, run = runNpm) {
 export function preflight({ directory = process.cwd(), expectedSha = process.env.EXPECTED_SHA, actualSha = process.env.GITHUB_SHA, run = runNpm } = {}) {
   assertPublishIdentity({ expectedSha, actualSha });
   const pkg = readPackageMetadata(directory);
+  // Before pack or any registry call: Native-default builds may only ship with the production trust unit intact.
+  const compatSource = readFileSync(join(directory, "src/storage/native-compat.ts"), "utf8");
+  assertNativeDefaultPublishable({ nativeCompatSource: compatSource });
   const files = checkPack(directory, run);
   assertVersionAbsent(pkg, directory, run);
   return { name: pkg.name, version: pkg.version, fileCount: files.length };
 }
+/** Publication authority for the Native-default build. Native default and its production trust pins are
+ * one releasable unit. Null, missing or malformed pins must never publish a build that cannot start.
+ * The source file is read as data only; it is never imported or executed. */
+export function assertNativeDefaultPublishable({ nativeCompatSource }) {
+  let manifest;
+  try { manifest = JSON.parse(String(nativeCompatSource).match(/export const NATIVE_COMPAT\s*:\s*[A-Za-z]+\s*=\s*(\{[\s\S]*\});?\s*$/)?.[1] ?? ""); }
+  catch { manifest = undefined; }
+  const versions = manifest?.versions;
+  const valid = versions !== undefined && Object.keys(versions).length > 0 && Object.values(versions).every(entry => {
+    const assets = entry?.assets;
+    return assets !== undefined && Object.keys(assets).length === 4 && Object.values(assets).every(asset =>
+      typeof asset?.sha256 === "string" && /^[0-9a-f]{64}$/.test(asset.sha256));
+  });
+  if (!valid) {
+    throw new Error("Native default requires verified production trust pins; publication with null or incomplete pins is refused");
+  }
+}
+
 
 // One attempt, no retry, no explicit dist-tag command. OIDC trusted publishing is the
 // only supported credential path here.

@@ -1,7 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import * as sqlite from "node:sqlite";
 import { closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { createNodeSqliteDriver } from "./sqlite-driver-node.js";
@@ -33,7 +32,9 @@ function invalidSelection(): never {
 }
 
 export function readDriverSelection(path = defaultDriverSelectionFile()): SqliteDriverSelection {
-  if (!existsSync(path)) return { driver: "node-sqlite" };
+  // Native is the only production driver. An absent file selects it at the declared default
+  // version; node-sqlite requires an explicit selection and is never a fallback.
+  if (!existsSync(path)) return { driver: "rust-native", nativeVersion: NATIVE_COMPAT.defaultVersion };
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
@@ -72,10 +73,12 @@ export function writeDriverSelection(selection: SqliteDriverSelection, path = de
   renameSync(temporary, path);
 }
 
-/** Resolve the actual selected driver; never falls back after Native failure. */
+/** Resolve the actual selected driver; never falls back after Native failure.
+ * `node:sqlite` is a non-default compatibility driver: it is loaded lazily and only
+ * when the operator explicitly selected it, so a Native deployment never imports it. */
 export function resolveSqliteDriver(options: ResolveDriverOptions = {}): SqliteDriver {
   const selection = readDriverSelection(options.selectionFile);
-  if (selection.driver === "node-sqlite") return createNodeSqliteDriver(sqlite);
+  if (selection.driver === "node-sqlite") return createNodeSqliteDriver();
   let manifest = options.manifest ?? NATIVE_COMPAT;
   if (selection.manifestFile !== undefined) {
     try {

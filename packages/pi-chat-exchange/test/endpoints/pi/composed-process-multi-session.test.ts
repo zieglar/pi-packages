@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { fork } from "node:child_process";
 import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { resolveSqliteDriver } from "../../../dist/storage/sqlite-driver-selection.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { expect, it } from "vitest";
@@ -13,6 +13,9 @@ import { assertHostRuntimeEligibility } from "../../../dist/storage/runtime.js";
 type Reply = { result: any; notices: string[]; error?: string };
 function peer(session: string, profile: string, dir: string) {
   fs.mkdirSync(dir, { recursive: true });
+  const selectionDirectory = join(dir, ".config/pi-chat-exchange");
+  fs.mkdirSync(selectionDirectory, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(join(selectionDirectory, "sqlite-driver.json"), `${JSON.stringify({ version: 1, driver: "node-sqlite" })}\n`, { mode: 0o600 });
   const child = fork(resolve("test/tunnel/support/composed-extension-worker.mjs"), [session], {
     execPath: process.execPath, execArgv: ["--import", resolve("test/tunnel/support/composed-extension-register.mjs")],
     env: { PATH: process.env.PATH!, HOME: dir, PI_CODING_AGENT_DIR: dir, CE_TUNNEL_PROFILE: profile,
@@ -58,6 +61,10 @@ function peer(session: string, profile: string, dir: string) {
 it("composes independent Pi factory OS processes, current-policy gates and fixed-sender MCP with independent durable evidence", { timeout: 60_000 }, async () => {
   expect(assertHostRuntimeEligibility().nodeVersion).toBe(process.version);
   const f = await multiSessionFixture();
+  // This compatibility test explicitly selects node-sqlite in every spawned HOME.
+  const selectionDirectory = join(f.dir, ".config/pi-chat-exchange");
+  fs.mkdirSync(selectionDirectory, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(join(selectionDirectory, "sqlite-driver.json"), `${JSON.stringify({ version: 1, driver: "node-sqlite" })}\n`, { mode: 0o600 });
   const peers: ReturnType<typeof peer>[] = [];
   let client: Client | undefined; let transport: StdioClientTransport | undefined;
   const spawn = (id: string) => { const p = peer(id, f.profilePath, join(f.dir, `pi-state-${peers.length}`)); peers.push(p); return p; };
@@ -69,7 +76,7 @@ it("composes independent Pi factory OS processes, current-policy gates and fixed
     expect(fs.realpathSync(loaded.config.store.directory)).toBe(loaded.config.store.directory);
     // Every observation opens a separate read-only SQLite connection: no Host response is durable evidence.
     const rows = (sql: string, ...args: (string | number)[]) => {
-      const db = new DatabaseSync(join(loaded.config.store.directory, loaded.config.store.file), { readOnly: true });
+      const db = resolveSqliteDriver().open(join(loaded.config.store.directory, loaded.config.store.file), { readOnly: true });
       try { return db.prepare(sql).all(...args); } finally { db.close(); }
     };
     const snapshot = () => Object.fromEntries(["message", "delivery_ack_receipt", "audit_event", "participant", "participant_session", "participant_ownership", "participant_fencing_high_water", "participant_capability", "exchange_membership", "delivery_cursor"].map(table => [table, rows(`SELECT * FROM ${table} ORDER BY rowid`)]));
