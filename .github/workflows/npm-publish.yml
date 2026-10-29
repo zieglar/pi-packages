@@ -1,0 +1,69 @@
+name: npm Trusted Publish
+
+# Publish only via npm Trusted Publishing (OIDC). No long-lived npm token is
+# used or accepted. A dispatch names the exact public commit to publish.
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the npm package using OIDC trusted publishing"
+        required: true
+        type: boolean
+        default: false
+      publish_sha:
+        description: "Exact public commit SHA authorized for publication"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: >-
+      inputs.publish && github.event_name == 'workflow_dispatch' &&
+      github.repository == 'zieglar/pi-packages' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: npm-release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      EXPECTED_SHA: ${{ inputs.publish_sha }}
+    steps:
+      - name: Checkout exact release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install pinned Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.21.0
+      - name: Install package manager and dependencies
+        working-directory: packages/pi-chat-exchange
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare pnpm@12.9.1 --activate
+          pnpm install --frozen-lockfile --ignore-scripts
+      - name: Build, typecheck and test package
+      - name: Check contract, build, typecheck and release suites
+        working-directory: packages/pi-chat-exchange
+        run: |
+          pnpm run check
+          pnpm run build
+          pnpm run typecheck
+          node --test scripts/test/npm-release.check.mjs scripts/test/native-release.check.mjs scripts/test/native-release.auth.test.mjs
+      - name: Verify identity, package contents and version absence
+        working-directory: packages/pi-chat-exchange
+        run: node scripts/npm-release.mjs preflight
+      - name: Publish once using OIDC trusted publishing
+        working-directory: packages/pi-chat-exchange
+        run: node scripts/npm-release.mjs publish
