@@ -36,8 +36,8 @@ function cliNpm(args, cwd) {
 
 /** Build and validate the one tarball that may later be published. The returned
  * artifactPath is the only publishable payload; callers must not repack the root. */
-export function buildPackageArtifact({ root = defaultRoot, out, run = cliNpm } = {}) {
-  if (out === undefined) fail("an explicit output directory is required");
+export function buildPackageArtifact({ root = defaultRoot, out, run = cliNpm, validateOnly = false } = {}) {
+  if (!validateOnly && out === undefined) fail("an explicit output directory is required");
   try {
     const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
     for (const hook of ["prepare", "prepack", "postpack", "preinstall", "install", "postinstall"])
@@ -61,6 +61,7 @@ export function buildPackageArtifact({ root = defaultRoot, out, run = cliNpm } =
         if (path.endsWith(".ts") && target.endsWith(".js") && !target.includes("/dist/")) target = target.slice(0, -3) + ".ts";
         regular(target, root);
       }
+    if (validateOnly) return { validated: true };
     }
     const output = resolve(out);
     mkdirSync(output, { recursive: true });
@@ -100,7 +101,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.a
   try {
     if (process.argv[2] === "--validate-only") {
       // Preserve the existing author-side dry validation command.
-      buildPackageArtifact({ out: resolve(defaultRoot, ".pi-artifacts", "validation") });
+      buildPackageArtifact({ validateOnly: true });
       console.log("Pi payload validated");
     } else {
       if (process.argv.length > 3) fail("usage: package-pi-extension.mjs [output-directory | --validate-only]");
