@@ -6,7 +6,7 @@
 
 > 归档（2026-10-06，PH-0002）：保留历史发现（ChatGPT plugin/tunnel/Work-chat 支持、公开 owning-session Pi API、拒绝 RPC、无需 Moshi/Herdr、真实 ChatGPT 验收 NOT_RUN）。项目改名为 pi-chat-exchange；当前合同：[protocol-v2.md](protocol-v2.zh-CN.md)；源码复用结论：[source-reuse-audit.md](source-reuse-audit.zh-CN.md)。
 
-...hatGPT Desktop 创作和私有安装支持本地/repo marketplace。因此下文历史“不能直接启动本地进程”和“必须 Secure MCP Tunnel”不再描述 Desktop-only 插件路径。参见 <https://developers.openai.com/plugins/deploy/desktop-only>、<https://developers.openai.com/plugins/build/plugins> 和[安装指南](chatgpt-installation.zh-CN.md)。公开 local-MCP 提交仍受 allowlist 限制；实际 Desktop 验收仍 NOT_RUN。
+> **当时修订（2026-10-14）：** OpenAI 文档已说明 Desktop-only 本地插件可使用根级 `mcp.json` stdio entry 和 `${PLUGIN_ROOT}` 启动路径，ChatGPT Desktop 创作和私有安装支持本地/repo marketplace。因此下文历史“不能直接启动本地进程”和“必须 Secure MCP Tunnel”不再描述 Desktop-only 插件路径。参见 <https://developers.openai.com/plugins/deploy/desktop-only>、<https://developers.openai.com/plugins/build/plugins> 和[安装指南](chatgpt-installation.zh-CN.md)。公开 local-MCP 提交仍受 allowlist 限制；实际 Desktop 验收仍 **NOT_RUN**。
 
 日期：2026-10-05。当天下载并完整阅读来源。来源未确立的事项标为 UNKNOWN。
 

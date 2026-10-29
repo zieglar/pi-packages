@@ -135,6 +135,6 @@ Send 的 `CREATED` 证明 Message、幂等记录与创建 Audit 在本地同一�
 /ce-tunnel sessions
 ```
 
-...int 前先 `/new`。Register/convert/revoke 要求确认与 verified STOPPED transport，不启动传输。`sessions` 报告选中的 active Endpoint IDs，不证明运行中 MCP 已加载策略。`/ce-tunnel revoke <exact-endpoint>` 撤销精确登记；正常释放用 `/ce-tunnel deactivate`，保留登记、历史和传输。完整流程见[多 Session](multi-session-usage.zh-CN.md)、[Tunnel 设置](tunnel-setup.zh-CN.md)与[运维指南](operations.zh-CN.md)。
+转换保留原登记。一个 native Session 对应一个稳定 Endpoint，注册不同 Endpoint 前先 `/new`。Register/convert/revoke 要求确认与 verified STOPPED transport，不启动传输。`sessions` 报告选中的 active Endpoint IDs，不证明运行中 MCP 已加载策略。`/ce-tunnel revoke <exact-endpoint>` 撤销精确登记；正常释放用 `/ce-tunnel deactivate`，保留登记、历史和传输。完整流程见[多 Session](multi-session-usage.zh-CN.md)、[Tunnel 设置](tunnel-setup.zh-CN.md)与[运维指南](operations.zh-CN.md)。
 
 命令/配置证据：`pi-extension/index.ts`（工具 schema、子命令、allowlist 优先级与生命周期）、`src/tunnel/profile.ts`、`src/tunnel/setup.ts`、`src/tunnel/messaging-config.ts`、`package.json`。历史安装证据见[独立安装](independent-install.zh-CN.md)与 [0.2.0 发布说明](releases/0.2.0.zh-CN.md)，不代表本次重新执行了验收。
