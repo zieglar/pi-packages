@@ -2,149 +2,198 @@
 
 # Getting started
 
-CE provides explicit ChatGPT ↔ Pi message exchange through a shared private SQLite Store. Secure MCP Tunnel and Desktop stdio are separate connection paths. This guide uses Tunnel; see [Desktop installation](chatgpt-installation.md) for stdio and [independent installation](independent-install.md) for the full managed npm/tarball procedure.
+## 1. What is Pi Chat Exchange?
 
-## Choose an installation
+Pi Chat Exchange (CE) lets ChatGPT and Pi exchange durable messages through explicit tools. ChatGPT calls the local MCP server through Secure MCP Tunnel; both endpoints use the same private SQLite Store. You choose when to send, discover or read a message. A message does not authorize a task or prove its completion.
 
-`@zieglar/pi-chat-exchange@0.2.0` is published on npm. Its historical distribution qualification is **Node 24.21.0 + Pi 1.3.0 + macOS arm64**. Cloud distribution remains **NOT_VERIFIED**. Current source declares Node `>=22.19.0`; this does not change the published artifact's qualification.
+This guide installs the published **0.2.1** package into an existing Pi installation and configures one ChatGPT ↔ Pi pair. The separate [Desktop stdio connection](chatgpt-installation.md) does not need Tunnel. Local installation and command checks have passed; **real Cloud transport and the complete ChatGPT ↔ Pi exchange have not been verified for this guide**.
 
-Use an approved Node for Pi and npm. Put its bin directory first in PATH; use npm 11.x from that Node and operator-controlled npm configuration/cache without inherited registry credentials. Installation downloads from the explicitly selected registry; runtime needs no registry access. The extension runs with your user permissions. `--ignore-scripts` limits installation scripts, not extension runtime authority.
+## 2. Requirements
 
-For managed npm, install an independent Pi host, then register the exact package:
+- Pi **1.3.0**, with its `pi` command available in your system terminal. Use an interactive Pi TUI for Setup and confirmation dialogs.
+- Node **>=22.19.0** for both Pi and its MCP child. Tested versions and limits are in [runtime support](runtime-support.md); the version range is not proof that every later release has been tested.
+- **macOS arm64 or Linux x64 GNU**, with a local filesystem accepted by the Store. Other Native artifacts do not establish Store support. Windows Native is unsupported; WSL2 integration is unverified. Keep any WSL Store on its Linux filesystem, not `/mnt/c`.
+- A separately installed, trusted `tunnel-client`. The documented compatibility baseline is **0.0.16**. Obtain it from [OpenAI Tunnel settings](https://platform.openai.com/settings/organization/tunnels) or [official releases](https://github.com/openai/tunnel-client/releases/latest), and check its source, version and integrity before using it. CE does not install or update this client.
+- A Tunnel, its authorized credential, and a ChatGPT workspace/account eligible for that Tunnel. Cloud permissions and current UI steps follow the [official Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels). CE does not create these cloud resources.
 
-```sh
-CE_APPROVED_NODE=/absolute/path/to/approved/node
-npm install --prefix ~/ce-install/host --ignore-scripts --save-exact \
-  @earendil-works/pi-coding-agent@1.3.0
-CE_PI_CLI="$HOME/ce-install/host/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
-export npm_config_ignore_scripts=true
-"$CE_APPROVED_NODE" --version
-"$CE_APPROVED_NODE" "$CE_PI_CLI" install npm:@zieglar/pi-chat-exchange@0.2.0
-"$CE_APPROVED_NODE" "$CE_PI_CLI" list
-"$CE_APPROVED_NODE" "$CE_PI_CLI"
-```
+Use non-sensitive text for the first exchange. Extensions run with your user permissions; review the package before installing it. Keep credentials out of prompts, shell history, screenshots and messages.
 
-Replace the Node placeholder with your trusted absolute executable path. Verify `node --version` and `npm --version` before installation. Do not load a second copy with `-e`. The historical managed-install test used an isolated loopback registry; publication does not turn that test into cloud acceptance evidence. A prebuilt tarball is a separate fallback: verify its publisher-provided SHA256, install it physically with `--ignore-scripts`, and register the installed absolute directory. Consumers do not build the package. Follow [independent installation](independent-install.md) for full commands, payload checks and safe removal.
+## 3. Install
 
-For source development, from the repository root:
+**System terminal**, outside Pi:
 
 ```sh
-pnpm install --frozen-lockfile --ignore-scripts
-pnpm --dir packages/pi-chat-exchange run build
-pi -e ./packages/pi-chat-exchange/pi-extension/index.ts
+node --version
+pi --version
+pi install npm:@zieglar/pi-chat-exchange@0.2.1
+pi list
 ```
 
-Use pnpm 12.9.1 and an approved Node. The extension imports `dist/`; after source changes build before `/reload`. A persistent local installation can use `pi install /absolute/path/to/packages/pi-chat-exchange`; keep that directory in place. See [operations](operations.md) for development checks.
+Success: `pi list` includes the exact npm source `@zieglar/pi-chat-exchange@0.2.1`. The package is prebuilt; you do not need a repository clone, pnpm or a TypeScript build. Do not also load it with `-e`.
 
-Rust Native is the only default persistence driver; absent selection chooses `rust-native` `0.1.0`. Explicit `node-sqlite` is non-production compatibility only, with no automatic fallback. Production `NATIVE_COMPAT` now pins the verified `ce-sqlite-v0.1.0` assets. These pins and the Node `>=22.19.0` source declaration (matching installed Pi 1.3.0) remain unreleased; production publication requires separate authorization. Build/load commands do not establish production availability.
-
-## Prepare Native in current source
-
-Run `/ce-native status`, then explicitly `/ce-native install` if needed. Installation downloads only the trusted default version, verifies before changing selection, and requires a Pi restart afterward. `/ce-native verify` is read-only; `/ce-native repair confirm` is explicit repair. `/ce-native check-updates` only discovers GitHub Releases and never trusts `latest` or changes selection. CE never automatically downloads, repairs, upgrades or falls back.
-
-Loading the extension is read-only: no download, Store creation or Tunnel start. Pi and management commands remain available when Native is missing; Store, Tunnel start and messaging fail closed. See [Native management](native-management.md) for states and the session warning. Windows Native refuses with `CE_NATIVE_TARGET_UNSUPPORTED`; use Linux Node.js, Pi and CE inside WSL2. Keep the active Store on the Linux filesystem rather than `/mnt/c` or other Windows mounts. WSL2 integration is unverified here; platform tests cover target mapping and Windows refusal only. Existing filesystem admission remains unchanged.
-
- Isolated offline Pi Host first runs passed on Node 22.19.0, 24.22.2, 25.2.1, 25.9.0 and 26.12.1; see the local matrix in [runtime support](runtime-support.md).
-
-## Configure Tunnel and messaging
-
-Obtain the client from [OpenAI Tunnel settings](https://platform.openai.com/settings/organization/tunnels) or the [official releases](https://github.com/openai/tunnel-client/releases/latest), checking provenance/version/integrity before execution. The documented compatibility baseline is `tunnel-client` 0.0.16. CE does not download/update it or create cloud resources. A newer release needs separate compatibility evidence.
-
-For explicit executable selection, set trusted canonical absolute paths in the parent Pi environment before starting Pi:
+Before launching Pi for this guide, set these variables in the **same system terminal**. Replace the two executable paths with trusted, normalized absolute paths on your machine:
 
 ```sh
 export CE_NODE_PATH=/trusted/node-install/bin/node
 export CE_TUNNEL_CLIENT_PATH=/trusted/client-install/tunnel-client
 export CE_TUNNEL_BACKGROUND_ALLOW=1
+pi
 ```
 
-`CE_NODE_PATH` selects the MCP child only; Pi must already run under approved Node. The background variable permits explicit Start and does not start anything. A Pi child shell cannot change its parent's environment.
+`CE_NODE_PATH` selects the MCP child; Pi itself must already run under the supported Node. The background opt-in permits a later explicit Start and does not start anything. Setting variables in a child shell inside Pi cannot update the parent Pi process. Leave `CE_TUNNEL_OFFLINE_TEST` unset for ordinary use.
 
-Run these in the interactive Pi TUI:
+If you already have CE configuration or a running Tunnel, follow the existing-installation precautions in step 5 before changing it. For a dedicated Host prefix, tarball installation or source development, use the [advanced documentation](#10-advanced-documentation).
+
+## 4. Prepare Native
+
+**Pi TUI**:
 
 ```text
+/ce-native status
+```
+
+If the state is `MISSING`, explicitly install the pinned Native driver:
+
+```text
+/ce-native install
+```
+
+Success: the command reports that the trusted version was installed and selected. **Exit Pi normally, then restart it from the prepared system terminal.** Installation requires a Pi restart; `/reload` alone is not the documented substitute. In the restarted Pi TUI:
+
+```text
+/ce-native verify
 /ce-tunnel doctor
+```
+
+Success: Native reports `READY` / `CE_NATIVE_READY`. Doctor separately reports host Node, MCP child Node and client path trust without starting the client or testing cloud authentication. Resolve missing/untrusted executable diagnostics before Start; see [client path diagnostics](tunnel-setup.md#client-安装与只读诊断).
+
+Native is the only default persistence driver. If it is missing or untrusted, Pi and management commands remain available, while Store, messaging and Tunnel Start refuse. CE never automatically downloads, repairs, upgrades or falls back. For `UNTRUSTED` or other states, use [Native management](native-management.md); do not delete the Store or select a compatibility driver to bypass a refusal.
+
+## 5. Configure Tunnel
+
+Keep using the **same Pi Session** from Setup through activation and the first exchange. A new Session is a different identity.
+
+For an existing installation, first `/ce-tunnel stop`, then `/ce-tunnel status` and verify `STOPPED`. If the current Pi Session holds an old CE binding, `/ce-tunnel deactivate` and confirm normal release before changing configuration. `UNKNOWN` is not stopped; investigate it using [Tunnel troubleshooting](tunnel-setup.md). Skip these cleanup actions on a fresh installation with no existing binding or transport.
+
+**Pi TUI**:
+
+```text
 /ce-tunnel setup
+```
+
+1. Enter the real Tunnel ID and, if required, Organization ID. Enter the authorized credential only in the masked input. Existing installations can choose **Keep existing credential**.
+2. At Review, choose **Back · Edit configuration → Advanced · Messaging (ChatGPT ↔ Pi) → Authorize messaging for this session**.
+3. Check the displayed current Pi Session and endpoint pair: `chatgpt/main` ↔ `pi/main`. This action grants sending between these endpoints and enables **payload read and ACK on both sides**. It replaces an Advanced recipient list with the Pi endpoint. Proceed only if those grants are intended.
+4. Choose **Back · Review → Review**, inspect the proposal, continue through any identity/routing confirmation, then choose **Save configuration**.
+
+Success: CE reports configuration saved and Messaging configured. Saving transport settings alone leaves `recipients: []` and cannot send messages. Save does not activate an endpoint, start Tunnel or read your inbox.
+
+Load the saved policy and explicitly bind this Session, still in the **Pi TUI**:
+
+```text
 /reload
 /ce-tunnel activate
 /ce-status
 ```
 
-Doctor separately checks host qualification, child executable qualification and client metadata trust without client startup, credential/Store reads or configuration changes. A missing client is a safe refusal, not cloud readiness evidence.
+In the activation dialog verify both endpoints, Store/Exchange and permissions, then choose **Activate current session**. Success: `Pi messaging bound` (or already bound), followed by `/ce-status` showing `endpoint=pi/main`, `registered=true` and `lease=ACTIVE`.
 
-In Setup, enter the Tunnel ID, optional Organization ID and credential through masked input. Never put the credential in shell commands or public reports. Review defaults to `recipients: []`, which cannot message. Choose **Back · Edit configuration → Advanced · Messaging (ChatGPT ↔ Pi) → Authorize messaging for this session**. Check the real Pi Session, `chatgpt/main`, `pi/main`, Store/Exchange and payload/ACK settings. This pairing enables payload read and ACK on both sides and replaces manual recipients with the single Pi recipient; it is an explicit permission grant. Save publishes configuration without activating an Endpoint, starting transport or reading messages.
+A first reload can report a missing mapping before explicit activation. If activation instead offers **Release current binding for policy reload**, the selected policy is not loaded: follow that release prompt, `/reload`, then explicitly activate again. An unknown release, persistence failure or existing owner needs investigation, not repeated activation or Store deletion. Activation never takes over an owner and does not start Tunnel.
 
-For existing configuration, first Stop and independently verify STOPPED. Normally deactivate an old local binding before reload. Activation requires confirmation and `requireUnowned`; it never takes over an Owner. Unknown release or failed persistence requires investigation, not repeated activation or Store deletion.
+## 6. Connect ChatGPT
 
-Configure the corresponding ChatGPT plugin through [custom MCP setup](https://developers.openai.com/api/docs/guides/custom-mcp-server), choose the same Tunnel, install/select it in the current conversation and refresh its tools after configuration changes. Cloud eligibility and permissions follow the [official Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels). CE does not configure those resources.
+**ChatGPT / Platform web UI**: follow the [custom MCP setup guide](https://developers.openai.com/api/docs/guides/custom-mcp-server) to create a custom MCP connection using **Tunnel**, selecting the same Tunnel ID and permitted organization/workspace. Review authentication and permissions, install/select the plugin in the current conversation, and refresh its tools after configuration changes. The Tunnel route does not require installing the Desktop stdio plugin.
 
-After authorization for a real running window:
+After authorizing a real running window and its possible cost, **Pi TUI**:
 
 ```text
 /ce-tunnel start
 /ce-tunnel status
 ```
 
-Configured, Pi-bound, Connected and actual message evidence are distinct. Closing the Manager or exiting Pi does not stop its detached client. Stop explicitly with `/ce-tunnel stop` and verify STOPPED independently.
+Success: status eventually measures `CONNECTED`. Start may initially report `STARTING`; use status or Manager Refresh to inspect progress. Do not request a second Start to force readiness. `DEGRADED` / `UNKNOWN` require the [Tunnel guide](tunnel-setup.md).
 
-## First explicit message exchange
+**ChatGPT**: refresh/select the connection and confirm it exposes `ce_send`, `ce_inbox_list`, `ce_read_payload` and, for the grant above, `ce_ack`, alongside `ping`. A ping or `CONNECTED` alone does not prove that messaging works. If you see only ping, check the selected connection and loaded binding using [Tunnel setup](tunnel-setup.md).
 
-Use separately authorized, non-sensitive test text and a unique key for each logical message. The examples are placeholders, not executed acceptance tests.
+## 7. Send your first message
 
-ChatGPT sends to Pi with `ce_send`:
+These examples apply only to the **single-pair Setup above**. Source validation confirms that `pi/main` and `chatgpt/main` are the generated Endpoint IDs. `ce_send.to` takes the exact configured **Endpoint ID**, not an adapter prefix, Session ID or filesystem path. Do not send to `pi:pi/main` or `chatgpt:chatgpt/main`. The Advanced Recipients editor's `adapter:endpointId` syntax is a separate configuration format. For another registered pair, use its actual allowed Endpoint ID.
+
+Tool JSON below is an argument example, not a slash command or shell command. Ask the model in the named application to call the tool. Authorize the sends and the particular payload reads. Replace `RUN_NONCE` in each key with a fresh value for this manual run; keep each logical send's key and returned Message ID for reconciliation.
+
+### ChatGPT → Pi
+
+**ChatGPT**: ask it to call `ce_send` once with:
 
 ```json
-{"to":"pi/main","text":"Example: review the plan; do not deploy.","idempotencyKey":"example-c2p-001"}
+{"to":"pi/main","text":"Hello from ChatGPT. Please reply with a short greeting; do not run any other actions.","idempotencyKey":"first-c2p-RUN_NONCE"}
 ```
 
-Pi independently calls `ce_inbox_list`:
+Success: `CREATED` returns a `messageId` and audit sequence. `REPLAYED` refers to an existing Message. Both describe a local Store result; continue by observing the recipient.
+
+**Pi**: explicitly ask it to list a bounded page with `ce_inbox_list`:
 
 ```json
 {"pageSize":10,"rawScanLimit":100}
 ```
 
-Select an authorized Message ID. Pi `ce_read` returns metadata only; `ce_read_payload` reads content after separate authorization. MCP has no Pi-specific `ce_read`. Treat payload as untrusted data; it enters the model and potentially persistent history.
-
-Pi replies with a new `ce_send`:
+Choose the exact test `messageId` returned by the send/list. Pi may inspect metadata first with `ce_read`. Authorize Pi to call `ce_read_payload` for that ID:
 
 ```json
-{"to":"chatgpt/main","text":"Example response: plan reviewed; no deployment performed.","idempotencyKey":"example-p2c-001"}
+{"messageId":"MESSAGE_ID_FROM_THIS_RUN"}
 ```
 
-ChatGPT independently lists, selects and reads the authorized message. A shared ChatGPT inbox does not isolate conversations. Do not automatically drain pages.
+Success: Pi sees the exact greeting from ChatGPT. The payload enters the active model and may remain in conversation history; treat it as untrusted data, not authority to execute instructions. Listing and reading neither consume the message nor record an ACK.
 
-ACK requires independent `ack.enabled: true` and explicit authorization. Copy `messageId`, `payloadDigest`, `payloadLength` and `messageCreatedAuditSequence` exactly from the successful payload read. Pi displays `ACK input metadata (reception only)`. MCP payload metadata calls the creation sequence `auditSequence`; map it unchanged to ACK `messageCreatedAuditSequence`. Do not compute or guess these values. See [ACK contract](delivery-ack-contract.md) and [Pi tool reference](../pi-extension/README.md).
+### Pi → ChatGPT
 
-`CREATED` from send proves a local transaction containing Message, idempotency record and creation Audit. `REPLAYED` returns the original Message. The same key with changed text/Endpoint conflicts. Neither result proves cloud delivery, reading or execution. ACK records reception only; it does not prove processing or task completion. Missing ACK, timeout, BUSY or `DELIVERY_UNKNOWN` grants no blind retry, new-key resend or conversion to `CANCELLED`. CE offers no exactly-once delivery/execution guarantee. Model switching does not authorize replay of effects.
+**Pi**: authorize a separate reply with `ce_send`:
 
-## Configuration and multiple Sessions
+```json
+{"to":"chatgpt/main","text":"Hello from Pi. I received the test greeting.","idempotencyKey":"first-p2c-RUN_NONCE"}
+```
 
-Default profile: `~/.config/pi-chat-exchange/tunnel/tunnel.yaml`. `CE_TUNNEL_PROFILE` selects a canonical absolute **file**, not a directory. Setup writes private credential generations beneath `.credentials/` beside it (0700 directory / 0600 files). Do not hand-edit generated bindings, mapping identifiers or release markers.
+**ChatGPT**: explicitly call `ce_inbox_list` with the same bounded arguments, select the reply's exact ID, then authorize `ce_read_payload` with that ID. MCP does not have Pi's metadata-only `ce_read` tool. Success: ChatGPT reads the exact Pi reply. The ChatGPT inbox is shared by the configured endpoint; it does not isolate conversations. Do not automatically drain pages or read unrelated messages.
 
-| Setting | Meaning |
-|---|---|
-| `CE_TUNNEL_PROFILE` | Selected profile; does not switch a running child |
-| `CE_NODE_PATH` | Trusted child Node; does not repair host Node |
-| `CE_TUNNEL_CLIENT_PATH` | Trusted client absolute-path override |
-| `CE_TUNNEL_BACKGROUND_ALLOW=1` | Permits explicit Start in the parent Pi environment |
-| Nonempty `CE_ALLOWLIST` | Explicit Pi policy takes precedence and blocks generated conversion/registration |
-| `CE_STORE_DIR` / `CE_STORE_FILE` | May confirm a configured Store, never silently redirect it |
-| `CE_LEASE_TTL_SECONDS` | Validated TTL override, loaded on reload; not recovery permission |
-| `CE_TUNNEL_OFFLINE_TEST=1` | Isolated simulator only; do not set for ordinary use |
+### Optional reception receipt
 
-Both ends must match Store directory/file and Exchange namespace/idempotencyKey exactly. Capabilities stay in Host memory. Payload read and ACK are independent grants captured at factory load; saving configuration or exporting variables elsewhere does not update them.
+If you also authorize `ce_ack`, copy all four fields from the successful payload read: `messageId`, `payloadDigest`, `payloadLength`, `messageCreatedAuditSequence`. Pi displays these as **ACK input metadata (reception only)**. On ChatGPT/MCP, copy the read result's `auditSequence` unchanged into ACK's `messageCreatedAuditSequence`. Never compute or guess values. See the [ACK contract](delivery-ack-contract.md).
 
-For separate native Sessions, use explicit multi-session registration:
+ACK records reception only. It does not prove delivery, reading, processing or task completion. Missing ACK, timeout or an uncertain result does not authorize another send, changing keys, or converting `DELIVERY_UNKNOWN` to `CANCELLED`. CE makes no exactly-once delivery/execution promise. Keep the original key/Message ID and inspect durable evidence before deciding what to do next.
+
+## 8. Verify and stop
+
+For this run, record the two send Message IDs and the corresponding authorized payload-read results. Seeing both exact greetings establishes your own first exchange evidence. Configuration, a local test, ping and transport health cannot substitute for it. This guide's maintenance validation has **not** executed that real Cloud exchange.
+
+**Pi TUI**, before ending the running window:
 
 ```text
-/ce-tunnel convert
-/new
-/ce-tunnel register pi/project-B --payload-read --ack
-/reload
-/ce-tunnel activate
-/ce-tunnel sessions
+/ce-tunnel stop
+/ce-tunnel status
 ```
 
-Conversion retains the original registration. A native Session maps to one stable Endpoint; use `/new` before registering a different one. Register/convert/revoke require confirmation and verified STOPPED transport; they do not start it. `sessions` reports selected active Endpoint IDs, not the policy loaded by a running MCP. Revoke exact registrations with `/ce-tunnel revoke <exact-endpoint>`; normal release uses `/ce-tunnel deactivate` and preserves registration/history/transport. Full procedures: [multiple Sessions](multi-session-usage.md), [Tunnel setup](tunnel-setup.md), [operations](operations.md).
+Success: the owned transport is measured `STOPPED`. Closing Manager or exiting Pi does **not** stop its detached client. Stop only acts on a process CE can prove it owns. If exit is unconfirmed or status is `UNKNOWN`, investigate; do not assume stopped or bulk-kill unrelated processes.
 
-Command/configuration evidence: `pi-extension/index.ts` (tool schemas, subcommands, allowlist precedence and lifecycle), `src/tunnel/profile.ts`, `src/tunnel/setup.ts`, `src/tunnel/messaging-config.ts`, and `package.json`. Historical installation evidence is in [independent installation](independent-install.md) and [0.2.0 release notes](releases/0.2.0.md); it is not a new acceptance run.
+To also release this Pi messaging binding, use `/ce-tunnel deactivate` and confirm. This retains registration/history and does not itself stop transport. Check `/ce-status` for no endpoint bound; a later use requires explicit activation.
+
+## 9. Troubleshooting
+
+| Observation | Next step |
+|---|---|
+| `/ce-native` or `/ce-tunnel` is unknown | Check `pi list`, exact version and selected Pi installation; restart/reload that Host without loading a second extension copy. |
+| Native is missing or not ready | Follow step 4 and [Native management](native-management.md); installation needs restart, repair needs explicit confirmation. |
+| Doctor refuses host/child/client | Fix the reported runtime or trusted executable path in the parent environment; [path checks](tunnel-setup.md#client-安装与只读诊断) include ancestors and symlinks. Do not relax checks to start. |
+| No endpoint bound / `CE_HOST_MAPPING_INVALID` | Confirm Setup authorized this Session, reload its policy, then explicitly activate. For stale/foreign mappings or unknown release, use [recovery guidance](tunnel-setup.md) without editing identifiers. |
+| `CE_HOST_ENDPOINT_NOT_ALLOWED` | Compare the exact configured Endpoint ID with `to`; do not add an adapter prefix or invent recipients. |
+| Payload/ACK tools missing | Confirm the intended Setup grants, Pi reload and fresh Tunnel MCP binding; refresh ChatGPT tools. For an existing connection, Stop/verify then Start separately. |
+| Start refuses or never reaches `CONNECTED` | Inspect `/ce-tunnel doctor`, `/ce-tunnel status` and [Tunnel troubleshooting](tunnel-setup.md). Cloud credentials/permissions and path trust are separate checks. |
+| Timeout, `CE_HOST_UNCERTAIN` or missing ACK | Preserve the original key/Message ID; inspect evidence before any retry. Do not resend under a new key. |
+
+## 10. Advanced documentation
+
+- [Native management](native-management.md): readiness, explicit installation/repair and trust boundaries.
+- [Tunnel setup and recovery](tunnel-setup.md): executable checks, existing profiles, lifecycle and refusal codes.
+- [Multiple Pi Sessions](multi-session-usage.md) and [Pi tools](../pi-extension/README.md): registrations and detailed tool contracts.
+- [Runtime support](runtime-support.md), [operations and source development](operations.md), and [security](storage-security.md).
+- [Independent Host / tarball installation](independent-install.md): current0.2.1 alternatives followed by a clearly separated historical0.2.0 record.
+- [Desktop stdio installation](chatgpt-installation.md): a separate local MCP route with its own prerequisites.

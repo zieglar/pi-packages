@@ -17,7 +17,7 @@
 
 ## Desktop 适用条件与打包
 
-要求：支持 local plugins 的 ChatGPT Desktop、macOS 或 Linux、开发候选 **Node.js >=24.20.0 <=24.22.2**（须满足 SQLite >=3.51.3、平台/编译安全与共享行为探针，不固定 SQLite/source ID）、仓库 pnpm 12.9.1。Node 24.19.0、25.9.0 因已复现的 native crash 被拒绝；26.12.1 仅作隔离预览。实测为 macOS arm64，不新增 Linux/Desktop UI 验收；已发布 npm 0.2.0 不变。Desktop 插件使用 `plugin.json`、根 `mcp.json`、`${PLUGIN_ROOT}` 与本地 stdio。
+需要具备 local plugin 支持的 ChatGPT Desktop、用于打包的 CE 0.2.1 源码、Node **>=22.19.0**、Pi 1.3.0 和 pnpm 12.9.1。Rust Native 是默认驱动；按 [Native 管理](native-management.zh-CN.md)在运行 Desktop 的系统账号下准备固定信任版本的缓存，安装后重启相关 Host。Store 支持 macOS arm64 / Linux x64 GNU。本地制品测试不证明真实 Desktop UI 安装、Linux Desktop 可用性或云端验收。插件使用 `plugin.json`、根 `mcp.json`、`${PLUGIN_ROOT}` 和 stdio。
 
 官方格式参考（客户端入口与组织资格以其当前文档为准）：
 
@@ -35,7 +35,7 @@ pnpm run package:desktop-plugin
 
 生成的 ignored artifacts：
 
-- `.plugin-build/pi-chat-exchange-0.2.0.zip`：单根 ZIP。
+- `.plugin-build/pi-chat-exchange-0.2.1.zip`：单根 ZIP。
 - `.plugin-build/marketplace/`：可注册的本地 marketplace。
 - `.plugin-build/pi-chat-exchange/`：解包检查副本。
 
@@ -112,7 +112,7 @@ codex plugin marketplace list
 3. `ack.enabled` exact true 时额外提供 `ce_ack`，否则不广告并拒绝调用；ACK 不顺带开启 payload read。
 4. 按[消息流程](tunnel-setup.zh-CN.md#4-双向-send--inbox--read--ack)双向 send → 独立 list → 授权 read → 单独授权 ACK，明确每一步证据。
 
-packaged artifact 测试验证 stdio/tool discovery，不证明 Desktop UI 安装成功。当前已完成的实际 ChatGPT↔Pi 消息及 Tunnel 启停验收见[README](../README.zh-CN.md)；不能把 Tunnel 验收外推成每条 Desktop 安装路径都重新跑过。ACK 永远仅 reception，非 task completion。
+制品测试验证 stdio/工具发现，不证明 Desktop UI 安装成功。[README](../README.zh-CN.md)记录本地 Registry 安装和 Native 测试范围。真实 Cloud transport 与完整 ChatGPT↔Pi 交换仍未验证；Tunnel 和 Desktop UI 验收各需独立证据。ACK 仍只代表接收回执，不证明任务完成。
 
 ## 显式 stale-ownership 恢复
 

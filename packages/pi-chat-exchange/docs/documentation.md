@@ -1,47 +1,67 @@
-# Maintaining bilingual documentation
+# Documentation index and maintenance
 
 English | [简体中文](documentation.zh-CN.md)
 
-Every CE Markdown document has an English default (`name.md`) and a Simplified Chinese counterpart (`name.zh-CN.md`). This includes package/extension/plugin READMEs, user guides, contracts, release notes, changelog and retained plans/audits. License texts remain verbatim. Historical documents describe their dated scope; they are not current installation or support promises.
+Start with [Getting started](getting-started.md) to install **CE0.2.1**, prepare Native, authorize one pair and attempt a first exchange. Every user-facing Markdown document has an English default and a Simplified Chinese counterpart. License texts remain verbatim. Historical notes retain their dated scope; they are not current installation or support promises.
 
-## Navigation and coverage
+## P0: start using CE
 
-| Task | English | 简体中文 |
+| Need | English | 简体中文 |
 |---|---|---|
-| Product overview | [README](../README.md) | [README](../README.zh-CN.md) |
-| Installation, configuration, commands | [Getting started](getting-started.md) | [入门](getting-started.zh-CN.md) |
-| Components and lifecycle | [Architecture](architecture.md) | [架构](architecture.zh-CN.md) |
-| Native release, pins, platforms | [Native SQLite](native-sqlite.md) | [Native SQLite](native-sqlite.zh-CN.md) |
-| Security, troubleshooting, development, release | [Operations](operations.md) | [运维](operations.zh-CN.md) |
-| Detailed transport setup | [Tunnel setup](tunnel-setup.md) | [Tunnel 设置](tunnel-setup.zh-CN.md) |
-| Sessions and grants | [Multi-session usage](multi-session-usage.md) | [多 Session](multi-session-usage.zh-CN.md) |
-| Desktop stdio | [ChatGPT installation](chatgpt-installation.md) | [ChatGPT 安装](chatgpt-installation.zh-CN.md) |
-| Storage and authorization | [Storage](storage-contract.md) · [Ownership](ownership-contract.md) · [ACK](delivery-ack-contract.md) | [Storage](storage-contract.zh-CN.md) · [Ownership](ownership-contract.zh-CN.md) · [ACK](delivery-ack-contract.zh-CN.md) |
+| Understand capabilities and limits | [README](../README.md) | [首页](../README.zh-CN.md) |
+| Install, configure and try a first exchange | [Getting started](getting-started.md) | [快速开始](getting-started.zh-CN.md) |
+| Use a dedicated Host or Registry tarball | [Installation](independent-install.md) | [独立安装](independent-install.zh-CN.md) |
 
-Each page links its language counterpart near the top. Update both versions in the same change. English links normally target English pages and Chinese links target Chinese pages; clearly label deliberate cross-language references. Preserve incoming fragment links when translating headings, using explicit anchors where needed.
+## P1: complete a specific task
 
-## Facts and translation
+| Need | English | 简体中文 |
+|---|---|---|
+| Inspect/install/repair Native | [Native management](native-management.md) | [Native 管理](native-management.zh-CN.md) |
+| Configure Tunnel, grants and lifecycle | [Tunnel setup](tunnel-setup.md) | [Tunnel 设置](tunnel-setup.zh-CN.md) |
+| Use the separate Desktop stdio route | [ChatGPT installation](chatgpt-installation.md) · [plugin guide](../plugin/pi-chat-exchange/README.md) | [ChatGPT 安装](chatgpt-installation.zh-CN.md) · [插件指南](../plugin/pi-chat-exchange/README.zh-CN.md) |
+| Register multiple Pi Sessions | [Multi-session usage](multi-session-usage.md) | [多 Session](multi-session-usage.zh-CN.md) |
 
-Verify commands, environment variables and schemas against source/tests. Use `package.json` for npm metadata, actual Release/ref/workflow evidence for release claims, and `src/storage/native-compat.ts` for consumer pins. Keep publication, automated tests, Store integration and manual use separate. A package version is not a Native tag; a successful release does not promote a trust pin.
+## P2: look up commands, configuration or errors
 
-Keep the same prerequisites, refusal conditions, evidence limits and next steps in both languages. Technical identifiers such as `Message`, `Endpoint`, `Session`, `Ownership`, `ACK` and `DELIVERY_UNKNOWN` retain their source spelling when translation would obscure meaning. Translate surrounding explanations, not configuration keys or error codes. Recovery markers do not confer authority. No exactly-once promise, blind retry or model-switch replay may be introduced by editing.
+| Reference | English | 简体中文 |
+|---|---|---|
+| Pi commands, tools, payload/ACK and policy | [Extension reference](../pi-extension/README.md) | [扩展参考](../pi-extension/README.zh-CN.md) |
+| Runtime requirements and measured scope | [Runtime support](runtime-support.md) | [运行时支持](runtime-support.zh-CN.md) |
+| Profile/environment and configuration precedence | [Tunnel configuration](tunnel-setup.md#配置模型与生成文件) | [Tunnel 配置](tunnel-setup.zh-CN.md#配置模型与生成文件) |
+| Refusal handling and maintenance | [Operations](operations.md) · [Tunnel troubleshooting](tunnel-setup.md#故障排查先定位层再进行最小修复) | [运维](operations.zh-CN.md) · [Tunnel 排障](tunnel-setup.zh-CN.md#故障排查先定位层再进行最小修复) |
+| Detached client lifecycle and process ownership | [Background Manager](tunnel-manager-background.md) | [后台 Manager](tunnel-manager-background.zh-CN.md) |
 
-The published npm package's `files` allowlist is unchanged by this documentation work. Repository documentation may be broader than the tarball; check pack inventory before making claims about bundled translations. Do not imply that editing this tree changes previously published npm 0.2.0 bytes.
+## P3: engineering, safety and release history
 
-## Editorial review
+| Reference | English | 简体中文 |
+|---|---|---|
+| Components and authority | [Architecture](architecture.md) | [架构](architecture.zh-CN.md) |
+| Storage and permissions | [Storage contract](storage-contract.md) · [Storage security](storage-security.md) | [存储契约](storage-contract.zh-CN.md) · [存储安全](storage-security.zh-CN.md) |
+| Ownership and ACK | [Ownership contract](ownership-contract.md) · [ACK contract](delivery-ack-contract.md) | [所有权契约](ownership-contract.zh-CN.md) · [ACK 契约](delivery-ack-contract.zh-CN.md) |
+| Frozen protocol and phase history | [Protocol v2](protocol-v2.md) | [协议 v2](protocol-v2.zh-CN.md) |
+| Native artifacts, trust and release procedure | [Native SQLite](native-sqlite.md) · [Native release CI](native-release-ci.md) | [Native SQLite](native-sqlite.zh-CN.md) · [Native 发布 CI](native-release-ci.zh-CN.md) |
+| Versions and historical qualification | [Changelog](../CHANGELOG.md) · [0.2.0 record](releases/0.2.0.md) | [变更记录](../CHANGELOG.zh-CN.md) · [0.2.0 记录](releases/0.2.0.zh-CN.md) |
+| License notices | [Licenses](licenses.md) | [许可证](licenses.zh-CN.md) |
 
-Apply humanizer to the completed English draft, then qu-ai-wei to the Chinese draft after translation. Use a technical reference voice. Preserve fenced code, inline code, commands, paths, configuration keys, versions, SHA, URLs, error codes and safety semantics throughout this prose-only pass. Do not add promotion, invented cases, first-person experiences or artificial colloquialisms.
+The installation page separates current0.2.1 steps from its historical0.2.0 record. Storage/Ownership/protocol/security references preserve frozen or phase-scoped material and later amendments. Read their scope/supersession notes before applying an older requirement. Real Cloud transport and a complete ChatGPT ↔ Pi exchange remain unverified; installation, automated tests and manual message evidence have distinct scopes.
 
-Compare protected spans against the draft after editing, then review the entire pair for factual drift. Neither skill is a translator, fact source or release authority. No third-party script is needed for this editorial step.
+## Maintain both languages
 
-## Validation checklist
+Each page links its counterpart near the top. Update both versions in the same change. Prefer matching-language links, and preserve incoming fragments with explicit anchors when headings change. English and Chinese must agree on prerequisites, commands, argument schemas, permissions, refusal handling and verification limits; natural translation need not follow sentence boundaries.
 
-- Check every CE document has its language counterpart and reciprocal links.
-- Resolve relative files and fragment links from the page containing them.
-- Compare code blocks and technical identifiers across each pair; explain intentional historical differences.
-- Check examples against actual CLI/config definitions; syntax checks do not prove external connections.
-- Check package/Native versions, exact release source and platform evidence scopes.
-- Inspect changed prose for credentials, payloads, private paths and internal-only records.
-- Review the diff for Markdown-only changes. Public export must contain only approved public documentation and retain earlier local exports.
+Verify commands against implementation/tests, npm metadata against `package.json` and the actual Registry, and Native trust against `src/storage/native-compat.ts` and fixed release evidence. Package publication is independent of a Native Release and does not itself grant trust to a new binary. Editing repository documents does not change already-published0.2.1 tarball bytes. Detailed documents and translations remain on GitHub; the npm archive includes only the English basic README.
 
-Source changes require the repository's normal code checks. Documentation-only verification does not prove runtime, cloud or publication behavior.
+Use humanizer on English prose and qu-ai-wei on Chinese prose as embedded editorial passes. Preserve commands, code, keys, versions, SHA, paths, error codes, URLs and safety meanings. Do not invent features or increase evidence strength for smoother wording.
+
+## Validate a documentation change
+
+- Check every actual Public Markdown file has a counterpart and reciprocal navigation.
+- Resolve local files and fragments; map public GitHub repository links to the intended file.
+- Compare command/JSON blocks and technical identifiers across languages, explaining historical differences.
+- Check current version/runtime/default-driver facts and scoped platform/client evidence.
+- Review Setup grants, exact recipient labels, payload exposure, ACK reception-only semantics, unknown outcomes and safe Stop.
+- Scan changed content for private paths, credentials, payloads and internal-only records.
+- Preserve dated evidence and frozen contracts; edit current guidance without rewriting history.
+- Review the fixed documentation candidate and run the repository-required checks before export/push.
+
+Documentation validation does not prove Cloud transport, authorize real operations or publish a package.

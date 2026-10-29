@@ -4,13 +4,13 @@
 
 # ChatGPT ↔ Pi: Tunnel guide, configuration and troubleshooting
 
-This is the Secure MCP Tunnel path; it does not require the Desktop stdio plugin. For Desktop alone, use the [Desktop stdio guide](chatgpt-installation.md). For daily-use distribution, use the published exact npm version or prebuilt tarball in the [independent installation guide](independent-install.md), without the repository build below. All examples are placeholders, not active configuration.
+This is the Secure MCP Tunnel path; it does not require the Desktop stdio plugin. For the published 0.2.1 installation and first exchange, start with [Getting started](getting-started.md). For Desktop alone, use the [Desktop stdio guide](chatgpt-installation.md). Repository build commands below are for source development; independent Host/tarball mechanics are covered in the historical [installation guide](independent-install.md). Examples are placeholders, not active configuration.
 
 <a id="1-前提与安装"></a>
 
-## Native readiness before Tunnel start (current source)
+## Native readiness before Tunnel start (0.2.1)
 
-Run `/ce-native status` or `/ce-native verify` for read-only inspection. Explicit `/ce-native install` downloads only the trusted default, verifies before selection, and requires restarting Pi. Repair requires `/ce-native repair confirm`; `/ce-native check-updates` only reads GitHub Release metadata, never trusts `latest` or changes selection. CE never automatically downloads, repairs, upgrades or falls back. The source declaration and pins are unreleased; production publication requires separate authorization.
+Run `/ce-native status` or `/ce-native verify` for read-only inspection. Explicit `/ce-native install` downloads only the trusted default, verifies before selection, and requires restarting Pi. Repair requires `/ce-native repair confirm`; `/ce-native check-updates` only reads GitHub Release metadata, never trusts `latest` or changes selection. CE never automatically downloads, repairs, upgrades or falls back. Published 0.2.1 includes the Native default and fixed trust pins.
 
 Extension load never downloads, creates a Store or starts Tunnel. Missing Native leaves Pi and management available with the warning and current factory scope described in [Native management](native-management.md), while Store, Tunnel start and messaging fail closed. `/ce-tunnel start` revalidates Native and Store admission before manager/profile/process effects; refusal includes a specific `CE_NATIVE_*` code and `/ce-native` hint. Status reports `native=<STATE> (code)` separately from transport; missing Native never means `STOPPED`. Stop remains available for safe cleanup.
 
@@ -21,7 +21,7 @@ Windows has no Native binary (`CE_NATIVE_TARGET_UNSUPPORTED`); CE never loads a 
 | Component | Requirement |
 |---|---|
 | Pi | 1.3.0; setup/confirmation uses the interactive TUI |
-| Pi host / MCP child Node | Current source declares **>=22.19.0**, matching installed Pi 1.3.0. Rust Native is the only default, with bundled SQLite 3.54.1 and Store admission probes; built-in `node:sqlite` restrictions apply only to explicit non-production compatibility selection. Published npm 0.2.0 is unchanged |
+| Pi host / MCP child Node | 0.2.1 requires **>=22.19.0**, matching Pi 1.3.0. Rust Native is the only default, with bundled SQLite 3.54.1 and Store admission probes; built-in `node:sqlite` restrictions apply only to explicit non-production compatibility selection. Historical 0.2.0 qualification remains separate |
 | Repository build tools | pnpm 12.9.1; package installation supplies UI dependencies |
 | Tunnel client | Current compatibility baseline `tunnel-client` 0.0.16; trusted absolute path or discovery in controlled system directories |
 | Store platforms | Allowlist: macOS arm64 / Linux x64. This local regression used macOS arm64. Node 26.12.1 is isolated preview only; this does not qualify future versions, Linux or every client |
@@ -250,7 +250,7 @@ Without explicit allowlist, the selected complete generated policy takes precede
 For an unreleased local session-process mutex slot, all Pi/CE processes, heartbeats, background launchers, automatic restarts and recovery jobs must be stopped and prevented from restarting throughout inspection, reconciliation, persistence and recheck. Independently establish owner death. Only then may the operator explicitly run:
 
 ```sh
-pnpm run reconcile:session-mutex --expect-store-dir <canonical-dir> --expect-store-file <basename> --expect-endpoint <endpoint> --expect-runtime-session <session> --expect-slot <slot> --expect-owner-version 1 --expect-owner-scope <sha256> --expect-owner-pid <pid> --expect-owner-birth <birth> --expect-owner-process-token <token> --expect-owner-handle-token <token> --expect-owner-sha256 <raw-byte-sha256> --expect-store-dev <dev> --expect-store-ino <ino> --expect-slot-dev <dev> --expect-slot-ino <ino> --expect-owner-dev <dev> --expect-owner-ino <ino> --offline-window-confirmed --owner-death-evidence <independent-reference>
+pnpm run reconcile:session-mutex --expect-store-dir '<canonical-dir>' --expect-store-file '<basename>' --expect-endpoint '<endpoint>' --expect-runtime-session '<session>' --expect-slot '<slot>' --expect-owner-version 1 --expect-owner-scope '<sha256>' --expect-owner-pid '<pid>' --expect-owner-birth '<birth>' --expect-owner-process-token '<token>' --expect-owner-handle-token '<token>' --expect-owner-sha256 '<raw-byte-sha256>' --expect-store-dev '<dev>' --expect-store-ino '<ino>' --expect-slot-dev '<dev>' --expect-slot-ino '<ino>' --expect-owner-dev '<dev>' --expect-owner-ino '<ino>' --offline-window-confirmed --owner-death-evidence '<independent-reference>'
 ```
 
 Every parameter requires independent verification; there are no defaults. There is no `--audit-log` parameter; unknown arguments refuse, and the script writes no audit file. It reconciles only a local mutex receipt, not CE ownership / Operator Recovery, and proves no CE end/detach. Restored local availability does not authorize business operations, CE read/ACK, detach, takeover or recovery; await a separate authorization decision. Do not delete locks, reconcile live PIDs or test acquire against a real Store. Publication has two stages: O_EXCL creates `release-pending.json` (0600, exactly the owner's raw bytes); after file/directory fsync and full recheck, atomic rename to `released.json` is the sole commit. Any failure before rename retains pending artifacts unchanged and exits with a fixed reason. If rename throws, success is recognized only when `released.json` exactly matches prepared bytes/identity; otherwise stop. No fallible operation runs after rename. Every failure requires manual inspection, never retry, overwrite or delete.

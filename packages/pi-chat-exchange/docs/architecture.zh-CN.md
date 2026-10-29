@@ -101,11 +101,11 @@ CE Receipt、Pi UI 通知、Tunnel health、runtime 执行事实和外部工作�
 
 ## Storage 运行契约
 
-Native 是目标默认驱动：没有选择文件时，使用声明的默认版本 `0.1.0` 选择 `rust-native`。`node-sqlite` 仅为显式选择、延迟加载的非生产兼容驱动，绝不作为回退。Native 加载或信任校验失败时直接拒绝。生产 `NATIVE_COMPAT` pins 仍为 null，默认构建不可发布，生产尚未启用。Native 默认切换与生产 pins 必须在另行授权 pin 后作为同一发布单元交付。
+已发布 CE 0.2.1 在没有选择文件时默认使用 `rust-native` `0.1.0`。显式、延迟加载的 `node-sqlite` 仅供非生产兼容用途。Native 失败直接拒绝，不回退。生产 `NATIVE_COMPAT` 固定不可变 `ce-sqlite-v0.1.0` 的四个资产；交互安装需显式执行，完成后重启 Pi。
 
 当前 Node engines 为 `>=22.19.0`，与已安装 Pi 1.3.0 Host manifest 一致。Native 使用内置 SQLite 3.54.1，检查 Node-API >=8、真实模块、ABI、目标与可信缓存，不依赖 `process.versions.sqlite`。内置 `node:sqlite` 的候选版本、SQLite 安全下限和已知 transaction-close 缺陷拒绝规则仅约束显式兼容路径；共享 SQLite 身份、编译选项和行为探针仍有效。平台 allowlist 仍为 macOS arm64 / Linux x64。文件系统、ownership、0700/0600、symlink、WAL/FULL、foreign keys、trusted-schema OFF、有界 busy wait 与 macOS fullfsync/checkpoint_fullfsync 要求不变。
 
-本地 Native 矩阵、历史制品证据与待验证项见[运行时支持](runtime-support.zh-CN.md)和 [Native SQLite](native-sqlite.zh-CN.md)。隔离离线 Pi Host 首跑已在 Node 22.19.0、24.22.2、25.2.1、25.9.0、26.12.1 全部通过；新增 Linux x64 Node 22.19.0 / 24.22.2 Native job 的 hosted 执行仍为 UNVERIFIED。npm 0.2.0 未改变。
+各项范围见[运行时支持](runtime-support.zh-CN.md)和 [Native SQLite](native-sqlite.zh-CN.md)。早期本地离线 Host 首跑覆盖 Node 22.19.0、24.22.2、25.2.1、25.9.0、26.12.1。[0.2.1 候选 CI](https://github.com/zieglar/pi-packages/actions/runs/40925049158)在 Linux x64 Node 22.19.0、24.22.2 上各通过 Native 227/227。真实 Registry0.2.1 的隔离 Pi/Node22 安装及持久化在 macOS arm64 通过；Cloud、WSL2 和 Linuxarm64 Store 尚未验证。
 
 migration ledger/checksum、application/store identity、integrity 与 restore hold 会拒绝 foreign/newer/corrupt Store，不自动 reset。能执行 Pi UI 不代表能打开 CE Store。实际准入以 `src/storage/runtime.ts` 与 [Storage contract](storage-contract.zh-CN.md) 为准；内存探针不证明磁盘锁或崩溃耐久，文件权限不能消除所有 TOCTOU、mount substitution、OS crash/power loss 风险。
 

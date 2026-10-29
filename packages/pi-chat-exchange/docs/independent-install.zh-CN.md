@@ -1,6 +1,50 @@
 [English](independent-install.md) | [简体中文](independent-install.zh-CN.md)
 
-# 独立安装 Pi 扩展（0.2.0：managed npm 与 tarball 回退）
+# 独立 Host 与 tarball 安装（0.2.1）
+
+已有 Pi 安装请从[快速开始](getting-started.zh-CN.md)进入。本页替代路线使用独立 Pi1.3.0 Host，Node **>=22.19.0**、**macOS arm64 / Linux x64 GNU**，文件系统须通过 Store 准入。当前已发布包为 `@zieglar/pi-chat-exchange@0.2.1`，源码构建见[运维](operations.zh-CN.md)。
+
+## 当前 0.2.1：独立 Host
+
+在使用可信受支持 Node/npm 的系统终端执行。若 `~/ce-install/host` 已供其他安装使用，应选择新目录。先替换 Node 占位路径，并将同一 Node 安装放在 PATH 首位供 npm 使用。
+
+```sh
+CE_APPROVED_NODE=/absolute/path/to/approved/node
+node --version
+npm --version
+npm install --prefix ~/ce-install/host --ignore-scripts --save-exact \
+  @earendil-works/pi-coding-agent@1.3.0
+CE_PI_CLI="$HOME/ce-install/host/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
+export npm_config_ignore_scripts=true
+"$CE_APPROVED_NODE" "$CE_PI_CLI" install npm:@zieglar/pi-chat-exchange@0.2.1
+"$CE_APPROVED_NODE" "$CE_PI_CLI" list
+"$CE_APPROVED_NODE" "$CE_PI_CLI"
+```
+
+成功条件：Pi 列出精确0.2.1 source。继续[准备 Native 和首次交换](getting-started.zh-CN.md#4-准备-native)，该指南中的 `pi` 均改用此 Host 入口。`/ce-native install` 后须完整重启 Pi。启动前配置父进程的可执行文件路径和 background opt-in，不会自动 Start Tunnel。
+
+## 当前 0.2.1：Registry tarball 替代路线
+
+取得精确已发布归档 `https://registry.npmjs.org/@zieglar/pi-chat-exchange/-/pi-chat-exchange-0.2.1.tgz`。发布时验证的 SHA256 为 `786ba02ebb4e20631bcbfba571a10d1d7ee2b3215118c1259778eedbf36c406f`，安装前核对，不匹配即停止。使用新建且由操作员拥有的 consumer 目录。
+
+```sh
+shasum -a 256 ~/ce-install/zieglar-pi-chat-exchange-0.2.1.tgz
+npm install --prefix ~/ce-install/consumer --omit=dev --ignore-scripts --save-exact \
+  ~/ce-install/zieglar-pi-chat-exchange-0.2.1.tgz
+"$CE_APPROVED_NODE" "$CE_PI_CLI" install "$HOME/ce-install/consumer/node_modules/@zieglar/pi-chat-exchange"
+"$CE_APPROVED_NODE" "$CE_PI_CLI" list
+```
+
+成功条件：物理包 manifest 为0.2.1，Pi 列出该精确目录。目录注册不安装依赖，必须先完成 npm 安装。不要把 tarball URL 传给 Pi（URL 属于 Git source）、混用 managed npm 路线或叠加 `-e`。Native 只经显式准备下载，不包含在归档中。
+
+真实 Registry0.2.1 的安装/加载/首次运行/持久化已在隔离 Pi1.3.0/Node22.19.0/macOSarm64 通过。[发布](https://github.com/zieglar/pi-packages/actions/runs/40925828108)与 [Linux x64 Native CI](https://github.com/zieglar/pi-packages/actions/runs/40925049158)各有独立证据，真实 Cloud 交换仍未验证。
+
+卸载时用 `pi list` 记录真实 source，再按[安全卸载流程](#5-安全卸载升级与回滚)操作。其旧0.2.0 命令仅用于当时安装的示例；必须移除实际记录的 source（当前 managed 安装为0.2.1），不能假定版本。
+
+## 历史 0.2.0 安装与资格记录
+
+以下保留0.2.0 命令、运行时限制和验收证据，属于历史示例，不是当前安装基线。其中旧候选实验也只描述当时状态，当前 Native 运行时要求以上文为准。不要在0.2.1 checkout 上执行旧生产者命令并期待产出0.2.0。
+
 
 开发候选说明：下文历史 0.2.0 操作及认证描述的是未变更的已发布制品。本地构建候选声明 Node `>=24.20.0 <=24.22.2`，还要求 SQLite >=3.51.3、平台/编译安全与共享行为检查，不再要求 SQLite/source 精确相等。Node 24.19.0/25.9.0 因复现 native crash 被拒绝，26.12.1 仅作预览。候选测试使用隔离 Store 和 macOS arm64 上的真实 Pi 1.3.0。不要把候选结论用于 npm 0.2.0。
 

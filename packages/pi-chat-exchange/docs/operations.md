@@ -60,7 +60,7 @@ Follow the full [safe removal procedure](independent-install.md#5-安全卸载�
 5. Remove the exact original source in its original scope, then inspect `list`:
 
 ```sh
-"$CE_APPROVED_NODE" "$CE_PI_CLI" remove "npm:@zieglar/pi-chat-exchange@0.2.0"
+"$CE_APPROVED_NODE" "$CE_PI_CLI" remove "npm:@zieglar/pi-chat-exchange@0.2.1"
 "$CE_APPROVED_NODE" "$CE_PI_CLI" list
 ```
 
@@ -81,7 +81,7 @@ pnpm --dir packages/pi-chat-exchange run verify
 
 `verify` runs contract/native checks, typecheck, build, default tests and packaged-plugin tests serially. Installed-client, real-host, distribution and native-specific lanes are separate. See [architecture verification layers](architecture.md#验证层次) for their evidence and prerequisites. Do not count a skipped/optional lane as passed or call isolated tests dogfooding. This documentation change does not rerun those gates.
 
-The default test lane explicitly selects `node-sqlite` in a private HOME for each invocation. The Rust lane uses the operator’s verified HOME, manifest and cache. Isolated offline Pi Host first runs passed on Node 22.19.0, 24.22.2, 25.2.1, 25.9.0 and 26.12.1; hosted execution of the added Linux x64 Node 22.19.0 / 24.22.2 Native job is UNVERIFIED. See [runtime support](runtime-support.md) for local results.
+The default test lane selects `node-sqlite` in a private HOME. The Rust lane uses a verified Native cache. Earlier local offline Host runs covered Node22.19.0/24.22.2/25.2.1/25.9.0/26.12.1. [0.2.1 candidate Hosted CI](https://github.com/zieglar/pi-packages/actions/runs/40925049158) passed Linux x64 Native227/227 on Node22.19.0 and24.22.2. See [runtime support](runtime-support.md) for scoped evidence.
 
 Contributions must preserve inward dependency direction, closed schemas, independent payload/ACK grants, trusted Session lookup and final Storage authority. Reuse Host/Storage seams; do not create a second message system. Keep intent before effect, explicit unknown outcomes and normal release paths. New runtime/client/platform support needs its own real qualification. Tests should exercise observable behavior, privacy/refusals, failure evidence and lifecycle boundaries. Do not publish real messages, private paths or Session identifiers as fixtures/evidence. See [architecture](architecture.md) for regression entry points and known debt.
 
@@ -89,7 +89,7 @@ Producer packaging from the repository root:
 
 ```sh
 pnpm --dir packages/pi-chat-exchange run package:pi-extension
-shasum -a 256 packages/pi-chat-exchange/.pi-artifacts/zieglar-pi-chat-exchange-0.2.0.tgz
+shasum -a 256 packages/pi-chat-exchange/.pi-artifacts/zieglar-pi-chat-exchange-0.2.1.tgz
 ```
 
 The package command builds and checks the runtime import closure/assets, required native/operations files, absence of consumer lifecycle hooks before `npm pack --ignore-scripts`. Bare `npm pack` bypasses these checks and is not the supported producer command. Desktop packaging uses separate `package:desktop-plugin`; its ZIP is not the Pi npm package.
@@ -104,9 +104,9 @@ Windows refuses Native and Tunnel start with `CE_NATIVE_TARGET_UNSUPPORTED`, wit
 
 ## Release evidence and limits
 
-Published npm 0.2.0, its historical Node 24.21.0 / Pi 1.3.0 / macOS arm64 qualification and cloud distribution **NOT_VERIFIED** are separate facts. Current source engines `>=22.19.0` describe the local candidate, not expanded qualification of the published artifact. The npm publishing workflow remains local and unpushed, with no hosted OIDC proof. The owner reports the publisher connection configured; that is not hosted publication evidence.
+Published npm0.2.1 requires Node>=22.19.0/Pi1.3.0. [OIDC publish run40925828108](https://github.com/zieglar/pi-packages/actions/runs/40925828108) succeeded at source `c7e2f0f756cd1868f175bde8743cef9920fbc6b8`; Registry integrity/provenance and isolated Registry installation on macOSarm64/Node22.19.0 were verified. Cloud transport remains NOT_VERIFIED. Historical0.2.0 qualification is unchanged.
 
-Native middleware has an independent immutable release `ce-sqlite-v0.1.0`, ABI 1, SQLite 3.54.1, source `a8386aafd657c84825b2905847f34a43d5b91e1e`; historical download/attestation verification is established. Hosted Native Store integration covers macOS arm64 / Linux x64; macOS x64 / Linux arm64 have artifact/conformance only. Production `NATIVE_COMPAT` now pins immutable Release `427441708`, with four platform SHA-256 values verified against `SHA256SUMS` and seven attestation subjects bound to that source. Rust Native is the only default persistence driver (`rust-native` `0.1.0` without selection); explicit `node-sqlite` is non-production compatibility only. Failures never trigger fallback. These source changes and pins remain unreleased; production publication requires separate authorization. These facts establish neither broad cloud/e2e support nor automatic native enablement. See [native SQLite](native-sqlite.md) and [native release CI](native-release-ci.md).
+Native middleware has independent immutable Release `ce-sqlite-v0.1.0`, ABI1, SQLite3.54.1, source `a8386aafd657c84825b2905847f34a43d5b91e1e`. CE0.2.1 includes its verified four-platform pins; Native Store integration covers macOSarm64/Linuxx64, while macOSx64/Linuxarm64 have artifact/conformance only. No automatic download, upgrade, repair or fallback is added. See [Native SQLite](native-sqlite.md) and [Native release CI](native-release-ci.md).
 
 Historical plans/audits retain dated design/test statements. A local commit is not a release, workflow intent is not hosted execution, and a configured publisher is not an OIDC proof. Release/push/publication decisions require separate authorization.
 

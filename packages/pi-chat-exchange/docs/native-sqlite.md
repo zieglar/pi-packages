@@ -2,13 +2,13 @@
 
 English | [简体中文](native-sqlite.zh-CN.md)
 
-Rust Native is the only default persistence driver in current source. The built-in `node:sqlite` driver requires explicit non-production compatibility selection. Both use the same TypeScript transaction helper, schema v7, SQL algorithms, authorization, idempotency, ACK and recovery contracts. There is no sidecar or IPC. The published npm 0.2.0 artifact and the current source have separate qualification histories; installing npm 0.2.0 does not acquire later source features.
+Rust Native is the only default persistence driver in published CE 0.2.1. The built-in `node:sqlite` driver requires explicit non-production compatibility selection. Both share the TypeScript transaction helper, schema v7, SQL algorithms, authorization, idempotency, ACK and recovery contracts, without sidecar or IPC. Historical npm 0.2.0 qualification remains separate.
 
 ## Release and consumer trust
 
 [Native Release `ce-sqlite-v0.1.0`](https://github.com/zieglar/pi-packages/releases/tag/ce-sqlite-v0.1.0) is published and immutable. Its middleware version is `0.1.0`, ABI `1`, bundled SQLite `3.54.1`, and exact source SHA `a8386aafd657c84825b2905847f34a43d5b91e1e`. The formal [release workflow run](https://github.com/zieglar/pi-packages/actions/runs/40813628775) succeeded. Published assets were downloaded separately from CI and their checksums, identities and seven subject attestations with source-digest binding verified during release acceptance. That is historical release evidence, not a fresh consumer or runtime test in this documentation change.
 
-Production `NATIVE_COMPAT` now pins immutable Release `427441708`, `ce-sqlite-v0.1.0`. All four platform SHA-256 values were verified against `SHA256SUMS`, and seven attestation subjects were verified as bound to source `a8386aafd657c84825b2905847f34a43d5b91e1e`. These pins and the current source declaration are not released in CE; production publication requires separate authorization. Absent selection chooses `rust-native` at `0.1.0`. Explicit `node-sqlite` compatibility is non-production and never an automatic fallback. Native trust, load and initialization failures fail closed.
+Production `NATIVE_COMPAT` pins immutable Release `427441708`, `ce-sqlite-v0.1.0`. All four platform SHA-256 values were verified against `SHA256SUMS`, and seven attestation subjects were bound to source `a8386aafd657c84825b2905847f34a43d5b91e1e`. Published CE 0.2.1 includes these fixed trust pins. Absent selection chooses `rust-native` at `0.1.0`; explicit `node-sqlite` remains non-production compatibility only. Native trust, load and initialization failures refuse without automatic fallback.
 
 For interactive installation, readiness states and Windows/WSL2 guidance, see [Native management](native-management.md). CE never automatically downloads, repairs or upgrades Native.
 

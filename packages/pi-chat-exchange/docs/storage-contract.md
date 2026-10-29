@@ -2,6 +2,8 @@
 
 # Durable storage contract (CE-0002-B2-S6-2)
 
+Current reader note (CE0.2.1): normal Store initialization uses the direct-current v7 implementation described below. The candidate review status recorded in the original E2-A section is historical provenance, not a current installation prerequisite or a new acceptance claim. Public opt-in `ce_ack` tools are now documented in the [Pi tool reference](../pi-extension/README.md) and [ACK contract](delivery-ack-contract.md); the storage section itself does not define a transport. Historical requirements below remain preserved under their supersession rules.
+
 Historical contract and amendments for the accepted private SQLite durable storage of
 Chat Exchange. Every normative claim below is backed by accepted test or
 implementation evidence; see the traceability matrix at the end.

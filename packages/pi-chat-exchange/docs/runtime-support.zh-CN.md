@@ -2,11 +2,11 @@
 
 [English](runtime-support.md) | 简体中文
 
-已发布的 npm 包 `@zieglar/pi-chat-exchange@0.2.0` 未改变。历史分发认证覆盖 Node `24.21.0`、Pi `1.3.0` 和 macOS arm64，云传输为 `NOT_VERIFIED`。下文当前源码的 Native 行为和 Host 最低要求不扩大该已发布制品的认证范围。
+已发布的 `@zieglar/pi-chat-exchange@0.2.1` 要求 Node `>=22.19.0` 和 Pi `1.3.0`，包含 Native 默认驱动、就绪检查和管理功能。在 Node 22.19.0 / macOS arm64 上，从真实 Registry 安装后的隔离 Pi 加载、首次运行和持久化已通过。[发布候选 Hosted CI](https://github.com/zieglar/pi-packages/actions/runs/40925049158)在 Linux x64 Node 22.19.0、24.22.2 上各通过 Native 227/227。云传输仍为 `NOT_VERIFIED`。历史 npm 0.2.0 的 Node24.21.0/Pi1.3.0/macOSarm64 资格范围不变。
 
-## 当前源码
+## 当前包与历史运行时证据
 
-当前源码 `package.json` 声明 Node `>=22.19.0`，与实际安装的 Pi 1.3.0 Host manifest 一致。这是 Host 最低要求，不代表全部 Node 22 及以后版本、Node 25 或 Node 26 均已验证。
+0.2.1 的 `package.json` 声明 Node `>=22.19.0`，与 Pi 1.3.0 一致。这是 Host 最低要求，不代表全部后续 Node 版本均已验证。
 
 Rust Native 是唯一的默认持久化驱动。没有选择文件时，CE 使用 `NATIVE_COMPAT.defaultVersion`（当前 `0.1.0`）选择 `rust-native`。`node-sqlite` 仅保留为显式选择、延迟加载的非生产兼容驱动。Native 加载或信任校验失败时直接拒绝，绝不回退到 Node。
 
@@ -45,4 +45,4 @@ Windows Native 不受支持（`CE_NATIVE_TARGET_UNSUPPORTED`）：没有 Windows
 
 Store allowlist 为 macOS arm64 / Linux x64。此矩阵不扩大 npm 0.2.0 的认证范围，也不证明所有 Pi/ChatGPT client、云连接或断电行为。自动化测试、发布验证和人工使用各有范围。
 
-安装和拒绝处理见[入门](getting-started.zh-CN.md)、[运维](operations.zh-CN.md)和 [Native SQLite](native-sqlite.zh-CN.md)。运行时事实依据 `package.json`、`src/storage/runtime.ts`、`src/storage/native-compat.ts`、`src/runtime/executables.ts` 和运行时/一致性测试。把源码声明用于已发布制品前，先核实实际加载的代码。
+安装与拒绝处理见[快速开始](getting-started.zh-CN.md)、[运维](operations.zh-CN.md)与 [Native SQLite](native-sqlite.zh-CN.md)。运行时事实来自 `package.json`、`src/storage/runtime.ts`、`src/storage/native-compat.ts`、`src/runtime/executables.ts` 及其测试。早期候选矩阵保留实测范围，不代表每份已发布制品都经过完整矩阵测试。

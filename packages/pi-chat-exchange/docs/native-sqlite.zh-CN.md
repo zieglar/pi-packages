@@ -2,13 +2,13 @@
 
 [English](native-sqlite.md) | 简体中文
 
-Rust Native 是当前源码唯一的默认持久化驱动。内置 `node:sqlite` 驱动仅供显式选择的非生产兼容用途。两者共享 TypeScript 事务 helper、schema v7、SQL 算法、授权、幂等、ACK 和恢复契约，没有 sidecar 或 IPC。已发布 npm 0.2.0 制品与当前源码各有资格验证历史，安装 npm 0.2.0 不会取得后续源码功能。
+Rust Native 是已发布 CE 0.2.1 唯一的默认持久化驱动。内置 `node:sqlite` 仅供显式选择的非生产兼容用途。两者共享 TypeScript 事务 helper、schema v7、SQL 算法、授权、幂等、ACK 和恢复契约，没有 sidecar 或 IPC。历史 npm 0.2.0 资格范围保持独立。
 
 ## Release 与消费者信任
 
 [Native Release `ce-sqlite-v0.1.0`](https://github.com/zieglar/pi-packages/releases/tag/ce-sqlite-v0.1.0) 已发布且不可变。中间件版本为 `0.1.0`、ABI 为 `1`、内置 SQLite 为 `3.54.1`，精确来源 SHA 为 `a8386aafd657c84825b2905847f34a43d5b91e1e`。正式[发布工作流](https://github.com/zieglar/pi-packages/actions/runs/40813628775)已成功。发布验收时，已单独下载正式 Release 资产，而非使用 CI 副本，并校验 checksum、身份和七个 subject 的 attestation 及 source-digest 绑定。这是历史发布证据，不是本次文档修改中新跑的消费者或运行时测试。
 
-生产 `NATIVE_COMPAT` 现已固定不可变 Release `427441708`，即 `ce-sqlite-v0.1.0`。四个平台的 SHA-256 均已与 `SHA256SUMS` 核对，七个 attestation subject 均已验证绑定到源码 `a8386aafd657c84825b2905847f34a43d5b91e1e`。这些 pins 和当前源码声明尚未随 CE 发布；生产发布需另行授权。没有选择文件时，默认使用 `rust-native` `0.1.0`。显式 `node-sqlite` 兼容选择仅供非生产用途，绝不自动回退。Native 信任、加载或初始化失败时直接拒绝。
+生产 `NATIVE_COMPAT` 固定不可变 Release `427441708`，即 `ce-sqlite-v0.1.0`。四个平台的 SHA-256 已与 `SHA256SUMS` 核对，七个 attestation subject 绑定到源码 `a8386aafd657c84825b2905847f34a43d5b91e1e`。已发布 CE 0.2.1 包含这些固定信任 pins。没有选择文件时使用 `rust-native` `0.1.0`，显式 `node-sqlite` 仅供非生产兼容用途。Native 信任、加载或初始化失败均拒绝，不自动回退。
 
 交互安装、就绪状态与 Windows/WSL2 建议见 [Native 管理](native-management.zh-CN.md)。CE 不会自动下载、修复或升级 Native。
 
