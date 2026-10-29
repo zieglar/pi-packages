@@ -6,7 +6,19 @@ The published npm package `@zieglar/pi-chat-exchange@0.2.0` declares Node `24.21
 
 ## Current source
 
-Current-source `package.json` declares Node `>=24.20.0 <=24.22.1`. The Node driver separately checks a candidate runtime, SQLite >=3.51.3, readable source identity, compile safety and shared behavior probes. Internal candidate detection for majors 24/25/26 does not declare all such versions supported. Node `24.19.0` and `25.9.0` are refused after reproduced transaction-close crashes; `24.12.0` and `25.2.1` contain affected SQLite `3.50.4`. Node `26.12.1` remains an isolated preview, outside the formal engines declaration.
+Current-source `package.json` declares Node `>=24.20.0 <=24.22.2`. The Node driver separately checks a candidate runtime, SQLite >=3.51.3, readable source identity, compile safety and shared behavior probes. Internal candidate detection for majors 24/25/26 does not declare all such versions supported. Node `24.19.0` and `25.9.0` are refused after reproduced transaction-close crashes; `24.12.0` and `25.2.1` contain affected SQLite `3.50.4`. Node `26.12.1` remains an isolated preview, outside the formal engines declaration.
+
+The lower bound `24.20.0` and upper bound `24.22.2` describe a bounded package support interval, not an exhaustive hard-runtime allowlist. The earlier upper bound `24.22.1` was the last tested patch when recorded; it was not a dependency or SQLite API ceiling. Keep Node `24.21.0` as the pinned CI/development baseline unless intentionally testing another qualified runtime. No dependency was upgraded, and CI remains on that baseline.
+
+| Runtime | Evidence and decision |
+|---|---|
+| Node 24.20.0 / 24.21.0 / 24.22.0 / 24.22.1 | Earlier macOS arm64 Store/Host qualification; historical results retained |
+| Node 24.22.2, SQLite 3.53.4 | New macOS arm64 runtime/Store checks: 317 passed; two-runtime persistence/crash matrix with 24.21.0: 12 passed |
+| Node 25.2.1, SQLite 3.50.4 | Actual runtime refuses the SQLite safety floor |
+| Node 25.9.0, SQLite 3.51.3 | Actual runtime refuses the previously reproduced transaction-close crash |
+| Future Node 24 patches / other Node 25 builds | Not declared by this change; do not infer compatibility from version order |
+
+Known-defect path checks for Node 25.2.1, 24.19.0 and 25.9.0 passed 15 refusal cases before persistent-path preparation. Node 25 is not added to package support: as listed in the official Node release index on 2026-10-29, the newest Node 25 release was 25.9.0, which the default Node driver explicitly refuses. Later Node 25 builds are not covered by this statement. Native Node-API compatibility does not make that default-driver path safe. These local macOS arm64 checks do not expand hosted CI, cloud, platform or published npm qualification.
 
 Pi host and MCP child qualify independently. `CE_NODE_PATH` chooses the child only; restart Pi under a qualified Node to change its host runtime. A version label or successful UI load does not establish Store admission. The Store also enforces local filesystem policy, ownership, private permissions, symlink restrictions, WAL/FULL and integrity/migration rules. In-memory probes do not establish disk locking or crash/power-loss durability.
 

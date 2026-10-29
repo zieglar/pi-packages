@@ -16,7 +16,7 @@ Wayforge owns governed tasks, policy, recovery and completion authority. Chat Ex
 
 ## Development
 
-Use the package's runtime requirements. CE's current source declares Node `>=24.20.0 <=24.22.1`, Pi `1.3.0` and pnpm `12.9.1`; runtime admission applies additional checks. From the repository root:
+Use the package's runtime requirements. CE's current source declares Node `>=24.20.0 <=24.22.2`, Pi `1.3.0` and pnpm `12.9.1`; runtime admission applies additional checks. From the repository root:
 
 ```sh
 pnpm install --frozen-lockfile --ignore-scripts

@@ -13,7 +13,7 @@ This is the Secure MCP Tunnel path; it does not require the Desktop stdio plugin
 | Component | Requirement |
 |---|---|
 | Pi | 1.3.0; setup/confirmation uses the interactive TUI |
-| Pi host / MCP child Node | Development candidate declares **>=24.20.0 <=24.22.1**; each must pass SQLite >=3.51.3, platform/compile safety and shared behavioral probes. No exact SQLite/source ID pin. 24.19.0 and 25.9.0 refuse after reproduced native crashes. Published npm 0.2.0 is unchanged |
+| Pi host / MCP child Node | Development candidate declares **>=24.20.0 <=24.22.2**; each must pass SQLite >=3.51.3, platform/compile safety and shared behavioral probes. No exact SQLite/source ID pin. 24.19.0 and 25.9.0 refuse after reproduced native crashes. Published npm 0.2.0 is unchanged |
 | Repository build tools | pnpm 12.9.1; package installation supplies UI dependencies |
 | Tunnel client | Current compatibility baseline `tunnel-client` 0.0.16; trusted absolute path or discovery in controlled system directories |
 | Store platforms | Allowlist: macOS arm64 / Linux x64. This local regression used macOS arm64. Node 26.12.1 is isolated preview only; this does not qualify future versions, Linux or every client |

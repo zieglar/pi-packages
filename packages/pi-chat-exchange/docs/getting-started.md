@@ -6,7 +6,7 @@ CE provides explicit ChatGPT ↔ Pi message exchange through a shared private SQ
 
 ## Choose an installation
 
-`@zieglar/pi-chat-exchange@0.2.0` is published on npm. Its historical distribution qualification is **Node 24.21.0 + Pi 1.3.0 + macOS arm64**. Cloud distribution remains **NOT_VERIFIED**. Node 24.22.1 is an approved published-runtime version, not part of that installation qualification. Current source declares Node `>=24.20.0 <=24.22.1`; this does not change the published artifact's qualification.
+`@zieglar/pi-chat-exchange@0.2.0` is published on npm. Its historical distribution qualification is **Node 24.21.0 + Pi 1.3.0 + macOS arm64**. Cloud distribution remains **NOT_VERIFIED**. Node 24.22.1 is an approved published-runtime version, not part of that installation qualification. Current source declares Node `>=24.20.0 <=24.22.2`; this does not change the published artifact's qualification.
 
 Use an approved Node for Pi and npm. Put its bin directory first in PATH; use npm 11.x from that Node and operator-controlled npm configuration/cache without inherited registry credentials. Installation downloads from the explicitly selected registry; runtime needs no registry access. The extension runs with your user permissions. `--ignore-scripts` limits installation scripts, not extension runtime authority.
 

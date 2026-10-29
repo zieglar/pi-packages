@@ -16,7 +16,9 @@ CE 不提供自动任务调度、自动排空收件箱或 exactly-once delivery/
 
 ## 系统要求与支持平台
 
-已发布的 npm 包是 **`@zieglar/pi-chat-exchange@0.2.0`**。历史分发认证范围为 **Node 24.21.0 / Pi 1.3.0 / macOS arm64**，该次认证中的云传输状态为 **NOT_VERIFIED**。当前源码声明 Node **`>=24.20.0 <=24.22.1`**，还需通过运行时与 SQLite 检查；源码验证不会改变已发布制品。
+已发布的 npm 包是 **`@zieglar/pi-chat-exchange@0.2.0`**。历史分发认证范围为 **Node 24.21.0 / Pi 1.3.0 / macOS arm64**，该次认证中的云传输状态为 **NOT_VERIFIED**。当前源码声明 Node **`>=24.20.0 <=24.22.2`**，还需通过运行时与 SQLite 检查；源码验证不会改变已发布制品。
+
+Node 24.21.0 仍为固定 CI/开发基线。源码上限现已纳入 macOS arm64 上真实 Node 24.22.2 Store 测试，不承诺未来补丁兼容。默认驱动不支持 Node 25：25.2.1 不满足 SQLite 安全下限，25.9.0 因复现 native transaction-close crash 而明确拒绝。已测版本与限制见[运行时证据](docs/runtime-support.zh-CN.md)。
 
 | 平台 | 当前 Native 证据 | 范围 |
 |---|---|---|

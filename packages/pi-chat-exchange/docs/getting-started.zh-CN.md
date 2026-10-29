@@ -6,7 +6,7 @@ CE 通过共享的私有 SQLite Store，让 ChatGPT 与 Pi 显式交换消息。
 
 ## 选择安装方式
 
-`@zieglar/pi-chat-exchange@0.2.0` 已发布到 npm。历史分发验收环境为 **Node 24.21.0 + Pi 1.3.0 + macOS arm64**，云端分发仍为 **NOT_VERIFIED**。Node 24.22.1 是已发布版本的批准运行时，但不在该安装验收范围内。当前源码声明 Node `>=24.20.0 <=24.22.1`，不改变已发布制品的验收范围。
+`@zieglar/pi-chat-exchange@0.2.0` 已发布到 npm。历史分发验收环境为 **Node 24.21.0 + Pi 1.3.0 + macOS arm64**，云端分发仍为 **NOT_VERIFIED**。Node 24.22.1 是已发布版本的批准运行时，但不在该安装验收范围内。当前源码声明 Node `>=24.20.0 <=24.22.2`，不改变已发布制品的验收范围。
 
 Pi 与 npm 都要使用批准 Node。把其 bin 目录放在 PATH 首位，使用随该 Node 分发的 npm 11.x，以及操作者控制的 npm 配置/cache，不继承其他 registry 凭据。安装从明确选定的 registry 下载，运行时不需要 registry 网络。扩展以你的用户权限运行；`--ignore-scripts` 只限制安装脚本，不隔离扩展运行时权限。
 

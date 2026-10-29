@@ -17,7 +17,7 @@
 
 ## Desktop 适用条件与打包
 
-要求：支持 local plugins 的 ChatGPT Desktop、macOS 或 Linux、开发候选 **Node.js >=24.20.0 <=24.22.1**（须满足 SQLite >=3.51.3、平台/编译安全与共享行为探针，不固定 SQLite/source ID）、仓库 pnpm 12.9.1。Node 24.19.0、25.9.0 因已复现的 native crash 被拒绝；26.12.1 仅作隔离预览。实测为 macOS arm64，不新增 Linux/Desktop UI 验收；已发布 npm 0.2.0 不变。Desktop 插件使用 `plugin.json`、根 `mcp.json`、`${PLUGIN_ROOT}` 与本地 stdio。
+要求：支持 local plugins 的 ChatGPT Desktop、macOS 或 Linux、开发候选 **Node.js >=24.20.0 <=24.22.2**（须满足 SQLite >=3.51.3、平台/编译安全与共享行为探针，不固定 SQLite/source ID）、仓库 pnpm 12.9.1。Node 24.19.0、25.9.0 因已复现的 native crash 被拒绝；26.12.1 仅作隔离预览。实测为 macOS arm64，不新增 Linux/Desktop UI 验收；已发布 npm 0.2.0 不变。Desktop 插件使用 `plugin.json`、根 `mcp.json`、`${PLUGIN_ROOT}` 与本地 stdio。
 
 官方格式参考（客户端入口与组织资格以其当前文档为准）：
 

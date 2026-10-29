@@ -18,7 +18,9 @@ CE does not provide automatic task scheduling, inbox draining or exactly-once de
 
 ## Requirements and support
 
-The published npm package is **`@zieglar/pi-chat-exchange@0.2.0`**. Its historical distribution qualification covers **Node 24.21.0 / Pi 1.3.0 / macOS arm64**. Cloud transport was **NOT_VERIFIED** in that qualification. The current source declares Node **`>=24.20.0 <=24.22.1`**, with additional runtime/SQLite checks; source qualification does not change the published artifact.
+The published npm package is **`@zieglar/pi-chat-exchange@0.2.0`**. Its historical distribution qualification covers **Node 24.21.0 / Pi 1.3.0 / macOS arm64**. Cloud transport was **NOT_VERIFIED** in that qualification. The current source declares Node **`>=24.20.0 <=24.22.2`**, with additional runtime/SQLite checks; source qualification does not change the published artifact.
+
+Node 24.21.0 remains the pinned CI/development baseline. The source upper bound now includes actual macOS arm64 Node 24.22.2 Store tests; it does not promise future patches. Node 25 is not supported by the default driver: 25.2.1 fails the SQLite safety floor and 25.9.0 is explicitly refused after a reproduced native transaction-close crash. See [runtime evidence](docs/runtime-support.md) for tested versions and limits.
 
 | Platform | Current Native evidence | Scope |
 |---|---|---|

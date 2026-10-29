@@ -94,7 +94,7 @@ shasum -a 256 packages/pi-chat-exchange/.pi-artifacts/zieglar-pi-chat-exchange-0
 
 ## 发布证据与限制
 
-npm 0.2.0 已发布、历史 Node 24.21.0 / Pi 1.3.0 / macOS arm64 验收、云端分发 **NOT_VERIFIED** 是不同事实。当前源码 engines `>=24.20.0 <=24.22.1` 描述本地候选，不扩大已发布制品验收范围。npm 发布 workflow 仍在本地且未推送，没有 hosted OIDC 证明。所有者报告 publisher connection 已配置，不等于 hosted 发布证据。
+npm 0.2.0 已发布、历史 Node 24.21.0 / Pi 1.3.0 / macOS arm64 验收、云端分发 **NOT_VERIFIED** 是不同事实。当前源码 engines `>=24.20.0 <=24.22.2` 描述本地候选，不扩大已发布制品验收范围。npm 发布 workflow 仍在本地且未推送，没有 hosted OIDC 证明。所有者报告 publisher connection 已配置，不等于 hosted 发布证据。
 
 Native middleware 有独立不可变发布 `ce-sqlite-v0.1.0`、ABI 1、SQLite 3.54.1，源码 `a8386aafd657c84825b2905847f34a43d5b91e1e`，历史下载/attestation 已验证。Hosted Native Store integration 覆盖 macOS arm64 / Linux x64；macOS x64 / Linux arm64 只有 artifact/conformance。`src/storage/native-compat.ts` 生产 pins 仍为 null，默认驱动 `node-sqlite`，native 失败不回退。这些事实不证明广泛云端/e2e 支持，也不自动开启 native。详见[原生 SQLite](native-sqlite.zh-CN.md)与[原生发布 CI](native-release-ci.zh-CN.md)。
 
