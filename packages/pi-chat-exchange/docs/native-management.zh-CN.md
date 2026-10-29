@@ -2,7 +2,7 @@
 
 [English](native-management.md) | 简体中文
 
-本指南适用于 HANDOFF-PI-CE-NATIVE-READINESS-01 的当前源码。源码声明和生产 pins 尚未发布，生产发布需另行授权。已发布 npm `@zieglar/pi-chat-exchange@0.2.0` 保留历史 Node `24.21.0` 验收、Node `24.21.0/24.22.1` engines、Pi `1.3.0`、macOS arm64 和云端 `NOT_VERIFIED` 边界。安装该制品不会取得这些后续源码功能。
+本指南介绍 `@zieglar/pi-chat-exchange@0.2.1` 包含的 Native 就绪与管理功能，适用 Node `>=22.19.0` 和 Pi `1.3.0`。历史 npm `0.2.0` 保留 Node `24.21.0` 验收、Node `24.21.0/24.22.1` engines、Pi `1.3.0`、macOS arm64 和云端 `NOT_VERIFIED` 边界。安装 0.2.0 不会取得 0.2.1 的功能。
 
 ## 可信默认版本
 
@@ -22,7 +22,7 @@ CE 不会自动下载、修复或升级 Native，也没有隐式回退。发现�
 | `/ce-native repair confirm` | 显式修复，使用同一可信准备与选择流程 |
 | `/ce-native check-updates` | 只读发现 GitHub Release，不安装或改变选择 |
 
-先运行 `/ce-native status`。需要安装时，显式运行 `/ce-native install`，然后重启 Pi。只有资产校验成功后才修改选择。修复必须使用完整的 `repair confirm`，单独 `repair` 不构成授权。对于哈希损坏的普通缓存文件，只有下载内容通过固定信任 pin 后才原子替换；下载失败时保留旧文件和选择。不安全的路径、所有者或权限仍会被拒绝，需要操作员检查。不要为修复驱动而删除 Store 或所有权文件。
+先运行 `/ce-native status`。需要安装时，显式运行 `/ce-native install`，然后重启 Pi，再进行 setup 或消息操作。只有资产校验成功后才修改选择。修复必须使用完整的 `repair confirm`，单独 `repair` 不构成授权。对于哈希损坏的普通缓存文件，只有下载内容通过固定信任 pin 后才原子替换；下载失败时保留旧文件和选择。不安全的路径、所有者或权限仍会被拒绝，需要操作员检查。不要为修复驱动而删除 Store 或所有权文件。
 
 `check-updates` 会联网读取 GitHub Release 元数据。`latest` 仅用于发现，不会因此受信任。发现不同版本时需等待 CE 兼容性更新，命令不会改变驱动选择。`status` 和 `verify` 离线运行。校验可能加载本地模块以检查身份；只读不代表完全不加载原生代码。
 
@@ -30,7 +30,7 @@ CE 不会自动下载、修复或升级 Native，也没有隐式回退。发现�
 
 ## 就绪状态与扩展加载
 
-扩展加载只读，不下载、不创建 Store、不启动 Tunnel。Native 未就绪时 Pi 仍能加载，管理命令仍可用。预期的会话警告原文如下：
+扩展加载只读，不下载、不创建 Store、不启动 Tunnel。Native 未就绪时 Pi 仍能加载，管理命令仍可用。会话警告原文如下：
 
 ```text
 Chat Exchange: Native Driver is not ready. Messaging is disabled. Run /ce-native to inspect or install the trusted driver.

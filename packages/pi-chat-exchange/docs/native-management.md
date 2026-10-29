@@ -2,7 +2,7 @@
 
 English | [简体中文](native-management.zh-CN.md)
 
-This guide describes current source for HANDOFF-PI-CE-NATIVE-READINESS-01. The source declaration and production pins are unreleased; production publication requires separate authorization. Published npm `@zieglar/pi-chat-exchange@0.2.0` retains its historical Node `24.21.0` qualification, Node `24.21.0/24.22.1` engines, Pi `1.3.0`, macOS arm64 and cloud `NOT_VERIFIED` boundary. Installing that artifact does not acquire these source features.
+This guide covers the Native readiness and management features included in `@zieglar/pi-chat-exchange@0.2.1`, with Node `>=22.19.0` and Pi `1.3.0`. Historical npm `0.2.0` retains its Node `24.21.0` qualification, Node `24.21.0/24.22.1` engines, Pi `1.3.0`, macOS arm64 and cloud `NOT_VERIFIED` boundary. Installing 0.2.0 does not acquire the 0.2.1 features.
 
 ## Trusted default
 
@@ -22,7 +22,7 @@ CE never automatically downloads, repairs or upgrades Native. There is no implic
 | `/ce-native repair confirm` | Explicit repair through the same trusted preparation and selection path |
 | `/ce-native check-updates` | Read-only GitHub Release discovery; no installation or selection change |
 
-Start with `/ce-native status`. If installation is needed, explicitly run `/ce-native install`, then restart Pi. Installation selects only after artifact verification. Repair requires the literal `repair confirm`; bare `repair` does not authorize it. A hash-corrupted regular cache file is replaced atomically only after the download passes the fixed trust pin; failed downloads preserve the old file and selection. Unsafe paths, ownership or permissions are refused and need operator inspection. Do not delete Store or ownership files to repair a driver.
+Start with `/ce-native status`. If installation is needed, explicitly run `/ce-native install`, then restart Pi before setup or messaging. Installation selects only after artifact verification. Repair requires the literal `repair confirm`; bare `repair` does not authorize it. A hash-corrupted regular cache file is replaced atomically only after the download passes the fixed trust pin; failed downloads preserve the old file and selection. Unsafe paths, ownership or permissions are refused and need operator inspection. Do not delete Store or ownership files to repair a driver.
 
 `check-updates` makes a network request for GitHub Release metadata. `latest` is discovery only and is never treated as trusted. A different discovered release requires a CE compatibility update; the command never changes the selected driver. `status` and `verify` are offline. Verification can load the local module to inspect its identity; read-only does not mean that native code is never loaded.
 
@@ -30,7 +30,7 @@ Selection is stored in `~/.config/pi-chat-exchange/sqlite-driver.json`; the vers
 
 ## Readiness and extension load
 
-Extension load is read-only: it never downloads, creates a Store or starts Tunnel. When Native is not ready, Pi still loads and management commands stay available. The intended session warning is:
+Extension load is read-only: it never downloads, creates a Store or starts Tunnel. When Native is not ready, Pi still loads and management commands stay available. The session warning is:
 
 ```text
 Chat Exchange: Native Driver is not ready. Messaging is disabled. Run /ce-native to inspect or install the trusted driver.

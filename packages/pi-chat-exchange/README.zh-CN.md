@@ -16,14 +16,16 @@ CE 不提供自动任务调度、自动排空收件箱或 exactly-once delivery/
 
 ## 系统要求与支持平台
 
-已发布的 npm 包是 **`@zieglar/pi-chat-exchange@0.2.0`**。历史分发认证范围为 **Node 24.21.0 / Pi 1.3.0 / macOS arm64**，该次认证中的云传输状态为 **NOT_VERIFIED**。当前源码声明 Node **`>=22.19.0`**，与 Pi 1.3.0 的实际 `engines.node` 一致；源码验证不会改变已发布制品。
+**0.2.1** 包含 Native 默认持久化驱动、就绪检查和显式驱动管理，要求 Node **`>=22.19.0`**，与 Pi 1.3.0 的 `engines.node` 一致。本地 Node 22 / Pi 1.3.0 首次运行与持久化检查已通过。Linux x64 hosted 检查在 Node **22.19.0** 和 **24.22.2** 上均通过 **227/227**；这些结果不代表云传输已获验证。
+
+历史 npm **0.2.0** 分发认证范围为 **Node 24.21.0 / Pi 1.3.0 / macOS arm64**，云传输为 **NOT_VERIFIED**。0.2.1 的验证结果不改变该历史范围。
 
 Pi 1.3.0 的实际安装 manifest 声明 **Node >=22.19.0**。Native 使用 bundled SQLite，要求 Node-API >=8，不以内置 SQLite 版本决定兼容性。已测版本不构成所有后续版本的兼容承诺；显式 `node:sqlite` 兼容路径保留自身的候选版本和已知缺陷拒绝条件。测试矩阵与限制见[运行时证据](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/runtime-support.zh-CN.md)。
 
 | 平台 | 当前 Native 证据 | 范围 |
 |---|---|---|
 | macOS arm64 | 制品、一致性测试和 Store 集成 | 不代表所有客户端或云工作流均已认证 |
-| Linux x64 GNU | 制品、一致性测试和 Store 集成 | 不扩大 npm 0.2.0 的分发认证范围 |
+| Linux x64 GNU | 制品、一致性测试、Store 集成与 hosted 检查 | Node 22.19.0 和 24.22.2 均通过 227/227；云传输未验证 |
 | macOS x64 | 仅制品与一致性测试 | 尚无 Store 集成证据 |
 | Linux arm64 GNU | 仅制品与一致性测试 | 尚无 Store 集成证据 |
 
@@ -35,7 +37,7 @@ Store allowlist 仍为 macOS arm64 / Linux x64。运行时还检查 SQLite 行�
 
 ```sh
 node --version
-pi install npm:@zieglar/pi-chat-exchange@0.2.0
+pi install npm:@zieglar/pi-chat-exchange@0.2.1
 pi list
 ```
 
@@ -45,7 +47,7 @@ pi list
 
 ## 快速开始
 
-在批准的 Node 运行时下启动 Pi，在交互 Session 中依次执行：
+在批准的 Node 运行时下启动 Pi，先执行 `/ce-native status`。若缺少可信驱动，执行 `/ce-native install`，然后退出并重启 Pi，再进行 setup 或消息操作。CE 不会自动下载 Native。在重启后的交互 Session 中依次执行：
 
 ```text
 /ce-tunnel doctor
@@ -87,11 +89,11 @@ Setup 的 Advanced · Messaging 必须显式授权当前 Session。只保存传�
 
 ## SQLite Native Driver
 
-独立且不可变的 Native Release 为 [**`ce-sqlite-v0.1.0`**](https://github.com/zieglar/pi-packages/releases/tag/ce-sqlite-v0.1.0)，ABI 为 **1**，内置 SQLite **3.54.1**，来源 SHA 为 **`a8386aafd657c84825b2905847f34a43d5b91e1e`**。它与 npm 0.2.0 独立，二进制不随 npm 包分发。
+独立且不可变的 Native Release 为 [**`ce-sqlite-v0.1.0`**](https://github.com/zieglar/pi-packages/releases/tag/ce-sqlite-v0.1.0)，ABI 为 **1**，内置 SQLite **3.54.1**，来源 SHA 为 **`a8386aafd657c84825b2905847f34a43d5b91e1e`**。0.2.1 使用同一独立 Native Release，二进制不随 npm 包分发。
 
-当前实现将 Native 作为默认驱动，即使 selection file 不存在也如此；`node:sqlite` 仅在显式选择后延迟加载，Native 信任、加载或初始化失败均 fail closed，绝不回退。生产 `NATIVE_COMPAT` pins 现已信任不可变 Release `427441708`：四个平台的 SHA-256 已与 `SHA256SUMS` 核对，七个 attestation subject 已验证绑定到该源码。新的源码声明与 pins 尚未发布；生产发布需另行授权。
+0.2.1 将 Native 作为默认驱动，即使 selection file 不存在也如此；`node:sqlite` 仅在显式选择后延迟加载，Native 信任、加载或初始化失败均 fail closed，绝不回退。生产 `NATIVE_COMPAT` pins 现已信任不可变 Release `427441708`：四个平台的 SHA-256 已与 `SHA256SUMS` 核对，七个 attestation subject 已验证绑定到该源码。0.2.1 包含这些固定信任 pins。
 
-## Native 就绪与管理（当前源码）
+## Native 就绪与管理（0.2.1）
 
 用 `/ce-native status` 或 `/ce-native verify` 检查 Native，不下载或修改选择。显式 `/ce-native install` 仅安装可信默认版本，校验成功后才更改选择；随后重启 Pi。`/ce-native repair confirm` 是显式修复。`/ce-native check-updates` 只读取 GitHub Release 元数据，`latest` 不会因此受信任或改变选择。CE 不会自动下载、修复或升级 Native。
 
@@ -119,7 +121,7 @@ pi -e ./packages/pi-chat-exchange/pi-extension/index.ts
 
 扩展导入 `dist/`，修改源码后必须重新构建，`/reload` 不会编译 TypeScript。可选 client 和真实 Host 测试有各自前提，不能与默认测试混为一谈。参见[开发与发布运维](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/operations.zh-CN.md)和[双语文档维护](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/documentation.zh-CN.md)。
 
-npm Trusted Publishing Workflow 已在本地实现，尚未推送，也未通过 hosted OIDC 发布验证。维护者已报告完成 npm publisher 连接配置；这与已发布 npm 0.2.0 制品及已验证 Native Release 是不同事实。
+npm 包包含预构建扩展与运行时文件。详细操作指南通过 GitHub 链接提供，npm tarball 不包含 `docs/`。
 
 ## License
 

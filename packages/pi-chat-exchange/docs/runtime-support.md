@@ -22,13 +22,13 @@ The following results were rerun on local Darwin arm64 against the current Nativ
 | Node 25.2.1 | Current run: 1027 passed, 3 failed, 4 skipped; failures are explicit Node-driver tests and a built-in SQLite lock-fixture stderr expectation |
 | Node 26.12.1 | Scenario probes only: real Store, zero `node:sqlite` calls; no full suite |
 
-Pi 1.3.0 installed-Host first runs passed on Node 22.19.0, 24.22.2, 25.2.1, 25.9.0 and 26.12.1: each resolved the real Native binary, had zero `node:sqlite` resolutions, and passed installation, Host load, first run and profile/policy/mutex/store checks. These are isolated offline runs; cloud transport and Native remove/reinstall remain unverified. The new Linux x64 Native CI job specifies Node 22.19.0 / 24.22.2, but its hosted execution is UNVERIFIED. These local results do not establish all-version compatibility, cloud qualification or production enablement.
+Pi 1.3.0 installed-Host first runs passed on Node 22.19.0, 24.22.2, 25.2.1, 25.9.0 and 26.12.1: each resolved the real Native binary, had zero `node:sqlite` resolutions, and passed installation, Host load, first run and profile/policy/mutex/store checks. These are isolated offline runs; cloud transport and Native remove/reinstall remain unverified. [Hosted CI at PX-0017](https://github.com/zieglar/pi-packages/actions/runs/40907970721) passed Linux x64 Native 227/227 on Node 22.19.0 and 24.22.2, using the production trust pins. These results do not establish all-version compatibility, cloud qualification or production enablement.
 
 Pi Host and MCP child qualify independently. `CE_NODE_PATH` selects only the child; changing the Host requires restarting Pi. Store filesystem policy, ownership, private permissions, symlink restrictions, WAL/FULL, integrity and migration checks still apply. In-memory probes do not establish disk locking or crash/power-loss durability.
 
 ## Native and platform scope
 
-Native `ce-sqlite-v0.1.0` uses ABI `1` and bundled SQLite `3.54.1`, with immutable release source `a8386aafd657c84825b2905847f34a43d5b91e1e`. Native admission checks the actual module, Node-API >=8, SQLite identity, compile options and behavior. Production `NATIVE_COMPAT` pins now reference immutable Release `427441708`; four platform SHA-256 values were verified against `SHA256SUMS`, and seven attestation subjects were bound to that source. The source declaration and pins remain unreleased. Production publication requires separate authorization.
+Native `ce-sqlite-v0.1.0` uses ABI `1` and bundled SQLite `3.54.1`, with immutable release source `a8386aafd657c84825b2905847f34a43d5b91e1e`. Native admission checks the actual module, Node-API >=8, SQLite identity, compile options and behavior. Version 0.2.1 includes production `NATIVE_COMPAT` pins for immutable Release `427441708`; four platform SHA-256 values were verified against `SHA256SUMS`, and seven attestation subjects were bound to that source.
 
 ## Native readiness and Windows/WSL2
 

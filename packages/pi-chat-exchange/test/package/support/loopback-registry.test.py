@@ -19,7 +19,7 @@ class RegistryTest(unittest.TestCase):
             root = pathlib.Path(directory)
             archive = root / 'candidate.tgz'
             with tarfile.open(archive, 'w:gz') as packed:
-                payload = json.dumps({'name': '@zieglar/pi-chat-exchange', 'version': '0.2.0', 'dependencies': {'fixture': '1.0.0'}}).encode()
+                payload = json.dumps({'name': '@zieglar/pi-chat-exchange', 'version': '0.2.1', 'dependencies': {'fixture': '1.0.0'}}).encode()
                 member = tarfile.TarInfo('package/package.json')
                 member.size = len(payload)
                 packed.addfile(member, io.BytesIO(payload))
@@ -37,11 +37,11 @@ class RegistryTest(unittest.TestCase):
                 status, data = request('/@zieglar%2fpi-chat-exchange')
                 self.assertEqual(status, 200)
                 metadata = json.loads(data)
-                version = metadata['versions']['0.2.0']
+                version = metadata['versions']['0.2.1']
                 self.assertEqual(version['dependencies'], {'fixture': '1.0.0'})
                 self.assertEqual(version['dist']['integrity'], 'sha512-' + base64.b64encode(hashlib.sha512(archive.read_bytes()).digest()).decode())
                 self.assertTrue(version['dist']['tarball'].startswith(registry.url + '/'))
-                self.assertEqual(request('/candidate-0.2.0.tgz'), (200, archive.read_bytes()))
+                self.assertEqual(request('/candidate-0.2.1.tgz'), (200, archive.read_bytes()))
                 for path in ['/other', '/@zieglar/pi-chat-exchange/1.0.0', '/../candidate.tgz']:
                     self.assertEqual(request(path)[0], 404)
                 self.assertEqual(request('/@zieglar/pi-chat-exchange', 'PUT')[0], 405)

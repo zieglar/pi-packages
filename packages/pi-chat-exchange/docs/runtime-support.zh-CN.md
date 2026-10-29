@@ -22,13 +22,13 @@ Native 使用内置 SQLite `3.54.1`，不依赖 `process.versions.sqlite`。准�
 | Node 25.2.1 | 当前运行：1027 通过、3 失败、4 跳过；失败为显式 Node 驱动测试及内置 SQLite 持锁 fixture 的 stderr 预期 |
 | Node 26.12.1 | 仅场景探针：真实 Store、零次 `node:sqlite` 调用；未跑完整 suite |
 
-Pi 1.3.0 安装后 Host 首跑已在 Node 22.19.0、24.22.2、25.2.1、25.9.0、26.12.1 全部通过：每个版本均实际解析 Native 二进制，`node:sqlite` 解析次数为 0，安装、Host 加载、首跑及 profile/policy/mutex/store 检查全部通过。这些是隔离离线运行，云传输和 Native 卸载后重装仍未验证。新增 Linux x64 Native CI job 指定 Node 22.19.0 / 24.22.2，但 hosted 执行仍为 UNVERIFIED。本地结果不证明所有版本兼容、云端资格或生产已启用。
+Pi 1.3.0 安装后 Host 首跑已在 Node 22.19.0、24.22.2、25.2.1、25.9.0、26.12.1 全部通过：每个版本均实际解析 Native 二进制，`node:sqlite` 解析次数为 0，安装、Host 加载、首跑及 profile/policy/mutex/store 检查全部通过。这些是隔离离线运行，云传输和 Native 卸载后重装仍未验证。[PX-0017 Hosted CI](https://github.com/zieglar/pi-packages/actions/runs/40907970721) 已使用生产 trust pins，在 Linux x64 的 Node 22.19.0 和 24.22.2 上各通过 Native 227/227。这些结果不证明所有版本兼容、云端资格或生产已启用。
 
 Pi Host 与 MCP child 分别准入。`CE_NODE_PATH` 只选择 child，改变 Host 需要重启 Pi。Store 的文件系统策略、所有权、私有权限、symlink 限制、WAL/FULL、完整性和迁移检查仍然有效。内存探针不证明磁盘锁或崩溃/断电耐久。
 
 ## Native 与平台范围
 
-Native `ce-sqlite-v0.1.0` 使用 ABI `1`、内置 SQLite `3.54.1`，不可变发布来源为 `a8386aafd657c84825b2905847f34a43d5b91e1e`。Native 准入检查真实模块、Node-API >=8、SQLite 身份、编译选项和行为。生产 `NATIVE_COMPAT` pins 现已指向不可变 Release `427441708`；四个平台的 SHA-256 已与 `SHA256SUMS` 核对，七个 attestation subject 已验证绑定到该源码。源码声明与 pins 尚未发布，生产发布需另行授权。
+Native `ce-sqlite-v0.1.0` 使用 ABI `1`、内置 SQLite `3.54.1`，不可变发布来源为 `a8386aafd657c84825b2905847f34a43d5b91e1e`。Native 准入检查真实模块、Node-API >=8、SQLite 身份、编译选项和行为。0.2.1 包含不可变 Release `427441708` 的生产 `NATIVE_COMPAT` pins；四个平台的 SHA-256 已与 `SHA256SUMS` 核对，七个 attestation subject 已验证绑定到该源码。
 
 ## Native 就绪与 Windows/WSL2
 
