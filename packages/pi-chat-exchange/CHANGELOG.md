@@ -2,6 +2,19 @@
 
 # Changelog
 
+## 0.2.1
+
+Version 0.2.1 includes:
+
+- Rust Native SQLite as the only default persistence driver, using the existing `ce-sqlite-v0.1.0` pins. No automatic download or fallback to `node:sqlite`.
+- Native readiness checks that keep Pi management available while refusing Store, messaging and Tunnel start when Native is not ready. Explicit `/ce-native` status, verify, install, repair and update-discovery commands; restart Pi after installation before setup or messaging.
+- Node `>=22.19.0`, matching Pi 1.3.0's Host minimum. Local Node 22 / Pi 1.3.0 first-run and persistence checks passed; Linux x64 hosted checks passed 227/227 on Node 22.19.0 and 24.22.2. Linux arm64 Store qualification, WSL2 integration and cloud transport remain unverified.
+- A minimal npm distribution with prebuilt runtime files and GitHub-linked operating guides, plus release CI and installed-Host fixture fixes.
+
+### Release-process note
+
+The ACK changeset has been consumed and reconciled with the behavior already described under 0.2.0. This is versioning bookkeeping, not a new ACK feature in 0.2.1. The historical 0.2.0 entry below is preserved.
+
 ## 0.2.0
 
 Published on npm as `@zieglar/pi-chat-exchange@0.2.0`. The qualification and feature claims below describe this release, not later development support.

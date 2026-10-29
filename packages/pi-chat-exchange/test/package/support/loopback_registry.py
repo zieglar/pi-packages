@@ -22,8 +22,8 @@ class CandidateRegistry:
             if stream is None:
                 raise RuntimeError('Missing candidate manifest')
             manifest = json.load(stream)
-        if (manifest.get('name'), manifest.get('version')) != ('@zieglar/pi-chat-exchange', '0.2.0'):
-            raise RuntimeError('Not the exact approved 0.2.0 candidate')
+        if (manifest.get('name'), manifest.get('version')) != ('@zieglar/pi-chat-exchange', '0.2.1'):
+            raise RuntimeError('Not the exact approved 0.2.1 candidate')
         self.log = log
         owner = self
 
@@ -44,7 +44,7 @@ class CandidateRegistry:
                 path = urllib.parse.unquote(self.path)
                 if path == '/@zieglar/pi-chat-exchange':
                     self.respond(200, json.dumps(owner.metadata).encode(), 'application/json')
-                elif path == '/candidate-0.2.0.tgz':
+                elif path == '/candidate-0.2.1.tgz':
                     self.respond(200, owner.payload, 'application/octet-stream')
                 else:
                     self.respond(404, b'not an authorized candidate route', 'text/plain')
@@ -57,9 +57,9 @@ class CandidateRegistry:
 
         self.server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
         self.url = 'http://127.0.0.1:' + str(self.server.server_port)
-        self.metadata = {'name': '@zieglar/pi-chat-exchange', 'dist-tags': {'latest': '0.2.0'}, 'versions': {'0.2.0': {
+        self.metadata = {'name': '@zieglar/pi-chat-exchange', 'dist-tags': {'latest': '0.2.1'}, 'versions': {'0.2.1': {
             **manifest,
-            'dist': {'tarball': self.url + '/candidate-0.2.0.tgz',
+            'dist': {'tarball': self.url + '/candidate-0.2.1.tgz',
                      'integrity': 'sha512-' + base64.b64encode(hashlib.sha512(self.payload).digest()).decode()}}}}
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 

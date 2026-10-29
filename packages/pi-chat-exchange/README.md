@@ -18,14 +18,16 @@ CE does not provide automatic task scheduling, inbox draining or exactly-once de
 
 ## Requirements and support
 
-The published npm package is **`@zieglar/pi-chat-exchange@0.2.0`**. Its historical distribution qualification covers **Node 24.21.0 / Pi 1.3.0 / macOS arm64**. Cloud transport was **NOT_VERIFIED** in that qualification. The current source declares Node **`>=22.19.0`**, matching Pi 1.3.0's actual `engines.node`; source qualification does not change the published artifact.
+Version **0.2.1** includes Native as the default persistence driver, readiness checks and explicit driver management. It requires Node **`>=22.19.0`**, matching Pi 1.3.0's `engines.node`. Local Node 22 / Pi 1.3.0 first-run and persistence checks passed. Linux x64 hosted checks passed **227/227** on both Node **22.19.0** and **24.22.2**; these results do not qualify cloud transport.
+
+The historical npm **0.2.0** distribution qualification covers **Node 24.21.0 / Pi 1.3.0 / macOS arm64**, with cloud transport **NOT_VERIFIED**. The 0.2.1 results do not change that historical scope.
 
 Pi 1.3.0's installed manifest declares **Node >=22.19.0**. Native uses its bundled SQLite and requires Node-API >=8, rather than the built-in SQLite version. Tested versions are not a compatibility promise for every subsequent release. The explicit compatibility `node:sqlite` path retains its own candidate-version and known-defect restrictions. See [runtime evidence](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/runtime-support.md) for the matrix and limits.
 
 | Platform | Current Native evidence | Scope |
 |---|---|---|
 | macOS arm64 | Artifact/conformance and Store integration | Does not certify every client or cloud workflow |
-| Linux x64 GNU | Artifact/conformance and Store integration | Does not extend npm 0.2.0 distribution certification |
+| Linux x64 GNU | Artifact/conformance, Store integration and hosted checks | 227/227 on Node 22.19.0 and 24.22.2; cloud unverified |
 | macOS x64 | Artifact/conformance only | Store integration not established |
 | Linux arm64 GNU | Artifact/conformance only | Store integration not established |
 
@@ -35,11 +37,11 @@ The Store allowlist remains macOS arm64 / Linux x64. Runtime admission also chec
 
 ## Installation and upgrades
 
-Use an approved Node executable to run Pi **1.3.0**, then install the exact published version:
+Use an approved Node executable to run Pi **1.3.0**, then install the exact version:
 
 ```sh
 node --version
-pi install npm:@zieglar/pi-chat-exchange@0.2.0
+pi install npm:@zieglar/pi-chat-exchange@0.2.1
 pi list
 ```
 
@@ -51,7 +53,7 @@ For a prebuilt tarball or a dedicated host prefix, follow [independent installat
 
 ## Quick start
 
-Start Pi under the approved Node runtime. In the interactive session:
+Start Pi under the approved Node runtime. Run `/ce-native status`; if the trusted driver is missing, run `/ce-native install`, then exit and restart Pi before setup or messaging. CE does not download Native automatically. In the restarted interactive session:
 
 ```text
 /ce-tunnel doctor
@@ -95,11 +97,11 @@ Recovery markers are not locks or fencing tokens. Changing models must not repla
 
 ## SQLite Native driver
 
-The independent immutable Native Release is [**`ce-sqlite-v0.1.0`**](https://github.com/zieglar/pi-packages/releases/tag/ce-sqlite-v0.1.0), with ABI **1**, bundled SQLite **3.54.1**, and source SHA **`a8386aafd657c84825b2905847f34a43d5b91e1e`**. It is separate from npm 0.2.0 and its binaries are not bundled in npm.
+The independent immutable Native Release is [**`ce-sqlite-v0.1.0`**](https://github.com/zieglar/pi-packages/releases/tag/ce-sqlite-v0.1.0), with ABI **1**, bundled SQLite **3.54.1**, and source SHA **`a8386aafd657c84825b2905847f34a43d5b91e1e`**. Version 0.2.1 uses this same independent Native release; its binaries are not bundled in npm.
 
-The implemented default is Native, including when no selection file exists. `node:sqlite` is loaded lazily only after an explicit selection; Native trust, load or initialization failure is closed and never falls back. Production `NATIVE_COMPAT` pins now trust immutable Release `427441708`: four platform SHA-256 values verified against `SHA256SUMS`, with seven attestation subjects bound to that source. The new source declaration and pins are unreleased; production publication requires separate authorization.
+In 0.2.1, the default is Native, including when no selection file exists. `node:sqlite` is loaded lazily only after an explicit selection; Native trust, load or initialization failure is closed and never falls back. Production `NATIVE_COMPAT` pins now trust immutable Release `427441708`: four platform SHA-256 values verified against `SHA256SUMS`, with seven attestation subjects bound to that source. Version 0.2.1 includes these fixed trust pins.
 
-## Native readiness and management (current source)
+## Native readiness and management (0.2.1)
 
 Run `/ce-native status` or `/ce-native verify` to inspect Native without downloads or selection changes. Explicit `/ce-native install` installs only the trusted default version and verifies it before changing selection; restart Pi afterward. `/ce-native repair confirm` is explicit repair. `/ce-native check-updates` reads GitHub Release metadata only: `latest` never becomes trusted or changes selection. CE never automatically downloads, repairs or upgrades Native.
 
@@ -129,7 +131,7 @@ pi -e ./packages/pi-chat-exchange/pi-extension/index.ts
 
 The extension imports `dist/`. Rebuild after source edits; `/reload` does not compile TypeScript. Optional client and real-host tests need their documented prerequisites and are separate from default tests. Follow [development and release operations](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/operations.md) and the [bilingual documentation guide](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/documentation.md).
 
-The npm Trusted Publishing workflow is implemented locally but has not been pushed or verified through a hosted OIDC publish. The maintainer reports its npm publisher connection configured. This is distinct from the published npm 0.2.0 artifact and the verified Native Release.
+The npm package contains the prebuilt extension and runtime files. Detailed operating guides are linked on GitHub; the npm tarball does not include `docs/`.
 
 ## License
 
