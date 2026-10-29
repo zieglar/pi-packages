@@ -1,4 +1,11 @@
+[English](adapter-contracts.md) | [简体中文](adapter-contracts.zh-CN.md)
+
 # Control surface and endpoint contracts — PH-0003
+
+> Historical phase record: "Today", "Future", and implementation status below
+> refer to PH-0003. For current MCP tool bindings, see
+> [delivery-ack-contract.md](delivery-ack-contract.md). These historical statements
+> do not promise current support.
 
 This replaces directional ClientAdapter/AgentAdapter naming with separate planes.
 It does not implement delivery, authentication, persistence or full control APIs.

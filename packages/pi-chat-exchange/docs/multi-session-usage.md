@@ -1,36 +1,46 @@
-# 一个 Tunnel，多个项目与 Pi Session
+[English](multi-session-usage.md) | [简体中文](multi-session-usage.zh-CN.md)
 
-每个真实 Pi Session 使用独立、稳定的 Endpoint，例如 `pi/project-A` 与 `pi/project-B`。项目目录不是身份；同一个项目也可有多个 Session，必须分别注册。ChatGPT 侧 `chatgpt/main` 是明确共享的 inbox，**不是 ChatGPT 对话隔离**。
+<a id="一个-tunnel多个项目与-pi-session"></a>
 
-先完成 [Tunnel 首次设置](tunnel-setup.md)。下面的配置操作不发送/读取/ACK 消息，也不会自动启停 Tunnel。
+# One Tunnel, multiple projects and Pi Sessions
 
-## 1. 从单 Session 显式转换
+Each real Pi Session uses a separate, stable Endpoint, such as `pi/project-A` or `pi/project-B`. A project directory is not an identity. Multiple Sessions in one project must each register separately. On the ChatGPT side, `chatgpt/main` is an explicitly shared inbox; it does not isolate ChatGPT conversations.
 
-已有 single-session 配置可以继续使用，不必强制转换。需要多 Session 时：
+Complete the [initial Tunnel setup](tunnel-setup.md) first. The configuration operations below do not send, read or ACK messages, and do not automatically start or stop the Tunnel.
 
-1. 显式 `/ce-tunnel stop`，核实 transport **STOPPED**。ACTIVE/UNKNOWN 均拒绝转换，不自动 Stop。
-2. 关闭所有旧 legacy Pi binding/runtime，或先更新并正常释放其 binding。旧二进制不能被新 revocation gates 约束，不能仅凭新配置就认为它们被撤销。
-3. 当前旧 Session 可用 `/ce-tunnel deactivate` 确认正常解绑，不退出 Pi、不删历史、不停止 transport。未知释放停止操作，不“清理” Owner。
-4. 从**未绑定**的交互 TUI 运行 `/ce-tunnel convert`；明确承认旧 runtime 限制并核对保留原 registration、Store、Exchange 与 grants。仍本地持有 legacy binding 时拒绝。
+<a id="1-从单-session-显式转换"></a>
 
-转换不创建新的默认宽权限，也不自动绑定保留的 legacy registration。
+## 1. Explicitly convert a single-session configuration
 
-## 2. 在每个真实 Session 注册 Endpoint
+An existing single-session configuration remains usable. Convert when you need multiple Sessions:
 
-从需要授权的那个 Pi Session 执行，Endpoint 必须与其他 Session 不同：
+1. Explicitly run `/ce-tunnel stop` and verify transport is **STOPPED**. ACTIVE/UNKNOWN refuses conversion; conversion does not Stop automatically.
+2. Close all old legacy Pi bindings/runtimes, or update them and release their bindings normally. New revocation gates cannot constrain old binaries, so a new configuration alone does not revoke them.
+3. In the old current Session, `/ce-tunnel deactivate` can confirm normal unbinding without exiting Pi, deleting history or stopping transport. If release is unknown, stop the procedure; do not “clean up” the Owner.
+4. From an **unbound** interactive TUI, run `/ce-tunnel convert`. Acknowledge the old-runtime limitation and check that the original registration, Store, Exchange and grants are retained. Conversion refuses while a legacy binding is still held locally.
+
+Conversion creates no new broad default permissions and does not automatically bind the retained legacy registration.
+
+<a id="2-在每个真实-session-注册-endpoint"></a>
+
+## 2. Register an Endpoint in each real Session
+
+Run this from the Pi Session you want to authorize. Its Endpoint must differ from those of other Sessions:
 
 ```text
 /ce-tunnel register pi/project-B --payload-read --ack
 ```
 
-- 仅注册当前可信 native Pi Session，不接受手填别的 Session ID；实际绑定仍需 reload 后显式 activate。
-- `--payload-read` 与 `--ack` 独立可选，默认都 **off**；不要为了照抄示例就开启。
-- 在确认前核对 Endpoint、当前 Session、Store、Exchange 与权限。
-- register/revoke/convert 需 verified STOPPED transport；不会替你 Stop/Start，不要求重输原 credential。
+- Registration accepts only the current trusted native Pi Session, not a manually supplied Session ID. Binding still requires reload followed by explicit activation.
+- `--payload-read` and `--ack` are independently optional and both default to **off**. Do not enable them simply to copy the example.
+- Before confirming, check the Endpoint, current Session, Store, Exchange and permissions.
+- register/revoke/convert require verified STOPPED transport. They do not Stop/Start for you or require re-entry of the original credential.
 
-使用不同项目时加载同一份扩展和同一所选 profile；不要在各项目初始化独立 Store 后期待自动路由。显式非空 `CE_ALLOWLIST` 保留 legacy 优先级，并阻止生成策略注册/转换。
+For different projects, load the same extension and select the same profile. Initializing separate Stores in each project does not provide automatic routing. An explicitly nonempty `CE_ALLOWLIST` retains legacy precedence and blocks generated-policy registration/conversion.
 
-## 3. 分别加载与激活
+<a id="3-分别加载与激活"></a>
+
+## 3. Load and activate each Session
 
 ```text
 /reload
@@ -38,40 +48,46 @@
 /ce-status
 ```
 
-首次注册没有 CE mapping，reload 拒绝 `CE_HOST_MAPPING_INVALID` 可以是预期行为；随后显式 activate 并确认，以 requireUnowned 创建该 Session 的绑定。它不是 recovery，不接管已有 Owner，包括 expired Owner。
+A first registration has no CE mapping, so reload may refuse with `CE_HOST_MAPPING_INVALID`. Explicitly activate and confirm afterward to create that Session's binding with requireUnowned. This is not recovery and never takes over an existing Owner, including an expired Owner.
 
-Pi grants 在 factory 加载时捕获，Save/register 不自动扩大旧运行时权限。MCP child 也需单独显式 `/ce-tunnel start`（此前已 Stop）读取所选 generation；不要把 Pi reload 视为远端 MCP reload。
+Pi grants are captured when the factory loads. Save/register does not expand the old runtime's permissions automatically. The MCP child also needs a separate explicit `/ce-tunnel start` after the earlier Stop to read the selected generation. Pi reload does not reload the remote MCP child.
 
-`/ce-status` 中 native Pi Session 是 lookup，CE Session 是 Owner incarnation；Endpoint 是稳定消息 label，Participant 是 Exchange 中的参与者。lease/fencing 描述当前权威，不是 transport health。**Configured ≠ Pi-bound ≠ Connected ≠ 消息实证。**
+In `/ce-status`, the native Pi Session is a lookup; the CE Session is an Owner incarnation. Endpoint is the stable message label, and Participant is the participant in the Exchange. lease/fencing describes current authority, not transport health. **Configured ≠ Pi-bound ≠ Connected ≠ message evidence.**
 
-## 4. 找到可用收件人
+<a id="4-找到可用收件人"></a>
 
-在当前已绑定、经授权的 multi-session runtime：
+## 4. Find available recipients
+
+In the currently bound, authorized multi-session runtime:
 
 ```text
 /ce-tunnel sessions
 ```
 
-它列出所选配置中 active 的精确 Endpoint IDs，可复制为 `ce_send.to`。它仍需当前 runtime、所载 registration epoch、current policy 与 process mutex 全部准入。未绑定、未加载、revoked、stale 或 uncertain 均拒绝，不列出其他目标。
+This lists the exact active Endpoint IDs in the selected configuration for use as `ce_send.to`. Admission still checks the current runtime, loaded registration epoch, current policy and process mutex. Unbound, unloaded, revoked, stale or uncertain states refuse rather than list other targets.
 
-该列表不读 Inbox，不证明 MCP child 已加载，也不证明消息已被接收；`to` 不使用 native/CE Session ID，不额外拼 adapter。ChatGPT 仍共享自己的历史/inbox，需操作者明确选择每次消息的收件 Endpoint。
+The list does not read the Inbox, prove the MCP child has loaded, or prove receipt of a message. `to` takes neither a native/CE Session ID nor an extra adapter prefix. ChatGPT still shares its own history/inbox; the operator must explicitly choose the recipient Endpoint for each message.
 
-## 5. 区分解绑、撤销、停止与 reload
+<a id="5-区分解绑撤销停止与-reload"></a>
 
-| 操作 | 改变什么 | 不做什么 |
+## 5. Distinguish unbinding, revocation, Stop and reload
+
+| Operation | What changes | What it does not do |
 |---|---|---|
-| `/ce-tunnel deactivate` | 确认后正常释放当前本地 CE Owner、detach 并停续租 | 不撤销 registration、不删历史、不 Stop Tunnel、不结束其他 Session |
-| `/ce-tunnel revoke pi/project-B` | 确认后撤销一个确切稳定 registration 的后续准入，需 STOPPED | 不回滚已准入操作、不自动释放 durable Owner、不删消息 |
-| `/ce-tunnel stop` | 停止可证明属于 Manager 的 transport 实例 | 不代表 Pi Owner 已释放或 registration 已撤销 |
-| 有效 binding 的 `/reload` | 停旧 generation/drain，重验并 resume 原 durable mapping | 不创建额外 Owner、不自动 takeover |
-| 已释放/未绑定 Session 的 `/reload` | 加载策略，仍不自动重绑 | 重新绑定须显式 activate；不能靠 reload 复活已结束 CE Session |
+| `/ce-tunnel deactivate` | After confirmation, normally releases the current local CE Owner, detaches and stops renewal | Does not revoke registration, delete history, Stop the Tunnel or end other Sessions |
+| `/ce-tunnel revoke pi/project-B` | After confirmation, revokes future admission for one exact stable registration; requires STOPPED | Does not roll back admitted operations, automatically release the durable Owner or delete messages |
+| `/ce-tunnel stop` | Stops a transport instance whose ownership the Manager can prove | Does not prove the Pi Owner was released or registration revoked |
+| `/reload` with a valid binding | Stops/drains the old generation, revalidates and resumes the original durable mapping | Creates no extra Owner and performs no automatic takeover |
+| `/reload` in a released/unbound Session | Loads policy without automatically rebinding | Rebinding requires explicit activation; reload cannot revive an ended CE Session |
 
-取消 deactivate 保留绑定；重复调用不重复 end。release/end 或证据持久化未知时保持 fail-closed，不把“无本地 handle”说成安全释放。正常退出/Session replacement 也走正常 end；正常 end/release 绕过 deny-only revocation 检查，便于安全归还权威。
+Cancelling deactivate retains the binding; repeated calls do not repeat end. If release/end or evidence persistence is unknown, the runtime remains fail-closed. Absence of a local handle is not proof of safe release. Normal exit/Session replacement also follows normal end. Normal end/release bypasses deny-only revocation checks so authority can be returned safely.
 
-撤销只挡之后新准入的操作（包括 reads/renew）；已准入操作可能完成。其他 registrations 和共享 ChatGPT 历史保留。重新授权使用 fresh epoch，旧 handle 仍拒绝。不要删旧注册/Owner/Store 来“重置”。
+Revocation blocks only newly admitted operations, including reads/renew. Already admitted operations may finish. Other registrations and shared ChatGPT history remain. Reauthorization uses a fresh epoch; old handles still refuse. Do not delete old registrations/Owners/Stores to “reset” them.
 
-## 安全与恢复限制
+<a id="安全与恢复限制"></a>
 
-process guard 只做本地 exclusion，不是 CE authority 或 crash recovery。旧 registration epoch 不能复用 reload handoff；不确定清理保留 marker 与 failure latch。append-only records 可累积，没有自动回收，即使进程已死也不自动接管。需要恢复时另行授权、核实精确 durable evidence。
+## Safety and recovery limits
 
-本页不启用自动 Inbox polling、payload execution、ACK、重试或 Wake Bridge。真实消息与 ACK 每次仍需授权；本地配置/隔离测试不替代真实用户验收。更多见 [Pi 工具指南](../pi-extension/README.md)与[排障](tunnel-setup.md#故障排查先定位层再进行最小修复)。
+The process guard provides local exclusion only, not CE authority or crash recovery. An old registration epoch cannot reuse a reload handoff. Uncertain cleanup retains the marker and failure latch. Append-only records can accumulate without automatic collection; a dead process does not trigger automatic takeover. Recovery requires separate authorization and verification of exact durable evidence.
+
+This page enables no automatic Inbox polling, payload execution, ACK, retry or Wake Bridge. Real messages and ACKs still require authorization each time. Local configuration/isolated tests do not replace real user acceptance. See the [Pi tool guide](../pi-extension/README.md) and [troubleshooting](tunnel-setup.md#故障排查先定位层再进行最小修复).

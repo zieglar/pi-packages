@@ -1,3 +1,5 @@
+[English](protocol-v1.md) | [简体中文](protocol-v1.zh-CN.md)
+
 # pi-handoff Protocol v1 (frozen)
 
 > **SUPERSEDED (2026-10-06, PH-0002):** this document is frozen historical

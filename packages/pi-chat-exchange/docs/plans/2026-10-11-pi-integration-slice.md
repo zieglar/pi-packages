@@ -1,3 +1,7 @@
+[English](./2026-10-11-pi-integration-slice.md) | [简体中文](./2026-10-11-pi-integration-slice.zh-CN.md)
+
+> Historical plan (2026-10-11). Proposals, commands, constraints and recorded observations below belong to that dated work. They do not establish current implementation, support, release status or authorization to execute these steps. See the [current package documentation](../../README.md) for current usage.
+
 # B3-P3B real two-process Pi runtime experiment
 
 Date: 2026-10-11
@@ -20,7 +24,7 @@ imports the compiled host seam from `packages/pi-chat-exchange/dist`).
 ## Setup
 
 ```sh
-REPO=/Users/zieglar/Code/pi-chat-exchange-ce0002
+REPO=/path/to/ce-checkout
 TMP=$(mktemp -d /tmp/ce-p3b-smoke-XXXXXX)
 mkdir -p "$TMP/home" "$TMP/work" "$TMP/store"
 cp -r "$REPO/.pi/extensions/ce-chat-exchange" "$TMP/work/.pi-extensions-src"
@@ -120,12 +124,12 @@ All steps executed in `/private/tmp/ce-p3b-smoke-*` environments with
 zai-coding-cn/glm-5.3 (anthropic/openai-codex providers were quota-limited).
 
 1. Extension loaded in both processes; Pi headers `ceA`/`ceB`; CE sessions
-   `ses_01M4NGVDCN6YMG9SD1Y1V586G3` / `ses_01M4NGWQ1QW9GCS281Q9RP9VP4`;
-   participants distinct; shared exchange `ho_01M4NGVDBXXAACR6T415WERMYZ`.
-2. A `ce_send` → `msg_01M4NGW98201BADZ3H9PD9VATK` (CREATED).
+   `ses_<SESSION_A>` / `ses_<SESSION_B>`;
+   participants distinct; shared exchange `ho_<EXCHANGE>`.
+2. A `ce_send` → `msg_<BEFORE_JOIN>` (CREATED).
 3. B `ce_read` of that id refused `MESSAGE_READ_REJECTED`: the message
    predates B's join boundary — correct P3A semantics. Second send after B
-   joined (`msg_01M4NGY19ZE15C9JYCNY77T39B`) was read successfully: from
+   joined (`msg_<AFTER_JOIN>`) was read successfully: from
    `local/sessionA`, 13 bytes, metadata only, no payload text.
 4. Sender reading the recipient's message and a nonexistent id both refused
    with the identical opaque `MESSAGE_READ_REJECTED`.
@@ -139,11 +143,11 @@ zai-coding-cn/glm-5.3 (anthropic/openai-codex providers were quota-limited).
    produced the truthful `LEASE_EXPIRED` refusal recorded here.
 6. `/reload` (interactive `ceE`, instrumented smoke copy only — the repo
    extension has no instrumentation). Durable artifacts:
-   `/private/tmp/ce-p3b-smoke-5D81t3/evidence-reload/marker.log` recorded
+   `/private/tmp/ce-p3b-smoke-<RUN>/evidence-reload/marker.log` recorded
    exactly `factory-run`, `session_start reason=startup`, `factory-run`,
    `session_start reason=reload` — one re-evaluation, no duplicated handlers;
    `4-status-after.txt` shows the post-reload `/ce-status` reporting the SAME
-   CE session (`ses_01M4NK5VYZSWB7NPRZJJ5EWZ1H`, lease ACTIVE). The reload
+   CE session (`ses_<RELOAD_SESSION>`, lease ACTIVE). The reload
    re-adopted the mapping from the SessionManager's in-memory branch entries
    (`pi.appendEntry` survives `/reload` without a session file — no `ceE`
    session file exists, and the durable store shows exactly one binding and

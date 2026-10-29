@@ -1,4 +1,10 @@
+[English](storage-security.md) | [简体中文](storage-security.zh-CN.md)
+
 # Private storage security boundaries (CE-0002-B1-R4)
+
+> Historical foundation-phase record with the later P1A addition. Deferred
+> work and version statements below belong to their respective phases; see
+> [storage-contract.md](storage-contract.md) for current durable storage support.
 
 This is a private SQLite foundation, not a delivery/dispatch implementation.
 The public protocol and lifecycle vocabulary are unchanged.

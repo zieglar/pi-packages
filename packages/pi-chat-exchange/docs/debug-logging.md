@@ -1,3 +1,5 @@
+[English](debug-logging.md) | [简体中文](debug-logging.zh-CN.md)
+
 # Development diagnostics (DIAG-01)
 
 Diagnostics are always on: no environment switch, logger dependency, or protocol

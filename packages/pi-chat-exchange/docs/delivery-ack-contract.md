@@ -1,6 +1,8 @@
+[English](delivery-ack-contract.md) | [简体中文](delivery-ack-contract.zh-CN.md)
+
 # Private delivery ACK storage contract (E2-A)
 
-The private storage contract was implemented in HANDOFF-CE-P3B-02 (E2-A). HANDOFF-CE-E2B-01 adds the operator-opt-in MCP/host surface described below without changing that storage contract. This document is not evidence of real ChatGPT dogfood or release.
+The storage contract was implemented in stage E2-A. The later operator surface adds the opt-in MCP/host interface described below without changing that storage contract. This document is not evidence of real ChatGPT dogfood or release.
 
 ## Meaning and authority
 
@@ -42,7 +44,7 @@ ACK never changes Message/state/body/revision, attempt, claim, cursor, result, o
 
 No bodies, credentials, host secrets or arbitrary causes enter receipt/audit results, logs or errors. Private hooks are synchronous, value-free, capture defensively, reject unsupported results without inspecting them, and replace caller exceptions before domain-error translation. Test instrumentation is privileged, not a sandbox.
 
-## MCP surface (HANDOFF-CE-E2B-01)
+## MCP surface (the operator surface stage)
 
 One opt-in MCP tool now exposes this committed storage contract. The private
 storage functions, their ordering, and their guarantees above are unchanged.

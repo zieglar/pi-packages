@@ -1,4 +1,8 @@
-# PH-0003 — Chat bridge source audit and endpoint comparison
+[English](chat-bridge-audit-ph0003.md) | [简体中文](chat-bridge-audit-ph0003.zh-CN.md)
+
+> Historical evidence or design record. Claims, commands, test results and limitations below describe the recorded phase, not current support or release eligibility.
+
+# PH-0003: Chat bridge source audit and endpoint comparison
 
 Read-only audit; downloaded sources were not installed or executed. No external
 code was extracted into this project or introduced as a dependency. Findings

@@ -1,3 +1,7 @@
+[English](quarantine-hotfix-ph0003.md) | [简体中文](quarantine-hotfix-ph0003.zh-CN.md)
+
+> Historical evidence or design record. Claims, commands, test results and limitations below describe the recorded phase, not current support or release eligibility.
+
 # PH-0003 authorized quarantine/disposition hotfix
 
 ## Frozen-contract conflict and approval
@@ -118,7 +122,7 @@ regression, all cancellation/close tests, disposition tests, unchanged 11
 identity tests and mandatory built stdio/in-memory ping smoke. Typecheck,
 build, ten negative architecture fixtures, workspace and whitespace checks
 pass. Wayforge: **438/438 tests, 51 files**, background task
-`bg_qc1_muvynw5u_2`, exit 0. No Wayforge source changes.
+`<validation-task>`, exit 0. No Wayforge source changes.
 
 No SQLite/store/broker/network/daemon, Pi or ChatGPT delivery, full MCP
 operations, production installation or new dependency. `exchange_archive`

@@ -1,4 +1,8 @@
-# CE Productization 02 — Local validation evidence
+[English](2026-10-24-ce-productization02-validation.md) | [简体中文](2026-10-24-ce-productization02-validation.zh-CN.md)
+
+> Historical evidence or design record. Claims, commands, test results and limitations below describe the recorded phase, not current support or release eligibility.
+
+# CE Productization 02: Local validation evidence
 
 ## Scope
 

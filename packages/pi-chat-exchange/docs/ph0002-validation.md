@@ -1,6 +1,10 @@
+[English](ph0002-validation.md) | [简体中文](ph0002-validation.zh-CN.md)
+
+> Historical evidence or design record. Claims, commands, test results and limitations below describe the recorded phase, not current support or release eligibility.
+
 # PH-0002 validation and acceptance evidence
 
-Baseline verified before work: `/Users/zieglar/Code/pi-packages`, `main`,
+Baseline verified before work: `<repository-root>`, `main`,
 `a645003a68c0d0217a92cba84431d4d34f7e581c`, clean. No push.
 
 ## Approved stop-condition recovery

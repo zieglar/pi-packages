@@ -1,4 +1,6 @@
-# Runtime decoupling — current development policy
+[English](runtime-qualification.md) | [简体中文](runtime-qualification.zh-CN.md)
+
+# Runtime decoupling: current development policy
 
 Handoff: `HANDOFF-PI-SQLITE-RUNTIME-DECOUPLE-01`. The sections below for COMPAT-02 and the original exact-runtime qualification are historical. Published npm 0.2.0 is unchanged.
 
@@ -24,11 +26,11 @@ The package declaration is deliberately bounded to **`>=24.20.0 <=24.22.1`**. Th
 
 The final five-runtime matrix (24.20.0, 24.21.0, 24.22.0, 24.22.1, 26.12.1) verifies all 25 directed pairs: clean reopen/content preservation, precommit lock contention/SIGKILL rollback and postcommit lost-response reconciliation (75 tests). Actual MCP protocol runs cover all 25 parent/child combinations plus composed independent Pi factory processes. Each runtime's targeted suite passes 337 tests with no skips. The broader Node 26 storage/runtime suite passes 1043 tests without skips. Earlier broad-run failures from deprecated test loader warnings were corrected using synchronous `registerHooks`; disk-fault/crash injection was scoped to file connections so the new memory COMMIT probe cannot consume intended fault boundaries. First failing runs are evidence, not compatibility passes.
 
-Evidence: `~/Code/Pi-Project-Evidence/chat-exchange/sqlite-runtime-decouple-01/` contains acquisition/identity inventories, original refusal and RED evidence, per-runtime gates, known-WAL-defect evidence and fixed-target independent reviews. New official archives were compared to HTTPS SHASUMS; detached signatures were not verified.
+Evidence: `<private-evidence-root>/sqlite-runtime-decouple-01/` contains acquisition/identity inventories, original refusal and RED evidence, per-runtime gates, known-WAL-defect evidence and fixed-target independent reviews. New official archives were compared to HTTPS SHASUMS; detached signatures were not verified.
 
 ## Historical COMPAT-02 policy
 
-# Runtime capability admission — development candidate
+# Runtime capability admission: development candidate
 
 Handoff: `HANDOFF-PI-NODE-SQLITE-COMPAT-02`. This section supersedes the historical exact-Node admission policy for the local development candidate only. Published npm 0.2.0 is unchanged.
 
@@ -40,7 +42,7 @@ Host and MCP child execute the same self-contained, compiled in-memory probe fun
 
 Current v7 schema validation, old-schema refusal, persistence, locking, SIGKILL and uncertain-outcome reconciliation remain separate disk-based regressions. No schema, ledger, recovery protocol or message format changed. Process-kill testing does not prove power-loss durability. Real Host testing uses Pi 1.3.0 and synthetic isolated configuration/Store; it does not execute a real Tunnel client.
 
-Evidence is retained outside both repositories at `~/Code/Pi-Project-Evidence/chat-exchange/node-sqlite-compat-02/`: runtime acquisition/identity records, RED/GREEN logs, final targeted command envelopes, installed-Host evidence and fixed-target independent review. The new 24.22.0 official archive was checked against HTTPS SHASUMS; detached signatures were not verified.
+Evidence is retained outside both repositories at `<private-evidence-root>/node-sqlite-compat-02/`: runtime acquisition/identity records, RED/GREEN logs, final targeted command envelopes, installed-Host evidence and fixed-target independent review. The new 24.22.0 official archive was checked against HTTPS SHASUMS; detached signatures were not verified.
 
 The following report is historical evidence for `HANDOFF-CE-RUNTIME-QUALIFICATION-01`; its exact-whitelist language and previous counts do not describe this candidate.
 
@@ -60,7 +62,7 @@ Task: `HANDOFF-CE-RUNTIME-QUALIFICATION-01`. This record describes observed qual
 | Required options | `THREADSAFE=1`, `MUTEX_PTHREADS` | same |
 | Behavioral API probes | defensive mode, statement get/all/run, transaction state | same |
 
-A is the existing local exact-version installation. B is the official `node-v24.22.1-darwin-arm64.tar.gz`, downloaded privately, SHA-256 `89c682593d76cd44233fa53b1563264e7de9cbb189cad169135c5b4fadfbc0a7`, compared against the official HTTPS SHASUMS. Detached signatures were **not** verified. Complete inventories, absolute executable paths, acquisition provenance and executed command/exit envelopes are in the local evidence bundle `ce-runtime-qualification-3s2AZH` (`formal-identities.json`, `initial-identities.json`, `acquisition.json`). No global runtime configuration changed.
+A is the existing local exact-version installation. B is the official `node-v24.22.1-darwin-arm64.tar.gz`, downloaded privately, SHA-256 `89c682593d76cd44233fa53b1563264e7de9cbb189cad169135c5b4fadfbc0a7`, compared against the official HTTPS SHASUMS. Detached signatures were **not** verified. Complete inventories, absolute executable paths, acquisition provenance and executed command/exit envelopes are in the local evidence bundle `<runtime-qualification-evidence-bundle>` (`formal-identities.json`, `initial-identities.json`, `acquisition.json`). No global runtime configuration changed.
 
 ## Observed compatibility matrix
 

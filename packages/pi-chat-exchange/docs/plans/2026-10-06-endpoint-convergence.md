@@ -1,3 +1,7 @@
+[English](./2026-10-06-endpoint-convergence.md) | [简体中文](./2026-10-06-endpoint-convergence.zh-CN.md)
+
+> Historical plan (2026-10-06). Proposals, commands, constraints and recorded observations below belong to that dated work. They do not establish current implementation, support, release status or authorization to execute these steps. See the [current package documentation](../../README.md) for current usage.
+
 # PH-0003 Endpoint Convergence Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.

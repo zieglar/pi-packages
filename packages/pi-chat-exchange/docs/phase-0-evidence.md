@@ -1,4 +1,8 @@
-# Phase 0 Evidence — pi-handoff platform audit
+[English](phase-0-evidence.md) | [简体中文](phase-0-evidence.zh-CN.md)
+
+> Historical evidence or design record. Claims, commands, test results and limitations below describe the recorded phase, not current support or release eligibility.
+
+# Phase 0 Evidence: pi-handoff platform audit
 
 > **ARCHIVAL (2026-10-06, PH-0002):** findings preserved unchanged as
 > historical evidence (ChatGPT plugin/tunnel/Work-chat support, public
@@ -39,7 +43,7 @@ in [chatgpt-installation.md](chatgpt-installation.md).
 | Manifest/configuration required? | For a personal custom MCP server: none beyond name/description/connection/auth. Packaging manifests (`plugin.json`, `.app.json`) are only needed for directory submission or marketplace distribution. | /plugins/build/plugins |
 | MCP transports supported? | SSE and streaming HTTP (public endpoint); tunnel-client reaches **stdio or HTTP** upstreams. | /api/docs/guides/custom-mcp-server, /api/docs/guides/secure-mcp-tunnels |
 | Write tools supported? | Yes. Tools without `readOnlyHint: true` are treated as write actions. | /api/docs/guides/custom-mcp-server |
-| User confirmation for write tools? | Yes — write actions require confirmation by default; approve/deny can be remembered per conversation; `readOnlyHint` is honored. | /api/docs/guides/custom-mcp-server |
+| User confirmation for write tools? | Yes: write actions require confirmation by default; approve/deny can be remembered per conversation; `readOnlyHint` is honored. | /api/docs/guides/custom-mcp-server |
 
 Implication for the smoke: `pi-handoff` serves MCP over **stdio** (works with
 `tunnel-client --mcp-command`, zero open ports); `ping` carries
@@ -47,18 +51,18 @@ Implication for the smoke: `pi-handoff` serves MCP over **stdio** (works with
 
 ## B. Pi runtime integration
 
-**Verdict: SUPPORTED_PUBLICLY.** The preferred architecture — the *existing*
-Pi session consumes handoffs through a Pi extension — is achievable with
+**Verdict: SUPPORTED_PUBLICLY.** The preferred architecture: the *existing*
+Pi session consumes handoffs through a Pi extension: is achievable with
 documented public APIs in the installed Pi 0.86.1.
 
 | Question | Answer | Source |
 | --- | --- | --- |
-| Programmatic prompt injection into the owning session? | **Yes.** `pi.sendUserMessage(content, options?)` sends an actual user message "as if typed by the user", always triggers a turn; when streaming, `deliverAs: "steer" \| "followUp"` queues it; `nextTurn` defers. | pi docs extensions.md — ExtensionAPI Methods |
-| Relevant hooks / events? | `session_start` (reason: startup/reload/new/resume/fork), `agent_start`, `agent_end` (run messages), `agent_settled` (no further automatic continuation), `turn_start`/`turn_end` (message + toolResults), `message_*`. | extensions.md — Events |
-| Session identity / custom entries? | `ctx.sessionManager.getSessionFile()`, `getEntries()`; `pi.appendEntry(customType, data?)` persists extension data (restorable on `session_start`); `ctx.cwd` for the workspace. | extensions.md — ExtensionContext / appendEntry |
-| EventBus? | `pi.events` in extensions; `createEventBus()` for SDK hosts; extension-to-extension communication inside one Pi process. | sdk.md — Event Bus |
-| RPC applicability? | **Not appropriate** for this architecture: `pi --mode rpc` is a separate headless session protocol. Using it would create a competing session alongside Moshi/Herdr — explicitly rejected by the handoff. | rpc.md |
-| Extension loading? | `~/.pi/agent/extensions/*.ts` (global), `.pi/extensions` (project-local), `settings.json → extensions` paths, or pi packages. A future pi-handoff extension installs through these public locations. | extensions.md — Extension Locations |
+| Programmatic prompt injection into the owning session? | **Yes.** `pi.sendUserMessage(content, options?)` sends an actual user message "as if typed by the user", always triggers a turn; when streaming, `deliverAs: "steer" \| "followUp"` queues it; `nextTurn` defers. | pi docs extensions.md: ExtensionAPI Methods |
+| Relevant hooks / events? | `session_start` (reason: startup/reload/new/resume/fork), `agent_start`, `agent_end` (run messages), `agent_settled` (no further automatic continuation), `turn_start`/`turn_end` (message + toolResults), `message_*`. | extensions.md: Events |
+| Session identity / custom entries? | `ctx.sessionManager.getSessionFile()`, `getEntries()`; `pi.appendEntry(customType, data?)` persists extension data (restorable on `session_start`); `ctx.cwd` for the workspace. | extensions.md: ExtensionContext / appendEntry |
+| EventBus? | `pi.events` in extensions; `createEventBus()` for SDK hosts; extension-to-extension communication inside one Pi process. | sdk.md: Event Bus |
+| RPC applicability? | **Not appropriate** for this architecture: `pi --mode rpc` is a separate headless session protocol. Using it would create a competing session alongside Moshi/Herdr: explicitly rejected by the handoff. | rpc.md |
+| Extension loading? | `~/.pi/agent/extensions/*.ts` (global), `.pi/extensions` (project-local), `settings.json → extensions` paths, or pi packages. A future pi-handoff extension installs through these public locations. | extensions.md: Extension Locations |
 
 No private Pi API is required for the frozen design. If a future phase needs
 more than `sendUserMessage` + lifecycle events + appendEntry, that must be
@@ -85,7 +89,7 @@ None of the handoff §18 stop conditions triggered:
 
 ## Real ChatGPT acceptance
 
-**NOT_RUN** — ChatGPT-side steps (tunnel creation, plugin creation/install,
+**NOT_RUN**: ChatGPT-side steps (tunnel creation, plugin creation/install,
 Work-chat invocation) require the user's manual interaction and credentials.
 This is expected and does not block Phase 1: the server-side path is proven by
 protocol-level tests; the ChatGPT half is ready for the user to execute via

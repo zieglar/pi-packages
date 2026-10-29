@@ -1,8 +1,12 @@
+[English](ph0003-validation.md) | [简体中文](ph0003-validation.zh-CN.md)
+
+> Historical evidence or design record. Claims, commands, test results and limitations below describe the recorded phase, not current support or release eligibility.
+
 # PH-0003 validation, review and acceptance boundary
 
 ## Baseline and separately authorized correction
 
-Initial baseline verified before work: `/Users/zieglar/Code/pi-packages`, `main`,
+Initial baseline verified before work: `<repository-root>`, `main`,
 `5a84cb1721d87a6f324d4d288ce0beac3dda1579`, clean. No push.
 
 Before convergence, a frozen-contract conflict was reproduced: owner-abandonment
@@ -59,7 +63,7 @@ and missing support cannot manufacture evidence. No authentication service exist
   Build output was cleaned before final verification; no stale old-adapter outputs
   were used by smoke tests.
 - Wayforge: **438/438 tests, 51 files**, terminal exit 0, background task
-  `bg_qc1_muvzy0j4_3`, log `/tmp/ph0003-final-wayforge.log`; source diff empty.
+  `<validation-task>`, log `/tmp/ph0003-final-wayforge.log`; source diff empty.
 - Workspace gate and format/diff-whitespace checks pass. Active LSP check: 6 paths,
   0 errors, 4 confirmed clean and 2 inconclusive. Full tsc is the complete evidence,
   not a claim of six LSP-confirmed clean files.

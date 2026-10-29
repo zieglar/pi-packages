@@ -1,4 +1,6 @@
-# Tunnel manager — offline scope (HOST-09 B1.1)
+[English](tunnel-manager-offline.md) | [简体中文](tunnel-manager-offline.zh-CN.md)
+
+# Tunnel manager: offline scope (HOST-09 B1.1)
 
 This document covers the **explicit offline harness** retained from HOST-09 B1.1:
 masked capture, scoped Keychain CRUD, and an owned offline simulator lifecycle.
@@ -215,7 +217,7 @@ helper never adopts, repairs, or recreates such an item.
   empty trusted-application list for secret-reading authorizations. A deliberately
   broad ACL on an owned fake item was refused for read and update.
 - **Historical note:** the statement below was B1.1-FIX's boundary; B1.1-KEYCHAIN-GATE and B1.1-INTEGRATION have since verified real successful reads under the restrictive ACL via the user-approved path.
-- **Successful Keychain retrieval remains NOT VERIFIED.** Reads of the restrictive
+- **Historical B1.1-FIX result: successful Keychain retrieval remained NOT VERIFIED.** Reads of the restrictive
   items returned `CE_TUNNEL_KEYCHAIN_UNAVAILABLE`; no successful value comparison
   was possible. No ACL was relaxed, helper trust granted, or OS prompt approved to
   make this pass. Update success alone does not prove the resulting secret value.

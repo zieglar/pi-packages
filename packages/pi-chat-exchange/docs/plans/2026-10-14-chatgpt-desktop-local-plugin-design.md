@@ -1,3 +1,7 @@
+[English](./2026-10-14-chatgpt-desktop-local-plugin-design.md) | [简体中文](./2026-10-14-chatgpt-desktop-local-plugin-design.zh-CN.md)
+
+> Historical plan (2026-10-14). Proposals, commands, constraints and recorded observations below belong to that dated work. They do not establish current implementation, support, release status or authorization to execute these steps. See the [current package documentation](../../README.md) for current usage.
+
 # ChatGPT Desktop Local Plugin Design
 
 ## Goal

@@ -1,4 +1,8 @@
-# Distribution repair — Task 1 implementation evidence
+[English](2026-10-25-distribution-task1.md) | [简体中文](2026-10-25-distribution-task1.zh-CN.md)
+
+> Historical evidence or design record. Claims, commands, test results and limitations below describe the recorded phase, not current support or release eligibility.
+
+# Distribution repair: Task 1 implementation evidence
 
 Baseline: `affc05d024d0bef4254eaf14de7d521815c720ea`, independent `fix/ce-distribution-fix` worktree. Approved plan is `docs/plans/2026-10-25-distribution-fix.md`.
 

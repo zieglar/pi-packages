@@ -1,4 +1,6 @@
-# Tunnel manager — real background scope (LOCAL-BACKGROUND-01)
+[English](tunnel-manager-background.md) | [简体中文](tunnel-manager-background.zh-CN.md)
+
+# Tunnel manager : real background scope (LOCAL-BACKGROUND-01)
 
 This document describes the **real background** mode of `/ce-tunnel start|status|stop`.
 The offline simulator mode (`CE_TUNNEL_OFFLINE_TEST=1`, see `tunnel-manager-offline.md`)
@@ -36,7 +38,7 @@ run side by side.
   `CE_TUNNEL_BACKGROUND_ALLOW=1` for this Pi session. `status`/`stop` are not
   gated: they never create cost, and stop only reduces it.
 - **Cross-process exclusion.** Start/stop (and any refresh that needs to
-  persist) hold `<state>.lock.d` — a mkdir DIRECTORY lock whose holder is
+  persist) hold `<state>.lock.d` : a mkdir DIRECTORY lock whose holder is
   verified by pid + start key. Stale or crashed locks are reclaimed under
   mutual exclusion between reclaimers: rename-to-grave first, then the grave's
   holder is verified to be the SAME lock that was judged stale; a mismatch
@@ -55,14 +57,14 @@ run side by side.
   grace), then takes the lock; it never returns while a cancelled start still
   owns work.
 - **Dual-run stop.** If a session also owns an unpersisted (pending) daemon
-  whose run differs from the on-disk record, `stop` terminates BOTH — the
+  whose run differs from the on-disk record, `stop` terminates BOTH : the
   pending run via its in-memory once-set (at most one signal ever), the disk
   run via its ledger. If the pending run still has not exited, `stop` refuses
   `CE_TUNNEL_STOP_UNCONFIRMED` and the status note says to run stop again; it
   never reports success while a run it owns is still alive.
 - **Ledger write guards.** Every `persist()` is machine-enforced to a held lock
   token, refuses a corrupt on-disk record, and refuses to overwrite a DIFFERENT
-  run's live record — no code path can roll back another session's ownership or
+  run's live record : no code path can roll back another session's ownership or
   termination ledger. Lock reclaim verifies the grave's inode, mtime and holder
   token all match the judged-stale lock before deletion.
 - **Three-state inspection.** Process checks are present / proven-absent /
@@ -73,7 +75,7 @@ run side by side.
 
 - **No credential interaction.** The key reaches the client only via the
   profile's existing `file:` reference. The manager checks the key file by
-  metadata only (regular, non-symlink, owner-only 0600 — `profile.ts`
+  metadata only (regular, non-symlink, owner-only 0600 : `profile.ts`
   `checkKeyFileRequirements`). Inline values and `env:` references refuse
   `CE_TUNNEL_CREDENTIAL_HANDOFF_BLOCKED`.
 - **Organization context (LOCAL-BACKGROUND-05).** The optional profile field
@@ -100,7 +102,7 @@ run side by side.
 - **Wrapper exec identity (LOCAL-BACKGROUND-03).** Homebrew installs the
   client as a shim script (`#!/bin/bash` plus `exec "<Cellar libexec>" "$@"`),
   so ps shows `/bin/bash <shim> run …` before the exec and `<cellar> run …`
-  after it — same pid, same start key. At spawn time the manager reads the
+  after it : same pid, same start key. At spawn time the manager reads the
   client file once and derives the acceptable identity set from explicit
   evidence only: the direct argv always; the `<interpreter> <shim>` form only
   from a no-argument `#!/abs/path` shebang; the post-exec form only from a
@@ -109,13 +111,13 @@ run side by side.
   record (`commandIdentityExec`) so later sessions recognize the exec'd
   process. The exec form additionally requires the WHOLE file to be the
   canonical shim shape (shebang + exactly one strict exec line; other lines
-  only blank or comments) — heredoc bodies, indented exec lines, or extra
+  only blank or comments) : heredoc bodies, indented exec lines, or extra
   statements forfeit it. Anything unknown or ambiguous (relative/unquoted/
   multi-exec lines, missing target, oversized or unreadable shim) yields no
   form and stays fail closed. Basename equality, pidfiles, and process names
   are never evidence. A non-canonical wrapper (extra statements, heredocs, an
   unreadable or oversized script) therefore DEGRADES to unmanageable after its
-  exec — identity mismatch, UNKNOWN, `CE_TUNNEL_STOP_UNCONFIRMED` — and the
+  exec : identity mismatch, UNKNOWN, `CE_TUNNEL_STOP_UNCONFIRMED` : and the
   instance is never mis-signalled; recovery is the documented manual,
   identity-verified termination. Identity capture itself also accepts only the
   evidence-derived identity set, so a client whose file cannot be read yields
@@ -125,11 +127,11 @@ run side by side.
   exit event is first-class proof that OUR spawn died, after which any process
   at that pid is a foreign reuser. The proof is archived PER RUN ID (runIds are
   UUIDs and never reused), the listener is armed before the identity-capture
-  window, and a later start never resets another run's evidence — so the
+  window, and a later start never resets another run's evidence : so the
   dual-run stop path cannot sever it; dispose() likewise keeps the proof while
   a pending run survives, because stop/refresh stay callable after dispose.
   Such a run is then closed as exited and
-  is NEVER adopted or signalled — re-acquisition requires a live child link
+  is NEVER adopted or signalled : re-acquisition requires a live child link
   plus exact membership in the evidence-derived identity set. Stop notes
   distinguish "exit observed after SIGTERM" from "exit observed (process
   already gone); no signal sent". On-disk `null` values for optional record
@@ -144,12 +146,12 @@ run side by side.
   kill, no name-based signalling (scans only REFUSE a duplicate start).
   **Write-ahead window:** if a record-backed run's `termRequestedAt` persisted
   but the signal was lost (e.g. the lock was taken before `signal()`), that
-  run is deliberately NOT re-signalled — at-most-once forbids the retry, so
+  run is deliberately NOT re-signalled : at-most-once forbids the retry, so
   at-most-once permits **zero** deliveries here. A later `stop` from this
   manager will NOT re-signal that record (its intent is already ledgered); it
   only ever reports `CE_TUNNEL_STOP_UNCONFIRMED` while the process survives.
   There is no automatic recovery: the operator must separately authorise a
-  manual, identity-verified termination of the surviving process — never clear
+  manual, identity-verified termination of the surviving process : never clear
   the ledger to bypass the at-most-once guard.
 - **No autostart, reconnect, respawn, or business retry.** A vanished daemon is
   marked stopped with `process absent (unexpected)`; restart is a fresh,

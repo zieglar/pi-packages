@@ -1,4 +1,8 @@
-# Persistence Proposal — pi-handoff broker (Phase 2+, design only)
+[English](persistence-proposal.md) | [简体中文](persistence-proposal.zh-CN.md)
+
+> Historical evidence or design record. Claims, commands, test results and limitations below describe the recorded phase, not current support or release eligibility.
+
+# Persistence Proposal: pi-handoff broker (Phase 2+, design only)
 
 > **DEFERRED/SUPERSEDED (2026-10-06, PH-0002):** the durable host is out of
 > v2 scope; the concrete choices below (SQLite, loopback HTTP + bearer
@@ -31,20 +35,20 @@ handoffs   1─n  results                handoffs  1─n  events (immutable)
 
 Logical entities (physical DDL is Phase 2 work):
 
-- **handoffs** — handoffId (PK), state, idempotencyKey (unique per namespace),
+- **handoffs**: handoffId (PK), state, idempotencyKey (unique per namespace),
   promptDigest, promptLength, promptBody (sensitive, separate column or
   sidecar), workspace, metadata JSON, createdAt, updatedAt. State transitions
   occur only inside transactions guarded by the frozen state machine.
-- **deliveries** — deliveryId, handoffId → handoffs, attempt, consumerId,
+- **deliveries**: deliveryId, handoffId → handoffs, attempt, consumerId,
   claimedAt, leaseUntil, deliveredAt, deliveryRecord JSON (proves
   attempted/not-attempted for the fail-closed rule).
-- **results** — resultId (PK), handoffId → handoffs, attempt, envelope JSON,
+- **results**: resultId (PK), handoffId → handoffs, attempt, envelope JSON,
   inputDigest, resultDigest, applicationEvidence JSON (opaque).
-- **events** — eventId, handoffId, seq (monotonic per handoff), type
+- **events**: eventId, handoffId, seq (monotonic per handoff), type
   (state_transition, claim, heartbeat, delivery, settlement, consumption,
-  cancel), payload JSON (digests/lengths/typed status only — never raw prompt
+  cancel), payload JSON (digests/lengths/typed status only: never raw prompt
   or result bodies), at. **Append-only, immutable.**
-- **consumers** — consumerId, label, registeredAt, lastSeenAt, tokenDigest
+- **consumers**: consumerId, label, registeredAt, lastSeenAt, tokenDigest
   (never the token itself).
 
 ## Hard requirements

@@ -1,10 +1,14 @@
-# Source Reuse Audit — frozen conclusions (PH-0002, 2026-10-06)
+[English](source-reuse-audit.md) | [简体中文](source-reuse-audit.zh-CN.md)
+
+> Historical evidence or design record. Claims, commands, test results and limitations below describe the recorded phase, not current support or release eligibility.
+
+# Source Reuse Audit: frozen conclusions (PH-0002, 2026-10-06)
 
 This file freezes the managed audit conclusions used by the PH-0002
 architecture correction. Full read-only audit reports (pins, integrity
 hashes, line-level evidence) live with the parent session artifacts; nothing
 was copied from these sources into this package, and no new dependency was
-added. All sources are MIT licensed — no license blocker anywhere.
+added. All sources are MIT licensed: no license blocker anywhere.
 
 ## Reproducible source pins
 
@@ -87,7 +91,7 @@ added. All sources are MIT licensed — no license blocker anywhere.
 | Source | Version audited | Verdict |
 | --- | --- | --- |
 | `pi-intercom` | 0.16.1 (npm tarball, pinned integrity) | REFERENCE_ONLY |
-| Official Pi handoff example (`examples/extensions/handoff.ts`) | read at the actual user runtime 0.86.1 (documented mise install path); child audit also covered installed 0.85.1 — versions deliberately labeled | REFERENCE_ONLY (new-session/editor-draft pattern; existing-session injection API evidence comes from official `extensions.md`) |
+| Official Pi handoff example (`examples/extensions/handoff.ts`) | read at the actual user runtime 0.86.1 (documented mise install path); child audit also covered installed 0.85.1: versions deliberately labeled | REFERENCE_ONLY (new-session/editor-draft pattern; existing-session injection API evidence comes from official `extensions.md`) |
 | `@nicknisi/pi-relay` | 0.4.0 | REFERENCE_ONLY (strongest design reference) |
 | `remote-pi` | npm 0.7.0 / repo pinned by SHA (fast-moving; HEAD ≠ npm artifact) | REFERENCE_ONLY |
 
@@ -97,7 +101,7 @@ The decisive ground is the same for the comm plugins: none of them offers a
 seam where OUR durable dedupe, lease fencing, and explicit no-retry decision
 can execute BEFORE their own injection/retry machinery acts. Secondary
 facts (in-memory state, differing ID formats, socket-level ACK semantics)
-are recorded below as facts, not as the refusal grounds — none of them alone
+are recorded below as facts, not as the refusal grounds: none of them alone
 disqualifies composition.
 
 - **pi-intercom 0.16.1** exposes an in-process extension bus with discovery
@@ -114,8 +118,8 @@ disqualifies composition.
   later addition; nothing here depends on it.
 - **Official handoff example** (`examples/extensions/handoff.ts`, read at the
   actual user runtime 0.86.1 at the documented mise install path; a child
-  audit also covered the installed 0.85.1 — versions deliberately labeled):
-  the example itself is a NEW-session flow — summarize the current session,
+  audit also covered the installed 0.85.1: versions deliberately labeled):
+  the example itself is a NEW-session flow: summarize the current session,
   edit the draft, `newSession` with parent tracking. It is NOT evidence of
   existing-session injection. The public injection API evidence
   (`pi.sendMessage` custom messages with `deliverAs`/`triggerTurn`,
@@ -123,15 +127,15 @@ disqualifies composition.
   official `extensions.md` documentation verified at 0.86.1. The example is
   cited for the new-session pattern and editor-draft flow only.
 - **pi-relay 0.4.0** has a published durable Pi-free core (claim/ACK/requeue/
-  recover, exact-id dedupe, `uncertain`-never-delivered receipts) — the
+  recover, exact-id dedupe, `uncertain`-never-delivered receipts): the
   closest prior art to our quarantine design. But its delivery ladder
   (steer → follow-up → fallback) retries inside catch-all exception handlers
   and claim recovery, and those paths may have side effects it cannot
   account for; we therefore cannot claim that composing it preserves our
-  fail-closed no-retry quarantine — it is not fail-closed in our sense, and
+  fail-closed no-retry quarantine: it is not fail-closed in our sense, and
   no claim of complete no-effect certainty is made about it.
 - **remote-pi** (npm 0.7.0 / repo pinned by SHA): its broker ACK (`received`)
-  after a socket write is transport acceptance, not runtime acceptance — a
+  after a socket write is transport acceptance, not runtime acceptance: a
   semantics fact, not by itself a refusal ground. The refusal ground is that
   its injection path (in-memory pending mesh buffer, drained via
   `sendMessage`) offers no seam for our durable dedupe/fencing/no-retry to

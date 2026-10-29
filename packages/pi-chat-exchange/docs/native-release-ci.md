@@ -1,6 +1,16 @@
-# Native SQLite CI and release policy (repository only)
+[English](native-release-ci.md) | [简体中文](native-release-ci.zh-CN.md)
 
-Middleware 0.1.0 / ABI 1 uses the checked-in Cargo.lock and bundled SQLite 3.54.1. This document describes workflow intent; a local test does not establish Hosted CI, OIDC signing or successful publication.
+# Native SQLite CI and release procedure (repository only)
+
+Middleware 0.1.0 / ABI 1 uses the checked-in Cargo.lock and bundled SQLite 3.54.1. The workflow and release helper define the procedure below; local tests alone do not establish Hosted CI, OIDC signing or successful publication.
+
+## Verified release boundary
+
+The immutable `ce-sqlite-v0.1.0` release (ABI 1, SQLite 3.54.1) was published from source `a8386aafd657c84825b2905847f34a43d5b91e1e`. Historical verification downloaded the assets and checked their attestations. Hosted Native Store integration covered macOS arm64 and Linux x64; macOS x64 and Linux arm64 have artifact/conformance evidence only. These results do not establish broad cloud or end-to-end compatibility.
+
+Production hashes in `src/storage/native-compat.ts` remain null. `src/storage/sqlite-driver-selection.ts` defaults to `node-sqlite` and never falls back after a Native failure; `src/storage/native-artifact.ts` refuses unpinned assets. Publication does not enable Native by default.
+
+The separate npm workflow remains local and unpushed, with no hosted OIDC proof. The owner reports that the publisher connection is configured; this is not a hosted publication result. npm `@zieglar/pi-chat-exchange@0.2.0` is already published independently of this Native release.
 
 ## Test layers and permissions
 
@@ -44,12 +54,12 @@ Workflow serialization is supplemental, not a repository protection mechanism. T
 
 - Immutable releases for the public repository. Publishing the draft must lock the tag and asset set. The release helper refuses when this setting is disabled or unreadable.
 - An active tag ruleset for `ce-sqlite-v*` that prohibits updates/deletions and limits creation/bypass to the approved release path. Ensure the intended token can create a fresh tag without permission to move it.
-- Protection/review for main and the `native-sqlite-release` environment, including deployment branch restrictions and required reviewers. Merely naming an environment does not establish these settings.
+- Protection/review for main and the `native-sqlite-release` environment, including deployment branch restrictions. The recorded automated release gate has no required reviewer; configure protection consistently with that gate. Merely naming an environment does not establish these settings.
 - Appropriate GitHub plan/visibility and permissions for Artifact Attestations.
 
-On 2026-10-28 the read-only public repository API reported immutable releases disabled (`enabled=false`, `enforced_by_owner=false`) and no rulesets. No administrator configuration was changed. These are external prerequisites to release, not a reason to skip local workflow fixes.
+Historical pre-release observation: on 2026-10-28 the read-only public repository API reported immutable releases disabled (`enabled=false`, `enforced_by_owner=false`) and no rulesets. No administrator configuration was changed. That observation predates the verified release above and does not describe current repository settings. These settings remain external prerequisites for future releases.
 
-## Next authorized verification
+## Procedure for a future authorized release
 
 1. Push only after explicit authorization, record the exact remote commit, then dispatch with publish=false. Verify four Hosted build results, Native conformance and the supported Store test subset, plus the official attestation identities/digests.
 2. Independently verify each downloaded file: `gh attestation verify FILE --repo zieglar/pi-packages --signer-workflow zieglar/pi-packages/.github/workflows/native-release.yml --source-ref refs/heads/main --source-digest COMMIT_SHA`. Verify the checksum manifest as well as the binaries. Local mocked-gh tests establish refusal/control flow only, not signature authenticity.

@@ -1,23 +1,30 @@
 # Pi Packages
 
-A pnpm workspace for independently owned packages that extend or integrate with Pi.
+English | [简体中文](README.zh-CN.md)
 
-## Packages
+Packages that extend or integrate with Pi. Start with [Pi Chat Exchange](packages/pi-chat-exchange/README.md) for durable, explicitly authorized message exchange between ChatGPT and Pi.
 
-- [`wayforge`](packages/wayforge/README.md) — deterministic agent orchestration kernel. This is the only initial package.
-- [`pi-chat-exchange`](packages/pi-chat-exchange/README.md) — generic chat-exchange protocol: Exchange aggregate, independent message/result lifecycles, pure core rules, and an MCP ping smoke (durable host deferred).
+## Pi Chat Exchange
+
+- [Installation, configuration and quick start](packages/pi-chat-exchange/docs/getting-started.md)
+- [Architecture and lifecycle](packages/pi-chat-exchange/docs/architecture.md)
+- [SQLite Native driver](packages/pi-chat-exchange/docs/native-sqlite.md)
+- [Security, troubleshooting, development and releases](packages/pi-chat-exchange/docs/operations.md)
+- [Bilingual documentation](packages/pi-chat-exchange/docs/documentation.md)
+
+Wayforge owns governed tasks, policy, recovery and completion authority. Chat Exchange owns message delivery/lifecycle, evidence and reconciliation. Pi provides sessions, runtime and provider transport. A message receipt does not grant task completion authority.
 
 ## Development
 
-Requires Node.js 22 or newer and the package manager pinned by `packageManager`.
+Use the package's runtime requirements. CE's current source declares Node `>=24.20.0 <=24.22.1`, Pi `1.3.0` and pnpm `12.9.1`; runtime admission applies additional checks. From the repository root:
 
-```bash
-pnpm install --frozen-lockfile
-pnpm check:workspace
-pnpm build
-pnpm typecheck
-pnpm test
-pnpm check
+```sh
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm --dir packages/pi-chat-exchange run verify
 ```
 
-See the [workspace contract](docs/workspace-contract.md), [contribution guide](docs/contributing.md), and [licensing policy](docs/licensing.md).
+Optional client/host tests and release qualification have their own prerequisites. Local tests do not establish cloud connectivity or publication. See the [development guide](packages/pi-chat-exchange/docs/operations.md).
+
+## License
+
+Pi Chat Exchange is [MIT](packages/pi-chat-exchange/LICENSE), Copyright (c) 2026 zieglar. Dependencies retain their own licenses.

@@ -1,3 +1,7 @@
+[English](./2026-10-22-ce-messaging-activation.md) | [简体中文](./2026-10-22-ce-messaging-activation.zh-CN.md)
+
+> Historical plan (2026-10-22). Proposals, commands, constraints and recorded observations below belong to that dated work. They do not establish current implementation, support, release status or authorization to execute these steps. See the [current package documentation](../../README.md) for current usage.
+
 # CE Messaging Explicit Activation Implementation Plan
 
 > Execution: same-session bounded tasks; use characterization/TDD and inspect every result. No commit until all fixed-target review BLOCKERs close.

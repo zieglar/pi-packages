@@ -1,4 +1,8 @@
-# Pi Runtime Integration Readiness — CE-0002 B3-P3D
+[English](pi-integration-readiness.md) | [简体中文](pi-integration-readiness.zh-CN.md)
+
+> Historical evidence or design record. Claims, commands, test results and limitations below describe the recorded phase, not current support or release eligibility.
+
+# Pi Runtime Integration Readiness: CE-0002 B3-P3D
 
 Status: **explicit bounded Inbox integration implemented**, extending the B3-P3B
 host adapter and Extension. Prior Pi 0.86.1 runtime evidence belongs to B3-P3B;
@@ -46,7 +50,7 @@ new id; unless the operator adds it to the allowlist it resolves to no
 endpoint and the extension stays inert (fail closed).
 
 Persisted mapping (`pi.appendEntry("ce-mapping", …)`) carries exactly
-`{endpointId, participantId, sessionId, exchangeId}` — identifiers only. On
+`{endpointId, participantId, sessionId, exchangeId}`: identifiers only. On
 `startup` / `reload` / `resume` the host validates it against durable state
 (Participant binding match, Session ATTACHED, ownership row current, lease
 active) before re-issuing Session-bound capabilities. A stale, foreign,
@@ -55,14 +59,14 @@ detached, or unowned mapping refuses with `CE_HOST_MAPPING_INVALID` or
 
 ## Four visibility states (do not conflate)
 
-1. **Stored** — `sendMessage` committed Message + idempotency + audit.
-2. **Extension-visible** — explicit `ce_inbox_list` discovers eligible IDs, and
+1. **Stored**: `sendMessage` committed Message + idempotency + audit.
+2. **Extension-visible**: explicit `ce_inbox_list` discovers eligible IDs, and
    `ce_read` returns metadata only. With operator opt-in, `ce_read_payload`
    separately returns Storage-authorized UTF-8 text for an explicit ID.
-3. **Conversation-visible** — successful explicit tool results enter the
+3. **Conversation-visible**: successful explicit tool results enter the
    invoking Pi conversation through normal tool handling. SQLite writes never
    appear there by themselves; this extension does not inject user messages.
-4. **Model-visible** — the successful payload tool content is available to the
+4. **Model-visible**: the successful payload tool content is available to the
    active model through normal Pi context handling. Visibility alone does not
    prove semantic consumption, delivery settlement, or Completion Authority.
 

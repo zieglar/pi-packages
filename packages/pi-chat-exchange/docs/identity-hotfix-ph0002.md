@@ -1,3 +1,7 @@
+[English](identity-hotfix-ph0002.md) | [简体中文](identity-hotfix-ph0002.zh-CN.md)
+
+> Historical evidence or design record. Claims, commands, test results and limitations below describe the recorded phase, not current support or release eligibility.
+
 # PH-0001 identity hotfix (authorized during PH-0002)
 
 The PH-0001 assertion that `encodeUlid()` preserves all 80 random bits was
