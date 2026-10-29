@@ -49,6 +49,7 @@ import { PI_ADAPTER_KIND } from "../dist/endpoints/pi/contract.js";
 import { initializeStore, openStore } from "../dist/storage/store.js";
 import { RuntimeEligibilityError } from "../dist/storage/runtime.js";
 import { diagnoseInstallation, hostRuntimeRepairMessage, installationDiagnosticMessage } from "../dist/runtime/diagnostics.js";
+import { assertNativeReadyForTunnel, inspectNativeReadiness, runNativeCommand, NATIVE_STARTUP_WARNING } from "../dist/runtime/native-readiness.js";
 import { TunnelRefusal } from "../dist/tunnel/codes.js";
 import {
   captureTunnelSecret,
@@ -389,6 +390,14 @@ function openHostStore(allowlist: AllowlistFile) {
 const TUNNEL_STATUS_KEYS = ["ce", "ce-tunnel", "ce-client"] as const;
 
 export default function ceChatExchange(pi: ExtensionApiView): void {
+  // Management is registered independently of subsequent Store/session activation.
+  let nativeStartupWarned = false;
+  pi.registerCommand("ce-native", {
+    description: "Inspect, install or verify the trusted Native driver; check release discovery",
+    async handler(args, ctx) {
+      notify(ctx, await runNativeCommand(args), "info");
+    },
+  });
   // Transport UI, the offline manager, and any in-flight credential capture
   // belong to THIS factory instance, independently of CE generation.
   let lastUiPort: ExtensionContextView | undefined;
@@ -986,6 +995,17 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   };
 
   pi.on("session_start", async (event, ctx) => {
+    // The warning is about the Native default path only. An explicit node-sqlite
+    // compatibility selection keeps messaging available, so it must not be told
+    // that messaging is disabled.
+    if (!nativeStartupWarned) {
+      const readiness = inspectNativeReadiness();
+      if (readiness.driver === "rust-native" && readiness.state !== "READY") {
+        nativeStartupWarned = true;
+        notify(ctx, NATIVE_STARTUP_WARNING, "warning");
+      }
+    }
+
     const transport = clearTunnelStatus();
     if (generation !== undefined || shutdownInFlight !== undefined) await shutdownCe(event.reason === "reload" ? "reload" : "new");
     // A new session must never begin while the previous owned child is still
@@ -2004,6 +2024,9 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         binding: view.binding, credential: view.credentialConfigured ? "configured" : "not configured",
         configurationState: view.state, ...(view.errorCode === undefined ? {} : { errorCode: view.errorCode }), runtimeState, evidence,
       }, { signal: controller.signal });
+      // Native readiness is independent evidence from the Tunnel lifecycle; never infer STOPPED.
+      const native = inspectNativeReadiness();
+      notify(ctx, `ce-tunnel: native=${native.state} (${native.code}) | transport lifecycle is reported separately; /ce-native for driver details`);
       if (!presentInteractive && !controller.signal.aborted) notify(ctx, `ce-tunnel: ce=${ceStatusText()} | tunnel(real background): ${presented.lines.join(" | ")}`);
     })();
     if (presentInteractive) managerUiTask = task;
@@ -2048,6 +2071,17 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   /** Direct shortcuts and the Manager invoke this same operation path. */
   const runTunnelCommand = async (args: string, ctx: ExtensionContextView): Promise<void> => {
         const sub = args.trim().split(/\s+/)[0] ?? "";
+        // The start gate precedes every manager, profile and process side effect.
+        if (sub === "start") {
+          try { assertNativeReadyForTunnel(); }
+          catch (error) {
+            if (error instanceof RuntimeEligibilityError) {
+              notify(ctx, `ce-tunnel: start refused ${error.code}; ${hostRuntimeRepairMessage()}`, "warning"); return;
+            }
+            const code = error instanceof Error && "code" in error && typeof error.code === "string" && /^CE_NATIVE_/.test(error.code) ? error.code : "CE_NATIVE_INITIALIZATION_FAILED";
+            notify(ctx, `ce-tunnel: start refused ${code}; run /ce-native to inspect or install the trusted driver`, "warning"); return;
+          }
+        }
         if (sub === "doctor") {
           notify(ctx, installationDiagnosticMessage(diagnoseInstallation({ env: process.env }))); return;
         }

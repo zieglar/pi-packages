@@ -8,7 +8,7 @@ The published npm package `@zieglar/pi-chat-exchange@0.2.0` is unchanged. Its hi
 
 Current-source `package.json` declares Node `>=22.19.0`, matching the actual installed Pi 1.3.0 Host manifest. This is a Host minimum, not a promise that every Node 22 or later build, Node 25 or Node 26 is qualified.
 
-Native is the target default driver. With no selection file, CE selects `rust-native` at `NATIVE_COMPAT.defaultVersion` (currently `0.1.0`). `node-sqlite` is retained only as an explicitly selected, lazily loaded, nonproduction compatibility driver. Native load or trust failure fails closed; Node is never a fallback.
+Rust Native is the only default persistence driver. With no selection file, CE selects `rust-native` at `NATIVE_COMPAT.defaultVersion` (currently `0.1.0`). `node-sqlite` is retained only as an explicitly selected, lazily loaded, nonproduction compatibility driver. Native load or trust failure fails closed; Node is never a fallback.
 
 Native uses bundled SQLite `3.54.1`, independently of `process.versions.sqlite`. Admission checks Node-API >=8, the actual module, ABI, target, trusted cache, SQLite identity, compile options and behavior. The built-in `node:sqlite` version/known-defect restrictions apply only to explicit compatibility selection. Driver-specific hard constraints remain in force, including the SQLite safety floor and shared probes.
 
@@ -28,7 +28,13 @@ Pi Host and MCP child qualify independently. `CE_NODE_PATH` selects only the chi
 
 ## Native and platform scope
 
-Native `ce-sqlite-v0.1.0` uses ABI `1` and bundled SQLite `3.54.1`, with immutable release source `a8386aafd657c84825b2905847f34a43d5b91e1e`. Native admission checks the actual module, Node-API >=8, SQLite identity, compile options and behavior. Production pins remain `null`, so default prepare/load refuses unpinned binaries. Native default and production pins must ship as one publish unit after separate pin authorization. With pins still null, the default build cannot be released and production is not enabled.
+Native `ce-sqlite-v0.1.0` uses ABI `1` and bundled SQLite `3.54.1`, with immutable release source `a8386aafd657c84825b2905847f34a43d5b91e1e`. Native admission checks the actual module, Node-API >=8, SQLite identity, compile options and behavior. Production `NATIVE_COMPAT` pins now reference immutable Release `427441708`; four platform SHA-256 values were verified against `SHA256SUMS`, and seven attestation subjects were bound to that source. The source declaration and pins remain unreleased. Production publication requires separate authorization.
+
+## Native readiness and Windows/WSL2
+
+Extension load is read-only and never downloads, creates a Store or starts Tunnel. Missing Native leaves Pi and management commands available, with the warning and current factory scope described in [Native management](native-management.md); Store, Tunnel start and messaging fail closed. CE never automatically downloads, repairs or upgrades Native, and never falls back. See [Native management](native-management.md) for `/ce-native` installation, inspection and the exact warning.
+
+Windows Native is unsupported (`CE_NATIVE_TARGET_UNSUPPORTED`): no Windows binary exists, CE does not load Linux binaries there, and `/ce-tunnel start` refuses. Run Linux Node.js, Pi and CE inside WSL2; the real Linux platform selects the x64/arm64 asset. Keep an active SQLite Store on the Linux filesystem rather than `/mnt/c` or other Windows mounts. This is a recommendation, with existing filesystem admission unchanged. WSL2 integration was not verified in this environment; platform tests cover target mapping and Windows refusal only.
 
 | Platform | Native artifact/conformance | Hosted Native Store integration |
 |---|---|---|

@@ -36,7 +36,15 @@ pi -e ./packages/pi-chat-exchange/pi-extension/index.ts
 
 Use pnpm 12.9.1 and an approved Node. The extension imports `dist/`; after source changes build before `/reload`. A persistent local installation can use `pi install /absolute/path/to/packages/pi-chat-exchange`; keep that directory in place. See [operations](operations.md) for development checks.
 
-Native is the target default: absent selection chooses `rust-native` at the declared default version `0.1.0`. `node-sqlite` is an explicitly selected, lazily loaded, nonproduction compatibility driver and is never a fallback. Native load/trust failures fail closed. Production `NATIVE_COMPAT` pins remain null: the default build cannot be released and production is not enabled. Native default and production pins must be delivered as one publish unit, only after separate pin authorization. The minimum matches `>=22.19.0` in the installed Pi 1.3.0 Host manifest. Source development is subject to this release blocker; the build/load commands above do not establish production availability. Isolated offline Pi Host first runs passed on Node 22.19.0, 24.22.2, 25.2.1, 25.9.0 and 26.12.1; see the local matrix in [runtime support](runtime-support.md).
+Rust Native is the only default persistence driver; absent selection chooses `rust-native` `0.1.0`. Explicit `node-sqlite` is non-production compatibility only, with no automatic fallback. Production `NATIVE_COMPAT` now pins the verified `ce-sqlite-v0.1.0` assets. These pins and the Node `>=22.19.0` source declaration (matching installed Pi 1.3.0) remain unreleased; production publication requires separate authorization. Build/load commands do not establish production availability.
+
+## Prepare Native in current source
+
+Run `/ce-native status`, then explicitly `/ce-native install` if needed. Installation downloads only the trusted default version, verifies before changing selection, and requires a Pi restart afterward. `/ce-native verify` is read-only; `/ce-native repair confirm` is explicit repair. `/ce-native check-updates` only discovers GitHub Releases and never trusts `latest` or changes selection. CE never automatically downloads, repairs, upgrades or falls back.
+
+Loading the extension is read-only: no download, Store creation or Tunnel start. Pi and management commands remain available when Native is missing; Store, Tunnel start and messaging fail closed. See [Native management](native-management.md) for states and the session warning. Windows Native refuses with `CE_NATIVE_TARGET_UNSUPPORTED`; use Linux Node.js, Pi and CE inside WSL2. Keep the active Store on the Linux filesystem rather than `/mnt/c` or other Windows mounts. WSL2 integration is unverified here; platform tests cover target mapping and Windows refusal only. Existing filesystem admission remains unchanged.
+
+ Isolated offline Pi Host first runs passed on Node 22.19.0, 24.22.2, 25.2.1, 25.9.0 and 26.12.1; see the local matrix in [runtime support](runtime-support.md).
 
 ## Configure Tunnel and messaging
 

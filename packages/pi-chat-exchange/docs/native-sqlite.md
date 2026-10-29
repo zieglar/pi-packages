@@ -2,13 +2,15 @@
 
 English | [简体中文](native-sqlite.zh-CN.md)
 
-Current source supports the built-in `node:sqlite` driver and independent Rust Native middleware. Both use the same TypeScript transaction helper, schema v7, SQL algorithms, authorization, idempotency, ACK and recovery contracts. There is no sidecar or IPC. The published npm 0.2.0 artifact and the current source have separate qualification histories; installing npm 0.2.0 does not acquire later source features.
+Rust Native is the only default persistence driver in current source. The built-in `node:sqlite` driver requires explicit non-production compatibility selection. Both use the same TypeScript transaction helper, schema v7, SQL algorithms, authorization, idempotency, ACK and recovery contracts. There is no sidecar or IPC. The published npm 0.2.0 artifact and the current source have separate qualification histories; installing npm 0.2.0 does not acquire later source features.
 
 ## Release and consumer trust
 
 [Native Release `ce-sqlite-v0.1.0`](https://github.com/zieglar/pi-packages/releases/tag/ce-sqlite-v0.1.0) is published and immutable. Its middleware version is `0.1.0`, ABI `1`, bundled SQLite `3.54.1`, and exact source SHA `a8386aafd657c84825b2905847f34a43d5b91e1e`. The formal [release workflow run](https://github.com/zieglar/pi-packages/actions/runs/40813628775) succeeded. Published assets were downloaded separately from CI and their checksums, identities and seven subject attestations with source-digest binding verified during release acceptance. That is historical release evidence, not a fresh consumer or runtime test in this documentation change.
 
-**Production asset hashes in `src/storage/native-compat.ts` remain `null`.** A null hash means unpinned and refuses both prepare and load. It does not mean the GitHub Release is absent. Publication, attestation verification and promotion into CE's consumer trust manifest are separate decisions. Native is the target default: absent selection chooses `rust-native` at the declared default version `0.1.0`. `node-sqlite` is an explicitly selected, lazily loaded, nonproduction compatibility driver and is never a fallback. Native load/trust failures fail closed. Production `NATIVE_COMPAT` pins remain null: the default build cannot be released and production is not enabled. Native default and production pins must be delivered as one publish unit, only after separate pin authorization.
+Production `NATIVE_COMPAT` now pins immutable Release `427441708`, `ce-sqlite-v0.1.0`. All four platform SHA-256 values were verified against `SHA256SUMS`, and seven attestation subjects were verified as bound to source `a8386aafd657c84825b2905847f34a43d5b91e1e`. These pins and the current source declaration are not released in CE; production publication requires separate authorization. Absent selection chooses `rust-native` at `0.1.0`. Explicit `node-sqlite` compatibility is non-production and never an automatic fallback. Native trust, load and initialization failures fail closed.
+
+For interactive installation, readiness states and Windows/WSL2 guidance, see [Native management](native-management.md). CE never automatically downloads, repairs or upgrades Native.
 
 The exact eight assets are:
 
@@ -49,11 +51,11 @@ Both Pi Host and MCP child read `~/.config/pi-chat-exchange/sqlite-driver.json`.
 }
 ```
 
-`manifestFile` is optional; without it the package's `NATIVE_COMPAT` applies and its current null hashes refuse loading. An operator-supplied manifest pins middleware version, ABI, target asset and SHA-256, and is executable-code trust authority. Verify its origin independently. A checksum downloaded beside an untrusted binary is insufficient as the sole trust anchor. Do not use `latest`, automatic upgrades or unverified pins.
+`manifestFile` is optional; without it the package's pinned `NATIVE_COMPAT` applies. An operator-supplied manifest pins middleware version, ABI, target asset and SHA-256, and is executable-code trust authority. Verify its origin independently. A checksum downloaded beside an untrusted binary is insufficient as the sole trust anchor. Do not use `latest`, automatic upgrades or unverified pins.
 
 ## Prepare, select and inspect
 
-These commands apply to a built current-source checkout, from the package directory after `pnpm run build`. They are conditional operator procedures, not an enabled default installation path: first obtain an independently verified manifest and authorize its use.
+These commands apply to a built current-source checkout, from the package directory after `pnpm run build`. They describe isolated qualification with an operator-supplied manifest. Normal interactive installation uses `/ce-native install` and the shipped trust pins; see [Native management](native-management.md).
 
 First set `CE_NATIVE_TEST_HOME` to the absolute path of a private isolated HOME prepared for this qualification and populate its verified cache. Use that same HOME throughout; this example supplies no authority over the production HOME.
 

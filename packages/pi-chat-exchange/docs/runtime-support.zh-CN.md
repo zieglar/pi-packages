@@ -8,7 +8,7 @@
 
 当前源码 `package.json` 声明 Node `>=22.19.0`，与实际安装的 Pi 1.3.0 Host manifest 一致。这是 Host 最低要求，不代表全部 Node 22 及以后版本、Node 25 或 Node 26 均已验证。
 
-Native 是目标默认驱动。没有选择文件时，CE 使用 `NATIVE_COMPAT.defaultVersion`（当前 `0.1.0`）选择 `rust-native`。`node-sqlite` 仅保留为显式选择、延迟加载的非生产兼容驱动。Native 加载或信任校验失败时直接拒绝，绝不回退到 Node。
+Rust Native 是唯一的默认持久化驱动。没有选择文件时，CE 使用 `NATIVE_COMPAT.defaultVersion`（当前 `0.1.0`）选择 `rust-native`。`node-sqlite` 仅保留为显式选择、延迟加载的非生产兼容驱动。Native 加载或信任校验失败时直接拒绝，绝不回退到 Node。
 
 Native 使用内置 SQLite `3.54.1`，不依赖 `process.versions.sqlite`。准入检查 Node-API >=8、实际模块、ABI、目标、可信缓存、SQLite 身份、编译选项与行为。内置 `node:sqlite` 的版本及已知缺陷限制仅适用于显式兼容选择。驱动各自的硬约束仍然有效，包括 SQLite 安全下限和共享探针。
 
@@ -28,7 +28,13 @@ Pi Host 与 MCP child 分别准入。`CE_NODE_PATH` 只选择 child，改变 Hos
 
 ## Native 与平台范围
 
-Native `ce-sqlite-v0.1.0` 使用 ABI `1`、内置 SQLite `3.54.1`，不可变发布来源为 `a8386aafd657c84825b2905847f34a43d5b91e1e`。Native 准入检查真实模块、Node-API >=8、SQLite 身份、编译选项和行为。生产 pin 仍为 `null`，因此默认 prepare/load 拒绝未 pin 二进制。Native 默认切换与生产 pins 必须在另行授权 pin 后作为同一发布单元交付。pins 仍为 null，默认构建不可发布，生产尚未启用。
+Native `ce-sqlite-v0.1.0` 使用 ABI `1`、内置 SQLite `3.54.1`，不可变发布来源为 `a8386aafd657c84825b2905847f34a43d5b91e1e`。Native 准入检查真实模块、Node-API >=8、SQLite 身份、编译选项和行为。生产 `NATIVE_COMPAT` pins 现已指向不可变 Release `427441708`；四个平台的 SHA-256 已与 `SHA256SUMS` 核对，七个 attestation subject 已验证绑定到该源码。源码声明与 pins 尚未发布，生产发布需另行授权。
+
+## Native 就绪与 Windows/WSL2
+
+扩展加载只读，不下载、不创建 Store、不启动 Tunnel。Native 缺失时 Pi 和管理命令仍可用，警告及当前 factory 范围见 [Native 管理](native-management.zh-CN.md)；Store、Tunnel start 和消息操作直接拒绝。CE 不会自动下载、修复或升级 Native，也不会回退。`/ce-native` 安装、检查与警告原文见 [Native 管理](native-management.zh-CN.md)。
+
+Windows Native 不受支持（`CE_NATIVE_TARGET_UNSUPPORTED`）：没有 Windows 二进制，CE 不会在 Windows 加载 Linux 二进制，`/ce-tunnel start` 会拒绝。建议在 WSL2 内运行 Linux Node.js、Pi 和 CE，由真实 Linux 平台选择 x64/arm64 资产。建议将活跃 SQLite Store 放在 Linux 文件系统，避免 `/mnt/c` 等 Windows 挂载；现有文件系统准入规则不变。本环境未做 WSL2 集成验证，平台测试仅覆盖目标映射与 Windows 拒绝。
 
 | 平台 | Native 制品/一致性测试 | Hosted Native Store 集成 |
 |---|---|---|

@@ -76,7 +76,7 @@ function tempPackage(fields = {}) {
     ...fields,
   }));
   const compatPath = join(directory, "dist/storage/native-compat.js");
-  const compat = readFileSync(compatPath, "utf8").replaceAll("sha256: null", `sha256: "${"a".repeat(64)}"`);
+  const compat = readFileSync(compatPath, "utf8");
   writeFileSync(compatPath, compat);
   return directory;
 }
@@ -171,8 +171,11 @@ test("Native-default publication with unpinned production assets refuses", () =>
     name: "@zieglar/pi-chat-exchange", version: "0.2.0",
     repository: { type: "git", url: "git+https://github.com/zieglar/pi-packages.git", directory: "packages/pi-chat-exchange" },
   }));
-  // Default Native path exists, but the production trust pin is null. No npm call is allowed.
-  writeFileSync(join(directory, "dist/storage/native-compat.js"), readFileSync(join(sourcePackageDirectory, "dist/storage/native-compat.js")));
+  // Mutate a fixture explicitly; the production module now contains verified pins.
+  const compat = readFileSync(join(sourcePackageDirectory, "dist/storage/native-compat.js"), "utf8");
+  writeFileSync(join(directory, "dist/storage/native-compat.js"), `${compat}
+for (const entry of Object.values(NATIVE_COMPAT.versions["0.1.0"].assets)) entry.sha256 = null;
+`);
   const result = invoke(["preflight"], { cwd: directory, routes: healthyRoutes() });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Native default requires verified production trust pins/);
@@ -190,7 +193,7 @@ test("fully pinned production assets pass the publish trust gate", async () => {
     assert.throws(() => assertNativeDefaultPublishable({ manifest: broken, parseNativeCompat }),
       /Native default requires verified production trust pins/);
   }
-  assert.throws(() => assertNativeDefaultPublishable({ manifest: structuredClone(NATIVE_COMPAT), parseNativeCompat }), /Native default requires verified production trust pins/);
+  assert.doesNotThrow(() => assertNativeDefaultPublishable({ manifest: structuredClone(NATIVE_COMPAT), parseNativeCompat }));
   for (const broken of [
     { ...manifest, abiVersion: 2 },
     { ...manifest, repository: "other/repository" },

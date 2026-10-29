@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// Inbox advisory behaviour is not Native qualification: keep the Native readiness
+// warning out of these notification-count assertions.
+vi.mock("../../../dist/runtime/native-readiness.js", async original => ({
+  ...await original<typeof import("../../../src/runtime/native-readiness.js")>(),
+  assertNativeReadyForTunnel: () => ({ state: "READY", code: "CE_NATIVE_READY", reason: "test", driver: "rust-native", version: "0.1.0", abiVersion: 1, sqliteVersion: "3.54.1", target: "test" }),
+  inspectNativeReadiness: () => ({ state: "READY", code: "CE_NATIVE_READY", reason: "test", driver: "rust-native", version: "0.1.0", abiVersion: 1, sqliteVersion: "3.54.1", target: "test" }),
+}));
+
 const fake = vi.hoisted(() => {
   class Refusal extends Error {
     readonly outcome = "ROLLED_BACK";

@@ -4,12 +4,20 @@
 
 这是 Secure MCP Tunnel 路径；不需要 Desktop stdio 插件。只用 Desktop 本地插件请走 [Desktop stdio 指南](chatgpt-installation.zh-CN.md)。正式安装给日常使用请用已发布精确 npm 版本或预构建 tarball 的[独立安装指南](independent-install.zh-CN.md)，无需本页的仓库构建。示例均为占位值，不是已生效配置。
 
+## Tunnel 启动前的 Native 就绪检查（当前源码）
+
+用 `/ce-native status` 或 `/ce-native verify` 只读检查。显式 `/ce-native install` 仅下载可信默认版本，校验后才修改选择，完成后需重启 Pi。修复需执行 `/ce-native repair confirm`；`/ce-native check-updates` 只读取 GitHub Release 元数据，不信任 `latest` 或改变选择。CE 不会自动下载、修复、升级或回退。源码声明与 pins 尚未发布，生产发布需另行授权。
+
+扩展加载不下载、不创建 Store、不启动 Tunnel。Native 缺失时 Pi 和管理命令仍可用，警告及当前 factory 范围见 [Native 管理](native-management.zh-CN.md)，Store、Tunnel start 和消息操作则直接拒绝。`/ce-tunnel start` 在任何 manager/profile/process 副作用前重新验证 Native 与 Store 准入，拒绝时给出具体 `CE_NATIVE_*` 码和 `/ce-native` 提示。status 单独报告 `native=<STATE> (code)`；不能因 Native 缺失就将 transport 视为 `STOPPED`。stop 仍可用于安全清理。
+
+Windows 没有 Native 二进制（`CE_NATIVE_TARGET_UNSUPPORTED`），CE 不会在 Windows 加载 Linux 二进制，start 会拒绝。建议在 WSL2 内运行 Linux Node.js、Pi 和 CE，按真实平台选择 Linux x64/arm64 资产。建议将活跃 Store 放在 Linux 文件系统，避免 `/mnt/c` 等 Windows 挂载；现有文件系统准入规则不变。本环境未做 WSL2 集成验证，平台测试仅覆盖目标映射与 Windows 拒绝。详见 [Native 管理](native-management.zh-CN.md)。
+
 ## 1. 前提与安装
 
 | 组件 | 要求 |
 |---|---|
 | Pi | 1.3.0；设置与确认操作使用交互 TUI |
-| Pi host / MCP child Node | 开发候选声明 **>=24.20.0 <=24.22.2**，分别满足 SQLite >=3.51.3、平台/编译安全与共享行为探针；不固定 SQLite/source ID。24.19.0、25.9.0 有已复现的 native crash，明确拒绝；已发布 npm 0.2.0 不变 |
+| Pi host / MCP child Node | 当前源码声明 **>=22.19.0**，与已安装 Pi 1.3.0 一致。Rust Native 是唯一默认驱动，使用内置 SQLite 3.54.1 并执行 Store 准入探针；内置 `node:sqlite` 限制仅用于显式非生产兼容选择。已发布 npm 0.2.0 不变 |
 | 仓库构建工具 | pnpm 12.9.1；UI 依赖由包安装，不需另装 UI |
 | Tunnel client | 当前兼容基线 `tunnel-client` 0.0.16；可信绝对路径或受控系统目录发现 |
 | Store 平台 | allowlist 为 macOS arm64 / Linux x64；本轮实际回归为 macOS arm64，Node 26.12.1 仅作隔离预览，不表示未来版本、Linux 或所有客户端已验收 |

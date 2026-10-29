@@ -36,7 +36,15 @@ pi -e ./packages/pi-chat-exchange/pi-extension/index.ts
 
 使用 pnpm 12.9.1 与批准 Node。扩展导入 `dist/`，修改源码后先 build 再 `/reload`。长期本地安装可用 `pi install /absolute/path/to/packages/pi-chat-exchange`，之后保留原目录。开发检查见[运维指南](operations.zh-CN.md)。
 
-Native 是目标默认驱动：没有选择文件时，使用声明的默认版本 `0.1.0` 选择 `rust-native`。`node-sqlite` 仅为显式选择、延迟加载的非生产兼容驱动，绝不作为回退。Native 加载或信任校验失败时直接拒绝。生产 `NATIVE_COMPAT` pins 仍为 null，默认构建不可发布，生产尚未启用。Native 默认切换与生产 pins 必须在另行授权 pin 后作为同一发布单元交付。当前最低 Node 要求与已安装 Pi 1.3.0 Host manifest 的 `>=22.19.0` 一致。源码开发也受此发布阻塞影响，不能把上面的 build/load 命令视为生产已可用。隔离离线 Pi Host 首跑已在 Node 22.19.0、24.22.2、25.2.1、25.9.0、26.12.1 全部通过；本地矩阵见[运行时支持](runtime-support.zh-CN.md)。
+Rust Native 是唯一的默认持久化驱动，没有选择文件时使用 `rust-native` `0.1.0`。显式 `node-sqlite` 仅供非生产兼容用途，不自动回退。生产 `NATIVE_COMPAT` 现已固定经验证的 `ce-sqlite-v0.1.0` 资产。这些 pins 和 Node `>=22.19.0` 源码声明（与已安装 Pi 1.3.0 一致）尚未发布；生产发布需另行授权。build/load 命令不证明生产已可用。
+
+## 在当前源码中准备 Native
+
+先运行 `/ce-native status`，需要安装时显式执行 `/ce-native install`。安装仅下载可信默认版本，校验通过后才修改选择，完成后需重启 Pi。`/ce-native verify` 只读；`/ce-native repair confirm` 是显式修复。`/ce-native check-updates` 只发现 GitHub Release，不会信任 `latest` 或修改选择。CE 不会自动下载、修复、升级或回退。
+
+扩展加载只读，不下载、不创建 Store、不启动 Tunnel。Native 缺失时 Pi 和管理命令仍可用；Store、Tunnel start 和消息操作直接拒绝。状态和会话警告见 [Native 管理](native-management.zh-CN.md)。Windows Native 以 `CE_NATIVE_TARGET_UNSUPPORTED` 拒绝；建议在 WSL2 内运行 Linux Node.js、Pi 和 CE，将活跃 Store 放在 Linux 文件系统，避免 `/mnt/c` 等 Windows 挂载。本环境未做 WSL2 集成验证，平台测试仅覆盖目标映射与 Windows 拒绝。现有文件系统准入规则不变。
+
+隔离离线 Pi Host 首跑已在 Node 22.19.0、24.22.2、25.2.1、25.9.0、26.12.1 全部通过；本地矩阵见[运行时支持](runtime-support.zh-CN.md)。
 
 ## 配置 Tunnel 与消息权限
 

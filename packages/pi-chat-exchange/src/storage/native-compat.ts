@@ -56,6 +56,15 @@ export function parseNativeCompat(value: unknown): NativeCompat {
 }
 
 
+// ce-sqlite-v0.1.0 immutable Release 427441708, source a8386aa…; verified by SHA256SUMS
+// and all seven attestation subjects bound to that source commit.
+const CE_SQLITE_V010_SHA256: Readonly<Record<string, string>> = {
+  "aarch64-apple-darwin": "b3b0102931f4fd50459e435cd0ac3ad68f61f9c00c0c14366eb03ab5f4b71db3",
+  "x86_64-apple-darwin": "53f036cca6b43a75f340c192dc67b070919904ad3590f5e63fa56a6d408e180b",
+  "x86_64-unknown-linux-gnu": "d93db0cf84621495154ff98f3b293b615593967060050b38d9ceaee6871efaf7",
+  "aarch64-unknown-linux-gnu": "6186c334e362d283481182efd1c6e8eaa98702b76bd6c3e5e933d584263c99d2",
+};
+
 export const NATIVE_COMPAT: NativeCompat = {
   abiVersion: NATIVE_ABI_VERSION,
   defaultVersion: NATIVE_DEFAULT_VERSION,
@@ -67,7 +76,7 @@ export const NATIVE_COMPAT: NativeCompat = {
         "x86_64-apple-darwin",
         "x86_64-unknown-linux-gnu",
         "aarch64-unknown-linux-gnu",
-      ].map((target) => [target, { asset: nativeAssetName(NATIVE_DEFAULT_VERSION, target), sha256: null }])),
+      ].map((target) => [target, { asset: nativeAssetName(NATIVE_DEFAULT_VERSION, target), sha256: CE_SQLITE_V010_SHA256[target]! }])),
     },
   },
 };

@@ -10,7 +10,7 @@ Pi Chat Exchange（CE）让 ChatGPT 和 Pi 通过显式工具交换持久化消�
 - 分别授权发送、消息发现、正文读取和 ACK。
 - 为每个 Pi Session 提供稳定 Endpoint，支持显式注册、激活、停用和撤销。
 - 管理 Secure MCP Tunnel；另有独立的 Desktop stdio 插件路径。
-- Rust Native SQLite 是目标默认驱动；`node:sqlite` 仅作为显式选择的非生产兼容驱动保留。
+- Rust Native SQLite 是唯一的默认持久化驱动；`node:sqlite` 仅作为显式选择的非生产兼容驱动保留。
 
 CE 不提供自动任务调度、自动排空收件箱或 exactly-once delivery/execution。`DELIVERY_UNKNOWN != CANCELLED`；缺少 ACK 不能作为重试操作的依据。
 
@@ -89,7 +89,15 @@ Setup 的 Advanced · Messaging 必须显式授权当前 Session。只保存传�
 
 独立且不可变的 Native Release 为 [**`ce-sqlite-v0.1.0`**](https://github.com/zieglar/pi-packages/releases/tag/ce-sqlite-v0.1.0)，ABI 为 **1**，内置 SQLite **3.54.1**，来源 SHA 为 **`a8386aafd657c84825b2905847f34a43d5b91e1e`**。它与 npm 0.2.0 独立，二进制不随 npm 包分发。
 
-当前实现将 Native 作为默认驱动，即使 selection file 不存在也如此；`node:sqlite` 仅在显式选择后延迟加载，Native 信任、加载或初始化失败均 fail closed，绝不回退。**生产 trust pin 仍为 `null`**，因此此 Native 默认构建目前无法加载，也不能发布。Native 默认与经验证的生产 pin 必须在单独授权后作为同一发布单元交付。隔离的 [Native 准备与校验指南](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/native-sqlite.zh-CN.md) 不会启用生产路径。
+当前实现将 Native 作为默认驱动，即使 selection file 不存在也如此；`node:sqlite` 仅在显式选择后延迟加载，Native 信任、加载或初始化失败均 fail closed，绝不回退。生产 `NATIVE_COMPAT` pins 现已信任不可变 Release `427441708`：四个平台的 SHA-256 已与 `SHA256SUMS` 核对，七个 attestation subject 已验证绑定到该源码。新的源码声明与 pins 尚未发布；生产发布需另行授权。
+
+## Native 就绪与管理（当前源码）
+
+用 `/ce-native status` 或 `/ce-native verify` 检查 Native，不下载或修改选择。显式 `/ce-native install` 仅安装可信默认版本，校验成功后才更改选择；随后重启 Pi。`/ce-native repair confirm` 是显式修复。`/ce-native check-updates` 只读取 GitHub Release 元数据，`latest` 不会因此受信任或改变选择。CE 不会自动下载、修复或升级 Native。
+
+扩展加载只读，不下载、不创建 Store、不启动 Tunnel。Native 未就绪时 Pi 仍可加载，管理命令仍可用；Store、Tunnel start 和消息操作直接拒绝。`/ce-tunnel start` 在任何 manager/profile/process 副作用前重新验证 Native 与 Store 准入，拒绝时给出 `CE_NATIVE_*` 码和 `/ce-native` 提示。status 单独报告 `native=<STATE> (code)`，不据此推断 transport 为 `STOPPED`；stop 仍可用于安全清理。
+
+Windows Native 不受支持（`CE_NATIVE_TARGET_UNSUPPORTED`），没有 Windows 二进制，CE 也不会在 Windows 尝试加载 Linux 二进制。建议在 WSL2 内运行 Linux Node.js、Pi 和 CE，按真实平台选择 Linux x64/arm64 资产。建议将活跃 SQLite Store 放在 Linux 文件系统，避免 `/mnt/c` 等 Windows 挂载。本环境未做 WSL2 集成验证；平台测试仅覆盖目标映射与 Windows 拒绝。现有 Store 文件系统规则仍适用。警告原文、命令和修复边界见 [Native 管理](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/native-management.zh-CN.md)。
 
 <a id="边界与验证"></a>
 
