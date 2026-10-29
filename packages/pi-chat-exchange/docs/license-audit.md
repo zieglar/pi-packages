@@ -2,7 +2,7 @@
 
 > Historical evidence or design record. Claims, commands, test results and limitations below describe the recorded phase, not current support or release eligibility.
 
-> Publication update (2026-10-29): `@zieglar/pi-chat-exchange@0.2.0` has been published. Publication restrictions below record the authority boundary of the 2026-10-27 audit. Historical qualification was Node 24.21.0 / Pi 1.3.0 / macOS arm64; cloud distribution remains `NOT_VERIFIED` for that artifact. The current source engine range is `>=24.20.0 <=24.22.1` in [`package.json`](../package.json), a separate claim from qualification.
+> Publication update (2026-10-29): `@zieglar/pi-chat-exchange@0.2.0` has been published. Publication restrictions below record the authority boundary of the 2026-10-27 audit. Historical qualification was Node 24.21.0 / Pi 1.3.0 / macOS arm64; cloud distribution remains `NOT_VERIFIED` for that artifact. The current source engine range is `>=24.20.0 <=24.22.2` in [`package.json`](../package.json), a separate claim from qualification.
 
 # CE 0.2.0 license audit (repo-only)
 

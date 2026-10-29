@@ -94,7 +94,7 @@ The package command builds and checks the runtime import closure/assets, require
 
 ## Release evidence and limits
 
-Published npm 0.2.0, its historical Node 24.21.0 / Pi 1.3.0 / macOS arm64 qualification and cloud distribution **NOT_VERIFIED** are separate facts. Current source engines `>=24.20.0 <=24.22.1` describe the local candidate, not expanded qualification of the published artifact. The npm publishing workflow remains local and unpushed, with no hosted OIDC proof. The owner reports the publisher connection configured; that is not hosted publication evidence.
+Published npm 0.2.0, its historical Node 24.21.0 / Pi 1.3.0 / macOS arm64 qualification and cloud distribution **NOT_VERIFIED** are separate facts. Current source engines `>=24.20.0 <=24.22.2` describe the local candidate, not expanded qualification of the published artifact. The npm publishing workflow remains local and unpushed, with no hosted OIDC proof. The owner reports the publisher connection configured; that is not hosted publication evidence.
 
 Native middleware has an independent immutable release `ce-sqlite-v0.1.0`, ABI 1, SQLite 3.54.1, source `a8386aafd657c84825b2905847f34a43d5b91e1e`; historical download/attestation verification is established. Hosted Native Store integration covers macOS arm64 / Linux x64; macOS x64 / Linux arm64 have artifact/conformance only. Production pins in `src/storage/native-compat.ts` remain null. Default driver is `node-sqlite`, with no fallback after native failure. These facts establish neither broad cloud/e2e support nor automatic native enablement. See [native SQLite](native-sqlite.md) and [native release CI](native-release-ci.md).
 

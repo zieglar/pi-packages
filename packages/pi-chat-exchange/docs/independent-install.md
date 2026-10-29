@@ -4,7 +4,7 @@
 
 # Independent Pi extension installation (0.2.0: managed npm and tarball fallback)
 
-Development candidate notice: the historical 0.2.0 instructions and certification below describe the unchanged published artifact. A locally built candidate declares Node `>=24.20.0 <=24.22.1` and requires SQLite >=3.51.3, platform/compile safety and shared behavioral checks; exact SQLite/source equality is removed. Node 24.19.0/25.9.0 are refused after reproduced native crashes; 26.12.1 is preview only. Candidate tests use isolated Stores and real Pi 1.3.0 on macOS arm64. Do not apply these candidate claims to npm 0.2.0.
+Development candidate notice: the historical 0.2.0 instructions and certification below describe the unchanged published artifact. A locally built candidate declares Node `>=24.20.0 <=24.22.2` and requires SQLite >=3.51.3, platform/compile safety and shared behavioral checks; exact SQLite/source equality is removed. Node 24.19.0/25.9.0 are refused after reproduced native crashes; 26.12.1 is preview only. Candidate tests use isolated Stores and real Pi 1.3.0 on macOS arm64. Do not apply these candidate claims to npm 0.2.0.
 
 `@zieglar/pi-chat-exchange@0.2.0` is published on npm. Install the exact published version through managed npm, or obtain a prebuilt npm tarball, install it physically and register it with Pi. Consumers need no repository, TypeScript, pnpm, tsconfig or build. These paths serve different purposes:
 

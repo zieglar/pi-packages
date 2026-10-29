@@ -4,6 +4,8 @@
 
 Handoff：`HANDOFF-PI-SQLITE-RUNTIME-DECOUPLE-01`。下方 COMPAT-02 和原始精确运行时资格章节均为历史记录。已发布 npm 0.2.0 不变。
 
+> 后续核查（2026-10-29）：真实 macOS arm64 Node 24.22.2 资格验证后，当前源码声明为 `>=24.20.0 <=24.22.2`。下方原矩阵及当时 `24.22.1` 上限保留为历史证据，当前结果和 Node 25 拒绝原因见[运行时支持](runtime-support.zh-CN.md)。已发布 npm 0.2.0 及其精确 engines 不变。
+
 当前候选策略取消将 SQLite 精确等于 3.53.4 及 source-ID 相等作为准入要求。运行时身份仍为可观察证据，不能替代行为检查。Node 候选限于规范稳定版 24（>=24.12.0）、25、26，仍须满足全部安全门禁并实际取得资格。未来 major 不自动支持。
 
 必要 SQLite 安全下限仍为 **3.51.3 或更新**。SQLite [WAL-reset bug](https://sqlite.org/wal.html#walresetbug) 可在独立进程/线程的多连接并发写入或 checkpoint 时损坏 WAL 数据库。CE 使用 WAL 和多进程，因此实际 Node 24.12.0、25.2.1 中有缺陷的 SQLite 3.50.4 即使通过内存/API 探针也被拒绝。较早修复回移版保守排除在策略之外。问题已获上游确认；本工作不声称本地复现损坏。

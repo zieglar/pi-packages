@@ -23,7 +23,7 @@ Follow the [Tunnel guide](tunnel-setup.md) for `/ce-tunnel doctor`, Setup / Adva
 
 ## Desktop requirements and packaging
 
-Requires ChatGPT Desktop with local plugin support, macOS or Linux, development candidate **Node.js >=24.20.0 <=24.22.1** (SQLite >=3.51.3, platform/compile safety and shared behavioral probes; no exact SQLite/source ID pin), and repository pnpm 12.9.1. Node 24.19.0 and 25.9.0 are refused after reproduced native crashes; 26.12.1 is isolated preview only. Testing used macOS arm64 and adds no Linux/Desktop UI acceptance. Published npm 0.2.0 is unchanged. The Desktop plugin uses `plugin.json`, root `mcp.json`, `${PLUGIN_ROOT}` and local stdio.
+Requires ChatGPT Desktop with local plugin support, macOS or Linux, development candidate **Node.js >=24.20.0 <=24.22.2** (SQLite >=3.51.3, platform/compile safety and shared behavioral probes; no exact SQLite/source ID pin), and repository pnpm 12.9.1. Node 24.19.0 and 25.9.0 are refused after reproduced native crashes; 26.12.1 is isolated preview only. Testing used macOS arm64 and adds no Linux/Desktop UI acceptance. Published npm 0.2.0 is unchanged. The Desktop plugin uses `plugin.json`, root `mcp.json`, `${PLUGIN_ROOT}` and local stdio.
 
 Official format references (current client entrypoints and organization eligibility follow their documentation):
 

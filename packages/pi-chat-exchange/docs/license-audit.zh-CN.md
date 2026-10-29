@@ -2,7 +2,7 @@
 
 > 历史许可证审计。以下权限和发布限制记录 2026-10-27 阶段，不代表当前发布状态。
 
-> 发布更新（2026-10-29）：`@zieglar/pi-chat-exchange@0.2.0` 已发布。下文发布限制属于当时审计权限边界。历史资格为 Node 24.21.0 / Pi 1.3.0 / macOS arm64；该制品云分发仍为 `NOT_VERIFIED`。当前源码 [`package.json`](../package.json) 的 engine 范围为 `>=24.20.0 <=24.22.1`，与资格验证是不同主张。
+> 发布更新（2026-10-29）：`@zieglar/pi-chat-exchange@0.2.0` 已发布。下文发布限制属于当时审计权限边界。历史资格为 Node 24.21.0 / Pi 1.3.0 / macOS arm64；该制品云分发仍为 `NOT_VERIFIED`。当前源码 [`package.json`](../package.json) 的 engine 范围为 `>=24.20.0 <=24.22.2`，与资格验证是不同主张。
 
 # CE 0.2.0 许可证审计（仅 repo）
 

@@ -4,6 +4,8 @@
 
 Handoff: `HANDOFF-PI-SQLITE-RUNTIME-DECOUPLE-01`. The sections below for COMPAT-02 and the original exact-runtime qualification are historical. Published npm 0.2.0 is unchanged.
 
+> Follow-up (2026-10-29): the current source declaration is `>=24.20.0 <=24.22.2` after actual macOS arm64 Node 24.22.2 qualification. The original matrix and its then-current `24.22.1` cap below remain historical evidence; current results and Node 25 refusal reasons are in [runtime support](runtime-support.md). Published npm 0.2.0 and its exact engines are unchanged.
+
 The current candidate policy removes exact SQLite 3.53.4 and source-ID equality as admission requirements. Runtime identities remain observable evidence; they are not substitutes for behavior checks. Node candidates are bounded to canonical stable 24 (>=24.12.0), 25 and 26, subject to all remaining safety gates and actual qualification. Future majors are not automatically supported.
 
 A necessary SQLite safety floor remains: **3.51.3 or newer**. SQLite's [WAL-reset bug](https://sqlite.org/wal.html#walresetbug) can corrupt WAL databases when multiple connections in separate processes/threads write or checkpoint concurrently. CE uses WAL and multiple processes, so affected SQLite 3.50.4 in actual Node 24.12.0 and 25.2.1 is refused even though the memory/API probes pass. Older fixed backports are conservatively outside this policy. The issue is upstream-confirmed; this work does not claim local corruption reproduction.
