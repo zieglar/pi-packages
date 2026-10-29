@@ -4,7 +4,8 @@ import type { Readable } from "node:stream";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { resolveSqliteDriver } from "../../src/storage/sqlite-driver-selection.js";
+import type { SqliteConnection } from "../../src/storage/sqlite-driver.js";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, it } from "vitest";
 import { createExchange, createMessage } from "../../src/storage/creation.js";
@@ -36,7 +37,7 @@ const to = { adapter: "pi", endpointId: "consumer-1" };
 interface Scenario {
   readonly root: string;
   readonly directory: string;
-  readonly reader: DatabaseSync;
+  readonly reader: SqliteConnection;
   readonly exchangeId: string;
 }
 interface WorkerReport {
@@ -70,7 +71,7 @@ function scenario(): Scenario {
   } finally {
     store.close();
   }
-  const reader = new DatabaseSync(join(directory, "store.sqlite"), { readOnly: true });
+  const reader = resolveSqliteDriver().open(join(directory, "store.sqlite"), { readOnly: true });
   const result = { root, directory, reader, exchangeId };
   scenarios.push(result);
   return result;

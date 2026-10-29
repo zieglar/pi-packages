@@ -6,10 +6,12 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { buildPackageArtifact } from "./package-pi-extension.mjs";
 
 export const PACKAGE_NAME = "@zieglar/pi-chat-exchange";
 export const REPOSITORY_URL = "git+https://github.com/zieglar/pi-packages.git";
 export const NATIVE_RELEASE_FILES = new Set(["SHA256SUMS", "provenance.jsonl", "native-manifest.json", "native-identities.json"]);
+const REQUIRED_NATIVE_TARGETS = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"];
 
 // npm errors are not proof of absence. Only a clean registry answer is
 // accepted; transport, permission and parse failures all refuse publication.
@@ -45,21 +47,6 @@ export function readPackageMetadata(directory) {
   return pkg;
 }
 
-export function checkPack(directory, run = runNpm) {
-  const result = run(["pack", "--dry-run", "--json"], directory);
-  if (result.status !== 0) throw new Error("npm pack failed; refusing release");
-  let pack;
-  try { pack = JSON.parse(result.stdout); } catch { throw new Error("npm pack output is unreadable; refusing release"); }
-  const files = Array.isArray(pack?.[0]?.files) ? pack[0].files.map(file => file.path) : [];
-  if (files.length === 0) throw new Error("npm package content inventory is empty");
-  const forbidden = files.filter(path =>
-    path.startsWith("native/ce-sqlite/") || path.endsWith(".node") || NATIVE_RELEASE_FILES.has(path)
-    || path.startsWith("docs/release/") || path.includes("public-export-ledger")
-    || path === "AGENTS.md" || path.startsWith(".herdr-web-ui/"));
-  if (forbidden.length > 0) throw new Error(`native release or private files must not enter the npm payload: ${forbidden.join(", ")}`);
-  return files;
-}
-
 export function assertVersionAbsent(pkg, directory, run = runNpm) {
   const result = run(["view", `${pkg.name}@${pkg.version}`, "version", "--json"], directory);
   if (result.status === 0) throw new Error("version already exists on npm; no overwrite or retry");
@@ -71,19 +58,39 @@ export function assertVersionAbsent(pkg, directory, run = runNpm) {
   }
 }
 
-export function preflight({ directory = process.cwd(), expectedSha = process.env.EXPECTED_SHA, actualSha = process.env.GITHUB_SHA, run = runNpm } = {}) {
+/** Publication authority for the Native-default build. Use the same compiled
+ * manifest and validator as runtime, then require the declared default version's
+ * complete target set to be pinned. Native default and pins are one release unit. */
+export function assertNativeDefaultPublishable({ manifest, parseNativeCompat }) {
+  let compat;
+  try { compat = parseNativeCompat(manifest); }
+  catch { throw new Error("Native default requires a valid production compatibility manifest and verified trust pins; publication refused"); }
+  const assets = compat.versions[compat.defaultVersion]?.assets;
+  const valid = assets !== undefined && REQUIRED_NATIVE_TARGETS.every(target => {
+    const asset = assets[target];
+    return asset?.asset === `ce-sqlite-${compat.defaultVersion}-${target}.node`
+      && typeof asset.sha256 === "string" && /^[0-9a-f]{64}$/.test(asset.sha256);
+  });
+  if (!valid) throw new Error("Native default requires verified production trust pins; publication with null or incomplete pins is refused");
+}
+
+export async function preflight({ directory = process.cwd(), expectedSha = process.env.EXPECTED_SHA, actualSha = process.env.GITHUB_SHA, run = runNpm } = {}) {
   assertPublishIdentity({ expectedSha, actualSha });
   const pkg = readPackageMetadata(directory);
-  const files = checkPack(directory, run);
+  // Read the actual built manifest, never evaluate a TypeScript source expression.
+  const compatModule = await import(pathToFileURL(join(directory, "dist/storage/native-compat.js")).href);
+  assertNativeDefaultPublishable({ manifest: compatModule.NATIVE_COMPAT, parseNativeCompat: compatModule.parseNativeCompat });
   assertVersionAbsent(pkg, directory, run);
-  return { name: pkg.name, version: pkg.version, fileCount: files.length };
+  const { artifactPath, inventory } = buildPackageArtifact({ root: directory, out: join(directory, ".pi-artifacts"), run });
+  return { name: pkg.name, version: pkg.version, fileCount: inventory.length, artifactPath };
 }
 
 // One attempt, no retry, no explicit dist-tag command. OIDC trusted publishing is the
-// only supported credential path here.
-export function publishOnce({ directory = process.cwd(), env = process.env, run = runNpm } = {}) {
+// only supported credential path here. Publish exactly the validated preflight tarball.
+export function publishOnce({ artifactPath, env = process.env, run = runNpm } = {}) {
   if (env.NPM_TOKEN) throw new Error("long-lived NPM_TOKEN must not be used; refusing release");
-  const result = run(["publish"], directory, env);
+  if (typeof artifactPath !== "string" || !artifactPath.endsWith(".tgz")) throw new Error("a validated preflight tarball is required; refusing release");
+  const result = run(["publish", artifactPath], undefined, env);
   if (result.status !== 0) throw new Error("npm publish failed; no retry and no explicit dist-tag commands");
   return result;
 }
@@ -91,15 +98,15 @@ export function publishOnce({ directory = process.cwd(), env = process.env, run 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
     if (process.argv[2] === "preflight") {
-      const result = preflight();
+      const result = await preflight();
       console.log(`preflight passed for ${result.name}@${result.version} (${result.fileCount} files)`);
     } else if (process.argv[2] === "publish") {
       // Refuse long-lived credentials before any registry or pack invocation.
       if (process.env.NPM_TOKEN) throw new Error("long-lived NPM_TOKEN must not be used; refusing release");
       // The publish entry point cannot bypass the preflight: identity, package
       // contents and duplicate-version checks always run before the single attempt.
-      preflight();
-      publishOnce();
+      const { artifactPath } = await preflight();
+      publishOnce({ artifactPath });
       console.log("npm publish completed once via trusted publishing");
     } else {
       throw new Error("usage: npm-release.mjs preflight | publish");

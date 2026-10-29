@@ -81,6 +81,8 @@ pnpm --dir packages/pi-chat-exchange run verify
 
 `verify` 串行运行 contract/native check、typecheck、build、默认 tests 与 packaged-plugin tests。Installed-client、real-host、distribution、native-specific lane 分开执行，证据与前置条件见[架构验证层次](architecture.zh-CN.md#验证层次)。跳过/可选 lane 不算通过，隔离测试不算 dogfooding。本次文档变更不重新执行这些门禁。
 
+默认测试 lane 在每次调用的私有 HOME 中显式选择 `node-sqlite`。Rust lane 使用操作员已验证的 HOME、manifest 和缓存。隔离离线 Pi Host 首跑已在 Node 22.19.0、24.22.2、25.2.1、25.9.0、26.12.1 全部通过；新增 Linux x64 Node 22.19.0 / 24.22.2 Native job 的 hosted 执行为 UNVERIFIED。本地矩阵见[运行时支持](runtime-support.zh-CN.md)。
+
 贡献须保留向内依赖、封闭 schema、独立 payload/ACK grants、可信 Session lookup 与最终 Storage authority。复用 Host/Storage seam，不另建消息系统。保留 intent 先于 effect、显式未知结果和正常释放路径。新 runtime/client/platform 支持需要独立真实资格验证。测试应检查可观察行为、隐私/拒绝、失败证据与生命周期边界，不用真实消息、私有路径或 Session 标识作公开 fixture/证据。回归入口与已知债务见[架构指南](architecture.zh-CN.md)。
 
 生产者从仓库根目录打包：
@@ -94,9 +96,9 @@ shasum -a 256 packages/pi-chat-exchange/.pi-artifacts/zieglar-pi-chat-exchange-0
 
 ## 发布证据与限制
 
-npm 0.2.0 已发布、历史 Node 24.21.0 / Pi 1.3.0 / macOS arm64 验收、云端分发 **NOT_VERIFIED** 是不同事实。当前源码 engines `>=24.20.0 <=24.22.2` 描述本地候选，不扩大已发布制品验收范围。npm 发布 workflow 仍在本地且未推送，没有 hosted OIDC 证明。所有者报告 publisher connection 已配置，不等于 hosted 发布证据。
+npm 0.2.0 已发布、历史 Node 24.21.0 / Pi 1.3.0 / macOS arm64 验收、云端分发 **NOT_VERIFIED** 是不同事实。当前源码 engines `>=22.19.0` 描述本地候选，不扩大已发布制品验收范围。npm 发布 workflow 仍在本地且未推送，没有 hosted OIDC 证明。所有者报告 publisher connection 已配置，不等于 hosted 发布证据。
 
-Native middleware 有独立不可变发布 `ce-sqlite-v0.1.0`、ABI 1、SQLite 3.54.1，源码 `a8386aafd657c84825b2905847f34a43d5b91e1e`，历史下载/attestation 已验证。Hosted Native Store integration 覆盖 macOS arm64 / Linux x64；macOS x64 / Linux arm64 只有 artifact/conformance。`src/storage/native-compat.ts` 生产 pins 仍为 null，默认驱动 `node-sqlite`，native 失败不回退。这些事实不证明广泛云端/e2e 支持，也不自动开启 native。详见[原生 SQLite](native-sqlite.zh-CN.md)与[原生发布 CI](native-release-ci.zh-CN.md)。
+Native middleware 有独立不可变发布 `ce-sqlite-v0.1.0`、ABI 1、SQLite 3.54.1，源码 `a8386aafd657c84825b2905847f34a43d5b91e1e`，历史下载/attestation 已验证。Hosted Native Store integration 覆盖 macOS arm64 / Linux x64；macOS x64 / Linux arm64 只有 artifact/conformance。`src/storage/native-compat.ts` 生产 pins 仍为 null，Native 是目标默认驱动：没有选择文件时，使用声明的默认版本 `0.1.0` 选择 `rust-native`。`node-sqlite` 仅为显式选择、延迟加载的非生产兼容驱动，绝不作为回退。Native 加载或信任校验失败时直接拒绝。生产 `NATIVE_COMPAT` pins 仍为 null，默认构建不可发布，生产尚未启用。Native 默认切换与生产 pins 必须在另行授权 pin 后作为同一发布单元交付。这些事实不证明广泛云端/e2e 支持，也不自动开启 native。详见[原生 SQLite](native-sqlite.zh-CN.md)与[原生发布 CI](native-release-ci.zh-CN.md)。
 
 历史 plans/audits 保留有日期的设计/测试陈述。本地 commit 不等于 release，workflow 意图不等于 hosted 执行，publisher 已配置不等于 OIDC 证明。Release/push/publication 需单独授权。
 

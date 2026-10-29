@@ -275,24 +275,25 @@ verify_installed_payload('initial')
 command('installed-runtime-qualification', [node, '--input-type=module', '-e',
     'const m = await import(process.argv[1]); console.log(JSON.stringify(m.assertHostRuntimeEligibility()));',
     (package / 'dist/storage/runtime.js').as_uri()])
-# Execute the shipped guide's actual local-prefix entry with the copied approved
-# Node, not an independently hardcoded alternative that could hide a doc defect.
-guide = (package / 'docs/independent-install.md').read_text()
+# The complete installation guide remains on GitHub, not in the minimal npm tarball.
+# Validate its actual local-prefix entry against the installed Host, using the repository's
+# current guide as the public-document source rather than pretending it is packaged.
+author_tree = pathlib.Path(__file__).resolve().parents[5]
+guide = (author_tree / 'packages/pi-chat-exchange/docs/independent-install.md').read_text()
 cli_match = re.search(r'^CE_PI_CLI="\$HOME/ce-install/(host/[^"\n]+)"$', guide, re.MULTILINE)
 if not cli_match:
-    raise RuntimeError('Shipped guide has no explicit local-prefix CLI route')
+    raise RuntimeError('Public installation guide has no explicit local-prefix CLI route')
 cli = r / cli_match.group(1)
 if not cli.is_file() or not cli.resolve().is_relative_to(r / 'host'):
-    raise RuntimeError('Shipped guide CLI route is not inside the installed host')
+    raise RuntimeError('Public installation guide CLI route is not inside the installed host')
 if cli.resolve(strict=True) != bootstrap_cli.resolve(strict=True):
-    raise RuntimeError('Shipped guide CLI route differs from the bootstrap CLI used for managed install: '
+    raise RuntimeError('Public installation guide CLI route differs from the bootstrap CLI used for managed install: '
                        + str(cli) + ' vs ' + str(bootstrap_cli))
 (r / 'guide-cli-route.json').write_text(json.dumps({'guideDerived': str(cli),
-    'bootstrapUsedForInstall': str(bootstrap_cli), 'identical': True}, indent=2))
+    'bootstrapUsedForInstall': str(bootstrap_cli), 'identical': True, 'source': 'GitHub public guide, intentionally not in tarball'}, indent=2))
 assert not package.is_symlink() and (package / 'dist/bin/mcp-stdio.js').is_file()
 env.update({'PI_OFFLINE': '1', 'PI_SKIP_VERSION_CHECK': '1', 'PI_TELEMETRY': '0', 'CE_NODE_PATH': str(node), 'CE_TUNNEL_CLIENT_PATH': str(r / 'run/absent-synthetic-client'), 'CE_TUNNEL_PROFILE': str(r / 'run/profile/tunnel.yaml')})
 (r / 'runtime-env.json').write_text(json.dumps(env, indent=2))
-author_tree = pathlib.Path(__file__).resolve().parents[5]
 sb = r / 'runtime.sb'
 sb.write_text('(version 1)\n(allow default)\n(deny network*)\n(deny file-read* (subpath "/Users") (subpath "/opt/homebrew") (subpath ' + json.dumps(str(author_tree)) + ') (subpath "' + str(r / 'cache') + '") (literal "' + str(archive) + '"))\n(deny process-exec (subpath "/Users") (subpath "/opt/homebrew") (regex "tunnel-client"))\n(allow process-exec (literal "/bin/ps") (with no-sandbox))\n')
 sandbox = ['/usr/bin/sandbox-exec', '-f', sb]

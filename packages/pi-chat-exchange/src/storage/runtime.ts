@@ -22,6 +22,9 @@ const REQUIRED_COMPILE_OPTIONS = Object.freeze(["THREADSAFE=1", "MUTEX_PTHREADS"
 const FORBIDDEN_COMPILE_OPTIONS = new Set(["OMIT_WAL", "OMIT_FOREIGN_KEY", "OMIT_TRIGGER", "OMIT_CHECK", "OMIT_COMPILEOPTION_DIAGS"]);
 const SUPPORTED_TARGETS = Object.freeze(["darwin/arm64", "linux/x64"]);
 
+/** Matches the supported Pi 1.3.0 Host declaration; independent of node:sqlite. */
+export const PI_HOST_MINIMUM_NODE_VERSION = "v22.19.0";
+
 /** Node builtin driver candidate range only; Rust uses Node-API instead. */
 export const CANDIDATE_NODE_RANGE = Object.freeze({ minimum: "v24.12.0", majors: Object.freeze([24, 25, 26]) });
 const NODE_VERSION_PATTERN = /^v(\d+)\.(\d+)\.(\d+)$/;
@@ -102,6 +105,11 @@ export function assertRuntimeEligibility(identity: RuntimeIdentity): void {
       throw new RuntimeEligibilityError("durable storage refuses this Node runtime: reproduced native transaction-close crash");
     }
   } else if (driver === "rust-native") {
+    const node = NODE_VERSION_PATTERN.exec(identity.nodeVersion ?? "");
+    if (node === null || !node.slice(1).every((part) => Number.isSafeInteger(Number(part)) && String(Number(part)) === part)
+      || Number(node[1]) < 22 || (Number(node[1]) === 22 && Number(node[2]) < 19)) {
+      throw new RuntimeEligibilityError(`Pi Host requires Node >=${PI_HOST_MINIMUM_NODE_VERSION}; received ${identity.nodeVersion ?? "unavailable"}`);
+    }
     const napi = Number(identity.napiVersion ?? process.versions.napi);
     if (!Number.isSafeInteger(napi) || napi < 8) {
       throw new RuntimeEligibilityError(`Rust Native requires Node-API >= 8; received ${identity.napiVersion ?? "unavailable"}`);

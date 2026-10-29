@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import vm from "node:vm";
 
@@ -11,8 +12,11 @@ const stub = resolve(import.meta.dirname, "support/npm-stub.mjs");
 const workflowPath = resolve(import.meta.dirname, "../../../../.github/workflows/npm-publish.yml");
 const SHA = "a".repeat(40);
 const OTHER_SHA = "b".repeat(40);
-const packageDirectory = resolve(import.meta.dirname, "../..");
+const packageDirectory = tempPackage();
 
+const sourcePackageDirectory = resolve(import.meta.dirname, "../..");
+const healthyInventory = JSON.parse(spawnSync("npm", ["pack", "--dry-run", "--json"], { cwd: packageDirectory, encoding: "utf8" }).stdout)[0].files
+  .filter(entry => entry.path !== "README.zh-CN.md");
 function harness(routes) {
   const directory = mkdtempSync(join(tmpdir(), "ce-npm-"));
   const bin = join(directory, "bin");
@@ -47,19 +51,33 @@ function invoke(args, { env = {}, routes = {}, scriptPath = releaseScript, cwd =
 
 function healthyRoutes() {
   return {
-    pack: { status: 0, stdout: JSON.stringify([{ files: [{ path: "dist/bin/ce-native.js" }, { path: "README.md" }] }]) },
+    pack: { status: 0, stdout: JSON.stringify([{ filename: "zieglar-pi-chat-exchange-0.2.0.tgz", files: healthyInventory }]) },
     view: { status: 1, stdout: "", stderr: "npm error code E404\n" },
   };
 }
 
 function tempPackage(fields = {}) {
   const directory = mkdtempSync(join(tmpdir(), "ce-pkg-"));
+  const sourceRoot = resolve(import.meta.dirname, "../..");
+  cpSync(join(sourceRoot, "dist"), join(directory, "dist"), { recursive: true });
+  cpSync(join(sourceRoot, "pi-extension"), join(directory, "pi-extension"), { recursive: true });
+  cpSync(join(sourceRoot, "README.md"), join(directory, "README.md"));
+  cpSync(join(sourceRoot, "LICENSE"), join(directory, "LICENSE"));
+  mkdirSync(join(directory, "native"), { recursive: true });
+  cpSync(join(sourceRoot, "native/tunnel-keychain.swift"), join(directory, "native/tunnel-keychain.swift"));
+  mkdirSync(join(directory, "scripts"), { recursive: true });
+  for (const name of ["recover-stale-ownership.mjs", "reconcile-session-process-mutex.mjs"])
+    cpSync(join(sourceRoot, "scripts", name), join(directory, "scripts", name));
   writeFileSync(join(directory, "package.json"), JSON.stringify({
+    ...JSON.parse(readFileSync(join(sourceRoot, "package.json"), "utf8")),
     name: "@zieglar/pi-chat-exchange",
     version: "0.2.0",
     repository: { type: "git", url: "git+https://github.com/zieglar/pi-packages.git", directory: "packages/pi-chat-exchange" },
     ...fields,
   }));
+  const compatPath = join(directory, "dist/storage/native-compat.js");
+  const compat = readFileSync(compatPath, "utf8").replaceAll("sha256: null", `sha256: "${"a".repeat(64)}"`);
+  writeFileSync(compatPath, compat);
   return directory;
 }
 
@@ -147,9 +165,45 @@ test("leading-zero semver is refused", () => {
   assert.equal(result.calls.length, 0);
 });
 
+test("Native-default publication with unpinned production assets refuses", () => {
+  const directory = tempPackage();
+  writeFileSync(join(directory, "package.json"), JSON.stringify({
+    name: "@zieglar/pi-chat-exchange", version: "0.2.0",
+    repository: { type: "git", url: "git+https://github.com/zieglar/pi-packages.git", directory: "packages/pi-chat-exchange" },
+  }));
+  // Default Native path exists, but the production trust pin is null. No npm call is allowed.
+  writeFileSync(join(directory, "dist/storage/native-compat.js"), readFileSync(join(sourcePackageDirectory, "dist/storage/native-compat.js")));
+  const result = invoke(["preflight"], { cwd: directory, routes: healthyRoutes() });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Native default requires verified production trust pins/);
+  assert.equal(result.calls.length, 0);
+});
+test("fully pinned production assets pass the publish trust gate", async () => {
+  const { assertNativeDefaultPublishable } = await import("../npm-release.mjs");
+  const { NATIVE_COMPAT, parseNativeCompat } = await import(pathToFileURL(join(sourcePackageDirectory, "dist/storage/native-compat.js")).href);
+  const all = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"];
+  const manifest = structuredClone(NATIVE_COMPAT);
+  for (const target of all) manifest.versions["0.1.0"].assets[target].sha256 = "a".repeat(64);
+  assert.doesNotThrow(() => assertNativeDefaultPublishable({ manifest, parseNativeCompat }));
+  for (const t of all) {
+    const broken = structuredClone(manifest); broken.versions["0.1.0"].assets[t].sha256 = null;
+    assert.throws(() => assertNativeDefaultPublishable({ manifest: broken, parseNativeCompat }),
+      /Native default requires verified production trust pins/);
+  }
+  assert.throws(() => assertNativeDefaultPublishable({ manifest: structuredClone(NATIVE_COMPAT), parseNativeCompat }), /Native default requires verified production trust pins/);
+  for (const broken of [
+    { ...manifest, abiVersion: 2 },
+    { ...manifest, repository: "other/repository" },
+    { ...manifest, defaultVersion: "9.9.9" },
+    { ...manifest, versions: { "0.1.0": { assets: Object.fromEntries(["a", "b", "c", "d"].map(t => [t, { asset: `ce-sqlite-0.1.0-${t}.node`, sha256: "a".repeat(64) }])) } } },
+  ]) assert.throws(() => assertNativeDefaultPublishable({ manifest: broken, parseNativeCompat }));
+  const wrongAsset = structuredClone(manifest);
+  wrongAsset.versions["0.1.0"].assets[all[0]].asset = "wrong.node";
+  assert.throws(() => assertNativeDefaultPublishable({ manifest: wrongAsset, parseNativeCompat }));
+});
 test("a new version with a clean pack passes preflight", () => {
   const result = invoke(["preflight"], { routes: healthyRoutes() });
-  assert.equal(result.status, 0);
+  assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /preflight passed for @zieglar\/pi-chat-exchange@0.2.0/);
 });
 
@@ -192,6 +246,9 @@ test("publish entry runs preflight and publishes exactly once with no dist-tag c
   const result = invoke(["publish"], { routes: healthyRoutes() });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.calls.filter(call => call.argv[0] === "publish").length, 1);
+  assert.deepEqual(result.calls.filter(call => call.argv[0] === "publish").map(call => call.argv),
+    [["publish", join(realpathSync(packageDirectory), ".pi-artifacts", "zieglar-pi-chat-exchange-0.2.0.tgz")]],
+    "publish must use exactly the validated preflight tarball, not the package root");
   assert.equal(result.calls.filter(call => call.argv[0] === "dist-tag").length, 0);
   assert.ok(result.calls.some(call => call.argv[0] === "pack"), "preflight must run before publish");
   assert.ok(result.calls.some(call => call.argv[0] === "view"), "duplicate-version check must run before publish");

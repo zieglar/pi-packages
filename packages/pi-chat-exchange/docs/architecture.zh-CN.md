@@ -101,9 +101,11 @@ CE Receipt、Pi UI 通知、Tunnel health、runtime 执行事实和外部工作�
 
 ## Storage 运行契约
 
-当前开发候选的正式 Node 声明为 **>=24.20.0 <=24.22.2**；内部仅将稳定 Node 24（>=24.12.0）、25、26 作为候选，不能据此宣布全部兼容。准入要求 SQLite **>=3.51.3**（排除已知 WAL-reset 缺陷）、可读且格式合法的 source identity、必要编译选项（`THREADSAFE=1`、`MUTEX_PTHREADS`；禁止 `OMIT_WAL`、`OMIT_FOREIGN_KEY`、`OMIT_TRIGGER`、`OMIT_CHECK`、`OMIT_COMPILEOPTION_DIAGS`）以及共享 defensive、statement、事务/savepoint authorizer、提交/回滚、STRICT、JSON、CHECK、FK 与 trigger 行为探针；不再固定 SQLite 3.53.4 或 source ID。Node 24.19.0、25.9.0 因隔离实验复现 native transaction-close SIGSEGV 明确拒绝，Node 26.12.1 仅作预览。Store 路径准备前拒绝不合格 runtime；环境版本标签不是资格证据。平台 allowlist 仍为 macOS arm64 / Linux x64，实际回归为 macOS arm64；详细矩阵见仅仓库保留的 `docs/runtime-qualification.md`。已发布 npm 0.2.0 的精确白名单不变。文件系统、ownership、0700/0600、symlink 限制与 writer WAL/FULL、foreign keys、trusted-schema OFF、有界 busy wait、macOS fullfsync/checkpoint_fullfsync 要求保持不变。
+Native 是目标默认驱动：没有选择文件时，使用声明的默认版本 `0.1.0` 选择 `rust-native`。`node-sqlite` 仅为显式选择、延迟加载的非生产兼容驱动，绝不作为回退。Native 加载或信任校验失败时直接拒绝。生产 `NATIVE_COMPAT` pins 仍为 null，默认构建不可发布，生产尚未启用。Native 默认切换与生产 pins 必须在另行授权 pin 后作为同一发布单元交付。
 
-驱动选择默认 `node-sqlite`，Native 失败不回退（`src/storage/sqlite-driver-selection.ts`）。生产 Native SHA256 pin 在 `src/storage/native-compat.ts` 中仍为 null，Release 可用不授予加载权。历史发布证据覆盖不可变 `ce-sqlite-v0.1.0`、ABI 1、SQLite 3.54.1、源码 `a8386aafd657c84825b2905847f34a43d5b91e1e`，包括下载和 attestation 验证。Hosted Native Store integration 覆盖 macOS arm64 / Linux x64；macOS x64 / Linux arm64 只有 artifact/conformance 证据。详见[原生 SQLite](native-sqlite.zh-CN.md)。
+当前 Node engines 为 `>=22.19.0`，与已安装 Pi 1.3.0 Host manifest 一致。Native 使用内置 SQLite 3.54.1，检查 Node-API >=8、真实模块、ABI、目标与可信缓存，不依赖 `process.versions.sqlite`。内置 `node:sqlite` 的候选版本、SQLite 安全下限和已知 transaction-close 缺陷拒绝规则仅约束显式兼容路径；共享 SQLite 身份、编译选项和行为探针仍有效。平台 allowlist 仍为 macOS arm64 / Linux x64。文件系统、ownership、0700/0600、symlink、WAL/FULL、foreign keys、trusted-schema OFF、有界 busy wait 与 macOS fullfsync/checkpoint_fullfsync 要求不变。
+
+本地 Native 矩阵、历史制品证据与待验证项见[运行时支持](runtime-support.zh-CN.md)和 [Native SQLite](native-sqlite.zh-CN.md)。隔离离线 Pi Host 首跑已在 Node 22.19.0、24.22.2、25.2.1、25.9.0、26.12.1 全部通过；新增 Linux x64 Node 22.19.0 / 24.22.2 Native job 的 hosted 执行仍为 UNVERIFIED。npm 0.2.0 未改变。
 
 migration ledger/checksum、application/store identity、integrity 与 restore hold 会拒绝 foreign/newer/corrupt Store，不自动 reset。能执行 Pi UI 不代表能打开 CE Store。实际准入以 `src/storage/runtime.ts` 与 [Storage contract](storage-contract.zh-CN.md) 为准；内存探针不证明磁盘锁或崩溃耐久，文件权限不能消除所有 TOCTOU、mount substitution、OS crash/power loss 风险。
 

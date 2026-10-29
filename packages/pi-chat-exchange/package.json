@@ -14,7 +14,7 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=24.20.0 <=24.22.2"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "test": "CE_DEFAULT_CLIENT_GUARD=1 vitest run --exclude test/tunnel/real-client-compat.test.ts --exclude test/tunnel/offline.integration.test.ts --exclude test/host-regression/real-host-recovery.test.ts --exclude test/package/installed-host.test.ts --exclude '**/native-{artifact,value-regression,cli}.test.ts' --exclude '**/sqlite-driver-cross.test.ts'",
@@ -50,26 +50,11 @@
   },
   "files": [
     "pi-extension/*.ts",
-    "pi-extension/README.md",
     "pi-extension/allowlist.example.json",
     "dist/**/*.js",
     "native/tunnel-keychain.swift",
     "scripts/recover-stale-ownership.mjs",
-    "scripts/reconcile-session-process-mutex.mjs",
-    "docs/independent-install.md",
-    "docs/tunnel-setup.md",
-    "docs/multi-session-usage.md",
-    "docs/chatgpt-installation.md",
-    "docs/architecture.md",
-    "docs/native-sqlite.md",
-    "docs/tunnel-manager-background.md",
-    "docs/protocol-v2.md",
-    "docs/ownership-contract.md",
-    "docs/storage-contract.md",
-    "docs/delivery-ack-contract.md",
-    "docs/storage-security.md",
-    "CHANGELOG.md",
-    "docs/releases/0.2.0.md"
+    "scripts/reconcile-session-process-mutex.mjs"
   ],
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "1.3.0"

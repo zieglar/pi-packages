@@ -6,8 +6,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadVerifiedNativeArtifact, nativeTarget, prepareNativeArtifact } from "../../src/storage/native-artifact.js";
-import { nativeAssetName, parseNativeCompat, type NativeCompat } from "../../src/storage/native-compat.js";
-import { readDriverSelection, writeDriverSelection } from "../../src/storage/sqlite-driver-selection.js";
+import { NATIVE_COMPAT, nativeAssetName, parseNativeCompat, type NativeCompat } from "../../src/storage/native-compat.js";
+import { readDriverSelection, resolveSqliteDriver, writeDriverSelection } from "../../src/storage/sqlite-driver-selection.js";
 
 const nativePath = process.env.CE_TEST_NATIVE_MODULE ?? fileURLToPath(new URL("../../native/ce-sqlite/target/release/ce-sqlite.node", import.meta.url));
 const nativeBytes = readFileSync(nativePath);
@@ -131,14 +131,21 @@ describe("Native artifact manager (local fixture, not GitHub Releases)", () => {
 });
 
 describe("SQLite driver selection file", () => {
-  it("defaults to Node, round-trips selection and rejects malformed values", () => {
+  it("defaults to Native, round-trips an explicit node-sqlite choice and rejects malformed values", () => {
     const file = join(root(), "sqlite-driver.json");
-    expect(readDriverSelection(file)).toEqual({ driver: "node-sqlite" });
+    expect(readDriverSelection(file)).toEqual({ driver: "rust-native", nativeVersion: NATIVE_COMPAT.defaultVersion });
     writeDriverSelection({ driver: "rust-native", nativeVersion: "0.1.0" }, file);
     expect(readDriverSelection(file)).toEqual({ driver: "rust-native", nativeVersion: "0.1.0" });
     writeDriverSelection({ driver: "node-sqlite" }, file);
     expect(readDriverSelection(file)).toEqual({ driver: "node-sqlite" });
     writeFileSync(file, JSON.stringify({ version: 1, driver: "rust-native" }));
     expect(() => readDriverSelection(file)).toThrowError(expect.objectContaining({ code: "CE_SQLITE_DRIVER_SELECTION_INVALID" }));
+  });
+  it("fails closed with a Native refusal when no selection exists and never falls back to node:sqlite", () => {
+    const absent = join(root(), "no-selection", "sqlite-driver.json");
+    // The shipped manifest is unpinned, so the default Native path must refuse; it must not
+    // return the built-in driver as a substitute.
+    expect(() => resolveSqliteDriver({ selectionFile: absent, root: join(root(), "empty-cache") }))
+      .toThrowError(expect.objectContaining({ code: expect.stringMatching(/^CE_NATIVE_/) }));
   });
 });

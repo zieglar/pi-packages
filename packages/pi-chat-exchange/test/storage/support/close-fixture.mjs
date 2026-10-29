@@ -5,7 +5,7 @@
 // immutable audit rows) and emits sanitized structured results only.
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { resolveSqliteDriver } from "../../../src/storage/sqlite-driver-selection.ts";
 
 const config = JSON.parse(process.argv[2]);
 
@@ -23,7 +23,7 @@ function waitForBarrier(path, waitMs) {
   return true;
 }
 
-const db = new DatabaseSync(join(config.directory, config.filename));
+const db = resolveSqliteDriver().open(join(config.directory, config.filename));
 db.exec(`PRAGMA foreign_keys=ON; PRAGMA busy_timeout=${config.busyTimeoutMs}`);
 
 writeFileSync(config.readyPath, "");

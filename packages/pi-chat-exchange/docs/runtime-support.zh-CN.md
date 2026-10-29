@@ -2,29 +2,33 @@
 
 [English](runtime-support.md) | 简体中文
 
-已发布的 npm 包 `@zieglar/pi-chat-exchange@0.2.0` 声明 Node `24.21.0 || 24.22.1` 和 Pi `1.3.0`。其分发认证覆盖 Node `24.21.0`、Pi `1.3.0` 和 macOS arm64。Node `24.22.1` 已获准入，但不在该次分发认证中；该路径的云传输为 `NOT_VERIFIED`。包已发布、运行时获准入，均不证明真实云端使用成功。
+已发布的 npm 包 `@zieglar/pi-chat-exchange@0.2.0` 未改变。历史分发认证覆盖 Node `24.21.0`、Pi `1.3.0` 和 macOS arm64，云传输为 `NOT_VERIFIED`。下文当前源码的 Native 行为和 Host 最低要求不扩大该已发布制品的认证范围。
 
 ## 当前源码
 
-当前源码 `package.json` 声明 Node `>=24.20.0 <=24.22.2`。Node 驱动另行检查候选运行时、SQLite >=3.51.3、可读 source identity、编译安全和共享行为探针。内部对 majors 24/25/26 的候选识别不代表全部版本受支持。Node `24.19.0` 和 `25.9.0` 因复现 transaction-close crash 被拒绝；`24.12.0` 和 `25.2.1` 使用受影响的 SQLite `3.50.4`。Node `26.12.1` 仍为隔离预览，不在正式 engines 声明内。
+当前源码 `package.json` 声明 Node `>=22.19.0`，与实际安装的 Pi 1.3.0 Host manifest 一致。这是 Host 最低要求，不代表全部 Node 22 及以后版本、Node 25 或 Node 26 均已验证。
 
-下界 `24.20.0` 和上界 `24.22.2` 是有边界的包支持区间，不是穷尽式运行时硬白名单。此前上界 `24.22.1` 是记录时最新的已测补丁，并非依赖或 SQLite API 上限。除非专门测试另一个合格运行时，CI/开发仍推荐固定 Node `24.21.0`。本次未升级依赖，CI 也保留该基线。
+Native 是目标默认驱动。没有选择文件时，CE 使用 `NATIVE_COMPAT.defaultVersion`（当前 `0.1.0`）选择 `rust-native`。`node-sqlite` 仅保留为显式选择、延迟加载的非生产兼容驱动。Native 加载或信任校验失败时直接拒绝，绝不回退到 Node。
 
-| 运行时 | 证据与决定 |
+Native 使用内置 SQLite `3.54.1`，不依赖 `process.versions.sqlite`。准入检查 Node-API >=8、实际模块、ABI、目标、可信缓存、SQLite 身份、编译选项与行为。内置 `node:sqlite` 的版本及已知缺陷限制仅适用于显式兼容选择。驱动各自的硬约束仍然有效，包括 SQLite 安全下限和共享探针。
+
+以下结果均在本地 Darwin arm64 上针对当前 Native 默认候选重新执行。CI-list 表示在本地执行的 CI 测试列表，不是 hosted CI。
+
+| 运行时 | 本地 Native 证据 |
 |---|---|
-| Node 24.20.0 / 24.21.0 / 24.22.0 / 24.22.1 | 既有 macOS arm64 Store/Host 资格验证，保留历史结果 |
-| Node 24.22.2，SQLite 3.53.4 | 本次 macOS arm64 runtime/Store 检查 317 项通过；与 24.21.0 的双运行时持久化/崩溃矩阵 12 项通过 |
-| Node 25.2.1，SQLite 3.50.4 | 真实运行时因 SQLite 安全下限拒绝 |
-| Node 25.9.0，SQLite 3.51.3 | 真实运行时因既有 transaction-close crash 证据拒绝 |
-| 后续 Node 24 补丁 / 其他 Node 25 构建 | 本次不作支持声明，不能按版本顺序推断兼容 |
+| Node 22.19.0 | 真实 Native status 与 CI-list 209/209；native-default 9/9 |
+| Node 24.22.2 | 完整 Rust suite：1030 通过、4 跳过；CI-list 209/209 |
+| Node 24.19.0 / 25.9.0 | 先前运行：1009 通过、2 失败、4 跳过；失败均为仅针对 Node 驱动的测试 |
+| Node 25.2.1 | 当前运行：1027 通过、3 失败、4 跳过；失败为显式 Node 驱动测试及内置 SQLite 持锁 fixture 的 stderr 预期 |
+| Node 26.12.1 | 仅场景探针：真实 Store、零次 `node:sqlite` 调用；未跑完整 suite |
 
-Node 25.2.1、24.19.0 和 25.9.0 的已知缺陷路径检查共 15 项通过，均在持久路径准备前拒绝。本次不增加 Node 25 支持：按 2026-10-29 的官方 Node 发布索引，Node 25 最新版本为 25.9.0，默认 Node 驱动明确拒绝它。此后发布的 Node 25 构建不在本说明范围内。Native Node-API 兼容性不能证明默认驱动路径安全。这些本地 macOS arm64 检查不扩大 hosted CI、云端、平台或已发布 npm 的资格范围。
+Pi 1.3.0 安装后 Host 首跑已在 Node 22.19.0、24.22.2、25.2.1、25.9.0、26.12.1 全部通过：每个版本均实际解析 Native 二进制，`node:sqlite` 解析次数为 0，安装、Host 加载、首跑及 profile/policy/mutex/store 检查全部通过。这些是隔离离线运行，云传输和 Native 卸载后重装仍未验证。新增 Linux x64 Native CI job 指定 Node 22.19.0 / 24.22.2，但 hosted 执行仍为 UNVERIFIED。本地结果不证明所有版本兼容、云端资格或生产已启用。
 
-Pi Host 与 MCP child 分别过资格门槛。`CE_NODE_PATH` 只选择 child；改变 Host 运行时须用合格 Node 重启 Pi。版本标签或 UI 成功加载不能证明 Store 准入。Store 还要求本地文件系统策略、所有权、私有权限、symlink 限制、WAL/FULL，以及完整性和迁移规则。内存探针不证明磁盘锁或崩溃/断电耐久。
+Pi Host 与 MCP child 分别准入。`CE_NODE_PATH` 只选择 child，改变 Host 需要重启 Pi。Store 的文件系统策略、所有权、私有权限、symlink 限制、WAL/FULL、完整性和迁移检查仍然有效。内存探针不证明磁盘锁或崩溃/断电耐久。
 
 ## Native 与平台范围
 
-Native `ce-sqlite-v0.1.0` 使用 ABI `1`、内置 SQLite `3.54.1`，不可变发布来源为 `a8386aafd657c84825b2905847f34a43d5b91e1e`。Native 准入检查真实模块、Node-API >=8、SQLite 身份、编译选项和行为。生产 pin 仍为 `null`，因此默认 prepare/load 拒绝未 pin 二进制。默认选择为 `node-sqlite`，选择 Rust 后不会静默回退。
+Native `ce-sqlite-v0.1.0` 使用 ABI `1`、内置 SQLite `3.54.1`，不可变发布来源为 `a8386aafd657c84825b2905847f34a43d5b91e1e`。Native 准入检查真实模块、Node-API >=8、SQLite 身份、编译选项和行为。生产 pin 仍为 `null`，因此默认 prepare/load 拒绝未 pin 二进制。Native 默认切换与生产 pins 必须在另行授权 pin 后作为同一发布单元交付。pins 仍为 null，默认构建不可发布，生产尚未启用。
 
 | 平台 | Native 制品/一致性测试 | Hosted Native Store 集成 |
 |---|---|---|

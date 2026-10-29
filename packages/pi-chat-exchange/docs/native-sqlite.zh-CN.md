@@ -6,9 +6,9 @@
 
 ## Release 与消费者信任
 
-[Native Release `ce-sqlite-v0.1.0`](https://github.com/zieglar/pi-packages/releases/tag/ce-sqlite-v0.1.0) 已发布且不可变。中间件版本为 `0.1.0`、ABI 为 `1`、内置 SQLite 为 `3.54.1`，精确来源 SHA 为 `a8386aafd657c84825b2905847f34a43d5b91e1e`。正式[发布工作流](https://github.com/zieglar/pi-packages/actions/runs/40813628775)已成功。发布验收时，已单独下载正式 Release 资产，而非使用 CI 副本，并校验 checksum、身份和七个 subject 的 attestation。这是历史发布证据，不是本次文档修改中新跑的消费者或运行时测试。
+[Native Release `ce-sqlite-v0.1.0`](https://github.com/zieglar/pi-packages/releases/tag/ce-sqlite-v0.1.0) 已发布且不可变。中间件版本为 `0.1.0`、ABI 为 `1`、内置 SQLite 为 `3.54.1`，精确来源 SHA 为 `a8386aafd657c84825b2905847f34a43d5b91e1e`。正式[发布工作流](https://github.com/zieglar/pi-packages/actions/runs/40813628775)已成功。发布验收时，已单独下载正式 Release 资产，而非使用 CI 副本，并校验 checksum、身份和七个 subject 的 attestation 及 source-digest 绑定。这是历史发布证据，不是本次文档修改中新跑的消费者或运行时测试。
 
-**`src/storage/native-compat.ts` 中的生产资产 hash 仍为 `null`。** null 表示未 pin，prepare 和 load 均拒绝，并不表示 GitHub Release 不存在。发布、attestation 校验和晋升到 CE 消费者信任清单是独立决策。默认仍为 `node-sqlite`，本文不授予更新 pin 的权限。
+**`src/storage/native-compat.ts` 中的生产资产 hash 仍为 `null`。** null 表示未 pin，prepare 和 load 均拒绝，并不表示 GitHub Release 不存在。发布、attestation 校验和晋升到 CE 消费者信任清单是独立决策。Native 是目标默认驱动：没有选择文件时，使用声明的默认版本 `0.1.0` 选择 `rust-native`。`node-sqlite` 仅为显式选择、延迟加载的非生产兼容驱动，绝不作为回退。Native 加载或信任校验失败时直接拒绝。生产 `NATIVE_COMPAT` pins 仍为 null，默认构建不可发布，生产尚未启用。Native 默认切换与生产 pins 必须在另行授权 pin 后作为同一发布单元交付。
 
 精确八文件清单：
 
@@ -38,7 +38,7 @@ Store allowlist 仍为 macOS arm64 / Linux x64，其他目标的制品验证不�
 
 ## 驱动选择
 
-Pi Host 与 MCP child 均读取 `~/.config/pi-chat-exchange/sqlite-driver.json`。选择必须显式完成，不从 PATH、工作目录或调用者提供的版本推断。选择 Rust 后不会静默回退到 Node。
+Pi Host 与 MCP child 均读取 `~/.config/pi-chat-exchange/sqlite-driver.json`。没有选择文件时使用 `NATIVE_COMPAT.defaultVersion`（`0.1.0`）选择 `rust-native`。显式选择不从 PATH、工作目录或调用者提供的版本推断。Node 绝不作为回退。
 
 ```json
 {
@@ -55,22 +55,24 @@ Pi Host 与 MCP child 均读取 `~/.config/pi-chat-exchange/sqlite-driver.json`�
 
 以下命令适用于当前源码已构建的 checkout，在包目录执行 `pnpm run build` 后使用。它们是有前提的操作员流程，不是默认已启用的安装路径：须先取得独立验证的 manifest，并授权使用。
 
+先将 `CE_NATIVE_TEST_HOME` 设为为本次验证准备的私有隔离 HOME 绝对路径，并在其中准备已验证的缓存；所有命令使用同一 HOME。生产 HOME 不受此示例授权。
+
 ```sh
-node dist/bin/ce-native.js prepare \
+HOME="$CE_NATIVE_TEST_HOME" node dist/bin/ce-native.js prepare \
   --version 0.1.0 \
   --manifest /absolute/path/to/verified-native-manifest.json
-node dist/bin/ce-native.js select --driver rust-native \
+HOME="$CE_NATIVE_TEST_HOME" node dist/bin/ce-native.js select --driver rust-native \
   --version 0.1.0 \
   --manifest /absolute/path/to/verified-native-manifest.json
-node dist/bin/ce-native.js status
+HOME="$CE_NATIVE_TEST_HOME" node dist/bin/ce-native.js status
 ```
 
 `prepare` 是显式可联网命令，下载固定目标资产，在私有临时文件中校验 SHA-256，再原子安装到版本化缓存。它不运行安装脚本、不在消费者侧编译、不覆盖另一版本，也不暴露可加载的半成品。并发准备不会替换有效缓存。默认下载 URL 为 `https://github.com/zieglar/pi-packages/releases/download/ce-sqlite-v<version>/<asset>`。
 
-`select` 在持久化选择前校验缓存制品。`status` 离线报告驱动、目标、缓存根、模块/SQLite 身份或封闭错误码。返回 Node 前，先停止所有 Store 使用者，再显式执行：
+`select` 在持久化选择前校验缓存制品。`status` 离线报告驱动、目标、缓存根、模块/SQLite 身份或封闭错误码。显式切换到非生产 Node 兼容路径前，先停止所有 Store 使用者，再显式执行：
 
 ```sh
-node dist/bin/ce-native.js select --driver node-sqlite
+HOME="$CE_NATIVE_TEST_HOME" node dist/bin/ce-native.js select --driver node-sqlite
 ```
 
 `select` 使用所选 HOME 的运行时缓存。自定义 `--root` 仅用于显式 prepare/status 资格验证，select 拒绝该选项。manifest 路径以绝对路径保存。
@@ -85,7 +87,7 @@ node dist/bin/ce-native.js select --driver node-sqlite
 
 运行时加载检查缓存目录链中的 symlink、所有权及 group/other 写权限，然后在 `require()` 前检查文件所有权/模式、SHA-256、中间件 SemVer、ABI 和目标。缺失或不兼容制品均拒绝。校验与 `dlopen` 是独立操作，同一 OS 用户替换路径不在所声明的安全边界内。
 
-Rust 准入检查真实模块、Node-API >= 8、SQLite 身份、编译选项和共享行为探针，使用 bundled SQLite，并保留 >=3.51.3 安全下限。Node 保留自身版本及已知缺陷规则。共享一致性测试覆盖 statement、事务、authorizer/defensive mode、扩展错误、BLOB、NULL、changes 和关闭状态。Rust 每次操作 prepare/finalize statement，authorizer 不重入 JavaScript。panic 或 native 内存故障仍可终止 Host。
+Rust 准入检查真实模块、Node-API >= 8、SQLite 身份、编译选项和共享行为探针，使用内置 SQLite 3.54.1，不依赖 `process.versions.sqlite`，并保留 >=3.51.3 安全下限。Node 保留自身版本及已知缺陷规则。共享一致性测试覆盖 statement、事务、authorizer/defensive mode、扩展错误、BLOB、NULL、changes 和关闭状态。Rust 每次操作 prepare/finalize statement，authorizer 不重入 JavaScript。panic 或 native 内存故障仍可终止 Host。
 
 同一进程内，对一个活跃数据库只使用一种 SQLite 实现。Node 和 Native 各含独立 SQLite 库，在 POSIX 上经两库打开/关闭同一数据库可能释放进程持有的锁。切换前必须停止所有使用 Store 的进程。跨驱动测试在两种实现之间先关闭连接。
 

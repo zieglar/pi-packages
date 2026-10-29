@@ -11,6 +11,7 @@ import {
   readRuntimeIdentity,
   type RuntimeIdentity,
 } from "../../src/storage/runtime.js";
+import { nativeTarget } from "../../src/storage/native-artifact.js";
 
 // Every required capability label; the collectors must prove each behaviorally.
 const REQUIRED_CAPABILITIES = [
@@ -34,6 +35,23 @@ const eligible: RuntimeIdentity = {
 };
 
 describe("durable storage runtime eligibility", () => {
+  it.each(["v22.19.0", "v24.19.0", "v25.2.1", "v25.9.0", "v26.12.1"])(
+    "Native admits Pi-supported %s without the built-in SQLite version exclusions", (nodeVersion) => {
+      expect(() => assertRuntimeEligibility({
+        ...eligible, driver: "rust-native", nodeVersion, napiVersion: "10",
+        native: { abiVersion: 1, middlewareVersion: "0.1.0", target: nativeTarget(),
+          sqliteVersion: "3.54.1", sqliteSourceId: eligible.sqliteSourceId,
+          buildId: "qualification", rustc: "qualification" },
+      })).not.toThrow();
+    },
+  );
+  it.each(["v22.18.0", "v20.99.0", "v22.19.0-rc.1", "v022.19.0", "22.19.0"])(
+    "Native refuses %s below or outside the declared Pi Host floor", (nodeVersion) => {
+      expect(() => assertRuntimeEligibility({
+        ...eligible, driver: "rust-native", nodeVersion, napiVersion: "10",
+      })).toThrow(/Pi Host requires/);
+    },
+  );
   it("retains the legacy pins as diagnostics, never as the admission authority", () => {
     expect(APPROVED_NODE_VERSION).toBe("v24.21.0");
     expect(APPROVED_SQLITE_VERSION).toBe("3.53.4");

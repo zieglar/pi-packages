@@ -6,7 +6,7 @@ CE provides explicit ChatGPT ↔ Pi message exchange through a shared private SQ
 
 ## Choose an installation
 
-`@zieglar/pi-chat-exchange@0.2.0` is published on npm. Its historical distribution qualification is **Node 24.21.0 + Pi 1.3.0 + macOS arm64**. Cloud distribution remains **NOT_VERIFIED**. Node 24.22.1 is an approved published-runtime version, not part of that installation qualification. Current source declares Node `>=24.20.0 <=24.22.2`; this does not change the published artifact's qualification.
+`@zieglar/pi-chat-exchange@0.2.0` is published on npm. Its historical distribution qualification is **Node 24.21.0 + Pi 1.3.0 + macOS arm64**. Cloud distribution remains **NOT_VERIFIED**. Current source declares Node `>=22.19.0`; this does not change the published artifact's qualification.
 
 Use an approved Node for Pi and npm. Put its bin directory first in PATH; use npm 11.x from that Node and operator-controlled npm configuration/cache without inherited registry credentials. Installation downloads from the explicitly selected registry; runtime needs no registry access. The extension runs with your user permissions. `--ignore-scripts` limits installation scripts, not extension runtime authority.
 
@@ -35,6 +35,8 @@ pi -e ./packages/pi-chat-exchange/pi-extension/index.ts
 ```
 
 Use pnpm 12.9.1 and an approved Node. The extension imports `dist/`; after source changes build before `/reload`. A persistent local installation can use `pi install /absolute/path/to/packages/pi-chat-exchange`; keep that directory in place. See [operations](operations.md) for development checks.
+
+Native is the target default: absent selection chooses `rust-native` at the declared default version `0.1.0`. `node-sqlite` is an explicitly selected, lazily loaded, nonproduction compatibility driver and is never a fallback. Native load/trust failures fail closed. Production `NATIVE_COMPAT` pins remain null: the default build cannot be released and production is not enabled. Native default and production pins must be delivered as one publish unit, only after separate pin authorization. The minimum matches `>=22.19.0` in the installed Pi 1.3.0 Host manifest. Source development is subject to this release blocker; the build/load commands above do not establish production availability. Isolated offline Pi Host first runs passed on Node 22.19.0, 24.22.2, 25.2.1, 25.9.0 and 26.12.1; see the local matrix in [runtime support](runtime-support.md).
 
 ## Configure Tunnel and messaging
 

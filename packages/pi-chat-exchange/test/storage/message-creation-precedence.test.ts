@@ -3,7 +3,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { resolveSqliteDriver } from "../../src/storage/sqlite-driver-selection.js";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, it } from "vitest";
 import { openStorageConnection } from "../../src/storage/connection.js";
@@ -32,8 +32,8 @@ interface Fixture {
   directory: string;
   path: string;
   store: DurableStore;
-  raw: Pick<DatabaseSync | SqliteConnection, "prepare" | "exec" | "close">;
-  reader: DatabaseSync;
+  raw: Pick<SqliteConnection, "prepare" | "exec" | "close">;
+  reader: SqliteConnection;
   exchangeId: string;
 }
 interface WorkerReport {
@@ -53,13 +53,13 @@ function fixture(): Fixture {
   const directory = join(root, "db");
   const path = join(directory, "store.sqlite");
   let store: DurableStore | undefined;
-  let raw: Pick<DatabaseSync | SqliteConnection, "prepare" | "exec" | "close"> | undefined;
-  let reader: DatabaseSync | undefined;
+  let raw: Pick<SqliteConnection, "prepare" | "exec" | "close"> | undefined;
+  let reader: SqliteConnection | undefined;
   try {
     store = initializeStore({ directory, filename: "store.sqlite", busyTimeoutMs: BUSY_MS });
     const exchangeId = createExchange(store, { namespace: "owner", idempotencyKey: "exchange-key" }).exchange.exchangeId;
     raw = openStorageConnection({ directory, filename: "store.sqlite", busyTimeoutMs: BUSY_MS });
-    reader = new DatabaseSync(path, { readOnly: true, defensive: true });
+    reader = resolveSqliteDriver().open(path, { readOnly: true, defensive: true });
     const result = { root, directory, path, store, raw, reader, exchangeId };
     fixtures.push(result);
     return result;
@@ -77,7 +77,7 @@ const namespace = (active: Fixture) => JSON.stringify(["message.create", active.
 /** CAST quote() to TEXT for every cell, including every SQLite INTEGER: no
  * JavaScript Number decoding, unsafe integer rounding, or quote() type assumption.
  * Names come only from the fixed table list and that table's SQLite metadata. */
-function snapshot(reader: DatabaseSync) {
+function snapshot(reader: SqliteConnection) {
   reader.exec("BEGIN");
   try {
     return TABLES.map((table) => {
@@ -215,7 +215,7 @@ async function closeExchange(active: Fixture) {
   const { writeFileSync } = await import("node:fs");
   const releasePath = join(active.root, "close.release");
   writeFileSync(releasePath, "");
-  const worker = launch([closeScript, JSON.stringify({
+  const worker = launch(["--import", fileURLToPath(new URL("./support/register-ts.mjs", import.meta.url)), closeScript, JSON.stringify({
     tag: "precedence-close", directory: active.directory, filename: "store.sqlite",
     busyTimeoutMs: BUSY_MS, waitMs: WORKER_MS,
     readyPath: join(active.root, "close.ready"), releasePath, exchangeId: active.exchangeId,

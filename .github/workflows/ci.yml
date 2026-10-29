@@ -17,11 +17,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "24.21.0"
       - name: Activate pinned pnpm
@@ -30,6 +30,8 @@ jobs:
         run: pnpm --version
       - name: Install
         run: pnpm install --frozen-lockfile
+      - name: Validate workspace
+        run: pnpm check:workspace
       - name: Build
         run: pnpm build
       - name: Typecheck
@@ -48,3 +50,69 @@ jobs:
             git log -1 --check --pretty=
           fi
           pnpm format:check
+
+  # Real Native qualification. The immutable ce-sqlite-v0.1.0 release is downloaded, its checksums and
+  # attestations are bound to the exact source commit, and an isolated HOME carries the pin. This never
+  # edits the production NATIVE_COMPAT pins; it proves the default driver loads the attested bytes and
+  # fails closed otherwise. Node 22.19.0 is the Pi Host floor; 24.22.2 is a current member.
+  native:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22.19.0", "24.22.2"]
+    env:
+      NATIVE_VERSION: "0.1.0"
+      NATIVE_TAG: ce-sqlite-v0.1.0
+      NATIVE_SOURCE_SHA: a8386aafd657c84825b2905847f34a43d5b91e1e
+      NATIVE_ASSET: ce-sqlite-0.1.0-x86_64-unknown-linux-gnu.node
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Activate pinned pnpm
+        run: npm install --global pnpm@12.9.1
+      - name: Install
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Build
+        run: pnpm --dir packages/pi-chat-exchange run build
+      - name: Download and verify the published Native release
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/native-assets"
+          gh release download "$NATIVE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/native-assets"
+          node --input-type=module -e '
+            import { verifyReleaseSet } from "./packages/pi-chat-exchange/scripts/verify-release-assets.mjs";
+            const r = verifyReleaseSet({ directory: process.argv[1], version: process.env.NATIVE_VERSION,
+              repository: process.env.GITHUB_REPOSITORY, sha: process.env.NATIVE_SOURCE_SHA });
+            console.log(`verified ${r.checksums} checksums and ${r.subjects.length} attested subjects`);
+          ' "$RUNNER_TEMP/native-assets"
+      - name: Prepare and select the verified Native cache in an isolated HOME
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/ce-home"
+          mkdir -m 700 "$HOME"
+          cd packages/pi-chat-exchange
+          manifest="$RUNNER_TEMP/native-assets/native-manifest.json"
+          node dist/bin/ce-native.js prepare --version "$NATIVE_VERSION" --manifest "$manifest"
+          node dist/bin/ce-native.js select --driver rust-native --version "$NATIVE_VERSION" --manifest "$manifest"
+          node dist/bin/ce-native.js status
+      - name: Real Native driver, Store and fail-closed tests
+        env:
+          CE_DEFAULT_CLIENT_GUARD: "1"
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/ce-home"
+          export CE_TEST_NATIVE_MODULE="$RUNNER_TEMP/native-assets/$NATIVE_ASSET"
+          cd packages/pi-chat-exchange
+          pnpm exec vitest run --config test/rust-native.vitest.config.ts \
+            test/storage/native-default.test.ts test/storage/native-artifact.test.ts \
+            test/storage/native-cli.test.ts test/storage/native-value-regression.test.ts \
+            test/storage/runtime.test.ts test/storage/runtime-api.test.ts test/storage/store.test.ts \
+            test/storage/transaction.test.ts test/storage/message-send-read.test.ts \
+            test/storage/message-creation-concurrency.test.ts test/storage/lease-lock-wait.test.ts \
+            --testTimeout 120000 --hookTimeout 120000 --maxWorkers 2
