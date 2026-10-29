@@ -61,8 +61,8 @@ export function buildPackageArtifact({ root = defaultRoot, out, run = cliNpm, va
         if (path.endsWith(".ts") && target.endsWith(".js") && !target.includes("/dist/")) target = target.slice(0, -3) + ".ts";
         regular(target, root);
       }
-    if (validateOnly) return { validated: true };
     }
+    if (validateOnly) return { validated: true };
     const output = resolve(out);
     mkdirSync(output, { recursive: true });
     const dryRun = run(["pack", "--ignore-scripts", "--json", "--dry-run"], root);

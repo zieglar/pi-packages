@@ -162,6 +162,8 @@ export interface PrepareNativeOptions extends NativeArtifactOptions {
   /** Test seam for a local HTTP fixture; production uses GitHub Releases only. */
   readonly baseUrl?: string;
   readonly fetchImpl?: typeof fetch;
+  /** Explicit operator repair only; ordinary prepare never replaces a cache entry. */
+  readonly repairCorrupt?: boolean;
 }
 
 /** Prepare: download a fixed asset to a temporary file, verify, and install
@@ -173,7 +175,12 @@ export async function prepareNativeArtifact(options: PrepareNativeOptions = {}):
   const target = nativeTarget();
   const asset = assetFor(manifest, version, target);
   const paths = artifactPaths(root, version, target, asset.asset);
-  if (existsSync(paths.path)) return loadVerifiedNativeArtifact(options);
+  if (existsSync(paths.path)) {
+    try { return loadVerifiedNativeArtifact(options); }
+    catch (error) {
+      if (!options.repairCorrupt || (error as NodeJS.ErrnoException).code !== "CE_NATIVE_HASH_MISMATCH") throw error;
+    }
+  }
 
   const url = options.baseUrl === undefined
     ? `https://github.com/${manifest.repository}/releases/download/ce-sqlite-v${version}/${asset.asset}`
@@ -199,9 +206,19 @@ export async function prepareNativeArtifact(options: PrepareNativeOptions = {}):
     closeSync(fd);
   }
   try {
-    // link() is atomic and never overwrites an existing cache entry, unlike rename().
-    linkSync(temporary, paths.path);
-    unlinkSync(temporary);
+    if (options.repairCorrupt && existsSync(paths.path)) {
+      // Recheck after download. Never replace unsafe entries or an already valid
+      // artifact installed by a concurrent preparer. The downloaded bytes have
+      // passed the fixed trust pin before the damaged file can be replaced.
+      assertCacheAncestors(paths.path);
+      assertPrivateFile(paths.path);
+      if (sha256File(paths.path) !== asset.sha256) renameSync(temporary, paths.path);
+      else unlinkSync(temporary);
+    } else {
+      // link() is atomic and never overwrites an existing cache entry.
+      linkSync(temporary, paths.path);
+      unlinkSync(temporary);
+    }
     fsyncDirectory(paths.directory);
   } catch (error) {
     rmSync(temporary, { force: true });

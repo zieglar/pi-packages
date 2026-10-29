@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadVerifiedNativeArtifact, nativeTarget, prepareNativeArtifact } from "../../src/storage/native-artifact.js";
-import { NATIVE_COMPAT, type NativeCompat } from "../../src/storage/native-compat.js";
+import { NATIVE_COMPAT, nativeAssetName, parseNativeCompat, type NativeCompat } from "../../src/storage/native-compat.js";
 import { readDriverSelection, resolveSqliteDriver, writeDriverSelection } from "../../src/storage/sqlite-driver-selection.js";
 
 const child = fileURLToPath(new URL("./support/native-default-child.mjs", import.meta.url));
@@ -66,9 +66,10 @@ describe("real Native default without node:sqlite access (built dist required)",
     expect(run(directory, { selectionFile }, "CE_TEST_SQLITE_DENIED")).toEqual(["builtin"]);
   });
 
-  it("refuses an absent selection with the shipped null pin before any persistent database or builtin access", () => {
+  it("refuses an explicitly unpinned fixture with no fallback before any persistent database or builtin access", () => {
     const directory = home();
-    const options = { root: join(directory, "empty-cache"), selectionFile: join(directory, "absent.json") };
+    const manifest = parseNativeCompat({ ...NATIVE_COMPAT, versions: { "0.1.0": { assets: { [nativeTarget()]: { asset: nativeAssetName("0.1.0", nativeTarget()), sha256: null } } } } });
+    const options = { root: join(directory, "empty-cache"), selectionFile: join(directory, "absent.json"), manifest };
     expect(readDriverSelection(options.selectionFile)).toEqual({ driver: "rust-native", nativeVersion: "0.1.0" });
     expect(() => resolveSqliteDriver(options)).toThrowError(expect.objectContaining({ code: "CE_NATIVE_ARTIFACT_UNPINNED" }));
     expect(run(directory, options, "CE_NATIVE_ARTIFACT_UNPINNED")).toEqual([]);

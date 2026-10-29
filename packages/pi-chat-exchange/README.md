@@ -12,7 +12,7 @@ Pi Chat Exchange (CE) lets ChatGPT and Pi exchange durable messages through expl
 - Independent permissions for sending, discovering messages, reading payloads and recording ACKs.
 - Stable endpoints for individual Pi sessions, with explicit registration, activation, deactivation and revocation.
 - Secure MCP Tunnel management, plus a separate Desktop stdio plugin path.
-- Rust Native SQLite is the target default driver; `node:sqlite` remains only as an explicitly selected, non-production compatibility driver.
+- Rust Native SQLite is the only default persistence driver; `node:sqlite` remains only as an explicitly selected, non-production compatibility driver.
 
 CE does not provide automatic task scheduling, inbox draining or exactly-once delivery/execution. `DELIVERY_UNKNOWN != CANCELLED`; a missing ACK does not justify retrying an operation.
 
@@ -97,7 +97,15 @@ Recovery markers are not locks or fencing tokens. Changing models must not repla
 
 The independent immutable Native Release is [**`ce-sqlite-v0.1.0`**](https://github.com/zieglar/pi-packages/releases/tag/ce-sqlite-v0.1.0), with ABI **1**, bundled SQLite **3.54.1**, and source SHA **`a8386aafd657c84825b2905847f34a43d5b91e1e`**. It is separate from npm 0.2.0 and its binaries are not bundled in npm.
 
-The implemented default is Native, including when no selection file exists. `node:sqlite` is loaded lazily only after an explicit selection; Native trust, load or initialization failure is closed and never falls back. **Production trust pins remain `null`**, so this Native-default build cannot currently load or be published. Native default and verified production pins must ship as one unit after separate authorization. The isolated [Native preparation and verification guide](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/native-sqlite.md) does not enable production.
+The implemented default is Native, including when no selection file exists. `node:sqlite` is loaded lazily only after an explicit selection; Native trust, load or initialization failure is closed and never falls back. Production `NATIVE_COMPAT` pins now trust immutable Release `427441708`: four platform SHA-256 values verified against `SHA256SUMS`, with seven attestation subjects bound to that source. The new source declaration and pins are unreleased; production publication requires separate authorization.
+
+## Native readiness and management (current source)
+
+Run `/ce-native status` or `/ce-native verify` to inspect Native without downloads or selection changes. Explicit `/ce-native install` installs only the trusted default version and verifies it before changing selection; restart Pi afterward. `/ce-native repair confirm` is explicit repair. `/ce-native check-updates` reads GitHub Release metadata only: `latest` never becomes trusted or changes selection. CE never automatically downloads, repairs or upgrades Native.
+
+Extension load is read-only: it never downloads, creates a Store or starts Tunnel. Pi and management commands remain available when Native is not ready; Store, Tunnel start and messaging fail closed. `/ce-tunnel start` revalidates Native and Store admission before manager/profile/process effects; refusal includes a `CE_NATIVE_*` code and `/ce-native` hint. Status reports `native=<STATE> (code)` separately from transport and never infers `STOPPED`; stop remains available for cleanup.
+
+Windows Native is unsupported (`CE_NATIVE_TARGET_UNSUPPORTED`); no Windows binary exists and CE never tries a Linux binary there. Run Linux Node.js, Pi and CE inside WSL2 to select the real Linux x64/arm64 asset. Keep an active SQLite Store on the Linux filesystem rather than `/mnt/c` or other Windows mounts. WSL2 is recommended but integration testing here has not verified it; platform tests cover target mapping and Windows refusal only. Existing Store filesystem rules still apply. See [Native management](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/native-management.md) for the warning, commands and recovery limits.
 
 <a id="边界与验证"></a>
 

@@ -3,6 +3,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTunnelManager, type TunnelManager } from "../../src/tunnel/manager.js";
 import { DEFAULT_TUNNEL_TIMING } from "../../src/tunnel/state.js";
 
+// Tunnel lifecycle tests are not Native qualification: keep the Native readiness gate
+// out of these scenarios. Native readiness itself is covered by native-readiness-gate.test.ts.
+vi.mock("../../dist/runtime/native-readiness.js", async original => ({
+  ...await original<typeof import("../../src/runtime/native-readiness.js")>(),
+  assertNativeReadyForTunnel: () => ({ state: "READY", code: "CE_NATIVE_READY", reason: "test", driver: "rust-native", version: "0.1.0", abiVersion: 1, sqliteVersion: "3.54.1", target: "test" }),
+  inspectNativeReadiness: () => ({ state: "READY", code: "CE_NATIVE_READY", reason: "test", driver: "rust-native", version: "0.1.0", abiVersion: 1, sqliteVersion: "3.54.1", target: "test" }),
+}));
+
 // Exercise the registered production extension against the SOURCE manager,
 // without rebuilding dist or replacing dispose with invented mock behavior.
 const bridge = vi.hoisted(() => ({ create: undefined as undefined | (() => TunnelManager) }));

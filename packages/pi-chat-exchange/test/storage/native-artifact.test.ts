@@ -143,8 +143,7 @@ describe("SQLite driver selection file", () => {
   });
   it("fails closed with a Native refusal when no selection exists and never falls back to node:sqlite", () => {
     const absent = join(root(), "no-selection", "sqlite-driver.json");
-    // The shipped manifest is unpinned, so the default Native path must refuse; it must not
-    // return the built-in driver as a substitute.
+    // Missing cache must refuse; the builtin driver is never a substitute.
     expect(() => resolveSqliteDriver({ selectionFile: absent, root: join(root(), "empty-cache") }))
       .toThrowError(expect.objectContaining({ code: expect.stringMatching(/^CE_NATIVE_/) }));
   });

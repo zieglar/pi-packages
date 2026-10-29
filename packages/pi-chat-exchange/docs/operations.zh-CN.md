@@ -94,11 +94,19 @@ shasum -a 256 packages/pi-chat-exchange/.pi-artifacts/zieglar-pi-chat-exchange-0
 
 该命令构建并检查运行时 import closure/assets、必需 native/运维文件、无 consumer lifecycle hook，再执行 `npm pack --ignore-scripts`。裸 `npm pack` 跳过这些检查，不是受支持的生产者命令。Desktop 使用独立 `package:desktop-plugin`，ZIP 不等于 Pi npm 包。
 
+## Native 就绪运维（当前源码）
+
+用 `/ce-native status` 和 `/ce-native verify` 只读检查本地状态。`/ce-native install` 显式下载可信默认版本，校验后才修改选择，完成后需重启 Pi。修复需执行 `/ce-native repair confirm`。`/ce-native check-updates` 只读取 GitHub Release 元数据，`latest` 不会因此受信任或改变选择。CE 不会自动下载、修复或升级 Native，也不会回退。
+
+扩展加载只读，不下载、不创建 Store、不启动 Tunnel。Native 缺失时 Pi 和管理命令仍可用，警告原文见 [Native 管理](native-management.zh-CN.md)；Store、Tunnel start 和消息操作直接拒绝。`/ce-tunnel start` 在任何 manager/profile/process 副作用前重新验证就绪状态与 Store 准入，拒绝时给出具体 `CE_NATIVE_*` 码和 `/ce-native` 提示。status 单独报告 `native=<STATE> (code)`，不据此推断 transport 为 `STOPPED`；stop 仍可用于安全清理。
+
+Windows Native 与 Tunnel start 以 `CE_NATIVE_TARGET_UNSUPPORTED` 拒绝，不尝试加载 Linux 二进制。建议在 WSL2 内运行 Linux Node.js、Pi 和 CE，选择真实 Linux x64/arm64 资产。建议将活跃 Store 放在 Linux 文件系统，避免 `/mnt/c` 等 Windows 挂载；现有文件系统准入规则不变。本环境未做 WSL2 集成验证，平台测试仅覆盖目标映射与 Windows 拒绝。
+
 ## 发布证据与限制
 
 npm 0.2.0 已发布、历史 Node 24.21.0 / Pi 1.3.0 / macOS arm64 验收、云端分发 **NOT_VERIFIED** 是不同事实。当前源码 engines `>=22.19.0` 描述本地候选，不扩大已发布制品验收范围。npm 发布 workflow 仍在本地且未推送，没有 hosted OIDC 证明。所有者报告 publisher connection 已配置，不等于 hosted 发布证据。
 
-Native middleware 有独立不可变发布 `ce-sqlite-v0.1.0`、ABI 1、SQLite 3.54.1，源码 `a8386aafd657c84825b2905847f34a43d5b91e1e`，历史下载/attestation 已验证。Hosted Native Store integration 覆盖 macOS arm64 / Linux x64；macOS x64 / Linux arm64 只有 artifact/conformance。`src/storage/native-compat.ts` 生产 pins 仍为 null，Native 是目标默认驱动：没有选择文件时，使用声明的默认版本 `0.1.0` 选择 `rust-native`。`node-sqlite` 仅为显式选择、延迟加载的非生产兼容驱动，绝不作为回退。Native 加载或信任校验失败时直接拒绝。生产 `NATIVE_COMPAT` pins 仍为 null，默认构建不可发布，生产尚未启用。Native 默认切换与生产 pins 必须在另行授权 pin 后作为同一发布单元交付。这些事实不证明广泛云端/e2e 支持，也不自动开启 native。详见[原生 SQLite](native-sqlite.zh-CN.md)与[原生发布 CI](native-release-ci.zh-CN.md)。
+Native middleware 有独立不可变发布 `ce-sqlite-v0.1.0`、ABI 1、SQLite 3.54.1，源码 `a8386aafd657c84825b2905847f34a43d5b91e1e`，历史下载/attestation 已验证。Hosted Native Store integration 覆盖 macOS arm64 / Linux x64；macOS x64 / Linux arm64 只有 artifact/conformance。生产 `NATIVE_COMPAT` 现已固定不可变 Release `427441708`，四个平台的 SHA-256 已与 `SHA256SUMS` 核对，七个 attestation subject 已验证绑定到该源码。Rust Native 是唯一的默认持久化驱动，没有选择文件时使用 `rust-native` `0.1.0`；显式 `node-sqlite` 仅供非生产兼容用途。失败不触发回退。这些源码变更与 pins 尚未发布，生产发布需另行授权。这些事实不证明广泛云端/e2e 支持，也不自动开启 native。详见[原生 SQLite](native-sqlite.zh-CN.md)与[原生发布 CI](native-release-ci.zh-CN.md)。
 
 历史 plans/audits 保留有日期的设计/测试陈述。本地 commit 不等于 release，workflow 意图不等于 hosted 执行，publisher 已配置不等于 OIDC 证明。Release/push/publication 需单独授权。
 

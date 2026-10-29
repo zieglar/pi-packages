@@ -97,10 +97,33 @@ jobs:
           export HOME="$RUNNER_TEMP/ce-home"
           mkdir -m 700 "$HOME"
           cd packages/pi-chat-exchange
-          manifest="$RUNNER_TEMP/native-assets/native-manifest.json"
-          node dist/bin/ce-native.js prepare --version "$NATIVE_VERSION" --manifest "$manifest"
-          node dist/bin/ce-native.js select --driver rust-native --version "$NATIVE_VERSION" --manifest "$manifest"
+          # Production pins, not the Release manifest, decide what may be installed.
+          node dist/bin/ce-native.js prepare --version "$NATIVE_VERSION"
+          node dist/bin/ce-native.js select --driver rust-native --version "$NATIVE_VERSION"
           node dist/bin/ce-native.js status
+      - name: Verify production trust pins match the published release manifest
+        env:
+          NATIVE_ASSETS: ${{ runner.temp }}/native-assets
+        run: |
+          set -euo pipefail
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const { NATIVE_COMPAT } = await import("./packages/pi-chat-exchange/dist/storage/native-compat.js");
+            const manifest = JSON.parse(readFileSync(process.env.NATIVE_ASSETS + "/native-manifest.json", "utf8"));
+            const expected = manifest.versions[manifest.defaultVersion].assets;
+            const actual = NATIVE_COMPAT.versions[NATIVE_COMPAT.defaultVersion].assets;
+            for (const [target, asset] of Object.entries(expected)) {
+              if (actual[target]?.sha256 !== asset.sha256) {
+                console.error(`production Native pin mismatch for ${target}`);
+                process.exit(1);
+              }
+            }
+            if (Object.keys(actual).length !== Object.keys(expected).length) {
+              console.error("production Native pin target set differs from the published release");
+              process.exit(1);
+            }
+            console.log("production trust pins match the published release manifest");
+          '
       - name: Real Native driver, Store and fail-closed tests
         env:
           CE_DEFAULT_CLIENT_GUARD: "1"
@@ -112,6 +135,8 @@ jobs:
           pnpm exec vitest run --config test/rust-native.vitest.config.ts \
             test/storage/native-default.test.ts test/storage/native-artifact.test.ts \
             test/storage/native-cli.test.ts test/storage/native-value-regression.test.ts \
+            test/storage/native-production-pin.test.ts test/runtime/native-readiness.test.ts \
+            test/tunnel/native-readiness-gate.test.ts test/tunnel/native-command.test.ts \
             test/storage/runtime.test.ts test/storage/runtime-api.test.ts test/storage/store.test.ts \
             test/storage/transaction.test.ts test/storage/message-send-read.test.ts \
             test/storage/message-creation-concurrency.test.ts test/storage/lease-lock-wait.test.ts \

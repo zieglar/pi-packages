@@ -2,13 +2,15 @@
 
 [English](native-sqlite.md) | 简体中文
 
-当前源码支持内置 `node:sqlite` 驱动和独立的 Rust Native 中间件。两者共享 TypeScript 事务 helper、schema v7、SQL 算法、授权、幂等、ACK 和恢复契约，没有 sidecar 或 IPC。已发布 npm 0.2.0 制品与当前源码各有资格验证历史，安装 npm 0.2.0 不会取得后续源码功能。
+Rust Native 是当前源码唯一的默认持久化驱动。内置 `node:sqlite` 驱动仅供显式选择的非生产兼容用途。两者共享 TypeScript 事务 helper、schema v7、SQL 算法、授权、幂等、ACK 和恢复契约，没有 sidecar 或 IPC。已发布 npm 0.2.0 制品与当前源码各有资格验证历史，安装 npm 0.2.0 不会取得后续源码功能。
 
 ## Release 与消费者信任
 
 [Native Release `ce-sqlite-v0.1.0`](https://github.com/zieglar/pi-packages/releases/tag/ce-sqlite-v0.1.0) 已发布且不可变。中间件版本为 `0.1.0`、ABI 为 `1`、内置 SQLite 为 `3.54.1`，精确来源 SHA 为 `a8386aafd657c84825b2905847f34a43d5b91e1e`。正式[发布工作流](https://github.com/zieglar/pi-packages/actions/runs/40813628775)已成功。发布验收时，已单独下载正式 Release 资产，而非使用 CI 副本，并校验 checksum、身份和七个 subject 的 attestation 及 source-digest 绑定。这是历史发布证据，不是本次文档修改中新跑的消费者或运行时测试。
 
-**`src/storage/native-compat.ts` 中的生产资产 hash 仍为 `null`。** null 表示未 pin，prepare 和 load 均拒绝，并不表示 GitHub Release 不存在。发布、attestation 校验和晋升到 CE 消费者信任清单是独立决策。Native 是目标默认驱动：没有选择文件时，使用声明的默认版本 `0.1.0` 选择 `rust-native`。`node-sqlite` 仅为显式选择、延迟加载的非生产兼容驱动，绝不作为回退。Native 加载或信任校验失败时直接拒绝。生产 `NATIVE_COMPAT` pins 仍为 null，默认构建不可发布，生产尚未启用。Native 默认切换与生产 pins 必须在另行授权 pin 后作为同一发布单元交付。
+生产 `NATIVE_COMPAT` 现已固定不可变 Release `427441708`，即 `ce-sqlite-v0.1.0`。四个平台的 SHA-256 均已与 `SHA256SUMS` 核对，七个 attestation subject 均已验证绑定到源码 `a8386aafd657c84825b2905847f34a43d5b91e1e`。这些 pins 和当前源码声明尚未随 CE 发布；生产发布需另行授权。没有选择文件时，默认使用 `rust-native` `0.1.0`。显式 `node-sqlite` 兼容选择仅供非生产用途，绝不自动回退。Native 信任、加载或初始化失败时直接拒绝。
+
+交互安装、就绪状态与 Windows/WSL2 建议见 [Native 管理](native-management.zh-CN.md)。CE 不会自动下载、修复或升级 Native。
 
 精确八文件清单：
 
@@ -49,11 +51,11 @@ Pi Host 与 MCP child 均读取 `~/.config/pi-chat-exchange/sqlite-driver.json`�
 }
 ```
 
-`manifestFile` 可选；未提供时使用包内 `NATIVE_COMPAT`，当前 null hash 会拒绝加载。操作员提供的 manifest pin 住中间件版本、ABI、目标资产和 SHA-256，属于可执行代码信任权威，必须独立核实来源。与不可信二进制一同下载的 checksum 不能作为唯一信任锚。不要使用 `latest`、自动升级或未经校验的 pin。
+`manifestFile` 可选；未提供时使用包内已固定的 `NATIVE_COMPAT`。操作员提供的 manifest pin 住中间件版本、ABI、目标资产和 SHA-256，属于可执行代码信任权威，必须独立核实来源。与不可信二进制一同下载的 checksum 不能作为唯一信任锚。不要使用 `latest`、自动升级或未经校验的 pin。
 
 ## Prepare、Select 与 Status
 
-以下命令适用于当前源码已构建的 checkout，在包目录执行 `pnpm run build` 后使用。它们是有前提的操作员流程，不是默认已启用的安装路径：须先取得独立验证的 manifest，并授权使用。
+以下命令适用于当前源码已构建的 checkout，在包目录执行 `pnpm run build` 后使用。这些命令用于操作员自备 manifest 的隔离验证。日常交互安装使用 `/ce-native install` 和随包提供的信任 pins，见 [Native 管理](native-management.zh-CN.md)。
 
 先将 `CE_NATIVE_TEST_HOME` 设为为本次验证准备的私有隔离 HOME 绝对路径，并在其中准备已验证的缓存；所有命令使用同一 HOME。生产 HOME 不受此示例授权。
 
