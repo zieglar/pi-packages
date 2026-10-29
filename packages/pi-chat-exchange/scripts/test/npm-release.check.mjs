@@ -125,6 +125,28 @@ test("registry failure is not proof of absence and refuses", () => {
   assert.match(result.stderr, /version state is unreadable/);
 });
 
+for (const [label, stderr] of [
+  ["proxy hostname containing 404", "npm error code ENOTFOUND\nnpm error proxy404.internal\n"],
+  ["request id containing 404 digits", "npm error code E500\nnpm error request 404123\n"],
+  ["generic not found text", "npm error ENOTFOUND: proxy not found\n"],
+]) {
+  test(`misleading ${label} is not accepted as version absence`, () => {
+    const routes = { ...healthyRoutes(), view: { status: 1, stdout: "", stderr } };
+    const result = invoke(["preflight"], { routes });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /version state is unreadable/);
+    assert.equal(result.calls.filter(call => call.argv[0] === "publish").length, 0);
+  });
+}
+
+test("leading-zero semver is refused", () => {
+  const directory = tempPackage({ version: "01.2.3" });
+  const result = invoke(["preflight"], { cwd: directory });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /package version must be a concrete semver version/);
+  assert.equal(result.calls.length, 0);
+});
+
 test("a new version with a clean pack passes preflight", () => {
   const result = invoke(["preflight"], { routes: healthyRoutes() });
   assert.equal(result.status, 0);
@@ -166,18 +188,20 @@ test("publishOnce refuses a long-lived token before any invocation", () => {
   assert.equal(result.calls.length, 0);
 });
 
-test("publishOnce attempts exactly once with no dist-tag on success", () => {
-  const result = invoke(["publish"]);
-  assert.equal(result.status, 0);
+test("publish entry runs preflight and publishes exactly once with no dist-tag command", () => {
+  const result = invoke(["publish"], { routes: healthyRoutes() });
+  assert.equal(result.status, 0, result.stderr);
   assert.equal(result.calls.filter(call => call.argv[0] === "publish").length, 1);
   assert.equal(result.calls.filter(call => call.argv[0] === "dist-tag").length, 0);
+  assert.ok(result.calls.some(call => call.argv[0] === "pack"), "preflight must run before publish");
+  assert.ok(result.calls.some(call => call.argv[0] === "view"), "duplicate-version check must run before publish");
 });
 
 test("simulated OIDC ENEEDAUTH fails once with no retry and no dist-tag", () => {
-  const routes = { publish: { status: 1, stdout: "", stderr: "npm error code ENEEDAUTH\n" } };
+  const routes = { ...healthyRoutes(), publish: { status: 1, stdout: "", stderr: "npm error code ENEEDAUTH\n" } };
   const result = invoke(["publish"], { routes });
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /no retry and no dist-tag changes/);
+  assert.match(result.stderr, /no retry and no explicit dist-tag commands/);
   assert.equal(result.calls.filter(call => call.argv[0] === "publish").length, 1);
   assert.equal(result.calls.filter(call => call.argv[0] === "dist-tag").length, 0);
 });
@@ -225,5 +249,9 @@ test("workflow uses only the publish environment, OIDC and no long-lived token",
   assert.match(source, /publish_sha/);
   assert.match(source, /npm-release\.mjs preflight/);
   assert.match(source, /npm-release\.mjs publish/);
+  const steps = source.matchAll(/^      - name: .+$(?:\n(?!      - ).*)*/gm);
+  for (const step of steps) {
+    assert.match(step[0], /\n        (uses|run):/, "every step must have run or uses");
+  }
   for (const match of source.matchAll(/uses: [^@\s]+@([^\s]+)/g)) assert.match(match[1], /^[a-f0-9]{40}$/);
 });
