@@ -1,7 +1,7 @@
 // npm release preflight and one-shot trusted publication.
 //
 // This module never creates or uses a long-lived npm token. Publication is
-// attempted exactly once and never retried; dist-tags are never modified.
+// attempted exactly once and never retried; no explicit dist-tag command is issued.
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -79,7 +79,7 @@ export function preflight({ directory = process.cwd(), expectedSha = process.env
   return { name: pkg.name, version: pkg.version, fileCount: files.length };
 }
 
-// One attempt, no retry, no dist-tag mutation. OIDC trusted publishing is the
+// One attempt, no retry, no explicit dist-tag command. OIDC trusted publishing is the
 // only supported credential path here.
 export function publishOnce({ directory = process.cwd(), env = process.env, run = runNpm } = {}) {
   if (env.NPM_TOKEN) throw new Error("long-lived NPM_TOKEN must not be used; refusing release");
