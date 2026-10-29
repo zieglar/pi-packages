@@ -74,7 +74,7 @@ Exchange 缺失（A1）、CLOSED（A3）或带有 disposition 行（A4；实现�
 
 ### 持久化存储边界（公共契约）
 
-Storage 为包内私有：公共入口仅重新导出 protocol/core（`src/index.ts:7-10`），契约门禁强制维持私有存储边界（19 个负向夹具；Wayforge 19 项架构门禁）。文件系统、拒绝、schema 清单及快照预检边界见 `docs/storage-security.md`。
+Storage 为包内私有：公共入口仅重新导出 protocol/core（`src/index.ts:7-10`），契约门禁强制维持私有存储边界（19 个负向夹具）。文件系统、拒绝、schema 清单及快照预检边界见 `docs/storage-security.md`。
 
 ## 2. 崩溃与恢复证据
 
@@ -101,7 +101,7 @@ Storage 为包内私有：公共入口仅重新导出 protocol/core（`src/index
 
 ## 4. 架构边界
 
-Chat Exchange 当前不负责模型路由、账号轮换、自动任务重试、持久化任务执行、恢复调度或跨插件编排。Chat Exchange 消息持久化（本契约）与 Wayforge 任务持久化相互独立，不能彼此推导。本文记录边界，不改变架构。
+Chat Exchange 当前不负责模型路由、账号轮换、自动任务重试、持久化任务执行、恢复调度或跨插件编排。Chat Exchange 消息持久化（本契约）与任何外部任务系统的持久化相互独立，不能彼此推导。本文记录边界，不改变架构。
 
 ## 5. 待办登记
 

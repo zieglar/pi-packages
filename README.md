@@ -12,7 +12,7 @@ Packages that extend or integrate with Pi. Start with [Pi Chat Exchange](package
 - [Security, troubleshooting, development and releases](packages/pi-chat-exchange/docs/operations.md)
 - [Bilingual documentation](packages/pi-chat-exchange/docs/documentation.md)
 
-Wayforge owns governed tasks, policy, recovery and completion authority. Chat Exchange owns message delivery/lifecycle, evidence and reconciliation. Pi provides sessions, runtime and provider transport. A message receipt does not grant task completion authority.
+CE does not decide whether a task is complete: task governance, policy, recovery and completion decisions belong to the external workflow or operator that uses CE. Chat Exchange owns message delivery/lifecycle, evidence and reconciliation. Pi provides sessions, runtime and provider transport. A message receipt does not grant task completion authority.
 
 ## Development
 

@@ -89,7 +89,7 @@ For a received message, discover its ID, read metadata, request payload access o
 
 ## Architecture and responsibilities
 
-Wayforge owns governed tasks, policy, recovery and completion authority. CE owns message delivery/lifecycle rules, durable evidence and reconciliation. Pi owns sessions, runtime and provider transport. CE's adapters use the same Host/Storage authority; tool labels and model claims cannot grant permissions.
+Task governance, policy, recovery and completion decisions stay with the external workflow or operator that uses CE. CE owns message delivery/lifecycle rules, durable evidence and reconciliation. Pi owns sessions, runtime and provider transport. CE's adapters use the same Host/Storage authority; tool labels and model claims cannot grant permissions.
 
 Recovery markers are not locks or fencing tokens. Changing models must not replay a task that has already produced effects. See [architecture](docs/architecture.md) for component responsibilities and the distinction between implemented messaging tools and the broader protocol model.
 

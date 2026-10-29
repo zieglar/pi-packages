@@ -47,7 +47,7 @@ Mutex 协调要求完整离线维护窗口：检查、协调、持久化、复�
 
 发布先用 O_EXCL 创建 `release-pending.json`，mode 0600，字节与 owner record 完全一致；fsync 文件/目录并复查全部身份后，原子 rename 为 `released.json`，这是唯一提交点。此前失败保留 pending 并拒绝。Rename 抛错时，只有 `released.json` 的字节/身份精确匹配才能确认已提交，否则停止；成功 rename 后不再执行可失败操作。失败需人工检查，不重试/覆盖/删除。这只协调本地 mutex receipt，不证明 CE end/detach，不授权 takeover 或 Operator Recovery。标记不是锁、fencing token 或 exactly-once 保证。
 
-`DELIVERY_UNKNOWN` 保持未知，不改为 `CANCELLED`。缺 ACK 不授权重试。已知送达但执行未知不证明 acceptance、settlement 或 Result。Wayforge 负责任务/策略/恢复/完成裁决；CE 负责消息交付/生命周期/证据/协调；Pi 负责 Session/runtime/provider transport。切换模型不授权重放 effect。
+`DELIVERY_UNKNOWN` 保持未知，不改为 `CANCELLED`。缺 ACK 不授权重试。已知送达但执行未知不证明 acceptance、settlement 或 Result。外部工作流或操作员负责任务/策略/恢复/完成裁决；CE 负责消息交付/生命周期/证据/协调；Pi 负责 Session/runtime/provider transport。切换模型不授权重放 effect。
 
 ## 卸载、升级与回滚
 
