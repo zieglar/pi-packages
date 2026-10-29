@@ -31,7 +31,9 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
       - name: Validate workspace
-        run: pnpm check:workspace
+        run: |
+          node --test tooling/check-workspace.check.mjs
+          node tooling/check-workspace.mjs
       - name: Build
         run: pnpm build
       - name: Typecheck
