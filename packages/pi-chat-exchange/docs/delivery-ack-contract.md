@@ -6,7 +6,7 @@ The storage contract was implemented in stage E2-A. The later operator surface a
 
 ## Meaning and authority
 
-An ACK is an immutable recipient reception statement: one receipt plus one `receipt_recorded` audit. It is not proof of reading, understanding, processing, exactly-once delivery/execution, task recovery, or task completion. Wayforge retains governed task authority; Pi retains runtime/transport authority. `DELIVERY_UNKNOWN` does not become `CANCELLED`.
+An ACK is an immutable recipient reception statement: one receipt plus one `receipt_recorded` audit. It is not proof of reading, understanding, processing, exactly-once delivery/execution, task recovery, or task completion. The external workflow or operator retains governed task authority; Pi retains runtime/transport authority. `DELIVERY_UNKNOWN` does not become `CANCELLED`.
 
 Private `recordDeliveryAck(store, input, seams?)` accepts exactly the host fields `participantId`, `sessionId`, `fencingToken`, `capability`, `exchangeId`, and copied Message metadata `messageId`, `payloadDigest`, `payloadLength`, `messageCreatedAuditSequence`. Inputs are captured once; unknown fields and invalid scalar types are refused without echoing values. These host authority fields are not a proposed public caller input.
 

@@ -6,7 +6,7 @@
 
 ## 含义与权限
 
-ACK 是不可变的接收方接收声明：一条 Receipt 加一条 `receipt_recorded` 审计。它不能证明已阅读、理解、处理、恰好一次投递/执行、任务恢复或任务完成。Wayforge 保留受治理任务的权限；Pi 保留 runtime/transport 权限。`DELIVERY_UNKNOWN` 不会变为 `CANCELLED`。
+ACK 是不可变的接收方接收声明：一条 Receipt 加一条 `receipt_recorded` 审计。它不能证明已阅读、理解、处理、恰好一次投递/执行、任务恢复或任务完成。外部工作流或操作员保留受治理任务的权限；Pi 保留 runtime/transport 权限。`DELIVERY_UNKNOWN` 不会变为 `CANCELLED`。
 
 私有 `recordDeliveryAck(store, input, seams?)` 恰好接受 host 字段 `participantId`、`sessionId`、`fencingToken`、`capability`、`exchangeId`，以及复制的 Message 元数据 `messageId`、`payloadDigest`、`payloadLength`、`messageCreatedAuditSequence`。输入只捕获一次；未知字段和无效标量类型会被拒绝，且不回显值。这些 host 权限字段不是拟议的公开调用输入。
 

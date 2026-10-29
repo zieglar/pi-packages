@@ -144,8 +144,8 @@ Corrupt or unexpected durable history is refused, never repaired (P3;
 
 Storage is private to the package: the public entry point re-exports
 protocol/core only (`src/index.ts:7-10`), and the contract gate enforces
-the private storage boundary (19 negative fixtures; Wayforge 19 architecture
-gates). Filesystem, refusal, schema-manifest, and snapshot-preflight
+the private storage boundary (19 negative fixtures). Filesystem, refusal,
+schema-manifest, and snapshot-preflight
 boundaries are documented in `docs/storage-security.md`.
 
 ## 2. Crash and recovery evidence
@@ -210,7 +210,7 @@ assertions are exercised through createMessage paths only.
 Chat Exchange does **not** currently own: model routing, account rotation,
 automatic task retries, durable task execution, recovery scheduling, or
 cross-plugin orchestration. Chat Exchange message persistence (this contract)
-is distinct from Wayforge task durability; neither implies the other. This
+is distinct from the durability of any external task system; neither implies the other. This
 document records boundaries; it changes no architecture.
 
 ## 5. Deferred register

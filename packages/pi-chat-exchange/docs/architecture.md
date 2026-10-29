@@ -69,13 +69,13 @@ MCP identity is fixed by operator-owned `--config`, not by an MCP invocation or 
 2. Inbox performs a bounded scan by creation Audit and applies recipient/membership/join boundaries. It neither ACKs nor consumes messages or advances a delivery cursor.
 3. Metadata read and payload read have separate permissions. Storage authorizes payload access before materializing bytes.
 4. ACK appends an immutable reception receipt: first CREATED, then REPLAYED. Message creation Audit sequence and receipt Audit sequence are distinct evidence.
-5. Result is immutable processing evidence. Publishing it does not automatically reply, close an Exchange or grant Wayforge completion authority.
+5. Result is immutable processing evidence. Publishing it does not automatically reply, close an Exchange or grant task completion authority.
 
 The full pure-core delivery lifecycle still constrains claim, dispatch intent, attempt, runtime evidence, settlement and quarantine. Durable message/ACK tools do not establish implementation of every remote delivery/execution/result flow.
 
 Frozen safety semantics require intent before effect and related Message/Attempt/Endpoint/incarnation/lease/fencing evidence. Ambiguous delivery enters `DELIVERY_UNKNOWN`, with no retry/requeue and no conversion to `CANCELLED`. Known delivery with unknown execution cannot synthesize acceptance/settlement/Result. Ordinary close requires all Messages to finish. Separately authorized `ABANDONED_UNRESOLVED` preserves unknown facts and means neither cancellation, normal close nor success.
 
-CE Receipts, Pi UI notifications, Tunnel health, runtime execution facts and Wayforge workflow decisions provide different evidence. Wayforge governs tasks, policy, recovery and completion; CE governs message delivery, lifecycle, evidence and reconciliation; Pi governs sessions, runtime and provider transport. External completion actions require their own explicit authorization and evidence. ACKs and model assertions cannot supply those. Switching models does not authorize replay of effects.
+CE Receipts, Pi UI notifications, Tunnel health, runtime execution facts and external workflow decisions provide different evidence. The external workflow or operator governs tasks, policy, recovery and completion; CE governs message delivery, lifecycle, evidence and reconciliation; Pi governs sessions, runtime and provider transport. External completion actions require their own explicit authorization and evidence. ACKs and model assertions cannot supply those. Switching models does not authorize replay of effects.
 
 <a id="生命周期并发与恢复边界"></a>
 ## Lifecycle, concurrency and recovery

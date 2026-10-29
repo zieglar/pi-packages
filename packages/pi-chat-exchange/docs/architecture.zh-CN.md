@@ -65,13 +65,13 @@ MCP 身份固定于 operator-owned `--config`，不是由一次 MCP invocation �
 2. Inbox 按 creation Audit 有界扫描并应用 recipient/membership/join boundary，不 ACK、不消费、不推进 delivery cursor。
 3. metadata read 与 payload read 是不同权限；后者在 materialize bytes 前完成 Storage 授权。
 4. ACK 追加 immutable reception receipt，第一次 CREATED、已有则 REPLAYED。Message 创建 Audit sequence 与 receipt Audit sequence 是不同证据。
-5. Result 是 immutable processing evidence，发布不自动回复、关闭 Exchange 或赋予 Wayforge completion authority。
+5. Result 是 immutable processing evidence，发布不自动回复、关闭 Exchange 或赋予任务完成权威。
 
 纯 core 的完整 delivery lifecycle 仍约束 claim、dispatch intent、attempt、runtime evidence、settlement、quarantine。不能因为当前工具提供持久消息/ACK，就宣称所有远端 delivery/execution/result 流程均已落地。
 
 **冻结安全语义：** intent 先于 effect；需相关 Message/Attempt/Endpoint/incarnation/lease/fencing 证据。模糊 delivery 进入 `DELIVERY_UNKNOWN`，不 retry/requeue，不将它改成 `CANCELLED`。已知送达但执行未知也不能合成 acceptance/settlement/Result。普通 close 需所有 Message 完结；独立授权的 `ABANDONED_UNRESOLVED` 保留未知事实，不代表 cancellation/normal close/success。
 
-CE Receipt、Pi UI 通知、Tunnel health、runtime 执行事实和 Wayforge 工作流裁决是不同平面。Wayforge 负责任务、策略、恢复与完成裁决；CE 负责消息交付、生命周期、证据和协调；Pi 负责 Session、运行时和 provider transport。切换模型不授权重放 effect。任何外部完成动作仍须其本身的显式授权和证据，不能从 ACK 或模型断言推导。
+CE Receipt、Pi UI 通知、Tunnel health、runtime 执行事实和外部工作流裁决是不同平面。外部工作流或操作员负责任务、策略、恢复与完成裁决；CE 负责消息交付、生命周期、证据和协调；Pi 负责 Session、运行时和 provider transport。切换模型不授权重放 effect。任何外部完成动作仍须其本身的显式授权和证据，不能从 ACK 或模型断言推导。
 
 ## 生命周期、并发与恢复边界
 

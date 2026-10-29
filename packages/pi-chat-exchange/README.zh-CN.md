@@ -81,7 +81,7 @@ Setup 的 Advanced · Messaging 必须显式授权当前 Session。只保存传�
 
 ## 架构与组件职责
 
-Wayforge 负责受治理任务、策略、恢复和完成权威；CE 负责消息投递/生命周期规则、持久证据和对账；Pi 负责 Session、运行时和 Provider Transport。CE 的适配器共享 Host/Storage 权威，工具标签和模型声明不能授予权限。
+任务治理、策略、恢复和完成裁决属于使用 CE 的外部工作流或操作员。CE 负责消息投递/生命周期规则、持久证据和对账；Pi 负责 Session、运行时和 Provider Transport。CE 的适配器共享 Host/Storage 权威，工具标签和模型声明不能授予权限。
 
 恢复标记不是锁或 fencing token。切换模型不能重放已经产生副作用的任务。[架构文档](docs/architecture.zh-CN.md)说明组件职责，并区分已实现消息工具与更完整的协议模型。
 

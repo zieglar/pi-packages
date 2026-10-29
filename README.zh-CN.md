@@ -12,7 +12,7 @@
 - [安全、故障排查、开发与发布](packages/pi-chat-exchange/docs/operations.zh-CN.md)
 - [双语文档维护](packages/pi-chat-exchange/docs/documentation.zh-CN.md)
 
-Wayforge 负责受治理任务、策略、恢复和完成权威；Chat Exchange 负责消息投递/生命周期、证据和对账；Pi 提供 Session、运行时和 Provider Transport。消息回执不授予任务完成权威。
+CE 不判定任务是否完成：任务治理、策略、恢复和完成裁决属于使用 CE 的外部工作流或操作员。Chat Exchange 负责消息投递/生命周期、证据和对账；Pi 提供 Session、运行时和 Provider Transport。消息回执不授予任务完成权威。
 
 ## 开发
 

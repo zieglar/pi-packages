@@ -120,7 +120,7 @@ Storage 在读取任何正文 bytes 前检查 payload_read scope、ATTACHED Sess
 
 allowlist 是 registration authority；当前 runtime 也必须经 CE Host/Storage 授权，label/工具存在不等于权限。Host trust-root secret 仅 Storage 在受控事务中读取。Capability 不进入 session entry、日志、details 或 model context。
 
-本扩展不自动执行载荷、不自动消费、不提供 remote exactly-once、不替用户承担费用批准，也不替 Wayforge/人工宣布工作流完成。`DELIVERY_UNKNOWN` 不能改写成 `CANCELLED`。崩溃恢复、消息语义完成与发布都保持独立权威。
+本扩展不自动执行载荷、不自动消费、不提供 remote exactly-once、不替用户承担费用批准，也不替外部工作流或人工宣布完成。`DELIVERY_UNKNOWN` 不能改写成 `CANCELLED`。崩溃恢复、消息语义完成与发布都保持独立权威。
 
 ## 验证与现场限制
 

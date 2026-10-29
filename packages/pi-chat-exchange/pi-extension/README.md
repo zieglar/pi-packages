@@ -138,7 +138,7 @@ With `inboxNotification.enabled`, successful binding and `agent_settled` may eac
 
 The allowlist is registration authority; the current runtime still requires CE Host/Storage authorization. A label or available tool does not grant access. Only Storage reads the Host trust-root secret within controlled transactions. Capability never enters session entries, logs, details or model context.
 
-The extension does not execute payloads or consume messages automatically, provide remote exactly-once, approve costs for users or declare Wayforge/manual workflow completion. `DELIVERY_UNKNOWN` must not become `CANCELLED`. Crash recovery, semantic message completion and release retain separate authority.
+The extension does not execute payloads or consume messages automatically, provide remote exactly-once, approve costs for users or declare external-workflow or manual completion. `DELIVERY_UNKNOWN` must not become `CANCELLED`. Crash recovery, semantic message completion and release retain separate authority.
 
 <a id="验证与现场限制"></a>
 

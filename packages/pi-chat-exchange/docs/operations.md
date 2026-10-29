@@ -47,7 +47,7 @@ Mutex reconciliation requires a complete offline maintenance window: stop and pr
 
 Publication first creates `release-pending.json` with O_EXCL, mode 0600 and bytes identical to the owner record. It fsyncs files/directories and rechecks all identities, then atomically renames to `released.json`, the only commit point. Any earlier failure preserves pending state and refuses. If rename throws, only an exact byte/identity match of `released.json` establishes committed success; otherwise stop. No fallible work follows a successful rename. Failures require manual inspection, never retry/overwrite/delete. This reconciles a local mutex receipt, not CE end/detach, takeover or Operator Recovery. Markers are not locks, fencing tokens or exactly-once guarantees.
 
-`DELIVERY_UNKNOWN` remains unknown, never `CANCELLED`. No ACK does not authorize retry. Known delivery with unknown execution does not establish acceptance, settlement or Result. Wayforge owns task/policy/recovery/completion decisions; CE owns message delivery/lifecycle/evidence/reconciliation; Pi owns sessions/runtime/provider transport. Model switching never authorizes replay of effects.
+`DELIVERY_UNKNOWN` remains unknown, never `CANCELLED`. No ACK does not authorize retry. Known delivery with unknown execution does not establish acceptance, settlement or Result. The external workflow or operator owns task/policy/recovery/completion decisions; CE owns message delivery/lifecycle/evidence/reconciliation; Pi owns sessions/runtime/provider transport. Model switching never authorizes replay of effects.
 
 ## Uninstall, upgrade and rollback
 
