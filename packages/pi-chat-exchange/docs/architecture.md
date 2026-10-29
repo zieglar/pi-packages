@@ -1,8 +1,11 @@
-# pi-chat-exchange 开发者架构指南
+[English](architecture.md) | [简体中文](architecture.zh-CN.md)
 
-本文说明消息、Endpoint/Session authority、transport 与 Pi 适配器的边界。用户入口见[快速开始](tunnel-setup.md)，多项目操作见[多 Session 使用](multi-session-usage.md)。精确约束仍以协议、Storage 与 Ownership 契约及源码 gate 为准。
+# pi-chat-exchange developer architecture
 
-## 分层与依赖方向
+This guide describes the boundaries between messages, Endpoint/Session authority, transport and the Pi adapter. Start with [getting started](getting-started.md) for installation and [multi-session usage](multi-session-usage.md) for multiple projects. Protocol, Storage and Ownership contracts and source gates define the precise constraints.
+
+<a id="分层与依赖方向"></a>
+## Layers and dependency direction
 
 ```text
 ChatGPT (Tunnel MCP / Desktop stdio)          Pi runtime
@@ -18,94 +21,103 @@ ChatGPT (Tunnel MCP / Desktop stdio)          Pi runtime
                               |
                          src/protocol
 
-src/tunnel: transport/profile/setup/Manager；不替代 CE Host authority
+src/tunnel: transport/profile/setup/Manager; does not replace CE Host authority
 ```
 
-| 层 | 职责 | 不应做什么 |
+| Layer | Responsibility | Boundary |
 |---|---|---|
-| `src/protocol/` | 中立实体、lifecycle、action grants、support declarations | 不依赖 Pi、MCP、网络或数据库 |
-| `src/core/` | 纯证据/授权规则，reference in-memory 行为 | 不读 env、文件或真实调用 endpoint |
-| `src/storage/` | 私有 SQLite、事务、schema/migrations、Ownership/fencing、最终数据授权 | 不把 private SQL/migration/evidence 类型暴露到 public barrel |
-| `src/host/` | adapter-neutral durable Endpoint Host，可信 binding、Session、幂等消息与 receipt 操作 | 不从 tool 参数接受 sender/capability，不替代外层工作流完成权威 |
-| `src/control/mcp/` | MCP schema/输出；默认 ping，注入 bound port 后提供 messaging | 不读任意 env、不直接 import Pi integration，不凭工具调用识别 ChatGPT 对话身份 |
-| `src/endpoints/pi/` | Pi Session host 的薄适配 | 不 import MCP SDK 或其他 endpoint integration |
-| `src/bin/` | stdio 组合根、可信绝对路径 `--config`、进程生命周期 | 不另造消息 broker 或平行 authority |
-| `pi-extension/` | 运行时 Session lookup、工具/命令、生命周期、UI、mapping identifiers | 不持久化 capability，不代替 Storage 决定可见性 |
-| `src/tunnel/` | client 生命周期、健康测量、私有配置事务、masked 输入与显式激活 UI | 不把 CONNECTED 当消息 Gate，不隐式读取/ACK/重试消息 |
+| `src/protocol/` | Neutral entities, lifecycle, action grants, support declarations | No Pi, MCP, network or database dependencies |
+| `src/core/` | Pure evidence/authorization rules, reference in-memory behavior | No environment or file reads or real endpoint calls |
+| `src/storage/` | Private SQLite, transactions, schema/migrations, Ownership/fencing, final data authorization | No private SQL/migration/evidence types in the public barrel |
+| `src/host/` | Adapter-neutral durable Endpoint Host, trusted binding, Session, idempotent messages and receipts | No sender/capability from tool arguments; no outer workflow completion authority |
+| `src/control/mcp/` | MCP schemas/output; ping by default, messaging with an injected bound port | No arbitrary environment reads, direct Pi integration imports or ChatGPT conversation identity inferred from invocation |
+| `src/endpoints/pi/` | Thin Pi Session host adapter | No MCP SDK or other endpoint integration imports |
+| `src/bin/` | Stdio composition root, trusted absolute `--config`, process lifecycle | No second message broker or parallel authority |
+| `pi-extension/` | Runtime Session lookup, tools/commands, lifecycle, UI, mapping identifiers | No persisted capability; Storage decides visibility |
+| `src/tunnel/` | Client lifecycle, health measurement, private configuration transactions, masked input and explicit activation UI | CONNECTED is not a message gate; no implicit read/ACK/retry |
 
-核心依赖向内：`bin → control/endpoints/host → storage → core → protocol`，具体许可由 `scripts/check-contract.mjs` 的 TypeScript AST gates 决定。protocol/core 不可 reach 外层；control 与 endpoints 不互相 import；禁止借 barrel、dynamic import 或 require 绕开。tunnel 属外层组合，不提升协议权威。共享行为优先下沉已有 Host/Storage seam，不让 ChatGPT/Pi 各实现第二套 Message 系统。
+Core dependencies point inward: `bin → control/endpoints/host → storage → core → protocol`. TypeScript AST gates in `scripts/check-contract.mjs` define permitted imports. Protocol/core cannot reach outer layers; control and endpoints cannot import each other. Barrels, dynamic imports and require cannot bypass these rules. Tunnel is outer composition and gains no protocol authority. Shared behavior belongs in existing Host/Storage seams, so ChatGPT and Pi do not acquire separate Message systems.
 
-## 身份模型与注册权威
+<a id="身份模型与注册权威"></a>
+## Identity and registration authority
 
-- **Exchange**：关联聚合，不是一个对话或 transport 连接；namespace/idempotencyKey 只负责确定性 bootstrap。
-- **EndpointRef**：`{adapter, endpointId}` 是非秘密身份。初始配对为 `chatgpt/main` 与 `pi/main`；多 Session 时每个 Pi Session 显式注册独立稳定 Endpoint（如 `pi/project-B`）。各 Endpoint 是独立 Authority，不共享 Owner；共享 ChatGPT inbox 不是对话隔离。
-- **Participant**：Store/Exchange 中注册的参与者；与当前具体 Session/incarnation 分开。
-- **CE Session / Ownership / fencing**：活跃执行权威与 incarnation，需 membership、lease、current owner、fencing 和精确作用域 capability 一起校验。
-- **Pi runtime Session ID**：从可信 Pi API 取得，作为 operator allowlist lookup。不是 CE Session ID，也不是凭自身能发消息的凭据。
-- **Recipient label**：工具 `to` 使用精确 endpointId，不是认证。labels、support declarations、工具存在和 UI 选择都不直接发 authority。
-- **Capability**：Host 内存中的 scoped authority；不写 mapping/日志/配置，不让模型自选。
+- Exchange is an association aggregate, not a conversation or transport connection. Namespace/idempotencyKey only provide deterministic bootstrap.
+- EndpointRef `{adapter, endpointId}` is non-secret identity. The initial pair is `chatgpt/main` and `pi/main`. Each Pi Session explicitly registers a separate stable Endpoint, such as `pi/project-B`. Endpoints have independent authority and Owners. A shared ChatGPT inbox does not isolate conversations.
+- Participant is registered in a Store/Exchange, separately from the current Session/incarnation.
+- CE Session / Ownership / fencing identify active execution authority and incarnation. Membership, lease, current owner, fencing and an exactly scoped capability must all pass validation.
+- The Pi runtime Session ID comes from the trusted Pi API and selects an operator allowlist entry. It is neither a CE Session ID nor a credential that permits messaging on its own.
+- A recipient label uses the exact endpointId in tool `to`; it is not authentication. Labels, support declarations, available tools and UI selection do not grant authority.
+- A capability is scoped authority held in Host memory. It is never written to mappings/logs/configuration or selected by the model.
 
-MCP 身份固定于 operator-owned `--config`，不是由一次 MCP invocation 或 ChatGPT 当前文字声明认证。Pi 身份固定于可信 allowlist 与当前 context。两边共享 Store directory/file 与 Exchange namespace/key；任一不同都没有自动路由补偿。`managed`/`managedBy` 是 provenance，不是替代 recipients 或 Storage 检查的许可。
+MCP identity is fixed by operator-owned `--config`, not by an MCP invocation or ChatGPT text. Pi identity is fixed by the trusted allowlist and current context. Both sides share the exact Store directory/file and Exchange namespace/key; differences have no automatic routing compensation. `managed`/`managedBy` record provenance and do not replace recipient or Storage checks.
 
-### 多 Session：配置准入不取代 durable authority
+<a id="多-session配置准入不取代-durable-authority"></a>
+### Multiple Sessions: configuration admission and durable authority
 
-`src/tunnel/{multi-session-policy,multi-session-admission}.ts` 管理 profile 选中的不可变 registration 策略；`pi-extension/multi-session-runtime.ts` 管理当前进程 guard。注册绑定可信 native Pi Session、稳定 Endpoint、active/revoked 状态与 epoch，payload/ACK 独立 opt-in；不从项目路径或模型参数推导身份。
+`src/tunnel/{multi-session-policy,multi-session-admission}.ts` manage the immutable registration policy selected by the profile. `pi-extension/multi-session-runtime.ts` manages the current process guard. Registrations bind trusted native Pi Sessions to stable Endpoints, active/revoked state and epoch. Payload/ACK are independent opt-ins. Project paths and model arguments do not determine identity.
 
-- convert/register/revoke 需人工确认、配置 revision 校验与 verified STOPPED transport lock；不自动启停，也不能约束仍在运行的旧二进制。
-- Pi factory grants 在 reload 前不变；MCP child 在显式 Stop/Start 前不能宣称已加载新 generation。selected configured、loaded、bound、connected 分开报告。
-- deny-only gates 约束后续准入，包括 read/renew；已经准入的操作可能完成。正常 end/release 不被撤销门禁阻挡；撤销不删除 Owner、Participant、历史消息或 Receipt。
-- process mutex 是本地 exclusion，不是 CE authority/recovery。runtime/epoch/Store/Exchange 与 guard 均须一致，最终权限仍由原 Host/Storage 校验；不增加 takeover 或跨 Exchange router。
-- `/ce-tunnel sessions` 仅在当前 runtime 经 admission 后投影所选 active Endpoint IDs；不读取 Inbox，不证明运行中的 MCP 已加载。
+- Convert/register/revoke require human confirmation, configuration revision validation and a verified STOPPED transport lock. They do not start/stop transport or constrain an old binary still running.
+- Pi factory grants remain fixed until reload. An MCP child cannot claim a new generation before explicit Stop/Start. Selected configuration, loaded policy, binding and connection are reported separately.
+- Deny-only gates constrain later admission, including read/renew; already admitted operations may finish. Normal end/release remains possible. Revocation removes no Owner, Participant, historical message or Receipt.
+- The process mutex provides local exclusion, not CE authority/recovery. Runtime/epoch/Store/Exchange and guard must agree; original Host/Storage checks make the final authorization decision. This adds neither takeover nor a cross-Exchange router.
+- `/ce-tunnel sessions` projects the selected active Endpoint IDs only after admission of the current runtime. It reads no Inbox and does not prove the running MCP loaded that policy.
 
-## Message、DeliveryAttempt、Receipt、Result 的分离
+<a id="messagedeliveryattemptreceiptresult-的分离"></a>
+## Message, DeliveryAttempt, Receipt and Result
 
-1. `ce_send` 将一次逻辑发送持久化为独立 Message；Message、幂等记录与创建 Audit 在本地 Store 同一事务提交，不证明云端传输或对端接收。key 在 Exchange 内作用域化，相同 key/请求重放原记录，改变正文或 Endpoint 则冲突；这不授予未知结果重试许可，也不承诺 exactly-once delivery/execution。反向回复/后续追问也是新 Message，不是 Result 的变形。
-2. Inbox 按 creation Audit 有界扫描并应用 recipient/membership/join boundary，不 ACK、不消费、不推进 delivery cursor。
-3. metadata read 与 payload read 是不同权限；后者在 materialize bytes 前完成 Storage 授权。
-4. ACK 追加 immutable reception receipt，第一次 CREATED、已有则 REPLAYED。Message 创建 Audit sequence 与 receipt Audit sequence 是不同证据。
-5. Result 是 immutable processing evidence，发布不自动回复、关闭 Exchange 或赋予 Wayforge completion authority。
+1. `ce_send` persists a logical send as an independent Message. Message, idempotency record and creation Audit commit in one local Store transaction. This proves neither cloud transmission nor peer reception. Keys are scoped to the Exchange: the same key/request replays the original record; changed text or Endpoint conflicts. This grants no retry permission after an unknown outcome and promises no exactly-once delivery/execution. Replies and follow-up questions are new Messages, not variations of Result.
+2. Inbox performs a bounded scan by creation Audit and applies recipient/membership/join boundaries. It neither ACKs nor consumes messages or advances a delivery cursor.
+3. Metadata read and payload read have separate permissions. Storage authorizes payload access before materializing bytes.
+4. ACK appends an immutable reception receipt: first CREATED, then REPLAYED. Message creation Audit sequence and receipt Audit sequence are distinct evidence.
+5. Result is immutable processing evidence. Publishing it does not automatically reply, close an Exchange or grant Wayforge completion authority.
 
-纯 core 的完整 delivery lifecycle 仍约束 claim、dispatch intent、attempt、runtime evidence、settlement、quarantine。不能因为当前工具提供持久消息/ACK，就宣称所有远端 delivery/execution/result 流程均已落地。
+The full pure-core delivery lifecycle still constrains claim, dispatch intent, attempt, runtime evidence, settlement and quarantine. Durable message/ACK tools do not establish implementation of every remote delivery/execution/result flow.
 
-**冻结安全语义：** intent 先于 effect；需相关 Message/Attempt/Endpoint/incarnation/lease/fencing 证据。模糊 delivery 进入 `DELIVERY_UNKNOWN`，不 retry/requeue，不将它改成 `CANCELLED`。已知送达但执行未知也不能合成 acceptance/settlement/Result。普通 close 需所有 Message 完结；独立授权的 `ABANDONED_UNRESOLVED` 保留未知事实，不代表 cancellation/normal close/success。
+Frozen safety semantics require intent before effect and related Message/Attempt/Endpoint/incarnation/lease/fencing evidence. Ambiguous delivery enters `DELIVERY_UNKNOWN`, with no retry/requeue and no conversion to `CANCELLED`. Known delivery with unknown execution cannot synthesize acceptance/settlement/Result. Ordinary close requires all Messages to finish. Separately authorized `ABANDONED_UNRESOLVED` preserves unknown facts and means neither cancellation, normal close nor success.
 
-CE Receipt、Pi UI 通知、Tunnel health、runtime 执行事实和 Wayforge 工作流裁决是不同平面。任何外部完成动作仍须其本身的显式授权和证据，不能从 ACK 或模型断言推导。
+CE Receipts, Pi UI notifications, Tunnel health, runtime execution facts and Wayforge workflow decisions provide different evidence. Wayforge governs tasks, policy, recovery and completion; CE governs message delivery, lifecycle, evidence and reconciliation; Pi governs sessions, runtime and provider transport. External completion actions require their own explicit authorization and evidence. ACKs and model assertions cannot supply those. Switching models does not authorize replay of effects.
 
-## 生命周期、并发与恢复边界
+<a id="生命周期并发与恢复边界"></a>
+## Lifecycle, concurrency and recovery
 
-- MCP startup bind 使用 `requireUnowned`；独立 heartbeat 续租。SIGINT/SIGTERM/stdio-close 走一次 release/end，不自动接管 crashed Owner。
-- Pi `session_start` 按可信 runtime lookup 选择 Endpoint；有 mapping 的 startup/reload/resume 校验恢复。reload 缺 mapping 拒绝，新/fork 不继承旧 authority。
-- Pi reload 结束旧内存 generation/timer，不结束有效 durable Ownership；正常退出/Session replacement 尝试 end/release/detach。renew/end 未知或 diagnostic persistence 失败锁住后续路径。
-- `ce-mapping`、`ce-messaging-released`、`ce-lifecycle-blocked` 仅存 identifiers/拒绝证据，不携带 capability。释放标记不能独立授予新权威，需验证旧 mapping 的 exact released+detached proof。
-- 显式 activation 在 profile lock 下核实当前配置/环境/runtime，只有 requireUnowned 可绑定。匹配已有有效 binding 为 no-op；未知释放、映射写入失败或旧 Exchange 证据不符拒绝，不自动 takeover。
-- `/ce-tunnel deactivate` 在确认与当前 generation/Session fence 后复用 `shutdownCe()` 正常结束路径；仅释放本地 CE binding，保留 registration/history/transport。未知 end 或证据持久化失败仍关闭操作；已释放 mapping 不在 reload 时自动重绑，只有显式 activate 可重新申请。
-- Tunnel 管理的是 detached client 的进程所有权，不是 CE Owner。跨进程 directory lock、PID+exact command+start key、write-ahead termination ledger 共同避免误杀/双启动；UNKNOWN 不等于进程消失。
-- 每个 record-backed run 最多一次 SIGTERM，不 SIGKILL、不 name-based bulk kill。intent 持久后信号丢失允许零次实际 signal；不能删除 ledger 以便重发。client MCP child 属 client，不由 Manager 擅自终止。
+- MCP startup binds with `requireUnowned`; an independent heartbeat renews the lease. SIGINT/SIGTERM/stdio-close perform release/end once, without taking over a crashed Owner.
+- Pi `session_start` selects an Endpoint through trusted runtime lookup. Startup/reload/resume with a mapping validates recovery. Reload without a mapping refuses; new/fork Sessions inherit no old authority.
+- Pi reload ends the old in-memory generation/timer while preserving valid durable Ownership. Normal exit/Session replacement attempts end/release/detach. Unknown renew/end or failed diagnostic persistence blocks subsequent paths.
+- `ce-mapping`, `ce-messaging-released` and `ce-lifecycle-blocked` hold identifiers/refusal evidence, never capabilities. Markers are not locks or fencing tokens. A release marker alone grants no new authority: exact released+detached proof for the old mapping is required.
+- Explicit activation checks current configuration/environment/runtime under the profile lock; only requireUnowned can bind. An existing matching valid binding is a no-op. Unknown release, mapping write failure or mismatched old Exchange evidence refuses, without automatic takeover.
+- `/ce-tunnel deactivate` confirms and checks the current generation/Session fence, then uses the normal `shutdownCe()` path. It releases only the local CE binding and retains registration/history/transport. Unknown end or failed evidence persistence keeps operations closed. Reload does not rebind a released mapping; explicit activate can request new authority.
+- Tunnel manages detached-client process ownership, not CE Ownership. A cross-process directory lock, PID+exact command+start key and write-ahead termination ledger prevent mistaken termination/duplicate starts. UNKNOWN does not mean a process disappeared.
+- Each record-backed run permits at most one SIGTERM, no SIGKILL or name-based bulk kill. A signal lost after persisted intent can mean zero actual signals. Do not delete the ledger to resend. The client owns its MCP child; Manager cannot arbitrarily terminate it.
 
-恢复 CLI 是另行授权的 operator-only 路径，既不注册为 MCP tool 也不由模型自动调用。进程恢复、CE Owner 恢复、消息未知结果调查是三个不同问题。
+The recovery CLI is a separately authorized operator-only path, neither an MCP tool nor an automatic model action. Process recovery, CE Owner recovery and investigation of unknown message outcomes are separate problems.
 
-`/ce-tunnel doctor` 是独立只读安装诊断：host qualification、child executable qualification 与 client metadata trust 分开；复用现有 executable admission，不启动 Manager/client、不读取 credential 或 Store、不发布配置。它不证明 profile 当前 child 命令、client schema 兼容、云端权限或网络健康；对应证据仍由配置/真实兼容测试和 Manager 提供。
+`/ce-tunnel doctor` is an independent read-only installation diagnostic. Host qualification, child executable qualification and client metadata trust remain separate. It reuses executable admission without starting Manager/client, reading credentials/Store or publishing configuration. It does not prove the saved profile child command, client schema compatibility, cloud permissions or network health; configuration, real compatibility tests and Manager supply those separate kinds of evidence.
 
-## 配置 generation 与原子迁移
+<a id="配置-generation-与原子迁移"></a>
+## Configuration generations and atomic migration
 
-源码定位：`src/tunnel/{profile,managed-binding,messaging-config,setup}.ts`，UI 在 `setup-ui.ts` / `secure-input.ts`，加载/激活在 `pi-extension/index.ts`。
+Source: `src/tunnel/{profile,managed-binding,messaging-config,setup}.ts`; UI: `setup-ui.ts` / `secure-input.ts`; loading/activation: `pi-extension/index.ts`.
 
-- Profile 是唯一 activation pointer。普通 binding 由完整 Tunnel/Organization/adapter 身份生成，文件名短尾只显示，不承担完整 identity 比较。
-- Advanced Messaging 发布完整 binding 与 Pi allowlist sidecar，名称 `messaging-<full SHA-256>.yaml` 及其 `.pi-allowlist.json`。digest 同时覆盖两份 bytes；generation 使用 no-overwrite link，loader 拒绝不完整/不符 pair。
-- 两个文件发布不是跨文件 crash-atomic；最终 profile temp+rename 才是逻辑提交点。失败可能保留未选中的私有 staging/generation，不回滚或删除不确定属于谁的文件。
-- Credential 替换先创建 0700 目录与 0600 exclusive generation，同步目录/内容，再提交引用；macOS 先清 inherited ACL。Keep 不读取内容，旧代保留，无自动 GC。
-- postcommit sync 失败只能报 durability uncertain，不能说 rollback。ACTIVE/UNKNOWN 不能被 UI 文字绕过为可编辑。
-- `/ce-tunnel migrate` 仅修 canonical generated YAML：移除 client 0.0.16 拒绝的 admin_ui 项并修批准 Node command，保留 identity/credential reference/binding/Store/recipient bytes；不是任意 YAML formatter。
+- Profile is the sole activation pointer. Ordinary bindings derive from full Tunnel/Organization/adapter identity. The short filename suffix is display only and does not compare full identities.
+- Advanced Messaging publishes a complete binding and Pi allowlist sidecar named `messaging-<full SHA-256>.yaml` and its `.pi-allowlist.json`. The digest covers both byte sequences. Generation publication uses a no-overwrite link; the loader rejects incomplete/mismatched pairs.
+- Publishing two files is not a cross-file crash-atomic operation. The final profile temp+rename is the logical commit point. Failure can leave unselected private staging/generations; it does not roll back or remove files of uncertain ownership.
+- Credential replacement first creates a 0700 directory and 0600 exclusive generation, syncs directory/content, then commits the reference. macOS first clears inherited ACLs. Keep does not read content. Old generations remain, with no automatic GC.
+- Postcommit sync failure reports durability uncertain, not rollback. UI wording cannot make ACTIVE/UNKNOWN editable.
+- `/ce-tunnel migrate` repairs only canonical generated YAML: removes admin_ui entries rejected by client 0.0.16 and repairs the approved Node command, preserving identity/credential reference/binding/Store/recipient bytes. It is not an arbitrary YAML formatter.
 
-## Storage 运行契约
+<a id="storage-运行契约"></a>
+## Storage runtime contract
 
-当前开发候选的正式 Node 声明为 **>=24.20.0 <=24.22.1**；内部仅将稳定 Node 24（>=24.12.0）、25、26 作为候选，不能据此宣布全部兼容。准入要求 SQLite **>=3.51.3**（排除已知 WAL-reset 缺陷）、可读且格式合法的 source identity、必要编译选项（`THREADSAFE=1`、`MUTEX_PTHREADS`；禁止 `OMIT_WAL`、`OMIT_FOREIGN_KEY`、`OMIT_TRIGGER`、`OMIT_CHECK`、`OMIT_COMPILEOPTION_DIAGS`）以及共享 defensive、statement、事务/savepoint authorizer、提交/回滚、STRICT、JSON、CHECK、FK 与 trigger 行为探针；不再固定 SQLite 3.53.4 或 source ID。Node 24.19.0、25.9.0 因隔离实验复现 native transaction-close SIGSEGV 明确拒绝，Node 26.12.1 仅作预览。Store 路径准备前拒绝不合格 runtime；环境版本标签不是资格证据。平台 allowlist 仍为 macOS arm64 / Linux x64，实际回归为 macOS arm64；详细矩阵见仅仓库保留的 `docs/runtime-qualification.md`。已发布 npm 0.2.0 的精确白名单不变。文件系统、ownership、0700/0600、symlink 限制与 writer WAL/FULL、foreign keys、trusted-schema OFF、有界 busy wait、macOS fullfsync/checkpoint_fullfsync 要求保持不变。
+The current development candidate declares Node **>=24.20.0 <=24.22.1**. Internally, stable Node 24 (>=24.12.0), 25 and 26 are only candidates, not a compatibility promise. Admission requires SQLite **>=3.51.3** (excluding the known WAL-reset defect), readable and well-formed source identity, compile options `THREADSAFE=1` and `MUTEX_PTHREADS`, absence of `OMIT_WAL`, `OMIT_FOREIGN_KEY`, `OMIT_TRIGGER`, `OMIT_CHECK`, `OMIT_COMPILEOPTION_DIAGS`, and shared probes for defensive mode, statements, transaction/savepoint authorizers, commit/rollback, STRICT, JSON, CHECK, FK and triggers. Exact SQLite 3.53.4/source-ID equality is no longer required. Node 24.19.0 and 25.9.0 are explicitly refused after isolated reproduction of native transaction-close SIGSEGV; Node 26.12.1 is preview only. Runtime refusal occurs before Store path preparation; version labels are not qualification evidence. The platform allowlist remains macOS arm64 / Linux x64; local runtime regression evidence is macOS arm64. See [runtime support](runtime-support.md). The published npm 0.2.0 exact allowlist is unchanged.
 
-migration ledger/checksum、application/store identity、integrity 与 restore hold 会拒绝 foreign/newer/corrupt Store，不自动 reset。能执行 Pi UI 不代表能打开 CE Store。实际准入以 `src/storage/runtime.ts` 与 [Storage contract](storage-contract.md) 为准；内存探针不证明磁盘锁或崩溃耐久，文件权限不能消除所有 TOCTOU、mount substitution、OS crash/power loss 风险。
+Driver selection defaults to `node-sqlite` and never falls back after native failure (`src/storage/sqlite-driver-selection.ts`). Production native SHA256 pins remain null in `src/storage/native-compat.ts`, so release availability alone does not authorize native loading. Historical release evidence covers immutable `ce-sqlite-v0.1.0`, ABI 1, SQLite 3.54.1, source `a8386aafd657c84825b2905847f34a43d5b91e1e`, including download/attestation verification. Hosted Native Store integration covers macOS arm64 / Linux x64; macOS x64 / Linux arm64 have artifact/conformance evidence only. See [native SQLite](native-sqlite.md).
 
-## 验证层次
+Filesystem ownership, 0700/0600, symlink restrictions, writer WAL/FULL, foreign keys, trusted-schema OFF, bounded busy wait and macOS fullfsync/checkpoint_fullfsync remain required. Migration ledger/checksum, application/store identity, integrity and restore hold refuse foreign/newer/corrupt Stores without automatic reset. A working Pi UI does not prove the Store can open. `src/storage/runtime.ts` and the [Storage contract](storage-contract.md) define admission. In-memory probes cannot prove disk locking or crash durability; file permissions cannot eliminate every TOCTOU, mount substitution, OS crash or power-loss risk.
 
-从包目录、批准 Node 运行：
+<a id="验证层次"></a>
+## Verification layers
+
+Run from the package directory with an approved Node:
 
 ```bash
 pnpm run check
@@ -113,58 +125,61 @@ pnpm run typecheck
 pnpm run build
 pnpm test
 pnpm run test:plugin-package
-# 可选（需本机已安装 tunnel-client；不属于默认门禁）
+# Optional: requires a locally installed tunnel-client; outside default gates
 pnpm run test:installed-client
-# 可选（真实 Pi CLI + PTY 的 crash/resume 回归；数分钟，不属于默认门禁）
+# Optional: real Pi CLI + PTY crash/resume regression; several minutes, outside default gates
 CE_HOST_REGRESSION_KEEP=1 pnpm run test:host-regression
-# 完整串行门禁（build 在 test 前）
+# Complete serial gate (build before test)
 pnpm run verify
 ```
 
-| 层次 | 证据范围 | 不能替代 |
+| Layer | Evidence | Does not replace |
 |---|---|---|
-| AST/type/compile-negative | 依赖方向、封闭 schema、类型拒绝 | 真实 runtime/客户端行为 |
-| core/protocol unit | 纯状态转移、scope、quarantine/authority | 文件事务/远端结果 |
-| Storage 事务/故障/多进程 | identity、lease/fencing、crash、并发、read/ACK privacy | ChatGPT UI 或云端连接 |
-| Host/MCP/Pi isolated harness | 参数、工具发现、mapping、activation、payload/ACK、生命周期 | 实体终端和端到端用户 Gate |
-| Tunnel offline / TUI harness | 合成 health、取消/在途/通知/屏幕契约 | 真实 client schema、认证、计费连接、终端物理表现 |
-| `test/tunnel/real-client-compat.test.ts` | 真实 client doctor 与本地 schema 兼容；可选 lane（`pnpm run test:installed-client`），需本机已安装 tunnel-client，未安装时按可用性跳过；已排除出 `pnpm test` 与 `pnpm run verify` | 真实网络 readiness 或双向消息 |
-| `test/tunnel/offline.integration.test.ts` | 真实 client 的离线集成；同一可选 lane，需本机已安装 tunnel-client，未安装时大声失败而非静默跳过；已排除出 `pnpm test` 与 `pnpm run verify` | 真实网络 readiness 或双向消息 |
-| `test/host-regression/real-host-recovery.test.ts` | 真实 Pi 1.3.0 CLI + 真实 PTY 的 crash→mutex 拒绝→离线 reconcile→resume→租约续期→授权路由完成→策略收窄拒绝→expired Owner 拒绝（含 reason/hint、fencing、slot 计数）回归；可选 lane（`CE_HOST_REGRESSION_TEST=1 pnpm run test:host-regression`），先以 `git archive HEAD` 出树编译并比对 blob 身份，全合成 Store/loopback provider，零 tunnel-client 执行；前置缺失或未设 opt-in 时大声失败而非跳过；已排除出 `pnpm test` 与 `pnpm run verify` | 真实 Tunnel/Exchange、真实凭据/网络、ChatGPT UI、installed client、Operator Recovery 执行 |
-| packaged plugin tests | 可移植包内容、stdio 启动、tool discovery | Desktop 安装菜单/资格/对话更新 |
-| 人工 real Gate | 当前 ChatGPT 对话与 Pi 的实际 send/list/read/ACK、Tunnel 启停 | 冷启动、所有平台、所有客户端或正式发布资格 |
+| AST/type/compile-negative | Dependency direction, closed schemas, type refusals | Real runtime/client behavior |
+| Core/protocol unit | Pure transitions, scope, quarantine/authority | File transactions/remote outcomes |
+| Storage transactions/faults/multiprocess | Identity, lease/fencing, crashes, concurrency, read/ACK privacy | ChatGPT UI/cloud connection |
+| Host/MCP/Pi isolated harness | Arguments, discovery, mappings, activation, payload/ACK, lifecycle | Physical terminals/end-to-end user gates |
+| Tunnel offline / TUI harness | Synthetic health, cancellation/in-flight/notifications/screen contracts | Real client schema, authentication, billable connection, physical terminal behavior |
+| `test/tunnel/real-client-compat.test.ts` | Real client doctor/local schema compatibility; optional `pnpm run test:installed-client`, requires installed client, skips on unavailability; excluded from `pnpm test` and `pnpm run verify` | Real network readiness/bidirectional messages |
+| `test/tunnel/offline.integration.test.ts` | Real client offline integration in the same optional lane; missing client fails loudly; excluded from `pnpm test` and `pnpm run verify` | Real network readiness/bidirectional messages |
+| `test/host-regression/real-host-recovery.test.ts` | Real Pi 1.3.0 CLI + real PTY: crash → mutex refusal → offline reconcile → resume → lease renewal → authorized route completion → narrowed-policy refusal → expired Owner refusal, including reason/hint, fencing and slot counts. Optional `CE_HOST_REGRESSION_TEST=1 pnpm run test:host-regression`; first builds out of tree with `git archive HEAD` and compares blob identity. Synthetic Store/loopback provider only, zero tunnel-client executions. Missing prerequisites/opt-in fail loudly; excluded from `pnpm test` and `pnpm run verify` | Real Tunnel/Exchange, credentials/network, ChatGPT UI, installed client, Operator Recovery execution |
+| Packaged plugin tests | Portable package contents, stdio startup, discovery | Desktop installation menus/eligibility/conversation updates |
+| Manual real gate | Actual send/list/read/ACK between the current ChatGPT conversation and Pi, Tunnel start/stop | Cold startup, all platforms/clients, release qualification |
 
-真实 Host lane 的证据留在原始临时根目录，不复制到另一处。`CE_HOST_REGRESSION_KEEP=1` 保留成功运行的证据；测试、进程/provider 清理（含本地超时）或清理记录写入失败时不启动删除，并尽力打印原始路径。仅在所有测试成功、驱动已等待并回收其自有子进程、合成 provider 已关闭、清理记录写入成功且未设 KEEP 时删除根目录。递归删除本身失败可能已部分移除证据；此时聚合错误以 `possibly-partially-removed` 标明状态并尽力打印原始路径，不承诺完整保留。两次离线 reconcile 均由驱动确认并记录**当前启动实例**的退出/回收身份，且在串行离线窗口前后再确认无存活自有 Store-capable 进程；未确认退出即拒绝执行，不以 `/quit` 加固定等待代替。默认收集的 `test/host-regression/*-cleanup.test.ts`、`failure-path.test.ts` 与 `refusal-comparator.test.ts` 只验证合成进程清理、离线屏障、故障证据状态和拒绝前后完整 message/audit 数组比较，不启动真实 Pi/client 或业务恢复。
+Real Host lane evidence remains in its original temporary root. `CE_HOST_REGRESSION_KEEP=1` retains successful runs. Test, process/provider cleanup (including local timeout) or cleanup-record failures prevent deletion and attempt to print the original path. The root is removed only after all tests succeed, the driver awaits/reaps its own children, the synthetic provider closes, cleanup recording succeeds and KEEP is absent. Recursive deletion failure can partially remove evidence; the aggregated error marks `possibly-partially-removed` and attempts to print the original path, without promising complete retention. For both offline reconciliations the driver confirms and records exit/reaping identity for the current launch instance, and checks for live owned Store-capable processes before and after the serial offline window. Unconfirmed exit refuses execution; `/quit` plus a fixed wait is insufficient. Default-collected `test/host-regression/*-cleanup.test.ts`, `failure-path.test.ts` and `refusal-comparator.test.ts` cover only synthetic cleanup, offline barriers, failure evidence state and full message/audit array comparison before/after refusal. They start no real Pi/client or business recovery.
 
-本地测试只对其实际执行的固定版本与环境提供证据，跳过项和平台限制必须明示。人工消息验收与隔离回归互不替代；不要将历史报告的测试数当作当前变更的新鲜执行证据。公共验收边界见[README](../README.md)。
+Local tests support only their fixed versions/environments; disclose skips/platform limits. Manual messaging acceptance and isolated regression do not replace one another. Historical test counts are not fresh execution evidence for a new change. See the [README](../README.md) for public acceptance boundaries.
 
-### 高价值回归入口
+<a id="高价值回归入口"></a>
+### Useful regression entry points
 
-- `test/tunnel/{setup-messaging,messaging-config,messaging-config-security,messaging-binding}.test.ts`：配对、immutable publication、权限/文件与失败路径。
-- `test/endpoints/pi/extension-messaging-activation.test.ts`：旧映射释放、reload、显式 activation、deny paths。
-- `test/endpoints/pi/extension-ack.test.ts` 与 `test/control/mcp/messaging-ack-tool.test.ts`：独立 opt-in、四字段与模型可见 metadata。
-- `test/tunnel/{background-manager,extension-deferred-start,real-client-compat}.test.ts`：进程证据、异步启动和真实 schema。
-- `test/storage/delivery-ack*.test.ts`、`inbox-*.test.ts`：receipt、privacy、事务/进程边界与分页。
+- `test/tunnel/{setup-messaging,messaging-config,messaging-config-security,messaging-binding}.test.ts`: pairing, immutable publication, permissions/files and failures.
+- `test/endpoints/pi/extension-messaging-activation.test.ts`: old mapping release, reload, explicit activation, deny paths.
+- `test/endpoints/pi/extension-ack.test.ts` and `test/control/mcp/messaging-ack-tool.test.ts`: independent opt-ins, four fields, model-visible metadata.
+- `test/tunnel/{background-manager,extension-deferred-start,real-client-compat}.test.ts`: process evidence, asynchronous start, real schema.
+- `test/storage/delivery-ack*.test.ts`, `inbox-*.test.ts`: receipts, privacy, transaction/process boundaries and pagination.
 
-## 扩展点与已知债务
+<a id="扩展点与已知债务"></a>
+## Extension points and known debt
 
-- 新 ControlSurface 必须使用既有 Host port、封闭请求 schema 与 adapter-neutral 规则；不能从不可信 label 自授权。
-- 新 endpoint integration 声明独立 support，不假设 peer capabilities 对称；unsupported/unknown 保持明确，需真实 evidence 才能声称实现。
-- 新 client 版本要真实 schema/doctor 回归，不能仅用 offline fixture；新 Node/SQLite/平台先独立资格验证，不能放松 runtime guard。
-- UI/异步任务要保留 draft/commit 边界、Session generation、在途合并、取消/teardown 的权限分离；不以通知成功当显示/送达成功。
-- 仍待后续：credential/generation 的显式安全 GC、机器冷启动与部分实体终端交互、受控 client 安装/升级流程。Desktop 已支持对私有副本显式配置本机批准 Node；这不是自动跨机安装或 Desktop UI 验收。
-- 不在当前范围：自动 Inbox draining/idle wake、自动业务重试/Owner takeover、自动远端执行、任意 Store 合并或跨 Exchange router、以 ACK 代替任务完成。
+- New ControlSurfaces must use the existing Host port, closed request schemas and adapter-neutral rules. Untrusted labels cannot self-authorize.
+- New endpoint integrations declare independent support. Peer capabilities need not be symmetric; unsupported/unknown remain explicit until real evidence supports implementation claims.
+- New client versions need real schema/doctor regression, beyond offline fixtures. New Node/SQLite/platform combinations need independent qualification without weakening runtime guards.
+- UI/asynchronous work must preserve draft/commit boundaries, Session generation, in-flight coalescing and separate cancellation/teardown authority. Successful notification is not successful display/delivery.
+- Outstanding work includes explicit safe credential/generation GC, machine cold startup, some physical terminal interactions and controlled client installation/upgrades. Desktop supports explicit local approved Node configuration for a private copy; this establishes neither automatic cross-machine installation nor Desktop UI acceptance.
+- Outside current scope: automatic Inbox draining/idle wake, business retries/Owner takeover, remote execution, arbitrary Store merges/cross-Exchange routing, or ACK as task completion.
 
-## 文档事实溯源与维护
+<a id="文档事实溯源与维护"></a>
+## Evidence and maintenance
 
-| 事实 | 首要源码/证据 |
+| Claim | Primary source/evidence |
 |---|---|
-| 版本与 scripts | `../package.json`、仓库根 `package.json`、`src/storage/runtime.ts` |
-| Pi 加载与 session_start/reload | Pi 1.3.0 CLI help / extensions 文档与运行时 `AgentSession.reload`；本包 `pi-extension/index.ts` |
-| Tunnel 字段/格式/child env | `src/tunnel/profile.ts`、`setup-ui.ts`、`background-manager.ts` |
-| binding closed schema / opt-in | `src/host/mcp-binding-config.ts`、`src/control/mcp/` |
-| generation/Store/Exchange 一致性 | `src/tunnel/{managed-binding,messaging-config,setup}.ts` |
-| 工具参数/ACK metadata/状态 | `pi-extension/index.ts`、Host port、对应 extension-ack / messaging-ack tests |
-| 当前支持与验收边界 | [README](../README.md)、对应隔离测试与独立人工验收；公共文档不复制原始消息/Session/日志 |
+| Versions/scripts | `../package.json`, root `package.json`, `src/storage/runtime.ts` |
+| Pi loading/session_start/reload | Pi 1.3.0 CLI help/extensions documentation and runtime `AgentSession.reload`; package `pi-extension/index.ts` |
+| Tunnel fields/format/child environment | `src/tunnel/profile.ts`, `setup-ui.ts`, `background-manager.ts` |
+| Binding closed schema/opt-ins | `src/host/mcp-binding-config.ts`, `src/control/mcp/` |
+| Generation/Store/Exchange consistency | `src/tunnel/{managed-binding,messaging-config,setup}.ts` |
+| Tool arguments/ACK metadata/status | `pi-extension/index.ts`, Host port, extension-ack / messaging-ack tests |
+| Support/acceptance boundaries | [README](../README.md), isolated tests and separate manual acceptance; public docs omit raw messages/Sessions/logs |
 
-历史 plans/audits/validation 报告保留其时间截面，不应机械改写为“今日已全部完成”。发现代码/配置与文档目标冲突时记录限制、另开实现任务；文档提交不偷偷改 runtime 或冻结契约。
+Historical plans/audits/validation reports retain their dated scope and are not current completion promises. Record code/configuration conflicts as limitations and separate implementation work; documentation changes do not alter runtime or frozen contracts.

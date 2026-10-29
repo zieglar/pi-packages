@@ -1,40 +1,48 @@
-# 独立安装 Pi 扩展（0.2.0：managed npm 与 tarball 回退）
+[English](independent-install.md) | [简体中文](independent-install.zh-CN.md)
 
-Development candidate notice (`HANDOFF-PI-SQLITE-RUNTIME-DECOUPLE-01`): the historical 0.2.0 instructions and certification below describe the unchanged published artifact. A locally built candidate declares Node `>=24.20.0 <=24.22.1` and requires SQLite >=3.51.3, platform/compile safety and shared behavioral checks; exact SQLite/source equality is removed. Node 24.19.0/25.9.0 are refused after reproduced native crashes; 26.12.1 is preview only. Candidate tests use isolated Stores and real Pi 1.3.0 on macOS arm64. Do not apply these candidate claims to npm 0.2.0.
+<a id="独立安装-pi-扩展020managed-npm-与-tarball-回退"></a>
 
-本指南是 **`@zieglar/pi-chat-exchange` 的正式独立分发方式**：消费者拿到一个预先构建的 npm tarball，物理安装后用 Pi 注册。它与两条旧路径互不替代：
+# Independent Pi extension installation (0.2.0: managed npm and tarball fallback)
 
-| 路径 | 用途 | 区别 |
+Development candidate notice: the historical 0.2.0 instructions and certification below describe the unchanged published artifact. A locally built candidate declares Node `>=24.20.0 <=24.22.1` and requires SQLite >=3.51.3, platform/compile safety and shared behavioral checks; exact SQLite/source equality is removed. Node 24.19.0/25.9.0 are refused after reproduced native crashes; 26.12.1 is preview only. Candidate tests use isolated Stores and real Pi 1.3.0 on macOS arm64. Do not apply these candidate claims to npm 0.2.0.
+
+`@zieglar/pi-chat-exchange@0.2.0` is published on npm. Install the exact published version through managed npm, or obtain a prebuilt npm tarball, install it physically and register it with Pi. Consumers need no repository, TypeScript, pnpm, tsconfig or build. These paths serve different purposes:
+
+| Path | Purpose | Difference |
 |---|---|---|
-| **本文（tarball）** | 正式安装给日常使用 | 预构建运行时闭包；消费者**不需要**仓库、TypeScript、pnpm、tsconfig 或任何 build |
-| 仓库源码 build + `pi install <目录>` | 开发者/Dogfood | 引用开发树目录，见 [README](../README.md) |
-| Desktop 插件 ZIP | ChatGPT Desktop stdio MCP | 另一个打包脚本，见 [ChatGPT 安装](chatgpt-installation.md) |
+| **This guide (managed npm/tarball)** | Distribution for daily use | Prebuilt runtime closure; no consumer build |
+| Repository source build + `pi install <directory>` | Developer/Dogfood | References a development-tree directory; see [README](../README.md) |
+| Desktop plugin ZIP | ChatGPT Desktop stdio MCP | Separate packaging script; see [ChatGPT installation](chatgpt-installation.md) |
 
-本包版本为 **0.2.0**。CE 自有代码已获所有者 MIT 授权（Copyright (c) 2026 zieglar，见包内 LICENSE）；第三方许可证证据已闭合，manifest 已按所有者条件移除 `private: true`。
+Package version is **0.2.0**. The owner licensed CE-owned code under MIT (Copyright (c) 2026 zieglar; see bundled LICENSE). Third-party license evidence was closed and `private: true` removed from the manifest under the owner's conditions.
 
-原生 managed npm 路径为：先按下面步骤安装独立 Pi 1.3.0、设置批准 Node 与 npm，再执行 `"$CE_APPROVED_NODE" "$CE_PI_CLI" install npm:@zieglar/pi-chat-exchange@0.2.0`。Pi 将依赖物理安装到其作用域内的 npm 根；不要另装 consumer 目录或叠加 `-e`。0.2.0 的此命令证据是在隔离 loopback 测试 registry 上取得的，不是公共 npm 证据；依赖前先自行确认该精确版本在你信任的 registry 上确实可解析。
+For native managed npm, install independent Pi 1.3.0 and select approved Node/npm below, then run `"$CE_APPROVED_NODE" "$CE_PI_CLI" install npm:@zieglar/pi-chat-exchange@0.2.0`. Pi physically installs dependencies into its scoped npm root. Do not add a separate consumer directory or second `-e` load. Historical 0.2.0 command acceptance used an isolated loopback test registry; publication on public npm is a separate fact and does not extend that acceptance to cloud transport. Confirm exact-version resolution in your trusted registry.
 
-下文 tarball 是独立的资产回退：从发布方提供的 GitHub release asset 或私有安全交付取得预构建 `.tgz`，先核对 SHA256 再物理安装。不要把 asset URL 直接传给 Pi（URL 是 Git source），也不要将 monorepo Git source 当作本包 npm 安装。源码开发路径仍引用开发树。
+The tarball below is a separate asset fallback: obtain a prebuilt `.tgz` from a publisher-provided GitHub release asset or secure private delivery and verify SHA256 before physical installation. Do not pass an asset URL directly to Pi (URLs are Git sources) or treat the monorepo Git source as this package's npm installation. Source development still references the development tree.
 
-## 0. 消费者前提
+<a id="0-消费者前提"></a>
 
-| 组件 | 要求 |
+## 0. Consumer prerequisites
+
+| Component | Requirement |
 |---|---|
-| Node（已发布 0.2.0） | 精确 **24.21.0 或 24.22.1**（用户本地安装即可；mise 不是要求）。Pi host 与 MCP child 分别过原 SQLite/运行时资格门槛；本地开发候选要求见页首 notice |
-| npm | 11.x（随批准 Node 分发） |
-| Pi | **1.3.0**，`pi` 可执行（全局安装或本地前缀均可） |
-| 平台 | macOS arm64（Store allowlist；Linux x64 未在本路径验收） |
-| Tunnel client | 可选。未安装时 `/ce-tunnel doctor` 会给出安全拒绝诊断（如 `CE_EXECUTABLE_UNTRUSTED`/缺失），这是预期行为，**不是**安装失败或兼容性证据 |
+| Node (published 0.2.0) | Exactly **24.21.0 or 24.22.1**, installed locally; mise is optional. Pi host and MCP child independently pass the original SQLite/runtime qualification gates. See the candidate notice above for local development |
+| npm | 11.x distributed with approved Node |
+| Pi | **1.3.0**, with a `pi` executable from global installation or local prefix |
+| Platform | macOS arm64 (Store allowlist; Linux x64 was not accepted through this installation path) |
+| Tunnel client | Optional. Without it, `/ce-tunnel doctor` safely refuses with diagnostics such as `CE_EXECUTABLE_UNTRUSTED`/missing. This is expected, not installation failure or compatibility evidence |
 
-不需要：仓库 clone、pnpm、TypeScript、任何 consumer 侧 build/lifecycle 脚本（包内没有 install hooks；全程 `--ignore-scripts`）。
+No repository clone, pnpm, TypeScript or consumer build/lifecycle scripts are needed. The package has no install hooks; use `--ignore-scripts` throughout.
 
-0.2.0 的认证目标仅 **Node 24.21.0 + Pi 1.3.0 + macOS arm64**；24.22.1 是已有运行时批准版本，不属于 0.2.0 的认证范围；Linux 未验证，cloud NOT_VERIFIED。
+0.2.0's qualification target was only **Node 24.21.0 + Pi 1.3.0 + macOS arm64**. 24.22.1 was already runtime-approved but outside that qualification. Linux was unverified through this path; cloud remains NOT_VERIFIED.
 
-包管理器也必须使用批准 Node：将其 bin 目录置于 PATH 首位，先核对 `node --version` 为 v24.21.0、`npm --version` 为随该 Node 分发的 11.x；不要借用另一个全局 npm/Node。使用自己控制的 npm userconfig/globalconfig/cache，设置 `npm_config_ignore_scripts=true`，不要继承其他 registry 的 token；安装阶段才允许明确的 registry 下载，运行时不需要 registry 网络。本包无消费者 build 或 lifecycle hooks。
+The package manager must also use approved Node. Put its bin directory first in PATH and check `node --version` is v24.21.0 and `npm --version` is its bundled 11.x. Do not borrow a different global npm/Node. Use operator-controlled npm userconfig/globalconfig/cache, set `npm_config_ignore_scripts=true` and do not inherit tokens from another registry. Explicit registry downloads are needed only during installation, not runtime. This package requires no consumer build or lifecycle hooks.
 
-## 1. 生产者（作者侧，仅作者执行一次）
+<a id="1-生产者作者侧仅作者执行一次"></a>
 
-在完整 workspace 中构建并打包。作者必须已按 [README](../README.md) 冻结安装依赖。
+## 1. Producer steps (author only)
+
+Build and package in the complete workspace after installing frozen dependencies as described in the [README](../README.md).
 
 ```sh
 # 仓库根目录，批准 Node 24.21.0/24.22.1 + pnpm 12.9.1
@@ -45,19 +53,21 @@ pnpm --dir packages/pi-chat-exchange run package:pi-extension
 # 可选自定义输出目录：node packages/pi-chat-exchange/scripts/package-pi-extension.mjs /path/to/out
 ```
 
-该命令依次执行：`tsc` 构建 → 载荷校验（本地运行时 import 闭包、`new URL` 运行时资产、必需 native/运维脚本、无消费者 lifecycle hook）→ `npm pack --ignore-scripts` 前再校验原生清单，任何缺项都会 fail closed。**裸 `npm pack` 不是受支持的作者命令**：现在 `files` 白名单已覆盖，裸 pack 会包含 `dist/`，但它跳过上述全部载荷/闭包/清单校验，也无法产出可追溯的制品 SHA。
+The command builds with `tsc`, validates payloads (local runtime import closure, `new URL` runtime assets, required native/operational scripts, no consumer lifecycle hook), then revalidates the native manifest before `npm pack --ignore-scripts`. Missing items fail closed. **Bare `npm pack` is not the supported author command**: the `files` allowlist now includes `dist/`, but bare pack skips payload/closure/manifest checks and does not produce the traceable artifact SHA.
 
-记录并随私有渠道交付：
+Record the hash and deliver it alongside the tarball through the chosen trusted channel:
 
 ```sh
 shasum -a 256 packages/pi-chat-exchange/.pi-artifacts/zieglar-pi-chat-exchange-0.2.0.tgz
 ```
 
-消费者**不要**重新构建或修改 tarball；如果需要新版本，请回到生产者步骤。
+Consumers must not rebuild or modify the tarball. A new artifact requires the producer steps.
 
-## 2. 消费者：物理安装 tarball 与 Pi 本体
+<a id="2-消费者物理安装-tarball-与-pi-本体"></a>
 
-把 tarball 放到消费者控制的目录（示例用 `~/ce-install`；路径可含空格与 scoped `node_modules/@scope` 形式，产品均已支持）：
+## 2. Consumer: physically install the tarball and Pi
+
+Place the tarball in a consumer-controlled directory (here `~/ce-install`; paths containing spaces and scoped `node_modules/@scope` are supported):
 
 ```sh
 # 本地 consumer 根：安装私有包及其运行时依赖（全部物理落盘，无 symlink 外链）
@@ -69,7 +79,7 @@ npm install --prefix ~/ce-install/host --ignore-scripts --save-exact \
   @earendil-works/pi-coding-agent@1.3.0
 ```
 
-（可选）核对安装产物确实包含编译运行时与本地入口：
+Optionally inspect the compiled runtime and local entrypoints:
 
 ```sh
 tar tzf ~/ce-install/zieglar-pi-chat-exchange-0.2.0.tgz | sort
@@ -78,7 +88,9 @@ tar tzf ~/ce-install/zieglar-pi-chat-exchange-0.2.0.tgz | sort
 # package/scripts/recover-stale-ownership.mjs、package/scripts/reconcile-session-process-mutex.mjs
 ```
 
-## 3. 消费者：注册到 Pi 并验证
+<a id="3-消费者注册到-pi-并验证"></a>
+
+## 3. Consumer: register with Pi and verify
 
 ```sh
 # 填入本机批准 Node 的绝对路径（不是任意 PATH 中的 node）
@@ -89,9 +101,9 @@ CE_PI_CLI="$HOME/ce-install/host/node_modules/@earendil-works/pi-coding-agent/di
 "$CE_APPROVED_NODE" "$CE_PI_CLI" list   # 应列出上述物理安装目录
 ```
 
-`pi install` 只登记已物理安装的本地包（Pi 不会替你安装依赖）；不要对同一包再叠 `-e` 加载第二份。本地 `npm install --prefix` 的 bin 链接在 `host/node_modules/.bin/pi`，不是 `host/bin/pi`。下文所有 `pi` 命令统一使用 `"$CE_APPROVED_NODE" "$CE_PI_CLI"`（无子命令即启动 TUI），避免 shebang 误用 PATH 中未批准的 Node 或另一个全局 Pi。Host 与 MCP child 均须分别通过运行时资格诊断；本路径实测 Node 24.21.0，24.22.1 是批准版本但不在此次安装实测范围。
+For a local-directory source, `pi install` registers an already physically installed package; it does not install dependencies. Do not load a second copy with `-e`. Prefix npm installation places Pi's bin link at `host/node_modules/.bin/pi`, not `host/bin/pi`. Use `"$CE_APPROVED_NODE" "$CE_PI_CLI"` for the Pi commands below (no subcommand starts the TUI), avoiding a shebang selecting unapproved PATH Node or another global Pi. Host and MCP child independently require qualification diagnostics. This installation path was tested on Node 24.21.0; approved 24.22.1 was not part of that installation test.
 
-首次运行（在工作目录启动 `pi`，交互 TUI 中按顺序执行；每步都有显式确认）：
+First run, from the working directory in the interactive Pi TUI, with explicit confirmations:
 
 ```text
 /ce-tunnel doctor        # 只读资格诊断；client 未装 → 安全拒绝是预期，不算失败
@@ -106,40 +118,48 @@ CE_PI_CLI="$HOME/ce-install/host/node_modules/@earendil-works/pi-coding-agent/di
 /ce-tunnel deactivate    # 正常释放本 Session 绑定；登记与历史保留
 ```
 
-最后的 `/ce-tunnel deactivate` 是验证正常解绑的演示，不是发消息前置步骤。若接下来要做首次消息验证，暂不执行该行、保持已授权 binding；若已停用则重新显式 activate。安装本身不证明云端可用：另行获准后按 [Tunnel 双向消息验证](tunnel-setup.md#4-双向-send--inbox--read--ack)完成 client/ChatGPT 连接、显式 Start 与独立 read/ACK；不得把离线合成流程当作真实云端验收。
+The last `/ce-tunnel deactivate` demonstrates normal unbinding; it is not a prerequisite for sending. For first-message verification, keep the authorized binding and defer that line, or explicitly reactivate if already deactivated. Installation does not prove cloud availability. Under separate authorization, follow [two-way Tunnel message verification](tunnel-setup.md#4-双向-send--inbox--read--ack) for client/ChatGPT connection, explicit Start and independent read/ACK. Offline synthetic flows are not real cloud acceptance.
 
-`convert` 不会清空或重命名原登记：若复用原 Session 和原 endpoint，省略 `/new` 与不同 endpoint 的 `register`，继续 reload/activate 即可；同一 native Session 尝试登记另一个 endpoint 会被拒绝。上列实测流程选择 `/new` 后为新 Session 登记 `pi/distribution`，原登记保留。
+`convert` neither clears nor renames the original registration. To reuse the same Session/endpoint, omit `/new` and registration of a different endpoint, then reload/activate. Registering another endpoint for the same native Session refuses. The tested sequence above uses `/new` and `pi/distribution` while retaining the original registration.
 
-`CE_TUNNEL_PROFILE` 指定 profile 文件的规范化绝对路径（不是目录）；Setup 将凭据保存在该文件所在目录的 `.credentials/` 下（默认见 [Tunnel 指南](tunnel-setup.md#配置模型与生成文件)）；凭据以 owner-only 文件（0600，0700 目录）落盘，绝不明文进 profile。Configured ≠ Pi-bound ≠ Connected；启动真实 Tunnel 仍需 `CE_TUNNEL_BACKGROUND_ALLOW=1` 与显式 `/ce-tunnel start`，见 [Tunnel 用户指南](tunnel-setup.md)。
+`CE_TUNNEL_PROFILE` selects a normalized absolute profile file, not a directory. Setup writes credentials into `.credentials/` beside that file (defaults in the [Tunnel guide](tunnel-setup.md#配置模型与生成文件)). Credentials use owner-only files (0600, directory 0700), never plaintext in the profile. Configured ≠ Pi-bound ≠ Connected. Real Tunnel startup still requires `CE_TUNNEL_BACKGROUND_ALLOW=1` and explicit `/ce-tunnel start`; see the [Tunnel user guide](tunnel-setup.md).
 
-多 Endpoint / 多 Session 的注册、解绑与撤销语义见 [多 Session 使用指南](multi-session-usage.md)。
+See the [multi-session guide](multi-session-usage.md) for registration, unbinding and revocation.
 
-### 本指南已验证的范围与未验证项
+<a id="本指南已验证的范围与未验证项"></a>
 
-上述首次运行序列已在真实安装 + 独立 Pi 1.3.0 + 真实 PTY 上验证到：安装、Host 加载、首次保存、转换、注册、激活、停用，以及磁盘持久状态（profile/凭据权限、策略登记、互斥释放、合成 Store 模式）。验证环境为**离线合成模式**：`PI_OFFLINE=1`、未安装真实 Tunnel client（doctor 会给出 `CE_EXECUTABLE_UNTRUSTED` 安全拒绝，这是预期诊断，不是兼容性或就绪证据）。**真实云传输（CLOUD_TRANSPORT）未验证**：需要单独安装可信 client、`CE_TUNNEL_BACKGROUND_ALLOW=1` 与显式 `/ce-tunnel start`，不属于本指南的验证范围。
+### Verified scope and unverified items
 
-## 4. 信任与安全注意
+The first-run sequence was tested with real installation, independent Pi 1.3.0 and a real PTY through installation, Host load, first save, conversion, registration, activation, deactivation and persisted state (profile/credential permissions, policy registration, mutex release and synthetic Store mode). The environment was **offline synthetic mode**, with `PI_OFFLINE=1` and no real Tunnel client. Doctor's `CE_EXECUTABLE_UNTRUSTED` refusal was expected, not compatibility/readiness evidence. **Real cloud transport (CLOUD_TRANSPORT) was not verified**. A trusted client, `CE_TUNNEL_BACKGROUND_ALLOW=1` and explicit `/ce-tunnel start` are separate requirements outside this guide's tested scope.
 
-- Pi 扩展以你的完整用户权限运行；安装前审查源码与制品来源。`--ignore-scripts` 只限制安装脚本，不会隔离扩展运行时权限。
-- tarball 为私有交付；安装前核对 SHA256，必要时 `tar tzf` 抽查（上面的必需文件清单即核对锚点）。
-- 全程 `--ignore-scripts`：本包没有也不需要任何 install/prepack/prepare hook。
-- 安装后的依赖树全部物理存在于 consumer 前缀内（内部 bin symlink 属正常；不应出现指向外部/开发树的链接）。
-- Desktop ZIP 与本路径不通用；不要混装同一 Endpoint。
-- 卸载、升级、回滚必须遵守下方安全步骤；退出 Pi 不等于停止后台 transport。
+<a id="4-信任与安全注意"></a>
 
-### 依赖与 Host 提供的运行时包
+## 4. Trust and safety
 
-本包声明 `peerDependencies: { "@earendil-works/pi-coding-agent": "1.3.0" }`：tarball 前缀安装时 npm 会把该精确版本装入 consumer 树（原生 managed npm 使用 `--legacy-peer-deps` 抑制 peer 自动安装；Host 从独立 1.3.0 树提供），满足 `pi-tui-kit` 的 `"*"` peer，避免自动拉入与 Host 不同代的完整 Pi 运行时（例如 1.4.x）。`@earendil-works/pi-tui` 与 `@sinclair/typebox` 保留为**锁定版本的 dependencies**（不是 peer）：编译后的 ESM（TUI 键序、TypeBox 运行时校验）在本地包模式下必须能从安装树物理解析，盲改为 `"*"` peer 会让 npm 拉最新版本、引入与 1.3.0 Host 的代差。代价是 Pi 启动时会提示“Host 提供的包应声明为 peerDependencies”的警告——这是当前分发架构的已知权衡（两份同版本运行时代码副本），不影响加载与首次运行；重新设计 host 映射不属于本指南范围。
+- Pi extensions run with your full user permissions. Review source/artifact provenance before installation. `--ignore-scripts` restricts installation scripts, not extension runtime permissions.
+- For tarball delivery, verify SHA256 and optionally inspect `tar tzf` using the required-file list above. Published exact npm installation is also available.
+- Use `--ignore-scripts` throughout. The package has no need for install/prepack/prepare hooks.
+- The installed dependency tree must physically reside within the consumer prefix. Internal bin symlinks are normal; links outside it or into the development tree are not.
+- Desktop ZIP is a separate path; do not mix installations on one Endpoint.
+- Follow the safe removal/update/rollback procedure below. Exiting Pi does not stop background transport.
 
-## 5. 安全卸载、升级与回滚
+<a id="依赖与-host-提供的运行时包"></a>
 
-以下是人工前置条件，不是新增卸载 CLI，也不是全机 Session 扫描授权。先用 `pi list` 记录精确 source 及 personal/project 作用域、实际包根、批准 Node/Pi/npm、profile、Store/Exchange 与有关 Session/进程。不要依据历史 PID 或文件名发信号。
+### Dependencies and Host-provided runtime packages
 
-1. 在可证明拥有目标实例的 Manager 中显式 `/ce-tunnel stop`；再独立 `/ce-tunnel status`，必须确认退出完成且 **STOPPED**。`/ce-tunnel doctor` 仅是资格诊断，不是退出证明。外部 Owner、UNKNOWN、STOP_UNCONFIRMED、未知 lease/lock 一律停止操作，不删目录、不 bulk kill、不重试未知结果。没有启动过 transport 也要核实 STOPPED；不要为卸载启动它。
-2. 对每个受影响的、自己拥有的本地绑定，执行 `/ce-tunnel deactivate` 并确认正常 release/detach；用 `/ce-status` 核对。不使用 revoke 或 Recovery 替代正常释放。未确认释放、证据写入失败或 UNKNOWN 都停止。
-3. 与其他使用者确认目标包/Node 前缀、profile、Store、后台实例及共享资源不再被依赖；其他独立 Session 或其他安装仍依赖时，必须在原生 remove 前 STOP：不得卸载、取消注册或删除相关目录。现有命令**不能自动证明**全机/其他用户均不再使用；不能确认就 STOP，保留现场，不擅自停止他们的 Session。
-4. 正常退出所有相关、自己拥有的 Pi Hosts（包括仍能加载旧代码者），确认退出完成；退出本身不替代前述 transport Stop。保持其他无关 Session 不变。
-5. 使用记录的原生 Pi source 和同一作用域移除：
+The package declares `peerDependencies: { "@earendil-works/pi-coding-agent": "1.3.0" }`. For tarball prefix installation, npm installs that exact version in the consumer tree. Native managed npm uses `--legacy-peer-deps` to suppress automatic peers, and the independent 1.3.0 Host tree supplies them. This satisfies `pi-tui-kit`'s `"*"` peer without pulling a different full Pi generation such as 1.4.x. `@earendil-works/pi-tui` and `@sinclair/typebox` remain **pinned dependencies**, not peers: compiled ESM (TUI key handling and TypeBox runtime validation) must physically resolve from the installation tree in local-package mode. Changing them blindly to `"*"` peers could pull latest versions incompatible with the 1.3.0 Host. Pi warns that Host-provided packages should be peerDependencies. This known distribution tradeoff means two copies of same-version runtime code; recorded loading/first-run checks passed. Redesigning Host mapping is outside this guide.
+
+<a id="5-安全卸载升级与回滚"></a>
+
+## 5. Safe uninstall, upgrade and rollback
+
+These are manual prerequisites, not a new uninstall CLI or authorization to scan every Session on the machine. Use `pi list` to record exact source, personal/project scope, actual package root, approved Node/Pi/npm, profile, Store/Exchange and relevant Sessions/processes. Historical PIDs/filenames do not authorize signals.
+
+1. In the Manager that can prove ownership of the target instance, explicitly `/ce-tunnel stop`, then independently `/ce-tunnel status`. Verify completed exit and **STOPPED**. `/ce-tunnel doctor` is qualification only, not exit evidence. External Owner, UNKNOWN, STOP_UNCONFIRMED or unknown lease/lock means stop the procedure: no deletion, bulk kill or unknown-outcome retry. Verify STOPPED even if transport was never started; do not start it to uninstall.
+2. For every affected local binding you own, run `/ce-tunnel deactivate` and verify normal release/detach with `/ce-status`. Revoke/Recovery cannot substitute for normal release. Stop on unconfirmed release, failed evidence writes or UNKNOWN.
+3. Confirm with other users that the package/Node prefix, profile, Store, background instances and shared resources are no longer needed. If another independent Session/installation still depends on them, STOP before native remove: do not uninstall, unregister or delete directories. Existing commands **cannot automatically prove** nonuse by all machine/other-user sessions. If uncertain, STOP and retain evidence; do not stop their Sessions.
+4. Normally exit all relevant Pi Hosts you own, including Hosts able to load old code, and confirm exit. Exit does not replace transport Stop. Leave unrelated Sessions alone.
+5. Remove using the recorded native Pi source and same scope:
 
 ```sh
 # 仅适用于原生 managed npm 安装（0.2.0 的安装证据来自私有 loopback registry）
@@ -149,10 +169,10 @@ CE_PI_CLI="$HOME/ce-install/host/node_modules/@earendil-works/pi-coding-agent/di
 # tarball/源码目录路线：remove 后面的参数必须改为 pi list 中原始绝对目录 source。
 ```
 
-Pi 1.3.0 的 `removeAndPersist` 先执行原生 remove 再取消声明；npm source 由 `uninstallNpm` 调用 npm uninstall，**已删除** managed 包文件。不要再对 Pi managed 根执行 rm/npm uninstall；该根可承载其他扩展。local-directory source 仅取消注册，不删除其原目录。remove 部分失败或登记持久化未确认时同样 STOP，保留证据，不盲重试或手工删目录。
+Pi 1.3.0 `removeAndPersist` performs native remove before removing the declaration. For npm sources, `uninstallNpm` calls npm uninstall, which **deletes** managed package files. Do not additionally rm/npm uninstall the Pi managed root; it may contain other extensions. A local-directory source is only unregistered; its directory is retained. Partial remove or unconfirmed persistence also means STOP and retain evidence, without blind retry/manual directory deletion.
 
-6. 只有对独占、自己拥有、已证实无其他依赖的 **tarball consumer 或专用 host 前缀**，才可以另行人工删除该前缀；不要删除共享 Node、Pi managed 根、其他安装或源代码树。任何归属/依赖不明均不删。默认保留 Store（含 WAL/SHM/host-secret）、profile、凭据、bindings、history 及状态/日志证据，勿 purge、删锁、清理 Owner 或重发未 ACK 消息。
+6. Only a dedicated **tarball consumer or dedicated host prefix** that you own, exclusively control and have proved has no other dependencies may be manually deleted separately. Do not delete shared Node, the Pi managed root, other installations or source trees. Keep anything of uncertain ownership/dependency. Retain Store (including WAL/SHM/host-secret), profile, credentials, bindings, history and state/log evidence by default. Do not purge, delete locks, clear Owners or resend unacknowledged messages.
 
-升级：先记录并保留原精确版本制品、SHA256、安装 source、锁文件与配置位置，按上述停止/释放/退出流程，再用原生 Pi remove 旧精确 source、install 新精确版本；tarball 路线物理安装到新的独占 consumer 前缀再注册，避免覆盖仍使用的目录。重新启动 Host 后 doctor/status，核对选中配置和 Store，再显式 activate，不自动 Start。
+Upgrade: retain the original exact artifact/version, SHA256, source, lockfile and configuration locations. Follow Stop/release/exit above, then native Pi remove of the old exact source and install of the new exact version. For tarballs, physically install to a new dedicated consumer prefix before registration rather than overwrite a directory in use. After Host restart, doctor/status, verify selected configuration and Store, then explicitly activate. No automatic Start.
 
-回滚/重装：先确认目标版本的 Store/schema/运行时兼容性；未知即 STOP，不降级、覆盖或删除 Store。兼容且获准后按同一停止/释放/退出流程移除当前版本、重装留存的精确旧制品/版本、核对真实加载路径与配置。重装 0.2.0 使用相同精确 npm source；保留配置不等于自动重新授权，仍须显式 activate。缺 ACK、超时或 DELIVERY_UNKNOWN 不是重试许可。
+Rollback/reinstall: first confirm target Store/schema/runtime compatibility. If unknown, STOP without downgrading, overwriting or deleting Store. With compatibility and authorization established, use the same Stop/release/exit procedure, remove current version, reinstall the retained exact artifact/version and verify actual load path/configuration. Reinstall 0.2.0 with the same exact npm source. Retained configuration does not renew authorization; explicitly activate. Missing ACK, timeout and DELIVERY_UNKNOWN do not permit retry.

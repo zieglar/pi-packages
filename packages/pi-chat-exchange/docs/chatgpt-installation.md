@@ -1,28 +1,36 @@
-# ChatGPT 安装：Tunnel 与 Desktop 本地插件
+[English](chatgpt-installation.md) | [简体中文](chatgpt-installation.zh-CN.md)
 
-有两条不同的部署路径，不要同时让它们占用同一个 CE Endpoint：
+<a id="chatgpt-安装tunnel-与-desktop-本地插件"></a>
 
-| 路径 | 连接方式 | 配置入口 |
+# ChatGPT installation: Tunnel and Desktop local plugin
+
+These are separate deployment paths. Do not let both occupy the same CE Endpoint:
+
+| Path | Connection | Configuration entry |
 |---|---|---|
-| Secure MCP Tunnel | ChatGPT 自定义 MCP 插件选择 Tunnel，client 启动本机 MCP | [完整 Tunnel 快速开始](tunnel-setup.md)，无需本地 marketplace |
-| Desktop 本地插件（本页后续） | ChatGPT Desktop 启动 bundled MCP，stdio | 外置 `mcp-binding.json`；操作者配置互补 Pi allowlist |
+| Secure MCP Tunnel | ChatGPT custom MCP plugin selects the Tunnel; the client starts local MCP | [Full Tunnel quick start](tunnel-setup.md); no local marketplace needed |
+| Desktop local plugin (below) | ChatGPT Desktop starts bundled MCP over stdio | External `mcp-binding.json`; operator configures complementary Pi allowlist |
 
-**不要**给 Tunnel generation 再复制一个 Desktop binding 当作同一客户端，也不要把 Desktop 默认路径误当成 Tunnel 使用的 `--config` 路径。两个模式共用 CE Host/Storage 契约，不共用进程所有权。
+Do not copy a Desktop binding into a Tunnel generation for the same client, or confuse Desktop's default path with Tunnel's `--config` path. The modes share CE Host/Storage contracts, but not process ownership.
 
-## Tunnel：ChatGPT 自定义 MCP
+<a id="tunnelchatgpt-自定义-mcp"></a>
 
-先按 [Tunnel 指南](tunnel-setup.md)完成 `/ce-tunnel doctor`、Setup / Advanced Messaging、显式 reload/activate 与单独 Start。在 [ChatGPT Plugins](https://chatgpt.com/plugins)选择 **+ → Add custom MCP server → Connection: Tunnel**，选择相同 Tunnel，按目标配置认证，审阅风险后创建并安装插件；当前对话用 `@` 选择它。工具变更在插件详情刷新；不能只凭 CONNECTED 判断当前对话权限。资格及具体入口以[官方自定义 MCP 指南](https://developers.openai.com/api/docs/guides/custom-mcp-server)为准。下面仅适用于 Desktop 本地 stdio，不要混做。
+## Tunnel: ChatGPT custom MCP
 
-## Desktop 适用条件与打包
+Follow the [Tunnel guide](tunnel-setup.md) for `/ce-tunnel doctor`, Setup / Advanced Messaging, explicit reload/activate and separate Start. In [ChatGPT Plugins](https://chatgpt.com/plugins), select **+ → Add custom MCP server → Connection: Tunnel**, choose the same Tunnel, configure target authentication, review risks, create and install the plugin, then select it with `@` in the current conversation. Refresh changed tools in plugin details. CONNECTED alone does not establish current conversation permissions. Eligibility and current entrypoints follow the [official custom MCP guide](https://developers.openai.com/api/docs/guides/custom-mcp-server). The rest of this page applies only to Desktop local stdio.
 
-要求：支持 local plugins 的 ChatGPT Desktop、macOS 或 Linux、开发候选 **Node.js >=24.20.0 <=24.22.1**（须满足 SQLite >=3.51.3、平台/编译安全与共享行为探针，不固定 SQLite/source ID）、仓库 pnpm 12.9.1。Node 24.19.0、25.9.0 因已复现的 native crash 被拒绝；26.12.1 仅作隔离预览。实测为 macOS arm64，不新增 Linux/Desktop UI 验收；已发布 npm 0.2.0 不变。Desktop 插件使用 `plugin.json`、根 `mcp.json`、`${PLUGIN_ROOT}` 与本地 stdio。
+<a id="desktop-适用条件与打包"></a>
 
-官方格式参考（客户端入口与组织资格以其当前文档为准）：
+## Desktop requirements and packaging
+
+Requires ChatGPT Desktop with local plugin support, macOS or Linux, development candidate **Node.js >=24.20.0 <=24.22.1** (SQLite >=3.51.3, platform/compile safety and shared behavioral probes; no exact SQLite/source ID pin), and repository pnpm 12.9.1. Node 24.19.0 and 25.9.0 are refused after reproduced native crashes; 26.12.1 is isolated preview only. Testing used macOS arm64 and adds no Linux/Desktop UI acceptance. Published npm 0.2.0 is unchanged. The Desktop plugin uses `plugin.json`, root `mcp.json`, `${PLUGIN_ROOT}` and local stdio.
+
+Official format references (current client entrypoints and organization eligibility follow their documentation):
 
 - <https://developers.openai.com/plugins/deploy/desktop-only>
 - <https://developers.openai.com/plugins/build/plugins>
 
-在已选中批准 Node 的 shell，从仓库根目录安装依赖，然后打包（无需 mise）：
+From the repository root in a shell using approved Node, install dependencies and package. mise is optional:
 
 ```sh
 node --version
@@ -31,15 +39,15 @@ cd packages/pi-chat-exchange
 pnpm run package:desktop-plugin
 ```
 
-生成的 ignored artifacts：
+Generated ignored artifacts:
 
-- `.plugin-build/pi-chat-exchange-0.2.0.zip`：单根 ZIP。
-- `.plugin-build/marketplace/`：可注册的本地 marketplace。
-- `.plugin-build/pi-chat-exchange/`：解包检查副本。
+- `.plugin-build/pi-chat-exchange-0.2.0.zip`: single-root ZIP.
+- `.plugin-build/marketplace/`: registerable local marketplace.
+- `.plugin-build/pi-chat-exchange/`: extracted inspection copy.
 
-包内含 compiled server 与生产依赖，不含 live Endpoint、Store、token、capability 或密钥。public directory 发布是独立流程，不能把本地 marketplace 安装解释成公开发布。
+The package contains the compiled server and production dependencies, with no live Endpoint, Store, token, capability or key. Public directory publication is separate; local marketplace installation is not public publication.
 
-**本机运行时配置：** 分发 ZIP 和 marketplace 的 `mcp.json` 默认为空 server 集合，不包含机器路径，也不会执行未验证的 `node`。以下将完整 marketplace 复制到仓库外的新私有目录；已存在时应停止，不覆盖旧配置。将 Node 路径替换为本机可信批准 executable：
+**Local runtime configuration:** Distributed ZIP/marketplace `mcp.json` starts with an empty server collection. It contains no machine paths and executes no unverified `node`. Copy the whole marketplace to a new private directory outside the repository below. If it already exists, stop without overwriting configuration. Replace Node paths with a trusted approved local executable:
 
 ```sh
 umask 077
@@ -51,11 +59,13 @@ mkdir -m 700 "$MARKETPLACE" && \
   "/trusted/absolute/node" "$MARKETPLACE/plugins/pi-chat-exchange/server/configure.mjs" --node "/trusted/absolute/node"
 ```
 
-插件根目录必须由当前操作者拥有且权限恰为 `0700`；根目录、祖先及 Node 的路径/ACL 全链都须通过信任门槛。配置器不自动修复权限或清 ACL。它验证完整 Node/SQLite 资格后只生成该副本的绝对 stdio command，不安装/注册/启动、不读取 binding 或 Store。目录可含空格；生成的 manifest 属本机配置，不可重新分发。仓库、ZIP、原始 marketplace 保持未配置；配置与注册必须使用同一副本。Secure Tunnel 用户无需此流程。
+The plugin root must be owned by the current operator with mode exactly `0700`. Root/ancestor and Node path/ACL chains must pass trust checks. The configurator does not repair permissions or clear ACLs. After full Node/SQLite qualification, it generates only that copy's absolute stdio command. It does not install, register, start, read the binding or read Store. Spaces in paths are supported. The generated manifest is local configuration and must not be redistributed. Repository, ZIP and original marketplace remain unconfigured. Configure and register the same copy. Secure Tunnel users do not need this procedure.
 
-## 创建外置 binding
+<a id="创建外置-binding"></a>
 
-binding 留在插件安装/cache 之外，默认由系统账户 home 定位：
+## Create the external binding
+
+Keep the binding outside plugin installation/cache. Its default location uses the system account home:
 
 ```bash
 umask 077
@@ -68,7 +78,7 @@ test ! -e "$HOME/.config/pi-chat-exchange/mcp-binding.json" && \
   chmod 600 "$HOME/.config/pi-chat-exchange/mcp-binding.json"
 ```
 
-下面是可解析的完整虚构示例，与 [Pi 指南](../pi-extension/README.md)的手工示例互补。路径与 Session placeholder 必须按本机授权替换；不要将示例当作已生效设置。payload/ACK 若未授权，分别保持 false。
+This complete, parseable fictional example complements the [Pi guide](../pi-extension/README.md). Replace paths and Session placeholders under local authorization. It is not active configuration. Keep payload/ACK false unless each is authorized.
 
 ```json
 {
@@ -84,39 +94,45 @@ test ! -e "$HOME/.config/pi-chat-exchange/mcp-binding.json" && \
 }
 ```
 
-Store directory 必须为规范化绝对 POSIX 路径且不是 `/`，本地文件系统与权限门槛见[Storage security](storage-security.md)（仅仓库，不随 tarball 分发）。lease renewal interval 不超过 TTL 一半。双方 Store directory/file、Exchange namespace/idempotencyKey 四项必须一致；Endpoint 与 Ownership 各自独立。模板中的旧标签不是强制名称。
+Store directory must be a normalized absolute POSIX path other than `/`. See [Storage security](storage-security.md) for local filesystem/permission requirements (included by the current source packaging manifest; inspect historical published artifacts separately). The lease renewal interval must not exceed half the TTL. Both sides must exactly match Store directory/file and Exchange namespace/idempotencyKey. Endpoint and Ownership remain independent. Legacy template labels are not required names.
 
-launcher 固定读取 `~/.config/pi-chat-exchange/mcp-binding.json`，不从模型参数或环境变量选身份。仅本地包诊断支持 strict normalized absolute `--config`；shipped `mcp.json` 不传这个 override。缺失/非法配置为 `CE_MCP_CONFIG_INVALID`，不降级成任意身份。
+The launcher reads fixed `~/.config/pi-chat-exchange/mcp-binding.json`; model arguments/environment cannot select identity. Only local package diagnostics support strict normalized absolute `--config`; shipped `mcp.json` does not pass the override. Missing/invalid configuration refuses `CE_MCP_CONFIG_INVALID`, with no arbitrary-identity fallback.
 
-## 注册与使用
+<a id="注册与使用"></a>
 
-按[官方本地 marketplace 流程](https://developers.openai.com/plugins/build/plugins)，用支持该命令的 Codex CLI 注册上面已配置的同一私有目录（此处 `MARKETPLACE` 沿用前文同一 shell）：
+## Register and use
+
+Following the [official local marketplace procedure](https://developers.openai.com/plugins/build/plugins), register the same configured private directory with a Codex CLI supporting these commands (`MARKETPLACE` continues from the same shell above):
 
 ```sh
 codex plugin marketplace add "$MARKETPLACE"
 codex plugin marketplace list
 ```
 
-重启支持本地插件的 ChatGPT Desktop，在 Plugins Directory 选择 **Pi Chat Exchange Local**，安装 **Pi Chat Exchange**，新建对话核对工具。客户端可能从 plugin cache 的安装副本加载；目录权限和本机 Node 在实际安装环境中仍须合格，不能用打包测试替代 UI 验收。
+Restart ChatGPT Desktop with local plugin support. In Plugins Directory, select **Pi Chat Exchange Local**, install **Pi Chat Exchange**, and verify tools in a new conversation. The client may load a plugin-cache installation copy; directory permissions and local Node must qualify in the actual installation environment. Packaging tests do not replace UI acceptance.
 
-更新时重新打包，复制到新的私有目录、收紧嵌套 plugin 根目录为 `0700`、配置后再注册；刷新/重装并新建对话，旧对话不保证重载。缺少资格或菜单不同时按官方说明核实，不绕过组织限制，也不要改用 Tunnel 来证明 Desktop 安装成功。
+For updates, repackage, copy to a new private directory, restrict the nested plugin root to `0700`, configure, then register. Refresh/reinstall and create a new conversation; old conversations are not guaranteed to reload. If eligibility or menus differ, check official instructions without bypassing organization restrictions. Tunnel success does not establish Desktop installation success.
 
-## 针对性验收与结果边界
+<a id="针对性验收与结果边界"></a>
 
-在独立授权、两端先加入同一 Exchange 后验证：
+## Targeted acceptance and result boundaries
 
-1. 新对话启用 Pi Chat Exchange，`ping` 得到 `status: "reachable"`。
-2. 发现 base tools：`ping`、`ce_send`、`ce_inbox_list`、`ce_read_payload`。即使 payload read 关闭，MCP 仍广告该工具，但实际读取拒绝；这不同于 Pi 按 opt-in 注册工具。
-3. `ack.enabled` exact true 时额外提供 `ce_ack`，否则不广告并拒绝调用；ACK 不顺带开启 payload read。
-4. 按[消息流程](tunnel-setup.md#4-双向-send--inbox--read--ack)双向 send → 独立 list → 授权 read → 单独授权 ACK，明确每一步证据。
+Under separate authorization, after both sides join the same Exchange:
 
-packaged artifact 测试验证 stdio/tool discovery，不证明 Desktop UI 安装成功。当前已完成的实际 ChatGPT↔Pi 消息及 Tunnel 启停验收见[README](../README.md)；不能把 Tunnel 验收外推成每条 Desktop 安装路径都重新跑过。ACK 永远仅 reception，非 task completion。
+1. Enable Pi Chat Exchange in a new conversation; `ping` should return `status: "reachable"`.
+2. Discover base tools: `ping`, `ce_send`, `ce_inbox_list`, `ce_read_payload`. MCP advertises payload read even when disabled, but actual reading refuses. Pi instead registers its tool only with opt-in.
+3. With exact true `ack.enabled`, `ce_ack` is additionally available. Otherwise it is neither advertised nor callable. ACK does not enable payload read.
+4. Follow the [message procedure](tunnel-setup.md#4-双向-send--inbox--read--ack): two-way send → independent list → authorized read → separately authorized ACK, recording each step's evidence.
 
-## 显式 stale-ownership 恢复
+Packaged artifact tests verify stdio/tool discovery, not successful Desktop UI installation. See the [README](../README.md) for recorded actual ChatGPT↔Pi messaging and Tunnel lifecycle acceptance. Tunnel acceptance does not mean each Desktop installation path was rerun. ACK always means reception only, never task completion. Cloud distribution remains NOT_VERIFIED; this guide adds no cloud validation.
 
-正常 MCP/Pi 启动不接管已有 Owner。崩溃后 lease 到期也不自动接管；先由操作者核实进程确已丢失，再以只读连接检查准确 durable owner evidence。这是独立授权的恢复操作，**不是**通用启动前置步骤，也不是模型可调用工具。
+<a id="显式-stale-ownership-恢复"></a>
 
-CLI 在包目录，先 build；以下只是模板，不可直接执行，所有 `<...>` 都必须由操作者从已核实证据替换，不能猜测：
+## Explicit stale-ownership recovery
+
+Normal MCP/Pi startup does not take over existing Owners. Lease expiry after a crash does not trigger takeover. The operator first verifies the process is lost, then inspects exact durable owner evidence through a read-only connection. Recovery needs separate authorization; it is neither a general startup prerequisite nor a model-callable tool.
+
+The CLI is in the package directory; build first. This is a template, not an executable procedure until the operator replaces every `<...>` with verified evidence:
 
 ```bash
 node scripts/recover-stale-ownership.mjs \
@@ -129,21 +145,23 @@ node scripts/recover-stale-ownership.mjs \
   > /operator-controlled/path/recovery-receipt.json
 ```
 
-直接调用批准 Node，避免 `pnpm run` 的 banner 污染重定向 receipt。六个 flags 必须匹配 durable row；`--confirm-endpoint` 是 `<adapter>/<endpointId>`，**不是** `ce_send.to` 的 label 用法。历史无 lease start 的迁移行才用 literal `null`。该 CLI 使用 MCP binding 选择恢复目标，不支持拿 Pi allowlist 文件替代；Pi Endpoint 的事故恢复需另行核实目标与授权。
+Invoke approved Node directly so `pnpm run` banners cannot contaminate the redirected receipt. All six flags must match the durable row. `--confirm-endpoint` is `<adapter>/<endpointId>`, unlike `ce_send.to`'s label. Use literal `null` only for migrated historical rows without lease start. This CLI selects its recovery target through an MCP binding; a Pi allowlist is not a substitute. Pi Endpoint incident recovery requires separate target and authorization checks.
 
-CLI 拒绝 live lease、缺失/不符证据和并发 loser；成功时绑定 recovery Session，执行现有原子 takeover，再 release/detach，fencing 单调增加。receipt 不含 capability/host secret，但内部标识符仍不应公开。
+The CLI refuses live leases, missing/mismatched evidence and concurrent losers. On success, it binds a recovery Session, performs the existing atomic takeover, then releases/detaches; fencing increases monotonically. The receipt contains no capability/host secret, but its internal identifiers must still remain private.
 
-| 固定码 | 意义与操作边界 |
+| Fixed code | Meaning and operational boundary |
 |---|---|
-| `CE_RECOVERY_LAUNCH_INVALID` / `INVALID_REQUEST` / `CONFIG_INVALID`（后两项同 `CE_RECOVERY_` 前缀） | flags、配置、目标路径或字段非法；核实输入，不猜值 |
-| `CE_RECOVERY_TARGET_MISMATCH` / `OWNER_ABSENT` / `OWNER_MISMATCH`（同前缀） | 无目标 Participant、无 Owner 或证据不符；重新核实，不能放宽确认 |
-| `CE_RECOVERY_OWNER_ACTIVE` / `CLOCK_REGRESSION`（同前缀） | lease 仍活跃或时钟先于持久 term；拒绝恢复 |
-| `CE_RECOVERY_RACE_LOST` / `BUSY`（同前缀） | 并发赢家或事务冲突；本次未据此取得 authority |
-| `CE_RECOVERY_FAILED` | 写入前 fail closed |
-| `CE_RECOVERY_OUTCOME_UNKNOWN` | durable outcome 未知，停止并核实，绝不盲重试 |
+| `CE_RECOVERY_LAUNCH_INVALID` / `INVALID_REQUEST` / `CONFIG_INVALID` (last two also use the `CE_RECOVERY_` prefix) | Invalid flags, configuration, target path or fields; verify input without guessing |
+| `CE_RECOVERY_TARGET_MISMATCH` / `OWNER_ABSENT` / `OWNER_MISMATCH` (same prefix) | Missing target Participant/Owner or mismatched evidence; verify again without weakening confirmation |
+| `CE_RECOVERY_OWNER_ACTIVE` / `CLOCK_REGRESSION` (same prefix) | Lease still active or clock earlier than persisted term; recovery refuses |
+| `CE_RECOVERY_RACE_LOST` / `BUSY` (same prefix) | Concurrent winner or transaction conflict; this attempt acquired no authority on that basis |
+| `CE_RECOVERY_FAILED` | Fail-closed before write |
+| `CE_RECOVERY_OUTCOME_UNKNOWN` | Unknown durable outcome; stop and verify, never retry blindly |
 
-exit 0 表示恢复成功，exit 1 仅向 stderr 输出固定拒绝码；不是消息或工作流完成。Tunnel process ownership 的恢复是另一套边界，不能用这个 CLI 清理 Manager 锁。
+Exit 0 means recovery succeeded. Exit 1 emits only a fixed refusal code to stderr. Neither indicates message/workflow completion. Tunnel process ownership recovery has a separate boundary; this CLI cannot clean up Manager locks.
 
-## 支持限制
+<a id="支持限制"></a>
 
-Windows 不满足当前绝对 POSIX path contract。缺失批准 Node、权限不符、Store identity/版本不符均 fail closed，不自动初始化替代 Store。诊断不应输出 key、capability、正文、完整日志或真实 Session 信息。其他常见问题统一见[排障](tunnel-setup.md#故障排查先定位层再进行最小修复)。
+## Support limits
+
+Windows does not meet the current absolute POSIX path contract. Missing approved Node, invalid permissions or mismatched Store identity/version fail closed without initializing a substitute Store. Diagnostics must not expose keys, capabilities, bodies, full logs or real Session information. See [troubleshooting](tunnel-setup.md#故障排查先定位层再进行最小修复) for other issues.

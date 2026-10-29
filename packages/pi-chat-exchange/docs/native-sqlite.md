@@ -1,10 +1,44 @@
-# Rust Native SQLite Driver
+# Rust Native SQLite driver
 
-This package can use either the built-in `node:sqlite` driver or the independent Rust Native middleware. The TypeScript transaction helper, schema v7, SQL algorithms, authorization, idempotency, ACK and recovery contracts stay the same. There is no Sidecar or IPC.
+English | [简体中文](native-sqlite.zh-CN.md)
+
+Current source supports the built-in `node:sqlite` driver and independent Rust Native middleware. Both use the same TypeScript transaction helper, schema v7, SQL algorithms, authorization, idempotency, ACK and recovery contracts. There is no sidecar or IPC. The published npm 0.2.0 artifact and the current source have separate qualification histories; installing npm 0.2.0 does not acquire later source features.
+
+## Release and consumer trust
+
+[Native Release `ce-sqlite-v0.1.0`](https://github.com/zieglar/pi-packages/releases/tag/ce-sqlite-v0.1.0) is published and immutable. Its middleware version is `0.1.0`, ABI `1`, bundled SQLite `3.54.1`, and exact source SHA `a8386aafd657c84825b2905847f34a43d5b91e1e`. The formal [release workflow run](https://github.com/zieglar/pi-packages/actions/runs/40813628775) succeeded. Published assets were downloaded separately from CI and their checksums, identities and seven subject attestations verified during release acceptance. That is historical release evidence, not a fresh consumer or runtime test in this documentation change.
+
+**Production asset hashes in `src/storage/native-compat.ts` remain `null`.** A null hash means unpinned and refuses both prepare and load. It does not mean the GitHub Release is absent. Publication, attestation verification and promotion into CE's consumer trust manifest are separate decisions. The default remains `node-sqlite`; these docs do not authorize a pin update.
+
+The exact eight assets are:
+
+```text
+SHA256SUMS
+ce-sqlite-0.1.0-aarch64-apple-darwin.node
+ce-sqlite-0.1.0-aarch64-unknown-linux-gnu.node
+ce-sqlite-0.1.0-x86_64-apple-darwin.node
+ce-sqlite-0.1.0-x86_64-unknown-linux-gnu.node
+native-identities.json
+native-manifest.json
+provenance.jsonl
+```
+
+The four binaries, checksums and two metadata files are seven attested subjects; `provenance.jsonl` is not self-attested. Native binaries are not part of the npm tarball. Middleware SemVer is independent of the CE npm version.
+
+## Platform evidence
+
+| Target | Native artifact/conformance | Hosted Store integration |
+|---|---|---|
+| macOS arm64 | Verified in release qualification | Verified |
+| Linux x64 GNU | Verified in release qualification | Verified |
+| macOS x64 | Verified in release qualification | Not established |
+| Linux arm64 GNU | Verified in release qualification | Not established |
+
+The Store allowlist remains macOS arm64 / Linux x64. Artifact qualification on another target does not expand it. The Linux Store evidence does not certify npm 0.2.0 installation, every Pi/client combination, cloud transport or power-loss durability. Local Linux emulation, hosted integration and manual message use are different evidence lanes.
 
 ## Driver selection
 
-The default remains `node-sqlite`; selecting Rust never silently falls back to it. Selection is read from `~/.config/pi-chat-exchange/sqlite-driver.json` by both the Pi Host and MCP child. It is not inferred from PATH, a working directory or a caller-supplied Node version.
+Both Pi Host and MCP child read `~/.config/pi-chat-exchange/sqlite-driver.json`. Selection is explicit; it is not inferred from PATH, the working directory or a caller-supplied version. Choosing Rust never silently falls back to Node.
 
 ```json
 {
@@ -15,40 +49,31 @@ The default remains `node-sqlite`; selecting Rust never silently falls back to i
 }
 ```
 
-`manifestFile` is optional. Without it, the package's `NATIVE_COMPAT` is used. The manifest pins ABI, middleware SemVer, target asset and SHA-256. A missing hash (`null`) means unpublished/unpinned and refuses both prepare and load. Do not use `latest`, automatic upgrades or an unverified new artifact.
+`manifestFile` is optional; without it the package's `NATIVE_COMPAT` applies and its current null hashes refuse loading. An operator-supplied manifest pins middleware version, ABI, target asset and SHA-256, and is executable-code trust authority. Verify its origin independently. A checksum downloaded beside an untrusted binary is insufficient as the sole trust anchor. Do not use `latest`, automatic upgrades or unverified pins.
 
-A missing Native cache or an incompatible artifact is a hard failure; it never causes an implicit `node:sqlite` fallback.
+## Prepare, select and inspect
 
-## Prepare (explicit, network-capable command)
-
-After building the package (`pnpm run build`):
+These commands apply to a built current-source checkout, from the package directory after `pnpm run build`. They are conditional operator procedures, not an enabled default installation path: first obtain an independently verified manifest and authorize its use.
 
 ```sh
 node dist/bin/ce-native.js prepare \
   --version 0.1.0 \
   --manifest /absolute/path/to/verified-native-manifest.json
-```
-
-Prepare downloads only the fixed asset selected by the manifest and current target, writes a private temporary file, checks SHA-256, then atomically installs it into the versioned cache. It does not run install scripts, compile on the consumer, overwrite another version or leave a loadable partial file. Concurrent preparation never replaces a good existing cache entry.
-
-The default source is `https://github.com/zieglar/pi-packages/releases/download/ce-sqlite-v<version>/<asset>`. Local fixtures may be used only by tests; real GitHub Releases distribution is **not verified by this development change**.
-
-## Select and inspect
-
-Only after the artifact is cached and verified:
-
-```sh
 node dist/bin/ce-native.js select --driver rust-native \
   --version 0.1.0 \
   --manifest /absolute/path/to/verified-native-manifest.json
 node dist/bin/ce-native.js status
 ```
 
-`select` verifies the artifact before writing the selection. `status` is offline and reports the selected driver, target, cache root, reported middleware/SQLite identity, or a closed error code. To return to the built-in driver, explicitly select `node-sqlite`.
+`prepare` is explicitly network-capable. It downloads the fixed target asset, checks SHA-256 in a private temporary file and atomically installs a versioned cache entry. It does not run install scripts, compile on the consumer, overwrite another version or expose a partial loadable file. Concurrent preparation does not replace a valid existing entry. The default download URL is `https://github.com/zieglar/pi-packages/releases/download/ce-sqlite-v<version>/<asset>`.
 
-`select` uses the runtime cache under the selected HOME. A custom `--root` is supported for explicit prepare/status qualification only and is rejected by select. Manifest paths are saved as absolute paths; treat an operator-supplied manifest as executable-code trust authority. Obtain its pins through an independently verified channel.
+`select` verifies the cached artifact before persisting selection. `status` is offline and reports the selected driver, target, cache root, module/SQLite identity or a closed error code. To return to Node, stop every Store user first, then explicitly run:
 
-Cache layout:
+```sh
+node dist/bin/ce-native.js select --driver node-sqlite
+```
+
+`select` uses the selected HOME's runtime cache. A custom `--root` is for explicit prepare/status qualification only; select rejects it. Manifest paths are persisted as absolute paths.
 
 ```text
 ~/.config/pi-chat-exchange/native/
@@ -56,29 +81,12 @@ Cache layout:
   ce-sqlite/<version>/<target>/artifact.json
 ```
 
-Runtime loading checks the complete cache directory chain for symlinks, ownership and group/other write access, then rechecks file ownership/mode, SHA-256, middleware SemVer, ABI and target before `require()`. A hash mismatch, ABI mismatch, target mismatch or malformed module report refuses loading. Verification and `dlopen` are separate operations; equivalent-UID replacement of the path is outside the claimed security boundary.
+## Verification and failure boundaries
 
-## Independent middleware version and release
+Runtime loading checks the cache directory chain for symlinks, ownership and group/other write access. It then checks file ownership/mode, SHA-256, middleware SemVer, ABI and target before `require()`. Missing or incompatible artifacts fail closed. Verification and `dlopen` are separate operations; replacement by the same OS user is outside the claimed boundary.
 
-Rust middleware has its own SemVer, independent of the CE npm version. ABI is currently `1`. CE declares compatible middleware versions and exact asset hashes in `src/storage/native-compat.ts` or an operator-supplied manifest. Native binaries are **not** included in the npm package.
+Rust admission checks the actual module, Node-API >= 8, SQLite identity, compile options and shared behavior probes. It uses bundled SQLite, retaining the >=3.51.3 safety floor. Node keeps its own version and known-defect rules. Shared conformance covers statements, transactions, authorizer/defensive mode, extended errors, BLOB, NULL, changes and closed-state handling. Rust prepares/finalizes statements per operation and does not re-enter JavaScript from the authorizer. A panic or native memory fault can still terminate the host.
 
-`.github/workflows/native-release.yml` builds the declared targets, runs conformance, records middleware/SQLite/target/build identity and generates asset hashes. Release creation is a separate `environment: native-sqlite-release` action and requires an explicit publish input. The workflow itself does not publish a tag or release on an ordinary build.
+Use exactly one SQLite implementation per live database within a process. Node and Native contain separate SQLite libraries; opening/closing the same database through both on POSIX can release process-owned locks. Switch only after stopping every process using the Store. Cross-driver tests close connections between implementations.
 
-Current declared build matrix: macOS arm64, macOS x64, Linux x64 GNU, Linux arm64 GNU. Local verification covers macOS arm64 and Linux x64 under Docker emulation on an arm64 host. Linux x64 evidence covers the adapter, subprocess locking and SIGKILL recovery; it does not claim a full CE Store/Pi acceptance run. macOS x64 and Linux arm64 remain build targets only.
-
-The CE Store admission policy still allows only macOS arm64 and Linux x64. Other listed targets are artifact build/conformance targets; they do not expand Store support. Hosted CI and actual GitHub release download remain unverified until the separately authorized workflow runs.
-
-## Database connection ownership
-
-Use exactly one SQLite implementation for a given live database within a process. Node and the Native addon contain separate SQLite libraries. On POSIX, opening/closing the same database through both libraries can release process-owned locks while the other library still believes it owns them. All CE connections, snapshots and validation use the selected driver. Cross-driver persistence tests close the old connections before opening the other implementation; switch drivers only after stopping every process using the Store.
-
-## Runtime qualification and failure boundaries
-
-- Node driver retains its existing Node-version and known-defect qualification rules.
-- Rust checks the actual cached module, Node-API >= 8, SQLite version/source, compile options and behavior, not a Node built-in SQLite version whitelist.
-- Bundled SQLite is used, not the system SQLite. The current build reports SQLite 3.54.1 and preserves the >=3.51.3 safety floor.
-- `prepare/get/all/run/exec`, transactions, authorizer policy, defensive mode, extended SQLite errors, BLOB, NULL, changes and closed-state classification are covered by shared conformance.
-- Rust statements are prepared per operation and finalized in that call; no Rust statement pointer escapes. Node retains its own statement lifecycle. Both wrappers refuse statement execution after connection close; transaction wrappers also revoke statements when the callback ends.
-- No JavaScript is re-entered from the SQLite authorizer. The parsed policy is implemented in Rust.
-- Unknown commit/close outcomes are never automatically retried. A Native panic or memory fault can still terminate the host; Rust `Result` mapping does not make that a rollback proof.
-- Actual GitHub Releases distribution has not been verified. SHA-256 is anchored in the CE compatibility manifest, not in a checksum downloaded from the same untrusted location as the binary.
+Unknown commit/close outcomes are not rollback proof and are never automatically retried. Recovery markers are not locks or fencing tokens. See [storage security](storage-security.md), [runtime qualification](runtime-support.md) and [release operations](operations.md). Release workflow details are in [Native release CI](native-release-ci.md).

@@ -1,6 +1,10 @@
+[English](CHANGELOG.md) | [简体中文](CHANGELOG.zh-CN.md)
+
 # Changelog
 
 ## 0.2.0
+
+Published on npm as `@zieglar/pi-chat-exchange@0.2.0`. The qualification and feature claims below describe this release, not later development support.
 
 First packaged release line of this extension. Version 0.1.1 was an internal
 private version only; it was never published to npm, so nothing below is an
@@ -13,7 +17,7 @@ Third-party license evidence is complete and `private: true` is removed from the
 - Add the default-disabled, opt-in `ce_ack` MCP tool, advertised only when the
   binding declares the Session-authorized ACK capability. The host supplies all
   authority fields and equivalent calls replay the original receipt. An ACK
-  records a recipient reception statement — not proof of delivery, reading,
+  records a recipient reception statement: not proof of delivery, reading,
   processing or task completion. BUSY rollback and uncertain outcomes never grant
   retry permission.
 
@@ -65,6 +69,6 @@ version authority, and a future Changesets version PR must reconcile and consume
 it together with this hand-written 0.2.0 entry and the 0.2.0 version pins. Root
 Changesets configuration and queued entries are untouched by this delta. With
 `private` now removed, `privatePackages.version: false` no longer keeps the queued
-changeset inert — the next Changesets version PR owns that reconciliation explicitly.
+changeset inert: the next Changesets version PR owns that reconciliation explicitly.
 
-**Third-party evidence complete; `private: true` removed.** The 101-item dependency closure is fully audited: the two former evidence gaps (pi-tui and the Host peer) closed with three-layer exact-version evidence — registry tarball MIT declarations plus the upstream `v1.3.0` tag root LICENSE (MIT, (c) 2025 Mario Zechner); their artifacts omit license text (upstream packaging omission, not incompatibility). The per-version audit record is `docs/license-audit.md`, which is repo-only and not distributed in the tarball. Owner authorization covers CE's own code only — not a grant to relicense dependencies.
+**Third-party evidence complete; `private: true` removed.** The 101-item dependency closure is fully audited: the two former evidence gaps (pi-tui and the Host peer) closed with three-layer exact-version evidence: registry tarball MIT declarations plus the upstream `v1.3.0` tag root LICENSE (MIT, (c) 2025 Mario Zechner); their artifacts omit license text (upstream packaging omission, not incompatibility). The per-version audit record is `docs/license-audit.md`, which is repo-only and not distributed in the tarball. Owner authorization covers CE's own code only: not a grant to relicense dependencies.

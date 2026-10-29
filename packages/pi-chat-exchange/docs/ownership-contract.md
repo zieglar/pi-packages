@@ -1,4 +1,12 @@
+[English](ownership-contract.md) | [简体中文](ownership-contract.zh-CN.md)
+
 # B3-P2 Ownership Contract
+
+> Versioned phase record: unimplemented features and scope status in each
+> section apply to that section's phase; later amendments supersede earlier
+> status in order. For the current ACK contract, see
+> [delivery-ack-contract.md](delivery-ack-contract.md); for the consolidated
+> storage contract, see [storage-contract.md](storage-contract.md).
 
 Status: **clarified by CE-0002-B3-P2A-R1** (this document is the versioned
 record of the P2 ownership design decisions). Scope: the private durable

@@ -1,6 +1,8 @@
+[English](storage-contract.md) | [简体中文](storage-contract.zh-CN.md)
+
 # Durable storage contract (CE-0002-B2-S6-2)
 
-Consolidated contract for the accepted private SQLite durable storage of
+Historical contract and amendments for the accepted private SQLite durable storage of
 Chat Exchange. Every normative claim below is backed by accepted test or
 implementation evidence; see the traceability matrix at the end.
 
@@ -35,13 +37,15 @@ The new private ACK/receipt reconciliation semantics are specified in
 
 Scope labels used throughout:
 
-- **public contract** — behavior callers can rely on;
-- **internal** — private implementation detail, not a caller guarantee;
-- **test-only** — capability existing only in the test harness;
-- **limitation** — known boundary of current evidence;
-- **deferred** — recorded future requirement, not implemented.
+- **public contract**: behavior callers can rely on;
+- **internal**: private implementation detail, not a caller guarantee;
+- **test-only**: capability existing only in the test harness;
+- **limitation**: known boundary of current evidence;
+- **deferred**: recorded future requirement, not implemented.
 
 This document does not change any architecture, production behavior, or test.
+
+Sections below retain their phase-specific claims. Later amendments supersede earlier claims only where stated; historical migration requirements do not override the current-only v7 section above. Storage APIs described as public contracts remain inside the private storage plane unless explicitly exported.
 
 ## 1. Storage contract
 
@@ -77,7 +81,7 @@ persisted exactly as requested (test: M3). Results are deeply frozen
 ### Private payload handling (public contract)
 
 The payload body is stored privately. Public results expose only the digest
-and length — never payload bytes, and no payload accessor (tests: SB6,
+and length: never payload bytes, and no payload accessor (tests: SB6,
 M3, and the S6-1 sweep). An empty payload is stored as a zero-length body
 (test: M7); the maximum authorized size is accepted (M8); oversized payloads
 are rejected before any transaction starts (M9).
@@ -94,7 +98,7 @@ works after Store close/reopen and across concurrent processes (test: R4 in
 ### Conflict (public contract)
 
 The same key carrying a different request (different payload or endpoint)
-is a nonretryable conflict — never a replace (tests: I4, I5; C2 race and
+is a nonretryable conflict: never a replace (tests: I4, I5; C2 race and
 serialized cases). A valid request conflicting with a stored different
 request is a conflict, not corruption (I8).
 
@@ -109,7 +113,7 @@ reopening (tests: F2-A, F2-B, F3).
 
 ### Transaction ownership and outcomes (public contract)
 
-All mutations run inside `withImmediateTransaction` — a synchronous,
+All mutations run inside `withImmediateTransaction`: a synchronous,
 exclusive owner of the connection (internal primitive; contract documented in
 `docs/storage-security.md` and covered by `transaction*.test.ts`). Public
 error classes are `CreationDomainError`, `StorageTransactionError`, and
@@ -166,7 +170,7 @@ Accepted committed regression evidence:
   (R3).
 
 **Distinction that must not be blurred (limitation):** in the accepted K5
-scenario the WAL file is zero bytes at crash time — K5 is an *uncommitted
+scenario the WAL file is zero bytes at crash time: K5 is an *uncommitted
 rollback* scenario. A zero-byte WAL does **not** prove the physical location
 of uncommitted pages. *Non-empty committed-WAL recovery* has independent
 review-harness evidence (45,352 WAL bytes surviving SIGKILL in the S5-2
@@ -195,7 +199,7 @@ control for legitimate public fields. Production cause-leak mutation
 sensitivity was demonstrated: mutating the **createMessage** wrap site fails
 4 tests (exit 1).
 
-**Non-blocking gap — `CE-PRIVACY-EXCHANGE-ERROR-COVERAGE` (deferred):**
+**Non-blocking gap: `CE-PRIVACY-EXCHANGE-ERROR-COVERAGE` (deferred):**
 createExchange error paths have no direct privacy assertions; mutating the
 createExchange wrap site alone passes the suite. The two APIs do **not** have
 identical mutation sensitivity. The shared wrap mechanism and sanitization
@@ -213,22 +217,22 @@ document records boundaries; it changes no architecture.
 
 Existing technical limitations / optional hardening:
 
-- **`CE-STORAGE-IMMUTABILITY-V2`** — Schema v1 lacks authenticated state
+- **`CE-STORAGE-IMMUTABILITY-V2`**: Schema v1 lacks authenticated state
   integrity; privileged CLOSED→OPEN drift is characterized but not prevented
   (tests: F4, P4).
-- **`CE-STORAGE-WAL-RECOVERY-REGRESSION`** — no committed regression test for
+- **`CE-STORAGE-WAL-RECOVERY-REGRESSION`**: no committed regression test for
   non-empty committed-WAL crash recovery; evidence is review-harness only.
-- **`CE-PRIVACY-EXCHANGE-ERROR-COVERAGE`** — createExchange error paths lack
+- **`CE-PRIVACY-EXCHANGE-ERROR-COVERAGE`**: createExchange error paths lack
   direct privacy mutation sensitivity (see §3).
 
 Future product capabilities (not implemented, not designed here):
 
-- **`CE-SESSION-CONTINUITY-001`** — a new Pi Session can safely resume
+- **`CE-SESSION-CONTINUITY-001`**: a new Pi Session can safely resume
   participation in an existing Exchange without losing committed messages.
   Current boundary: persisted messages and Store reopening do not by
   themselves provide cross-session continuity; participant takeover is out
   of scope here.
-- **`CE-RECONNECT-001`** — recover communication after ChatGPT.app restart,
+- **`CE-RECONNECT-001`**: recover communication after ChatGPT.app restart,
   update, or temporary disconnection. Distinct layers: persisted Exchange
   state (this contract), Pi-side connection restoration, ChatGPT.app
   integration, and task-execution recovery. ChatGPT.app must not be assumed
@@ -240,21 +244,21 @@ B2 scope is not expanded by these entries.
 
 | Contract claim | Test evidence | Accepted commit | Limitation |
 | --- | --- | --- | --- |
-| Exchange creation: 3 rows, one transaction, audit seq 1 | exchange-creation suite; `creation.ts:120`,`:178` | `deefd8e` | — |
-| Message creation: schema-valid CREATED, 3 rows visible | M1, M6 | `deefd8e` | — |
+| Exchange creation: 3 rows, one transaction, audit seq 1 | exchange-creation suite; `creation.ts:120`,`:178` | `deefd8e` |: |
+| Message creation: schema-valid CREATED, 3 rows visible | M1, M6 | `deefd8e` |: |
 | Public fields incl. endpoints; deep freeze | M3, M5; S6-1 sweep | `deefd8e`, `84e0603` | endpoints are public, not hidden |
-| Private payload; digest/length only; no accessor | SB1–SB10, M3, M7–M9 | `deefd8e` | — |
-| Idempotent replay: zero writes, metadata preserved | I1–I3, I7 | `deefd8e` | — |
-| Conflict nonretryable; no replace | I4, I5, I8, C2 | `deefd8e`, `1250800` | — |
-| Admission: missing/CLOSED/dispositioned refused | A1, A3–A8, F2-A/F2-B/F3 | `deefd8e`, `8318b36` | — |
+| Private payload; digest/length only; no accessor | SB1–SB10, M3, M7–M9 | `deefd8e` |: |
+| Idempotent replay: zero writes, metadata preserved | I1–I3, I7 | `deefd8e` |: |
+| Conflict nonretryable; no replace | I4, I5, I8, C2 | `deefd8e`, `1250800` |: |
+| Admission: missing/CLOSED/dispositioned refused | A1, A3–A8, F2-A/F2-B/F3 | `deefd8e`, `8318b36` |: |
 | Transaction outcomes: BUSY/ROLLED_BACK/INDETERMINATE + invalidation | transaction suites; S6-1 error tests | `deefd8e`, `84e0603` | INDETERMINATE ≠ zero-write guarantee |
-| Error precedence and corruption refusal | P1–P5 | `5005078`, `a51c091` | — |
+| Error precedence and corruption refusal | P1–P5 | `5005078`, `a51c091` |: |
 | Crash boundaries K1–K6, SIGKILL commit durability | crash suite (19 tests) | `263c191`, `b3141ca` | harness-based process fixtures |
-| Lock release, contention, reader isolation | R1-A, R1-B, R2 | `f178dec` | — |
-| Close/reopen + concurrent replay | R4, C5 | `bbf28f0`, `1250800` | — |
+| Lock release, contention, reader isolation | R1-A, R1-B, R2 | `f178dec` |: |
+| Close/reopen + concurrent replay | R4, C5 | `bbf28f0`, `1250800` |: |
 | K5 uncommitted rollback survives crash | R3 | `bbf28f0` | WAL zero bytes; see CE-STORAGE-WAL-RECOVERY-REGRESSION |
 | Public-surface privacy sweep + binary controls | S6-1 suite (18 tests) | `84e0603`, `f606594` | createExchange error paths: CE-PRIVACY-EXCHANGE-ERROR-COVERAGE |
-| Private storage boundary / no public export | architecture contract gate (19 fixtures) | (workspace gates) | — |
+| Private storage boundary / no public export | architecture contract gate (19 fixtures) | (workspace gates) |: |
 
 
 ## 7. B3-P1A schema v2, explicit migration, and host trust root
@@ -283,7 +287,7 @@ B3-P2/P3, and a migration test asserts they are empty.
 ### Version recognition (normal open)
 
 - Recognized pristine v1 (ledger exactly the v1 row, `user_version` 1,
-  v1 manifest): refused with `STORAGE_MIGRATION_REQUIRED` — migration is
+  v1 manifest): refused with `STORAGE_MIGRATION_REQUIRED`: migration is
   never implicit and never runs during a normal open.
 - Migrated v2 (ledger v1 row + v2 migration row, `user_version` 2) or fresh
   v2 (single v2 foundation row, `user_version` 2): opens after full
@@ -312,13 +316,13 @@ supported version), so downgrade is impossible.
 
 The host secret is a 256-bit random value hex-encoded into a `host-secret`
 file inside the private store directory: exclusive creation with O_NOFOLLOW,
-mode 0600, current-user-owned, no symlinks — the same artifact enforcement
+mode 0600, current-user-owned, no symlinks: the same artifact enforcement
 the database itself passes. Only its SHA-256 fingerprint is persisted, in the
 append-only `host_trust_root` table. Every v2 open re-reads the file, repeats
 the artifact checks, and compares the fingerprint: missing file
 `STORAGE_TRUST_ROOT_MISSING`, disagreement `STORAGE_TRUST_ROOT_MISMATCH`,
 insecure artifact `STORAGE_TRUST_ROOT_INSECURE`, preexisting secret during
-initialization/migration/recovery `STORAGE_TRUST_ROOT_AMBIGUOUS` — all fail
+initialization/migration/recovery `STORAGE_TRUST_ROOT_AMBIGUOUS`: all fail
 closed with zero writes, no repair, no automatic regeneration, and no secret
 or fingerprint material in any error, result, or log surface.
 
@@ -360,7 +364,7 @@ binding are immutable (`participant_identity_immutable`), the binding is 1:1
 (`UNIQUE (endpoint_adapter, endpoint_id)`), a second Participant for the same
 Endpoint identity is refused (`PARTICIPANT_ENDPOINT_CONFLICT`), and no
 reassignment or aliasing exists. A Session ID is never an identity:
-`participant_session` stays unused in P1B. `instanceId` is ephemeral — it is
+`participant_session` stays unused in P1B. `instanceId` is ephemeral: it is
 excluded from identity, from the request digest, and from the persisted
 binding, so a differing incarnation replays instead of conflicting. Creation
 is idempotency-keyed with the accepted B2 semantics (replay, conflict,
@@ -424,7 +428,7 @@ plane remains unauthorized B3-P2/P3 scope.
 
 Minimal private reads only: Participant existence, stable Endpoint binding,
 Exchange membership with its join boundary, and host-local capability status.
-Nothing is added to the public package surface — the private storage boundary
+Nothing is added to the public package surface: the private storage boundary
 and its contract gate are unchanged.
 
 ### Interpretation notes
@@ -471,7 +475,7 @@ atomically with identity creation.
 
 **Trust-root classification is aligned.** During capability verification, a
 missing trust-generation row is `STORAGE_CORRUPT` and a host-secret fingerprint
-disagreement is `STORAGE_TRUST_ROOT_MISMATCH` — typed trust-root refusals, as
+disagreement is `STORAGE_TRUST_ROOT_MISMATCH`: typed trust-root refusals, as
 the capability plane already documented and as `issueCapability` already
 behaved. Capability refusals themselves stay a single opaque
 `CAPABILITY_REJECTED`, and both paths fail closed with zero writes.
@@ -679,10 +683,10 @@ scope, trust generation, revocation, and expiry checks are unchanged.
 `takeoverOwnership` replaces an EXISTING ownership row whose lease is expired
 at the operation's clock, including a legacy v2 row (NULL `lease_started_at`,
 expired at every instant). It refuses: a live Owner (`OWNERSHIP_HELD`,
-evaluated against the persisted term — one millisecond before expiry still
+evaluated against the persisted term: one millisecond before expiry still
 refuses, exact expiry is eligible); a clock-regressed lease
 (`LEASE_CLOCK_REGRESSION`); a Participant with no ownership row
-(`OWNERSHIP_TAKEOVER_INELIGIBLE` — initial acquisition remains the `attach`
+(`OWNERSHIP_TAKEOVER_INELIGIBLE`: initial acquisition remains the `attach`
 operation); corrupt ownership state (`STORAGE_OWNERSHIP_CORRUPT`, never
 repaired); and any invalid, revoked, expired, wrong-Participant,
 wrong-Session, wrong-scope, or wrong-generation capability
@@ -700,7 +704,7 @@ accepted).
 
 R1 defines one authoritative operation-time sampling point for every owned
 mutating transaction: inside the transaction, after `BEGIN IMMEDIATE` has
-acquired the writer lock — `BEGIN IMMEDIATE → sample now → validate
+acquired the writer lock: `BEGIN IMMEDIATE → sample now → validate
 authority → evaluate current state → mutate → COMMIT`. All checks within one
 mutation use this one consistent instant. This governs `bindSession`,
 `acquireOwnership`, `renewLease`, `releaseOwnership`, `verifyOwnership`,
@@ -755,14 +759,14 @@ lease at serialization is `OWNERSHIP_HELD`, regardless of what the clock read
 at initiation. A renewal serialized while its lease is still live extends it;
 a renewal serialized after expiry refuses `LEASE_EXPIRED` and can never revive
 it. A renewal/takeover race is therefore decided by the durable lease state at
-each operation's own serialization instant — exactly one winner, no
+each operation's own serialization instant: exactly one winner, no
 stale-time distortion in either direction.
 
 ### Supersession
 
 After a successful takeover the previous Session is no longer the current
 Owner: its fencing token is stale (`FENCING_STALE`), its `resume` capability
-cannot renew, release, or verify the new Owner (`OWNERSHIP_NOT_CURRENT` — the
+cannot renew, release, or verify the new Owner (`OWNERSHIP_NOT_CURRENT`: the
 durable ownership row decides, never the Session ID). Historical Session
 bindings are preserved for audit continuity. Takeover never creates a
 Participant, never rewrites Endpoint bindings, Exchange membership, join
@@ -774,7 +778,7 @@ An uncertain takeover outcome (for example an INDETERMINATE transaction
 result) is reconciled explicitly through `reconcileTakeover`, a zero-write
 read that compares the evidence the caller presents (Participant, target
 Session, the exact persisted term boundaries, optional fencing token) against
-the durable row in one consistent snapshot — never a Session ID alone:
+the durable row in one consistent snapshot: never a Session ID alone:
 
 - `COMMITTED`: the current row matches the presented evidence exactly. This is
   effect-level recognition of the durable state, not operation-level
@@ -791,7 +795,7 @@ the durable row in one consistent snapshot — never a Session ID alone:
   freshly authorized and eligibility-checked, never because `NO_TRACE` proved a
   non-commit.
 - `EVIDENCE_CONFLICT`: the target Session is the current Owner under
-  different term or token evidence — the current state was installed by a
+  different term or token evidence: the current state was installed by a
   different request. Never auto-retry; operator review.
 
 Documented limitations (fail-closed, no invented exactly-once semantics): a
@@ -820,7 +824,7 @@ a term guessed later than the durable one misreads a committed takeover as
 `NO_TRACE`, and a term guessed earlier misattributes a same-Session row as
 `EVIDENCE_CONFLICT`. When exact term evidence is unavailable the outcome simply
 remains unknown to the caller. `reconcileTakeover` accepts no UNKNOWN input and
-returns no UNKNOWN disposition — preserving that uncertainty is a caller-level
+returns no UNKNOWN disposition: preserving that uncertainty is a caller-level
 judgment, not an existing API disposition, and the three dispositions above
 keep their exact meanings.
 
@@ -830,8 +834,8 @@ opened store. A lost acknowledgement never authorizes a blind retry.
 
 A caller may also snapshot `readFencingHighWater` for the Participant before
 the call. If a later valid read of the same Participant still returns the same
-value, then no fencing allocation — and therefore no successful takeover or
-acquisition for that Participant — committed between the two reads, assuming
+value, then no fencing allocation: and therefore no successful takeover or
+acquisition for that Participant: committed between the two reads, assuming
 both reads are valid, correctly ordered, and about the same Participant. An
 increased high-water proves only that some allocation committed; it never
 identifies which invocation committed, never proves that this caller's takeover
@@ -892,7 +896,7 @@ and schema v4 enforces the accepted canonical representation on it, not
 only the one-way revision transition:
 
 - **SQLite enforces**, on the `participant_session_detach_once` UPDATE path
-  only: `detached_at` is a canonical UTC instant — GLOB shape
+  only: `detached_at` is a canonical UTC instant: GLOB shape
   (`YYYY-MM-DDTHH:MM:SS.mmmZ`), a `strftime` parse round trip (so month 13,
   February 30, non-leap February 29, day 00, minute 60, and leap seconds
   are refused rather than silently normalized), and hour < 24 (SQLite's own
@@ -903,8 +907,8 @@ only the one-way revision transition:
   cannot hold BLOB, so no wrong storage class can reach the predicate as
   anything but non-matching text.
 - **The application parser enforces** (`session-state.ts`): the same
-  canonicality on every row read — shape, `Date.parse` finiteness, and an
-  `toISOString` round trip for `bound_at` and `detached_at` — plus the
+  canonicality on every row read: shape, `Date.parse` finiteness, and an
+  `toISOString` round trip for `bound_at` and `detached_at`: plus the
   identity patterns and the two-state revision matrix. It remains the
   authority: the insert trigger checks only born-ATTACHED, so a privileged
   writer can still insert a malformed `bound_at`; such a row is refused as
@@ -916,7 +920,7 @@ connection with `recursive_triggers` disabled bypasses the delete trigger
 through conflict-resolution (`INSERT OR REPLACE`) deletes; the storage
 connection asserts `recursive_triggers=ON` (with `foreign_keys=ON` and
 `trusted_schema=OFF`) on every open. An actor with unrestricted database
-write access can drop the triggers or rewrite rows directly — no protection
+write access can drop the triggers or rewrite rows directly: no protection
 is claimed against that (`CE-STORAGE-IMMUTABILITY-V2`, unchanged).
 
 ### Version recognition and migration
@@ -986,7 +990,7 @@ writer lock: a detach serialized after lease expiry still refuses
 after the lock wait commits at the serialization instant without touching
 ownership or fencing).
 
-## B3-P3A — Session-authorized durable send/read (CE-0002-B3-P3A)
+## B3-P3A: Session-authorized durable send/read (CE-0002-B3-P3A)
 
 Status: **implemented as a private storage slice**. Schema v4 and the frozen
 public `Message` entity are unchanged. This amendment does not define endpoint
@@ -1057,7 +1061,7 @@ for same-key sends and send-versus-release/takeover serialization.
 after-Message, after-idempotency, after-audit, and after-COMMIT boundaries and
 proves only a complete transaction survives.
 
-## B3-P3C — Minimal Audit correlation index (CE-ARCH-P3C-INDEX-001)
+## B3-P3C: Minimal Audit correlation index (CE-ARCH-P3C-INDEX-001)
 
 Schema v5 appends exactly one non-unique index:
 `idx_audit_event_correlation ON audit_event(exchange_id, kind, subject_id)`.
@@ -1086,7 +1090,7 @@ The index cannot prove existence, uniqueness, field agreement, or absence of
 orphan rows. The Schema v5 amendment itself added no Inbox API; the separate
 bounded private operation below uses that frozen schema without changing it.
 
-## B3-P3C — Bounded storage Inbox Discovery (HANDOFF-731845)
+## B3-P3C: Bounded storage Inbox Discovery
 
 Status: **implemented as a private storage slice**. The implementation
 adds no schema object, migration, table, index, persistent cursor, public package
@@ -1114,7 +1118,7 @@ callers may request smaller positive safe-integer limits only, and `pageSize` ma
 not exceed `rawScanLimit`. These are implementation parameters, not frozen protocol
 constants.
 
-Each `message_created` candidate loads only Message metadata—never `payload_body`—
+Each `message_created` candidate loads only Message metadata; never `payload_body`—
 then invokes the unchanged Schema v5 exact-correlation lookup with `LIMIT 2`. That
 validator still requires exactly one matching Audit and validates Exchange, subject,
 event kind/schema, Audit Sequence, creation instant, digest, length, revision, and
@@ -1148,7 +1152,7 @@ BUSY and INDETERMINATE classification, restart behavior, and query plans.
 prove send/list, revocation/list, and release/list valid before-or-after outcomes, plus
 a deterministically held Inbox transaction that excludes an overlapping sender.
 
-## B3-P4C — Schema v6 independent payload capability (HANDOFF-427916)
+## B3-P4C: Schema v6 independent payload capability
 
 Status: **implemented for schema and capability authority only**. This phase adds
 no payload-read Storage operation, Session Host issuance, Pi tool, delivery behavior,
@@ -1192,7 +1196,7 @@ Evidence is pinned by `test/storage/schema-v6.test.ts` and
 `test/storage/payload-read-capability.test.ts`, plus the unchanged migration, Store,
 capability, messaging, Inbox, ownership, and recovery regression suites.
 
-## B3-P4D — Authorized Message payload read (HANDOFF-583207)
+## B3-P4D: Authorized Message payload read
 
 Status: **implemented across Storage, the Pi session host, and the operator-opted-in
 Pi extension tool**. Schema v6, the `payload_read` capability, and every frozen
@@ -1208,7 +1212,7 @@ transaction it authorizes the exact `payload_read` scope (never the metadata
 `read` scope, and vice versa), the ATTACHED Session, current Owner, current fencing
 token, and active lease; then Exchange membership, Message metadata, the opaque
 missing/wrong-recipient refusal, the recipient endpoint binding, the exact
-`message_created` audit correlation, and the recipient's join boundary — all
+`message_created` audit correlation, and the recipient's join boundary: all
 metadata-only. Only after that chain passes does `readMessagePayloadBodyInTransaction`
 in `src/storage/creation.ts` materialize `payload_body`, validate the BLOB type,
 exact byte length, and SHA-256 digest against the authorized metadata, and return
@@ -1221,7 +1225,7 @@ lease, ownership, or capability state ever changes. `DELIVERY_UNKNOWN` stays
 
 `CeSessionHost.readPayload` keeps the raw Store and the plaintext capability
 inside the host/storage boundary. The `payloadRead.enabled` operator policy —
-exact boolean `true` only; missing, false, or malformed fails closed — is fixed
+exact boolean `true` only; missing, false, or malformed fails closed: is fixed
 for the lifetime of a host instance, gates capability issuance in `beginSession`
 and validated `resume` alike, and answers a fixed sanitized
 `CE_HOST_PAYLOAD_DISABLED` when disabled. The fixed exposure limit is 65,536
@@ -1229,7 +1233,7 @@ encoded bytes, checked before decoding (`CE_HOST_PAYLOAD_TOO_LARGE`), and decodi
 is strict UTF-8 (`CE_HOST_PAYLOAD_INVALID_UTF8`); nothing partial ever escapes.
 
 The extension registers `ce_read_payload` (input: `messageId` only) only when the
-opt-in is enabled — a disabled deployment registers no payload tool at all. Every
+opt-in is enabled: a disabled deployment registers no payload tool at all. Every
 invocation reads the guarded current Pi context, resolves the allowlist, checks the
 startup binding, and delegates synchronously. A successful result is a fixed
 untrusted-content warning plus the exact decoded text; the payload never appears

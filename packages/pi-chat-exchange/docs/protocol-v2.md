@@ -1,4 +1,12 @@
+[English](protocol-v2.md) | [简体中文](protocol-v2.zh-CN.md)
+
 # pi-chat-exchange Protocol v2 (frozen)
+
+> Historical protocol-phase record: descriptions of unimplemented hosts,
+> persistence, and endpoints below refer to PH-0002/PH-0003. For later private
+> storage and MCP implementations, see [storage-contract.md](storage-contract.md)
+> and [delivery-ack-contract.md](delivery-ack-contract.md). Frozen protocol
+> semantics remain unchanged.
 
 Frozen 2026-10-06 by PH-0002 (the approved architecture correction of
 PH-0001). Changes require an explicit contract revision. Machine-readable
