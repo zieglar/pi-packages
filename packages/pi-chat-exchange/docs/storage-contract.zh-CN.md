@@ -2,6 +2,8 @@
 
 # 持久化存储契约（CE-0002-B2-S6-2）
 
+当前读者说明（CE0.2.1）：正常 Store 初始化使用下文 direct-current v7 实现。原 E2-A 段落中记录的候选审查状态是历史来源，不是当前安装前提，也不据此新增验收主张。公开的 opt-in `ce_ack` 工具见 [Pi 工具参考](../pi-extension/README.zh-CN.md)和 [ACK 契约](delivery-ack-contract.zh-CN.md)；存储章节本身不定义传输。下文历史要求继续按各自取代规则保留。
+
 Chat Exchange 已验收的私有 SQLite 持久化存储的历史契约及修订。下列每项规范性声明均有已验收的测试或实现证据支持；参见后文的追溯矩阵。
 
 ## E2-A 仅限当前 v7 的实现候选

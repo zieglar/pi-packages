@@ -60,7 +60,7 @@ Mutex 协调要求完整离线维护窗口：检查、协调、持久化、复�
 5. 按原 scope 移除原精确 source，再检查 `list`：
 
 ```sh
-"$CE_APPROVED_NODE" "$CE_PI_CLI" remove "npm:@zieglar/pi-chat-exchange@0.2.0"
+"$CE_APPROVED_NODE" "$CE_PI_CLI" remove "npm:@zieglar/pi-chat-exchange@0.2.1"
 "$CE_APPROVED_NODE" "$CE_PI_CLI" list
 ```
 
@@ -81,7 +81,7 @@ pnpm --dir packages/pi-chat-exchange run verify
 
 `verify` 串行运行 contract/native check、typecheck、build、默认 tests 与 packaged-plugin tests。Installed-client、real-host、distribution、native-specific lane 分开执行，证据与前置条件见[架构验证层次](architecture.zh-CN.md#验证层次)。跳过/可选 lane 不算通过，隔离测试不算 dogfooding。本次文档变更不重新执行这些门禁。
 
-默认测试 lane 在每次调用的私有 HOME 中显式选择 `node-sqlite`。Rust lane 使用操作员已验证的 HOME、manifest 和缓存。隔离离线 Pi Host 首跑已在 Node 22.19.0、24.22.2、25.2.1、25.9.0、26.12.1 全部通过；新增 Linux x64 Node 22.19.0 / 24.22.2 Native job 的 hosted 执行为 UNVERIFIED。本地矩阵见[运行时支持](runtime-support.zh-CN.md)。
+默认测试 lane 在私有 HOME 中选择 `node-sqlite`，Rust lane 使用已验证 Native 缓存。早期本地离线 Host 运行覆盖 Node22.19.0/24.22.2/25.2.1/25.9.0/26.12.1。[0.2.1 候选 Hosted CI](https://github.com/zieglar/pi-packages/actions/runs/40925049158)在 Linux x64 Node22.19.0 和24.22.2 上各通过 Native227/227。范围见[运行时支持](runtime-support.zh-CN.md)。
 
 贡献须保留向内依赖、封闭 schema、独立 payload/ACK grants、可信 Session lookup 与最终 Storage authority。复用 Host/Storage seam，不另建消息系统。保留 intent 先于 effect、显式未知结果和正常释放路径。新 runtime/client/platform 支持需要独立真实资格验证。测试应检查可观察行为、隐私/拒绝、失败证据与生命周期边界，不用真实消息、私有路径或 Session 标识作公开 fixture/证据。回归入口与已知债务见[架构指南](architecture.zh-CN.md)。
 
@@ -89,7 +89,7 @@ pnpm --dir packages/pi-chat-exchange run verify
 
 ```sh
 pnpm --dir packages/pi-chat-exchange run package:pi-extension
-shasum -a 256 packages/pi-chat-exchange/.pi-artifacts/zieglar-pi-chat-exchange-0.2.0.tgz
+shasum -a 256 packages/pi-chat-exchange/.pi-artifacts/zieglar-pi-chat-exchange-0.2.1.tgz
 ```
 
 该命令构建并检查运行时 import closure/assets、必需 native/运维文件、无 consumer lifecycle hook，再执行 `npm pack --ignore-scripts`。裸 `npm pack` 跳过这些检查，不是受支持的生产者命令。Desktop 使用独立 `package:desktop-plugin`，ZIP 不等于 Pi npm 包。
@@ -104,9 +104,9 @@ Windows Native 与 Tunnel start 以 `CE_NATIVE_TARGET_UNSUPPORTED` 拒绝，不�
 
 ## 发布证据与限制
 
-npm 0.2.0 已发布、历史 Node 24.21.0 / Pi 1.3.0 / macOS arm64 验收、云端分发 **NOT_VERIFIED** 是不同事实。当前源码 engines `>=22.19.0` 描述本地候选，不扩大已发布制品验收范围。npm 发布 workflow 仍在本地且未推送，没有 hosted OIDC 证明。所有者报告 publisher connection 已配置，不等于 hosted 发布证据。
+已发布 npm0.2.1 要求 Node>=22.19.0/Pi1.3.0。[OIDC 发布 run40925828108](https://github.com/zieglar/pi-packages/actions/runs/40925828108)在源码 `c7e2f0f756cd1868f175bde8743cef9920fbc6b8` 成功；Registry integrity/provenance 及 macOSarm64/Node22.19.0 的隔离 Registry 安装已验证。云传输仍为 NOT_VERIFIED，历史0.2.0 资格范围不变。
 
-Native middleware 有独立不可变发布 `ce-sqlite-v0.1.0`、ABI 1、SQLite 3.54.1，源码 `a8386aafd657c84825b2905847f34a43d5b91e1e`，历史下载/attestation 已验证。Hosted Native Store integration 覆盖 macOS arm64 / Linux x64；macOS x64 / Linux arm64 只有 artifact/conformance。生产 `NATIVE_COMPAT` 现已固定不可变 Release `427441708`，四个平台的 SHA-256 已与 `SHA256SUMS` 核对，七个 attestation subject 已验证绑定到该源码。Rust Native 是唯一的默认持久化驱动，没有选择文件时使用 `rust-native` `0.1.0`；显式 `node-sqlite` 仅供非生产兼容用途。失败不触发回退。这些源码变更与 pins 尚未发布，生产发布需另行授权。这些事实不证明广泛云端/e2e 支持，也不自动开启 native。详见[原生 SQLite](native-sqlite.zh-CN.md)与[原生发布 CI](native-release-ci.zh-CN.md)。
+Native middleware 有独立不可变 Release `ce-sqlite-v0.1.0`，ABI1、SQLite3.54.1、源码 `a8386aafd657c84825b2905847f34a43d5b91e1e`。CE0.2.1 包含其已验证的四平台 pins；Native Store 集成覆盖 macOSarm64/Linuxx64，macOSx64/Linuxarm64 仅有制品与一致性证据。不增加自动下载、升级、修复或回退。见 [Native SQLite](native-sqlite.zh-CN.md)和 [Native release CI](native-release-ci.zh-CN.md)。
 
 历史 plans/audits 保留有日期的设计/测试陈述。本地 commit 不等于 release，workflow 意图不等于 hosted 执行，publisher 已配置不等于 OIDC 证明。Release/push/publication 需单独授权。
 

@@ -2,149 +2,198 @@
 
 # 快速开始
 
-CE 通过共享的私有 SQLite Store，让 ChatGPT 与 Pi 显式交换消息。Secure MCP Tunnel 与 Desktop stdio 是两条独立连接路径。本指南使用 Tunnel；stdio 见 [Desktop 安装](chatgpt-installation.zh-CN.md)，完整 managed npm/tarball 流程见[独立安装](independent-install.zh-CN.md)。
+## 1. Pi Chat Exchange 是什么？
 
-## 选择安装方式
+Pi Chat Exchange（CE）让 ChatGPT 和 Pi 通过显式工具交换持久化消息。ChatGPT 经 Secure MCP Tunnel 调用本地 MCP server，两个 Endpoint 使用同一个私有 SQLite Store。发送、发现和读取消息都由你决定。消息本身不授予执行任务的权限，也不证明任务完成。
 
-`@zieglar/pi-chat-exchange@0.2.0` 已发布到 npm。历史分发验收环境为 **Node 24.21.0 + Pi 1.3.0 + macOS arm64**，云端分发仍为 **NOT_VERIFIED**。当前源码声明 Node `>=22.19.0`，不改变已发布制品的验收范围。
+本指南将已发布的 **0.2.1** 安装到现有 Pi 中，配置一组 ChatGPT ↔ Pi 配对。独立的 [Desktop stdio 连接](chatgpt-installation.zh-CN.md)无需 Tunnel。本地安装和命令检查已有通过记录；**本指南尚未验证真实 Cloud transport 及完整的 ChatGPT ↔ Pi 消息交换**。
 
-Pi 与 npm 都要使用批准 Node。把其 bin 目录放在 PATH 首位，使用随该 Node 分发的 npm 11.x，以及操作者控制的 npm 配置/cache，不继承其他 registry 凭据。安装从明确选定的 registry 下载，运行时不需要 registry 网络。扩展以你的用户权限运行；`--ignore-scripts` 只限制安装脚本，不隔离扩展运行时权限。
+## 2. 前提条件
 
-managed npm 路线先安装独立 Pi host，再登记精确版本：
+- Pi **1.3.0**，系统终端中可用 `pi` 命令。Setup 与确认对话框需要交互式 Pi TUI。
+- Pi 与 MCP child 均使用 Node **>=22.19.0**。已测版本和限制见[运行时支持](runtime-support.zh-CN.md)；版本范围不代表所有后续版本都经过测试。
+- **macOS arm64 或 Linux x64 GNU**，Store 所在的本地文件系统须通过准入检查。其他 Native 制品不代表 Store 支持相应平台。Windows Native 不受支持，WSL2 集成尚未验证；若使用 WSL，Store 应放在 Linux 文件系统，避免 `/mnt/c`。
+- 单独安装、来源可信的 `tunnel-client`，文档兼容基线为 **0.0.16**。从 [OpenAI Tunnel 设置](https://platform.openai.com/settings/organization/tunnels)或[官方 releases](https://github.com/openai/tunnel-client/releases/latest)取得，使用前核对来源、版本和完整性。CE 不安装或更新该 client。
+- 一个 Tunnel、获准使用它的凭据，以及具备该 Tunnel 使用资格的 ChatGPT workspace/account。云端权限和最新界面步骤以[官方 Tunnel 指南](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)为准，CE 不创建这些云端资源。
 
-```sh
-CE_APPROVED_NODE=/absolute/path/to/approved/node
-npm install --prefix ~/ce-install/host --ignore-scripts --save-exact \
-  @earendil-works/pi-coding-agent@1.3.0
-CE_PI_CLI="$HOME/ce-install/host/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
-export npm_config_ignore_scripts=true
-"$CE_APPROVED_NODE" --version
-"$CE_APPROVED_NODE" "$CE_PI_CLI" install npm:@zieglar/pi-chat-exchange@0.2.0
-"$CE_APPROVED_NODE" "$CE_PI_CLI" list
-"$CE_APPROVED_NODE" "$CE_PI_CLI"
-```
+首次交换使用无敏感内容的文字。扩展以当前用户权限运行，安装前应审查包。不要把凭据放入 prompt、shell history、截图或消息。
 
-把 Node 占位路径替换为本机可信可执行文件的绝对路径。安装前核对 `node --version` 与 `npm --version`。不要叠加 `-e` 加载第二份。历史 managed 安装测试使用隔离 loopback registry；npm 已发布，但这项历史测试仍不证明云端验收通过。预构建 tarball 是独立回退：核对发布方提供的 SHA256，用 `--ignore-scripts` 物理安装，再登记安装后的绝对目录。消费者不构建包。完整命令、载荷检查与安全移除见[独立安装](independent-install.md)。
+## 3. 安装
 
-源码开发从仓库根目录执行：
+在 Pi 之外的**系统终端**执行：
 
 ```sh
-pnpm install --frozen-lockfile --ignore-scripts
-pnpm --dir packages/pi-chat-exchange run build
-pi -e ./packages/pi-chat-exchange/pi-extension/index.ts
+node --version
+pi --version
+pi install npm:@zieglar/pi-chat-exchange@0.2.1
+pi list
 ```
 
-使用 pnpm 12.9.1 与批准 Node。扩展导入 `dist/`，修改源码后先 build 再 `/reload`。长期本地安装可用 `pi install /absolute/path/to/packages/pi-chat-exchange`，之后保留原目录。开发检查见[运维指南](operations.zh-CN.md)。
+成功条件：`pi list` 包含精确的 npm source `@zieglar/pi-chat-exchange@0.2.1`。包已预构建，无需克隆仓库、安装 pnpm 或编译 TypeScript。不要再叠加 `-e` 加载第二份。
 
-Rust Native 是唯一的默认持久化驱动，没有选择文件时使用 `rust-native` `0.1.0`。显式 `node-sqlite` 仅供非生产兼容用途，不自动回退。生产 `NATIVE_COMPAT` 现已固定经验证的 `ce-sqlite-v0.1.0` 资产。这些 pins 和 Node `>=22.19.0` 源码声明（与已安装 Pi 1.3.0 一致）尚未发布；生产发布需另行授权。build/load 命令不证明生产已可用。
-
-## 在当前源码中准备 Native
-
-先运行 `/ce-native status`，需要安装时显式执行 `/ce-native install`。安装仅下载可信默认版本，校验通过后才修改选择，完成后需重启 Pi。`/ce-native verify` 只读；`/ce-native repair confirm` 是显式修复。`/ce-native check-updates` 只发现 GitHub Release，不会信任 `latest` 或修改选择。CE 不会自动下载、修复、升级或回退。
-
-扩展加载只读，不下载、不创建 Store、不启动 Tunnel。Native 缺失时 Pi 和管理命令仍可用；Store、Tunnel start 和消息操作直接拒绝。状态和会话警告见 [Native 管理](native-management.zh-CN.md)。Windows Native 以 `CE_NATIVE_TARGET_UNSUPPORTED` 拒绝；建议在 WSL2 内运行 Linux Node.js、Pi 和 CE，将活跃 Store 放在 Linux 文件系统，避免 `/mnt/c` 等 Windows 挂载。本环境未做 WSL2 集成验证，平台测试仅覆盖目标映射与 Windows 拒绝。现有文件系统准入规则不变。
-
-隔离离线 Pi Host 首跑已在 Node 22.19.0、24.22.2、25.2.1、25.9.0、26.12.1 全部通过；本地矩阵见[运行时支持](runtime-support.zh-CN.md)。
-
-## 配置 Tunnel 与消息权限
-
-从 [OpenAI Tunnel 设置](https://platform.openai.com/settings/organization/tunnels)或[官方 releases](https://github.com/openai/tunnel-client/releases/latest)获取 client，执行前检查来源、版本和完整性。文档兼容基线为 `tunnel-client` 0.0.16。CE 不下载、更新 client，也不创建云端资源；新版本需要独立兼容性证据。
-
-如需显式选择可执行文件，在启动 Pi 前向父 Pi 环境设置可信、规范化绝对路径：
+在**同一个系统终端**设置以下变量后再启动 Pi。先把两个可执行文件路径替换为本机可信、规范化的绝对路径：
 
 ```sh
 export CE_NODE_PATH=/trusted/node-install/bin/node
 export CE_TUNNEL_CLIENT_PATH=/trusted/client-install/tunnel-client
 export CE_TUNNEL_BACKGROUND_ALLOW=1
+pi
 ```
 
-`CE_NODE_PATH` 只选择 MCP child，Pi 本身仍须由批准 Node 启动。background 变量只许可显式 Start，不自动启动。Pi 子 shell 不能修改父进程环境。
+`CE_NODE_PATH` 只选择 MCP child；Pi 本身仍须由受支持的 Node 启动。background opt-in 只许可稍后显式 Start，不会自动启动。Pi 内的子 shell 不能修改父 Pi 进程环境。普通使用时不要设置 `CE_TUNNEL_OFFLINE_TEST`。
 
-在 Pi 交互 TUI 执行：
+若已有 CE 配置或运行中的 Tunnel，修改前先遵循第 5 步的现有安装注意事项。专用 Host 前缀、tarball 安装和源码开发见[专题文档](#10-专题文档)。
+
+## 4. 准备 Native
+
+在 **Pi TUI** 执行：
 
 ```text
+/ce-native status
+```
+
+若状态为 `MISSING`，显式安装固定信任版本的 Native 驱动：
+
+```text
+/ce-native install
+```
+
+成功条件：命令报告可信版本已安装并选定。**正常退出 Pi，再从已设置环境变量的系统终端重新启动。** 安装后需要重启 Pi，不能用 `/reload` 替代这一步。在重启后的 Pi TUI 执行：
+
+```text
+/ce-native verify
 /ce-tunnel doctor
+```
+
+成功条件：Native 显示 `READY` / `CE_NATIVE_READY`。Doctor 分别检查 host Node、MCP child Node 与 client 路径信任，不启动 client，也不测试云端认证。Start 前先处理缺少或不可信可执行文件的诊断，详见[client 路径检查](tunnel-setup.zh-CN.md#client-安装与只读诊断)。
+
+Native 是唯一的默认持久化驱动。缺失或不可信时，Pi 和管理命令仍可用，Store、消息操作和 Tunnel Start 会拒绝。CE 不会自动下载、修复、升级或回退。遇到 `UNTRUSTED` 等状态时，按 [Native 管理](native-management.zh-CN.md)处理；不要删除 Store 或改选兼容驱动来绕过拒绝。
+
+## 5. 配置 Tunnel
+
+从 Setup 到激活和首次交换，始终使用**同一个 Pi Session**。新 Session 是不同的身份。
+
+现有安装应先执行 `/ce-tunnel stop`，再用 `/ce-tunnel status` 核实 `STOPPED`。若当前 Pi Session 持有旧 CE binding，修改配置前先 `/ce-tunnel deactivate` 并确认正常释放。`UNKNOWN` 不等于已停止，应按 [Tunnel 排障](tunnel-setup.zh-CN.md)调查。全新安装、没有旧 binding 或 transport 时可跳过这些清理动作。
+
+在 **Pi TUI** 执行：
+
+```text
 /ce-tunnel setup
+```
+
+1. 输入真实 Tunnel ID，按需填写 Organization ID。获准使用的凭据只在 masked 输入中填写。现有配置可选 **Keep existing credential**。
+2. 在 Review 选择 **Back · Edit configuration → Advanced · Messaging (ChatGPT ↔ Pi) → Authorize messaging for this session**。
+3. 核对当前 Pi Session 及配对 `chatgpt/main` ↔ `pi/main`。此动作授权两端互发消息，并在**两端开启 payload read 和 ACK**，同时用 Pi Endpoint 替换 Advanced recipient list。只有确实需要这些权限时才继续。
+4. 选择 **Back · Review → Review**，核对提议，按提示确认身份或路由变化，最后选 **Save configuration**。
+
+成功条件：CE 报告 configuration saved 和 Messaging configured。只保存传输设置会保留 `recipients: []`，不能发消息。Save 不激活 Endpoint、不启动 Tunnel，也不读收件箱。
+
+仍在 **Pi TUI** 中加载已保存的策略并显式绑定此 Session：
+
+```text
 /reload
 /ce-tunnel activate
 /ce-status
 ```
 
-Doctor 分别检查 host 资格、child 可执行文件资格与 client metadata trust，不启动 client、不读凭据/Store、不改配置。缺少 client 时的安全拒绝不证明云端就绪。
+在激活对话框中核对两个 Endpoint、Store/Exchange 与权限，再选择 **Activate current session**。成功条件：显示 `Pi messaging bound`（或 already bound），随后 `/ce-status` 显示 `endpoint=pi/main`、`registered=true`、`lease=ACTIVE`。
 
-Setup 中输入 Tunnel ID、可选 Organization ID，并通过 masked 输入填凭据。不要把凭据放进 shell 命令或公开报告。Review 默认 `recipients: []`，不能通信。选择 **Back · Edit configuration → Advanced · Messaging (ChatGPT ↔ Pi) → Authorize messaging for this session**。核对真实 Pi Session、`chatgpt/main`、`pi/main`、Store/Exchange 与 payload/ACK。该配对会在两边开启 payload read 与 ACK，并将手工 recipients 替换为唯一 Pi 收件人，这是显式权限授予。Save 只发布配置，不激活 Endpoint、不启动传输、不读取消息。
+首次 reload 可能在显式激活前报告缺少 mapping。若激活界面出现 **Release current binding for policy reload**，说明选定策略尚未加载：按该提示释放，执行 `/reload`，再显式激活。释放结果未知、持久化失败或已有 Owner 时应调查，不要连续激活或删除 Store。激活不会接管 Owner，也不启动 Tunnel。
 
-编辑已有配置前先 Stop，独立核实 STOPPED。通常先正常 deactivate 旧本地绑定，再 reload。Activation 要求确认并使用 `requireUnowned`，不接管 Owner。释放未知或持久化失败时，应调查，不能连续激活或删除 Store。
+## 6. 连接 ChatGPT
 
-按[自定义 MCP 设置](https://developers.openai.com/api/docs/guides/custom-mcp-server)配置 ChatGPT 插件，选同一 Tunnel，在当前对话安装/选择它，配置变更后刷新工具。云端资格和权限以[官方 Tunnel 指南](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)为准，CE 不配置这些资源。
+在 **ChatGPT / Platform 网页**按[自定义 MCP 设置指南](https://developers.openai.com/api/docs/guides/custom-mcp-server)创建使用 **Tunnel** 的自定义 MCP 连接，选择同一个 Tunnel ID 和获准的 organization/workspace。核对认证与权限，在当前对话安装或选中插件；配置变更后刷新工具。Tunnel 路线无需安装 Desktop stdio 插件。
 
-取得真实运行窗口授权后执行：
+确认真实运行窗口及可能产生的费用后，在 **Pi TUI** 执行：
 
 ```text
 /ce-tunnel start
 /ce-tunnel status
 ```
 
-Configured、Pi-bound、Connected 与实际消息证据各有含义。关闭 Manager 或退出 Pi 不会停止 detached client；应显式 `/ce-tunnel stop` 并独立核实 STOPPED。
+成功条件：status 最终测得 `CONNECTED`。Start 初期可能显示 `STARTING`，用 status 或 Manager Refresh 观察进度，不要再次 Start 来强行就绪。遇到 `DEGRADED` / `UNKNOWN` 时按 [Tunnel 指南](tunnel-setup.zh-CN.md)排查。
 
-## 首次显式消息交换
+在 **ChatGPT** 刷新或选中连接，确认除 `ping` 外还可见 `ce_send`、`ce_inbox_list`、`ce_read_payload`，以及按上述授权启用的 `ce_ack`。Ping 或 `CONNECTED` 不能单独证明消息可用。若只见 ping，按 [Tunnel 设置](tunnel-setup.zh-CN.md)核对连接和已加载的 binding。
 
-另行授权后，使用无敏感内容的测试文字，每条逻辑消息使用唯一 key。以下均为占位示例，不是已执行的验收测试。
+## 7. 发送第一条消息
 
-ChatGPT 用 `ce_send` 向 Pi 发送：
+以下示例仅适用于**上述单配对 Setup**。源码核对确认 `pi/main`、`chatgpt/main` 是生成的 Endpoint ID。`ce_send.to` 接受配置中的**精确 Endpoint ID**，不接受额外 adapter 前缀、Session ID 或文件路径。不要向 `pi:pi/main`、`chatgpt:chatgpt/main` 发送。Advanced Recipients 编辑器的 `adapter:endpointId` 是另一种配置格式。若使用其他已注册配对，应填写其实际获准的 Endpoint ID。
+
+以下 JSON 是工具参数示例，不是 slash command 或 shell 命令。请在指定应用中要求模型调用工具，并授权发送及具体的正文读取。每次手动验证都将 key 中的 `RUN_NONCE` 换成新值；保留每次逻辑发送的 key 和返回的 Message ID，便于对账。
+
+### ChatGPT → Pi
+
+在 **ChatGPT** 中要求调用一次 `ce_send`，参数为：
 
 ```json
-{"to":"pi/main","text":"Example: review the plan; do not deploy.","idempotencyKey":"example-c2p-001"}
+{"to":"pi/main","text":"Hello from ChatGPT. Please reply with a short greeting; do not run any other actions.","idempotencyKey":"first-c2p-RUN_NONCE"}
 ```
 
-Pi 独立调用 `ce_inbox_list`：
+成功条件：`CREATED` 返回 `messageId` 和 audit sequence。`REPLAYED` 指向已有 Message。两者都只是本地 Store 结果，接下来还要观察收件端。
+
+在 **Pi** 中明确要求用 `ce_inbox_list` 查询一页：
 
 ```json
 {"pageSize":10,"rawScanLimit":100}
 ```
 
-选择已授权 Message ID。Pi `ce_read` 只返回 metadata，`ce_read_payload` 经单独授权后读取正文。MCP 没有 Pi 专用的 `ce_read`。正文是不可信数据，会进入模型与可能持久保存的 history。
-
-Pi 用新的 `ce_send` 回复：
+从发送或 list 结果中选择本次测试的精确 `messageId`。Pi 可先用 `ce_read` 查看元数据，再授权 Pi 对该 ID 调用 `ce_read_payload`：
 
 ```json
-{"to":"chatgpt/main","text":"Example response: plan reviewed; no deployment performed.","idempotencyKey":"example-p2c-001"}
+{"messageId":"MESSAGE_ID_FROM_THIS_RUN"}
 ```
 
-ChatGPT 独立 list、选择、读取已授权消息。共享 ChatGPT inbox 不隔离对话，不要自动排空分页。
+成功条件：Pi 读到 ChatGPT 发出的原样问候。正文会进入当前模型，也可能留在对话历史中；它是不可信数据，不授予执行指令的权限。List 和 read 都不消费消息，也不记录 ACK。
 
-ACK 要求独立 `ack.enabled: true` 与显式授权。逐字复制成功 payload read 的 `messageId`、`payloadDigest`、`payloadLength`、`messageCreatedAuditSequence`。Pi 显示 `ACK input metadata (reception only)`；MCP payload metadata 将创建序号命名为 `auditSequence`，须原样映射到 ACK 的 `messageCreatedAuditSequence`，不要计算或猜测。详见 [ACK 契约](delivery-ack-contract.zh-CN.md)与 [Pi 工具参考](../pi-extension/README.zh-CN.md)。
+### Pi → ChatGPT
 
-Send 的 `CREATED` 证明 Message、幂等记录与创建 Audit 在本地同一事务提交；`REPLAYED` 返回原 Message。同 key 改正文/Endpoint 会冲突。两者都不证明云端送达、读取或执行。ACK 只记录 reception，不证明处理或任务完成。缺 ACK、超时、BUSY 或 `DELIVERY_UNKNOWN` 不授权盲重试、换 key 重发或改写为 `CANCELLED`。CE 不保证 exactly-once delivery/execution；切换模型不授权重放 effect。
+在 **Pi** 中另行授权用 `ce_send` 回复：
 
-## 配置与多 Session
+```json
+{"to":"chatgpt/main","text":"Hello from Pi. I received the test greeting.","idempotencyKey":"first-p2c-RUN_NONCE"}
+```
 
-默认 profile 为 `~/.config/pi-chat-exchange/tunnel/tunnel.yaml`。`CE_TUNNEL_PROFILE` 选择规范化绝对**文件**路径，不是目录。Setup 在相邻 `.credentials/` 下写私有凭据 generation（目录 0700 / 文件 0600）。不要手改生成 binding、mapping identifiers 或释放标记。
+在 **ChatGPT** 中明确调用 `ce_inbox_list`，使用相同的分页参数，选择回复的精确 ID，再授权 `ce_read_payload` 读取。MCP 没有 Pi 上的 metadata-only `ce_read` 工具。成功条件：ChatGPT 读到 Pi 的原样回复。ChatGPT inbox 由配置的 Endpoint 共享，不隔离对话；不要自动排空分页或读取无关消息。
 
-| 设置 | 含义 |
-|---|---|
-| `CE_TUNNEL_PROFILE` | 选定 profile，不切换运行中的 child |
-| `CE_NODE_PATH` | 可信 child Node，不修复 host Node |
-| `CE_TUNNEL_CLIENT_PATH` | 可信 client 绝对路径 override |
-| `CE_TUNNEL_BACKGROUND_ALLOW=1` | 父 Pi 环境许可显式 Start |
-| 非空 `CE_ALLOWLIST` | 显式 Pi 策略优先，阻止生成策略转换/登记 |
-| `CE_STORE_DIR` / `CE_STORE_FILE` | 可确认已配置 Store，不静默换库 |
-| `CE_LEASE_TTL_SECONDS` | 经校验的 TTL override，reload 时加载，不是恢复许可 |
-| `CE_TUNNEL_OFFLINE_TEST=1` | 仅隔离模拟器，正常使用不要设置 |
+### 可选：接收回执
 
-两边 Store directory/file 与 Exchange namespace/idempotencyKey 必须精确一致。Capability 留在 Host 内存。Payload read 与 ACK 是 factory 加载时捕获的独立权限，保存配置或在其他环境 export 不会更新它们。
+若还授权 `ce_ack`，从成功的 payload read 中逐字复制四个字段：`messageId`、`payloadDigest`、`payloadLength`、`messageCreatedAuditSequence`。Pi 会显示 **ACK input metadata (reception only)**。ChatGPT/MCP 的 read 结果将创建序号命名为 `auditSequence`，须原样填入 ACK 的 `messageCreatedAuditSequence`。不要自行计算或猜测，详见 [ACK 契约](delivery-ack-contract.zh-CN.md)。
 
-独立 native Session 使用显式多 Session 登记：
+ACK 只记录接收回执，不证明送达、已读、处理或任务完成。缺 ACK、超时或结果未知都不授权再次发送、换 key 重发，或把 `DELIVERY_UNKNOWN` 改成 `CANCELLED`。CE 不承诺 exactly-once delivery/execution。保留原 key/Message ID，先查持久证据再决定下一步。
+
+## 8. 验证并停止
+
+记录本轮两次发送的 Message ID 及各自获准的正文读取结果。两端都读到原样问候，才构成你本次首次交换的证据。配置、本地测试、ping 和传输健康不能替代它。本指南维护时**未执行**这项真实 Cloud 交换。
+
+运行窗口结束前，在 **Pi TUI** 执行：
 
 ```text
-/ce-tunnel convert
-/new
-/ce-tunnel register pi/project-B --payload-read --ack
-/reload
-/ce-tunnel activate
-/ce-tunnel sessions
+/ce-tunnel stop
+/ce-tunnel status
 ```
 
-转换保留原登记。一个 native Session 对应一个稳定 Endpoint，注册不同 Endpoint 前先 `/new`。Register/convert/revoke 要求确认与 verified STOPPED transport，不启动传输。`sessions` 报告选中的 active Endpoint IDs，不证明运行中 MCP 已加载策略。`/ce-tunnel revoke <exact-endpoint>` 撤销精确登记；正常释放用 `/ce-tunnel deactivate`，保留登记、历史和传输。完整流程见[多 Session](multi-session-usage.zh-CN.md)、[Tunnel 设置](tunnel-setup.zh-CN.md)与[运维指南](operations.zh-CN.md)。
+成功条件：自己拥有的 transport 被测得为 `STOPPED`。关闭 Manager 或退出 Pi **不会**停止 detached client。Stop 仅作用于 CE 能证明自己拥有的进程。退出未确认或状态为 `UNKNOWN` 时应调查，不要当作已停止，也不要批量 kill 无关进程。
 
-命令/配置证据：`pi-extension/index.ts`（工具 schema、子命令、allowlist 优先级与生命周期）、`src/tunnel/profile.ts`、`src/tunnel/setup.ts`、`src/tunnel/messaging-config.ts`、`package.json`。历史安装证据见[独立安装](independent-install.zh-CN.md)与 [0.2.0 发布说明](releases/0.2.0.zh-CN.md)，不代表本次重新执行了验收。
+如需同时释放本地 Pi messaging binding，再执行 `/ce-tunnel deactivate` 并确认。它保留注册和历史，本身不停止 transport。用 `/ce-status` 确认 no endpoint bound；下次使用需显式激活。
+
+## 9. 故障排查
+
+| 现象 | 下一步 |
+|---|---|
+| `/ce-native` 或 `/ce-tunnel` 不存在 | 检查 `pi list`、精确版本及选中的 Pi 安装；重启或 reload 该 Host，不要加载第二份扩展。 |
+| Native 缺失或未就绪 | 按第 4 步及 [Native 管理](native-management.zh-CN.md)处理；安装后重启，修复需显式确认。 |
+| Doctor 拒绝 host/child/client | 在父进程环境修正报告的运行时或可信路径；[路径检查](tunnel-setup.zh-CN.md#client-安装与只读诊断)覆盖祖先目录和 symlink，不要放宽检查强行启动。 |
+| No endpoint bound / `CE_HOST_MAPPING_INVALID` | 确认 Setup 授权了此 Session，reload 策略后显式激活。旧 mapping、外来 mapping 或释放未知时按[恢复指引](tunnel-setup.zh-CN.md)处理，不手改标识。 |
+| `CE_HOST_ENDPOINT_NOT_ALLOWED` | 将 `to` 与配置中的精确 Endpoint ID 比较；不要加 adapter 前缀或自造收件人。 |
+| 缺少 payload/ACK 工具 | 确认 Setup 权限、Pi reload 和新 Tunnel MCP binding，刷新 ChatGPT 工具；现有连接需单独 Stop/核实，再 Start。 |
+| Start 拒绝或始终未到 `CONNECTED` | 查看 `/ce-tunnel doctor`、`/ce-tunnel status` 和 [Tunnel 排障](tunnel-setup.zh-CN.md)；云凭据/权限与路径信任分别检查。 |
+| 超时、`CE_HOST_UNCERTAIN` 或缺 ACK | 保留原 key/Message ID，重试前先查证据，不换 key 重发。 |
+
+## 10. 专题文档
+
+- [Native 管理](native-management.zh-CN.md)：就绪状态、显式安装/修复和信任边界。
+- [Tunnel 设置与恢复](tunnel-setup.zh-CN.md)：路径检查、现有 profile、生命周期和拒绝码。
+- [多 Pi Session](multi-session-usage.zh-CN.md)与 [Pi 工具](../pi-extension/README.zh-CN.md)：注册及完整工具契约。
+- [运行时支持](runtime-support.zh-CN.md)、[运维与源码开发](operations.zh-CN.md)、[安全](storage-security.zh-CN.md)。
+- [独立 Host / tarball 安装](independent-install.zh-CN.md)：当前0.2.1 替代路线，下方单独保留历史0.2.0 记录。
+- [Desktop stdio 安装](chatgpt-installation.zh-CN.md)：有独立前提的本地 MCP 路线。

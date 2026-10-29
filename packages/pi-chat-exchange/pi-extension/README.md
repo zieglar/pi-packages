@@ -4,7 +4,7 @@
 
 # Pi Chat Exchange extension guide
 
-Development candidate baseline: **Pi 1.3.0 / Node.js >=24.20.0 <=24.22.2**, plus SQLite >=3.51.3, platform/compile safety and shared behavioral probes. Exact SQLite/source ID equality is no longer required. Node 24.19.0 and 25.9.0 are refused after reproduced native transaction-close crashes; 24.12.0 and 25.2.1 are refused for the older SQLite WAL defect. Node 26.12.1 is isolated preview only. Pi host and MCP child qualify separately. Local testing used macOS arm64; published npm 0.2.0 is unchanged. See [independent installation](../docs/independent-install.md) for distribution, the [Tunnel guide](../docs/tunnel-setup.md) for source development, and [installation paths](../docs/chatgpt-installation.md) for Desktop stdio.
+Current package: **CE 0.2.1 / Pi 1.3.0 / Node >=22.19.0**, using pinned Rust Native SQLite by default. Host and MCP child qualify independently; built-in SQLite restrictions apply only to explicit non-production `node-sqlite` selection. Store support remains macOS arm64 / Linux x64 GNU; cloud transport and Desktop UI installation are not qualified by local tests. Start with [Getting started](../docs/getting-started.md); this page is the command/configuration reference.
 
 <a id="加载与两种配置方式"></a>
 

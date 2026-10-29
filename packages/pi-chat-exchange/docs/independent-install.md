@@ -2,7 +2,51 @@
 
 <a id="独立安装-pi-扩展020managed-npm-与-tarball-回退"></a>
 
-# Independent Pi extension installation (0.2.0: managed npm and tarball fallback)
+# Independent Host and tarball installation (0.2.1)
+
+For an existing Pi installation, use [Getting started](getting-started.md). This alternative installs a dedicated Pi 1.3.0 Host. Use Node **>=22.19.0** on **macOS arm64 / Linux x64 GNU**, with a filesystem accepted by the Store. The published package is `@zieglar/pi-chat-exchange@0.2.1`; source builds are covered in [operations](operations.md).
+
+## Current 0.2.1: dedicated Host
+
+Run in a system terminal under a trusted supported Node/npm. Use a new directory if `~/ce-install/host` already serves another installation. The Node placeholder must be replaced before execution; put the same Node installation first in PATH for npm.
+
+```sh
+CE_APPROVED_NODE=/absolute/path/to/approved/node
+node --version
+npm --version
+npm install --prefix ~/ce-install/host --ignore-scripts --save-exact \
+  @earendil-works/pi-coding-agent@1.3.0
+CE_PI_CLI="$HOME/ce-install/host/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
+export npm_config_ignore_scripts=true
+"$CE_APPROVED_NODE" "$CE_PI_CLI" install npm:@zieglar/pi-chat-exchange@0.2.1
+"$CE_APPROVED_NODE" "$CE_PI_CLI" list
+"$CE_APPROVED_NODE" "$CE_PI_CLI"
+```
+
+Success: Pi lists the exact0.2.1 source. Continue [Native preparation and first exchange](getting-started.md#4-prepare-native), using this Host entrypoint wherever that guide says `pi`. `/ce-native install` requires a full Pi restart. Configure parent executable paths/background opt-in before launching Pi; no automatic Tunnel Start occurs.
+
+## Current 0.2.1: Registry tarball alternative
+
+Obtain the exact published archive from `https://registry.npmjs.org/@zieglar/pi-chat-exchange/-/pi-chat-exchange-0.2.1.tgz`. The release-verified SHA256 is `786ba02ebb4e20631bcbfba571a10d1d7ee2b3215118c1259778eedbf36c406f`. Verify before installing; a mismatch stops the procedure. Use a new operator-owned consumer directory.
+
+```sh
+shasum -a 256 ~/ce-install/zieglar-pi-chat-exchange-0.2.1.tgz
+npm install --prefix ~/ce-install/consumer --omit=dev --ignore-scripts --save-exact \
+  ~/ce-install/zieglar-pi-chat-exchange-0.2.1.tgz
+"$CE_APPROVED_NODE" "$CE_PI_CLI" install "$HOME/ce-install/consumer/node_modules/@zieglar/pi-chat-exchange"
+"$CE_APPROVED_NODE" "$CE_PI_CLI" list
+```
+
+Success: the physical package manifest reports0.2.1 and Pi lists that exact directory. Directory registration does not install dependencies; npm must finish first. Do not pass the tarball URL to Pi (URLs are Git sources), mix this route with managed npm, or load another `-e` copy. Native is downloaded only by explicit preparation and is not bundled in the archive.
+
+Actual Registry0.2.1 install/load/first-run/persistence passed on isolated Pi1.3.0/Node22.19.0/macOSarm64. [Publication](https://github.com/zieglar/pi-packages/actions/runs/40925828108) and [Linux x64 Native CI](https://github.com/zieglar/pi-packages/actions/runs/40925049158) are separate evidence. Real Cloud exchange remains unverified.
+
+For removal, record the actual source from `pi list` and use the [safe removal procedure](#5-safe-uninstall-upgrade-and-rollback). Its legacy0.2.0 command is only an example for that old installation: remove the exact recorded source (0.2.1 for a current managed install), not an assumed version.
+
+## Historical 0.2.0 installation and qualification record
+
+The remainder preserves0.2.0 commands, runtime restrictions and acceptance evidence. They are historical examples, not the current installation baseline. Older candidate experiments mentioned there are also historical; current Native runtime requirements are above. Do not run the old producer commands against a0.2.1 checkout expecting a0.2.0 artifact.
+
 
 Development candidate notice: the historical 0.2.0 instructions and certification below describe the unchanged published artifact. A locally built candidate declares Node `>=24.20.0 <=24.22.2` and requires SQLite >=3.51.3, platform/compile safety and shared behavioral checks; exact SQLite/source equality is removed. Node 24.19.0/25.9.0 are refused after reproduced native crashes; 26.12.1 is preview only. Candidate tests use isolated Stores and real Pi 1.3.0 on macOS arm64. Do not apply these candidate claims to npm 0.2.0.
 

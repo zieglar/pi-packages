@@ -2,11 +2,11 @@
 
 English | [简体中文](runtime-support.zh-CN.md)
 
-The published npm package `@zieglar/pi-chat-exchange@0.2.0` is unchanged. Its historical distribution qualification covered Node `24.21.0`, Pi `1.3.0` and macOS arm64, with cloud transport `NOT_VERIFIED`. Current-source Native behavior and the Host minimum below do not expand that published artifact’s qualification.
+Published `@zieglar/pi-chat-exchange@0.2.1` requires Node `>=22.19.0` and Pi `1.3.0`, and includes Native-default readiness and management. Its actual Registry installation passed isolated Pi loading, first run and persistence on Node 22.19.0 / macOS arm64. [Release-candidate Hosted CI](https://github.com/zieglar/pi-packages/actions/runs/40925049158) passed Linux x64 Native 227/227 on Node 22.19.0 and 24.22.2. Cloud transport remains `NOT_VERIFIED`. Historical npm 0.2.0 qualification (Node24.21.0/Pi1.3.0/macOSarm64) is unchanged.
 
-## Current source
+## Current package and historical runtime evidence
 
-Current-source `package.json` declares Node `>=22.19.0`, matching the actual installed Pi 1.3.0 Host manifest. This is a Host minimum, not a promise that every Node 22 or later build, Node 25 or Node 26 is qualified.
+The 0.2.1 `package.json` declares Node `>=22.19.0`, matching Pi 1.3.0. This is a Host minimum, not exhaustive qualification of every later Node release.
 
 Rust Native is the only default persistence driver. With no selection file, CE selects `rust-native` at `NATIVE_COMPAT.defaultVersion` (currently `0.1.0`). `node-sqlite` is retained only as an explicitly selected, lazily loaded, nonproduction compatibility driver. Native load or trust failure fails closed; Node is never a fallback.
 
@@ -45,4 +45,4 @@ Windows Native is unsupported (`CE_NATIVE_TARGET_UNSUPPORTED`): no Windows binar
 
 The Store allowlist is macOS arm64 / Linux x64. This matrix does not expand npm 0.2.0 certification or prove all Pi/ChatGPT clients, cloud connections or power-loss behavior. Automated tests, release verification and manual use have separate scopes.
 
-For installation and refusal handling, see [getting started](getting-started.md), [operations](operations.md) and [Native SQLite](native-sqlite.md). Runtime facts come from `package.json`, `src/storage/runtime.ts`, `src/storage/native-compat.ts`, `src/runtime/executables.ts` and the runtime/conformance tests. Check actual loaded code before applying source-only claims to a published artifact.
+For installation and refusal handling, see [getting started](getting-started.md), [operations](operations.md) and [Native SQLite](native-sqlite.md). Runtime facts come from `package.json`, `src/storage/runtime.ts`, `src/storage/native-compat.ts`, `src/runtime/executables.ts` and their tests. Earlier candidate matrices below retain their measured scope; do not treat them as a full test of every published build.

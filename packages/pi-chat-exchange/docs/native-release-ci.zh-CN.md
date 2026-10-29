@@ -8,9 +8,9 @@
 
 不可变发布 `ce-sqlite-v0.1.0`（ABI 1、SQLite 3.54.1）已从源码 `a8386aafd657c84825b2905847f34a43d5b91e1e` 发布。历史验证下载了资产并检查其 attestation。Hosted Native Store 集成覆盖 macOS arm64、Linux x64；macOS x64、Linux arm64 仅有产物及 conformance 证据。这些结果不证明广泛云兼容或端到端兼容。
 
-`src/storage/native-compat.ts` 中生产哈希仍为 null。`src/storage/sqlite-driver-selection.ts` 默认 `node-sqlite`，Native 失败后绝不 fallback；`src/storage/native-artifact.ts` 拒绝未固定资产。发布不会默认启用 Native。
+已发布 CE 0.2.1 包含不可变 `ce-sqlite-v0.1.0` 四个资产的固定生产哈希，默认使用 `rust-native` `0.1.0`。Native 失败不回退。`/ce-native install` 显式准备可信缓存，npm tarball 不包含 Native 二进制。
 
-独立 npm 工作流仍为本地未推送工作，没有 hosted OIDC 证明。所有者报告 publisher 连接已配置，这不属于 hosted 发布结果。npm `@zieglar/pi-chat-exchange@0.2.0` 已独立于该 Native 发布而发布。
+独立 npm OIDC 工作流已在 [run40925828108](https://github.com/zieglar/pi-packages/actions/runs/40925828108) 从 `c7e2f0f756cd1868f175bde8743cef9920fbc6b8` 发布 `@zieglar/pi-chat-exchange@0.2.1`。Registry integrity、签名 provenance 和隔离 Registry 安装已验证。此发布独立于 Native Release，不证明 Cloud transport 验收。
 
 ## 测试层及权限
 
@@ -64,6 +64,6 @@ Release 为独立 environment 门控 job，要求 `publish=true`、公共仓库�
 1. 仅显式授权后 push，记录精确远端提交，再以 publish=false dispatch。检查四个 Hosted 构建、Native conformance、支持的 Store 子集，以及官方 attestation 身份/摘要。
 2. 独立验证每个下载文件：`gh attestation verify FILE --repo zieglar/pi-packages --signer-workflow zieglar/pi-packages/.github/workflows/native-release.yml --source-ref refs/heads/main --source-digest COMMIT_SHA`。校验清单也须验证。本地 mocked-gh 测试仅证明拒绝/控制流，不证明签名真实性。
 3. 单独获授权发布前确认仓库设置及版本缺失。发布精确 attested 集，验证不可变 Release 和 tag SHA，再以独立锚定 pins 在隔离 cache 测实际 GitHub 下载及离线加载。
-4. 生产兼容哈希在另行审查信任 pin 更新前保持 null。与二进制同处下载的 Release 校验和或本地构建成功均不授权信任新字节。
+4. 新 Native 版本需要单独审查的 compatibility-pin 更新，现有0.1.0 pins 保持固定。随二进制下载的 Release checksum 或单独的本地构建，都不授权新信任。
 
 本地有界检查：`node --test scripts/test/native-release.check.mjs scripts/test/native-release.auth.test.mjs`、`node scripts/check-native.mjs`、YAML/shell 静态验证。此仅 CI 变更无需完整存储矩阵或 Rust 重建。发布 helper 及本仓库流程按既有包文件列表排除在 npm payload 外。

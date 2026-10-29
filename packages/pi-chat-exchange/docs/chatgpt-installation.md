@@ -23,7 +23,7 @@ Follow the [Tunnel guide](tunnel-setup.md) for `/ce-tunnel doctor`, Setup / Adva
 
 ## Desktop requirements and packaging
 
-Requires ChatGPT Desktop with local plugin support, macOS or Linux, development candidate **Node.js >=24.20.0 <=24.22.2** (SQLite >=3.51.3, platform/compile safety and shared behavioral probes; no exact SQLite/source ID pin), and repository pnpm 12.9.1. Node 24.19.0 and 25.9.0 are refused after reproduced native crashes; 26.12.1 is isolated preview only. Testing used macOS arm64 and adds no Linux/Desktop UI acceptance. Published npm 0.2.0 is unchanged. The Desktop plugin uses `plugin.json`, root `mcp.json`, `${PLUGIN_ROOT}` and local stdio.
+Requires ChatGPT Desktop with local plugin support, CE 0.2.1 source for packaging, Node **>=22.19.0**, Pi 1.3.0 and pnpm 12.9.1. Rust Native is the default driver; prepare its pinned cache under the system account that runs Desktop, using [Native management](native-management.md), and restart affected hosts after installation. Store support is macOS arm64 / Linux x64 GNU. Local artifact tests do not establish actual Desktop UI installation, Linux Desktop availability or cloud acceptance. The plugin uses `plugin.json`, root `mcp.json`, `${PLUGIN_ROOT}` and stdio.
 
 Official format references (current client entrypoints and organization eligibility follow their documentation):
 
@@ -41,7 +41,7 @@ pnpm run package:desktop-plugin
 
 Generated ignored artifacts:
 
-- `.plugin-build/pi-chat-exchange-0.2.0.zip`: single-root ZIP.
+- `.plugin-build/pi-chat-exchange-0.2.1.zip`: single-root ZIP.
 - `.plugin-build/marketplace/`: registerable local marketplace.
 - `.plugin-build/pi-chat-exchange/`: extracted inspection copy.
 
@@ -124,7 +124,7 @@ Under separate authorization, after both sides join the same Exchange:
 3. With exact true `ack.enabled`, `ce_ack` is additionally available. Otherwise it is neither advertised nor callable. ACK does not enable payload read.
 4. Follow the [message procedure](tunnel-setup.md#4-双向-send--inbox--read--ack): two-way send → independent list → authorized read → separately authorized ACK, recording each step's evidence.
 
-Packaged artifact tests verify stdio/tool discovery, not successful Desktop UI installation. See the [README](../README.md) for recorded actual ChatGPT↔Pi messaging and Tunnel lifecycle acceptance. Tunnel acceptance does not mean each Desktop installation path was rerun. ACK always means reception only, never task completion. Cloud distribution remains NOT_VERIFIED; this guide adds no cloud validation.
+Packaged artifact tests verify stdio/tool discovery, not successful Desktop UI installation. The [README](../README.md) records local Registry installation and Native test scope. Real Cloud transport and a complete ChatGPT↔Pi exchange remain unverified; Tunnel and Desktop UI acceptance require their own evidence. ACK remains reception only, never task completion.
 
 <a id="显式-stale-ownership-恢复"></a>
 

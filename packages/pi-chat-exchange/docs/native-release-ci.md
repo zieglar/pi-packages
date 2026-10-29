@@ -8,9 +8,9 @@ Middleware 0.1.0 / ABI 1 uses the checked-in Cargo.lock and bundled SQLite 3.54.
 
 The immutable `ce-sqlite-v0.1.0` release (ABI 1, SQLite 3.54.1) was published from source `a8386aafd657c84825b2905847f34a43d5b91e1e`. Historical verification downloaded the assets and checked their attestations. Hosted Native Store integration covered macOS arm64 and Linux x64; macOS x64 and Linux arm64 have artifact/conformance evidence only. These results do not establish broad cloud or end-to-end compatibility.
 
-Production hashes in `src/storage/native-compat.ts` remain null. `src/storage/sqlite-driver-selection.ts` defaults to `node-sqlite` and never falls back after a Native failure; `src/storage/native-artifact.ts` refuses unpinned assets. Publication does not enable Native by default.
+Published CE 0.2.1 includes fixed production hashes for all four immutable `ce-sqlite-v0.1.0` assets and defaults to `rust-native` `0.1.0`. Native failures refuse without fallback. `/ce-native install` explicitly prepares the trusted cache; the npm tarball contains no Native binary.
 
-The separate npm workflow remains local and unpushed, with no hosted OIDC proof. The owner reports that the publisher connection is configured; this is not a hosted publication result. npm `@zieglar/pi-chat-exchange@0.2.0` is already published independently of this Native release.
+The separate npm OIDC workflow published `@zieglar/pi-chat-exchange@0.2.1` in [run40925828108](https://github.com/zieglar/pi-packages/actions/runs/40925828108), from `c7e2f0f756cd1868f175bde8743cef9920fbc6b8`. Registry integrity, signed provenance and isolated Registry installation were verified. This is independent of the Native release and does not establish cloud transport acceptance.
 
 ## Test layers and permissions
 
@@ -64,6 +64,6 @@ Historical pre-release observation: on 2026-10-28 the read-only public repositor
 1. Push only after explicit authorization, record the exact remote commit, then dispatch with publish=false. Verify four Hosted build results, Native conformance and the supported Store test subset, plus the official attestation identities/digests.
 2. Independently verify each downloaded file: `gh attestation verify FILE --repo zieglar/pi-packages --signer-workflow zieglar/pi-packages/.github/workflows/native-release.yml --source-ref refs/heads/main --source-digest COMMIT_SHA`. Verify the checksum manifest as well as the binaries. Local mocked-gh tests establish refusal/control flow only, not signature authenticity.
 3. Before separately authorized publication, confirm repository settings and version absence. Publish the exact attested set, validate the immutable Release and tag SHA, then test actual GitHub downloads in an isolated cache with independently anchored pins and offline loading.
-4. Production compatibility hashes remain null until a separately reviewed trust-pin update. Neither a Release checksum downloaded alongside a binary nor a successful local build authorizes trusting new bytes.
+4. A new Native version needs a separately reviewed compatibility-pin update; existing0.1.0 pins remain fixed. Neither a Release checksum downloaded alongside a binary nor a local build alone authorizes new trust.
 
 Local bounded checks: `node --test scripts/test/native-release.check.mjs scripts/test/native-release.auth.test.mjs`, `node scripts/check-native.mjs`, YAML/shell static validation. No full storage matrix or Rust rebuild is needed for this CI-only delta. The release helper and this repository-only policy are excluded from the npm payload by the existing package file list.
