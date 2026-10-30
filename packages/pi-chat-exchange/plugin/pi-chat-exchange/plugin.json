@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "pi-chat-exchange",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Exchange messages between ChatGPT Desktop and a locally running Pi endpoint through the existing pi-chat-exchange MCP server.",
   "author": {
     "name": "zieglar"

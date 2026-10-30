@@ -4,11 +4,11 @@
 
 # ChatGPT ↔ Pi: Tunnel guide, configuration and troubleshooting
 
-This is the Secure MCP Tunnel path; it does not require the Desktop stdio plugin. For the published 0.2.1 installation and first exchange, start with [Getting started](getting-started.md). For Desktop alone, use the [Desktop stdio guide](chatgpt-installation.md). Repository build commands below are for source development; independent Host/tarball mechanics are covered in the historical [installation guide](independent-install.md). Examples are placeholders, not active configuration.
+This is the Secure MCP Tunnel path. This working tree prepares local candidate **0.2.2**; npm **0.2.1** remains the published release. Start with [Getting started](getting-started.md) for candidate tarball installation. The separate [Desktop stdio guide](chatgpt-installation.md) does not need Tunnel. Repository build commands below are for source development; examples are placeholders, not active configuration.
 
 <a id="1-前提与安装"></a>
 
-## Native readiness before Tunnel start (0.2.1)
+## Native readiness before Tunnel start (0.2.2 candidate)
 
 Run `/ce-native status` or `/ce-native verify` for read-only inspection. Explicit `/ce-native install` downloads only the trusted default, verifies before selection, and requires restarting Pi. Repair requires `/ce-native repair confirm`; `/ce-native check-updates` only reads GitHub Release metadata, never trusts `latest` or changes selection. CE never automatically downloads, repairs, upgrades or falls back. Published 0.2.1 includes the Native default and fixed trust pins.
 
@@ -21,9 +21,9 @@ Windows has no Native binary (`CE_NATIVE_TARGET_UNSUPPORTED`); CE never loads a 
 | Component | Requirement |
 |---|---|
 | Pi | 1.3.0; setup/confirmation uses the interactive TUI |
-| Pi host / MCP child Node | 0.2.1 requires **>=22.19.0**, matching Pi 1.3.0. Rust Native is the only default, with bundled SQLite 3.54.1 and Store admission probes; built-in `node:sqlite` restrictions apply only to explicit non-production compatibility selection. Historical 0.2.0 qualification remains separate |
+| Pi host / MCP child Node | 0.2.2 candidate requires **>=22.19.0**, matching Pi 1.3.0. Rust Native remains the only default, with bundled SQLite 3.54.1 and Store admission probes; built-in `node:sqlite` restrictions apply only to explicit non-production compatibility selection. Historical qualification remains version-scoped |
 | Repository build tools | pnpm 12.9.1; package installation supplies UI dependencies |
-| Tunnel client | Current compatibility baseline `tunnel-client` 0.0.16; trusted absolute path or discovery in controlled system directories |
+| Tunnel client | Local admission/Doctor exercised with 0.0.16; official 0.0.18 has not completed CE runtime compatibility validation. Explicit user-selected path or strict controlled-directory discovery |
 | Store platforms | Allowlist: macOS arm64 / Linux x64. This local regression used macOS arm64. Node 26.12.1 is isolated preview only; this does not qualify future versions, Linux or every client |
 
 <a id="安装和加载扩展"></a>
@@ -59,6 +59,9 @@ CE_TUNNEL_BACKGROUND_ALLOW=1 \
 
 Get the platform-specific client through [OpenAI Tunnel settings](https://platform.openai.com/settings/organization/tunnels) or [official releases](https://github.com/openai/tunnel-client/releases/latest). Verify provenance, version and publisher-provided integrity information before execution. Latest does not automatically mean compatible. CE does not download, install or update the client, or create cloud Tunnels.
 
+On macOS, the official installation route is `brew install openai/tools/tunnel-client`; follow the [official guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) and the release assets for other platforms. It may install a newer version than CE has exercised. This guide does not authorize an upgrade or treat 0.0.18 as qualified. Once you trust the installation, set `CE_TUNNEL_CLIENT_PATH` to its actual absolute path (commonly `/opt/homebrew/bin/tunnel-client` on Apple silicon). Do not use `xattr`/`spctl` or “Open Anyway” as a CE workaround.
+
+
 In Pi:
 
 ```text
@@ -67,10 +70,12 @@ In Pi:
 
 Doctor separately reports the current host, independently selected child Node and client path trust. It does not start the client, read credentials/Store, change profile or establish cloud authentication/readiness. Child inspection checks the current resolver candidate, not the saved profile command or actual running child identity. Check existing profiles in Review/Details; explicitly migrate only after verified STOPPED if needed. Use fixed diagnostics to distinguish Node qualification, missing client and client trust refusal.
 
-- Explicit `CE_TUNNEL_CLIENT_PATH` / `CE_NODE_PATH` must be trusted normalized absolute paths. Invalid explicit overrides must not be hidden by other candidates.
+With explicit Homebrew selection, expect `client=TRUSTED_METADATA_ONLY`; it means the selected path passed this policy, not provenance or runtime compatibility. Without the variable, the same group-writable installation may report `CE_EXECUTABLE_UNTRUSTED` under strict discovery. `CE_TUNNEL_CLIENT_MISSING` means no admitted/discovered installation; inspect the selected path and restart Pi after parent-environment changes. Do not “repair” Homebrew permissions.
+
+- `CE_TUNNEL_CLIENT_PATH` is an explicit trust delegation to a non-empty, normalized absolute executable path. It takes priority; an invalid selection refuses without discovery fallback. Only its ancestor directory group-write check is relaxed. No extra confirmation, digest binding or authorization database is added.
 - System candidates come only from `/usr/local/bin`, `/usr/bin`, `/bin`, `/opt/homebrew/bin`, not project PATH. Node also checks the current process executable and historical mise installation location; mise is not required.
-- Ownership/permissions are checked for the executable and every ancestor of original and resolved symlink paths. Project paths, `node_modules`, writable files/ancestors and untrusted symlink chains refuse. macOS accepts only absent/deny-only ACLs; unknown/failed inspection refuses.
-- **Homebrew installation does not prove path trust.** Group/other-writable wrapper or Cellar ancestors refuse even if the final binary is not writable. Do not relax permissions, bypass symlink checks or execute it to “prove trust”. Choose a separately installed executable meeting the entire chain requirement and set its absolute override. Diagnostics do not move Homebrew files or clear ACLs.
+- Original and resolved symlink chains, owner, regular/X_OK, project/`node_modules`/`.git` restrictions remain checked. Files with group-write, world-write paths (apart from existing root-owned sticky directory handling), foreign non-root owners, and macOS allow/unknown ACLs still refuse. `CE_NODE_PATH`, Native and automatic client discovery retain their existing strict rules.
+- A selected installation may be replaced by any effective writer of its group-writable ancestors. Malicious client code can run with your user permissions and read the Tunnel credential. CE does not prove all writers or eliminate check-to-execution races. Homebrew stays user-managed: do not change its permissions/ACLs, copy the binary into a CE-owned installation or bypass Gatekeeper to satisfy CE.
 
 Missing/untrusted clients never spawn. You can inspect Node, read docs and prepare configuration first, but that does not authorize Start.
 

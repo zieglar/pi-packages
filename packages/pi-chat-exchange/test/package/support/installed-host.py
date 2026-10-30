@@ -27,7 +27,7 @@ from supervised_pty import SupervisedPty
 if len(sys.argv) not in (4, 5) or (len(sys.argv) == 5 and sys.argv[4] not in ('tarball', 'managed-npm')):
     raise RuntimeError('Expected Node, npm CLI, archive and optional tarball/managed-npm mode')
 managed = len(sys.argv) == 5 and sys.argv[4] == 'managed-npm'
-source = 'npm:@zieglar/pi-chat-exchange@0.2.1'
+source = 'npm:@zieglar/pi-chat-exchange@0.2.2'
 node_source, npm_source, archive = (pathlib.Path(s).resolve(strict=True) for s in sys.argv[1:4])
 base = pathlib.Path('/private/tmp/ce-distribution-fix')
 base.mkdir(mode=448, exist_ok=True)
@@ -248,7 +248,7 @@ def audit_installed_trees(label):
 
 audit_installed_trees('initial')
 package = r / consumer_tree / 'node_modules/@zieglar/pi-chat-exchange'
-if json.loads((package / 'package.json').read_text())['version'] != '0.2.1':
+if json.loads((package / 'package.json').read_text())['version'] != '0.2.2':
     raise RuntimeError('Installed candidate identity mismatch')
 def verify_installed_payload(label):
     if managed and (r / 'agent/npm/node_modules/@earendil-works/pi-coding-agent').exists():
@@ -442,7 +442,7 @@ def verify_native_lifecycle():
     native_install('pi-managed-reinstall')
     audit_installed_trees('reinstalled')
     verify_installed_payload('reinstalled')
-    if json.loads((package / 'package.json').read_text())['version'] != '0.2.1' or before != snapshot():
+    if json.loads((package / 'package.json').read_text())['version'] != '0.2.2' or before != snapshot():
         raise RuntimeError('Reinstall identity or retention mismatch')
     # A fresh real Host rehydrates retained configuration; it does not reuse an
     # ended native Session or silently activate/take over its released binding.

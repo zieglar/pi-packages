@@ -6,14 +6,14 @@
 
 Pi Chat Exchange（CE）让 ChatGPT 和 Pi 通过显式工具交换持久化消息。ChatGPT 经 Secure MCP Tunnel 调用本地 MCP server，两个 Endpoint 使用同一个私有 SQLite Store。发送、发现和读取消息都由你决定。消息本身不授予执行任务的权限，也不证明任务完成。
 
-本指南将已发布的 **0.2.1** 安装到现有 Pi 中，配置一组 ChatGPT ↔ Pi 配对。独立的 [Desktop stdio 连接](chatgpt-installation.zh-CN.md)无需 Tunnel。本地安装和命令检查已有通过记录；**本指南尚未验证真实 Cloud transport 及完整的 ChatGPT ↔ Pi 消息交换**。
+本指南面向 **0.2.2 本地 Release Candidate**，配置一组 ChatGPT ↔ Pi 配对。当前 npm 正式版仍为 **0.2.1**，其不可变包不包含本次 Homebrew 显式路径修复；验证候选时使用下方已审查的本地 tarball。独立的 [Desktop stdio 连接](chatgpt-installation.zh-CN.md)无需 Tunnel。**真实 Cloud transport 及完整 ChatGPT ↔ Pi 消息交换仍未验证。**
 
 ## 2. 前提条件
 
 - Pi **1.3.0**，系统终端中可用 `pi` 命令。Setup 与确认对话框需要交互式 Pi TUI。
 - Pi 与 MCP child 均使用 Node **>=22.19.0**。已测版本和限制见[运行时支持](runtime-support.zh-CN.md)；版本范围不代表所有后续版本都经过测试。
 - **macOS arm64 或 Linux x64 GNU**，Store 所在的本地文件系统须通过准入检查。其他 Native 制品不代表 Store 支持相应平台。Windows Native 不受支持，WSL2 集成尚未验证；若使用 WSL，Store 应放在 Linux 文件系统，避免 `/mnt/c`。
-- 单独安装、来源可信的 `tunnel-client`，文档兼容基线为 **0.0.16**。从 [OpenAI Tunnel 设置](https://platform.openai.com/settings/organization/tunnels)或[官方 releases](https://github.com/openai/tunnel-client/releases/latest)取得，使用前核对来源、版本和完整性。CE 不安装或更新该 client。
+- 单独安装并由你信任的 `tunnel-client`。CE 已对 **0.0.16** 做本地准入与 Doctor 实机检查；官方较新的 **0.0.18 尚未完成 CE 运行兼容性验证**。安装入口见[官方 Tunnel 指南](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)和[官方 releases](https://github.com/openai/tunnel-client/releases)。CE 不负责 client 的安装、升级或供应链审计。
 - 一个 Tunnel、获准使用它的凭据，以及具备该 Tunnel 使用资格的 ChatGPT workspace/account。云端权限和最新界面步骤以[官方 Tunnel 指南](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)为准，CE 不创建这些云端资源。
 
 首次交换使用无敏感内容的文字。扩展以当前用户权限运行，安装前应审查包。不要把凭据放入 prompt、shell history、截图或消息。
@@ -25,22 +25,25 @@ Pi Chat Exchange（CE）让 ChatGPT 和 Pi 通过显式工具交换持久化消�
 ```sh
 node --version
 pi --version
-pi install npm:@zieglar/pi-chat-exchange@0.2.1
+npm install --prefix /absolute/path/to/ce-rc-prefix --omit=dev --ignore-scripts /absolute/path/to/zieglar-pi-chat-exchange-0.2.2.tgz
+pi install /absolute/path/to/ce-rc-prefix/node_modules/@zieglar/pi-chat-exchange
 pi list
 ```
 
-成功条件：`pi list` 包含精确的 npm source `@zieglar/pi-chat-exchange@0.2.1`。包已预构建，无需克隆仓库、安装 pnpm 或编译 TypeScript。不要再叠加 `-e` 加载第二份。
+先将两处路径替换为已审查的制品和专用安装 prefix；`pi install` 登记的是已安装包目录，不是 `.tgz` 文件。成功条件：`pi list` 显示该目录，已安装 manifest 为 `@zieglar/pi-chat-exchange`、版本 `0.2.2`。这是本地制品安装，**不是 Registry 安装验证**。消费者无需编译，不要叠加 `-e`。正式版仍可通过 `npm:@zieglar/pi-chat-exchange@0.2.1` 安装，但保留旧准入策略。
 
 在**同一个系统终端**设置以下变量后再启动 Pi。先把两个可执行文件路径替换为本机可信、规范化的绝对路径：
 
 ```sh
 export CE_NODE_PATH=/trusted/node-install/bin/node
-export CE_TUNNEL_CLIENT_PATH=/trusted/client-install/tunnel-client
+export CE_TUNNEL_CLIENT_PATH=/opt/homebrew/bin/tunnel-client
 export CE_TUNNEL_BACKGROUND_ALLOW=1
 pi
 ```
 
 `CE_NODE_PATH` 只选择 MCP child；Pi 本身仍须由受支持的 Node 启动。background opt-in 只许可稍后显式 Start，不会自动启动。Pi 内的子 shell 不能修改父 Pi 进程环境。普通使用时不要设置 `CE_TUNNEL_OFFLINE_TEST`。
+
+设置 `CE_TUNNEL_CLIENT_PATH` 即表示你对该外部程序及安装路径写入者的显式信任委托。此模式允许祖先目录 group-write，不另设确认或授权数据库；自动发现仍严格准入。其他有效写入者可能替换程序，恶意 client 能以你的身份运行并读取 Tunnel 凭据；检查与执行之间的竞争窗口仍存在。文件/world-write、owner、macOS ACL、项目路径等拒绝规则继续生效。请使用本机实际绝对路径；Homebrew 示例不是白名单。
 
 若已有 CE 配置或运行中的 Tunnel，修改前先遵循第 5 步的现有安装注意事项。专用 Host 前缀、tarball 安装和源码开发见[专题文档](#10-专题文档)。
 
@@ -182,7 +185,7 @@ ACK 只记录接收回执，不证明送达、已读、处理或任务完成。�
 |---|---|
 | `/ce-native` 或 `/ce-tunnel` 不存在 | 检查 `pi list`、精确版本及选中的 Pi 安装；重启或 reload 该 Host，不要加载第二份扩展。 |
 | Native 缺失或未就绪 | 按第 4 步及 [Native 管理](native-management.zh-CN.md)处理；安装后重启，修复需显式确认。 |
-| Doctor 拒绝 host/child/client | 在父进程环境修正报告的运行时或可信路径；[路径检查](tunnel-setup.zh-CN.md#client-安装与只读诊断)覆盖祖先目录和 symlink，不要放宽检查强行启动。 |
+| Doctor 拒绝 host/child/client | 按[client 路径检查](tunnel-setup.zh-CN.md#client-安装与只读诊断)修正父进程环境。0.2.2 可显式选择用户管理的 Homebrew client；自动发现仍严格。不要为满足 CE 修改 Homebrew 权限或 ACL。 |
 | No endpoint bound / `CE_HOST_MAPPING_INVALID` | 确认 Setup 授权了此 Session，reload 策略后显式激活。旧 mapping、外来 mapping 或释放未知时按[恢复指引](tunnel-setup.zh-CN.md)处理，不手改标识。 |
 | `CE_HOST_ENDPOINT_NOT_ALLOWED` | 将 `to` 与配置中的精确 Endpoint ID 比较；不要加 adapter 前缀或自造收件人。 |
 | 缺少 payload/ACK 工具 | 确认 Setup 权限、Pi reload 和新 Tunnel MCP binding，刷新 ChatGPT 工具；现有连接需单独 Stop/核实，再 Start。 |

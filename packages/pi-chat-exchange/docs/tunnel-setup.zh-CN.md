@@ -2,9 +2,9 @@
 
 # ChatGPT ↔ Pi：Tunnel 用户指南、配置与排障
 
-这是 Secure MCP Tunnel 路径，不需要 Desktop stdio 插件。已发布 0.2.1 的安装和首次交换从[快速开始](getting-started.zh-CN.md)进入；只用 Desktop 本地插件请走 [Desktop stdio 指南](chatgpt-installation.zh-CN.md)。下文仓库构建命令用于源码开发，独立 Host/tarball 机制见保留历史范围的[安装指南](independent-install.zh-CN.md)。示例均为占位值，不是已生效配置。
+这是 Secure MCP Tunnel 路径。本工作区准备 **0.2.2 本地候选**，npm 正式版仍为 **0.2.1**。候选 tarball 安装从[快速开始](getting-started.zh-CN.md)进入；独立的 [Desktop stdio 指南](chatgpt-installation.zh-CN.md)无需 Tunnel。下文构建命令用于源码开发，示例是占位值，不是已生效配置。
 
-## Tunnel 启动前的 Native 就绪检查（0.2.1）
+## Tunnel 启动前的 Native 就绪检查（0.2.2 候选）
 
 用 `/ce-native status` 或 `/ce-native verify` 只读检查。显式 `/ce-native install` 仅下载可信默认版本，校验后才修改选择，完成后需重启 Pi。修复需执行 `/ce-native repair confirm`；`/ce-native check-updates` 只读取 GitHub Release 元数据，不信任 `latest` 或改变选择。CE 不会自动下载、修复、升级或回退。已发布的 0.2.1 包含 Native 默认驱动和固定信任 pins。
 
@@ -17,9 +17,9 @@ Windows 没有 Native 二进制（`CE_NATIVE_TARGET_UNSUPPORTED`），CE 不会�
 | 组件 | 要求 |
 |---|---|
 | Pi | 1.3.0；设置与确认操作使用交互 TUI |
-| Pi host / MCP child Node | 0.2.1 要求 **>=22.19.0**，与 Pi 1.3.0 一致。Rust Native 是唯一默认驱动，使用内置 SQLite 3.54.1 并执行 Store 准入探针；内置 `node:sqlite` 限制仅用于显式非生产兼容选择。历史 0.2.0 资格范围保持独立 |
+| Pi host / MCP child Node | 0.2.2 候选要求 **>=22.19.0**，与 Pi 1.3.0 一致。Rust Native 仍为唯一默认驱动，使用内置 SQLite 3.54.1 并执行 Store 准入探针；内置 `node:sqlite` 限制仅用于显式非生产兼容选择。历史资格继续按版本区分 |
 | 仓库构建工具 | pnpm 12.9.1；UI 依赖由包安装，不需另装 UI |
-| Tunnel client | 当前兼容基线 `tunnel-client` 0.0.16；可信绝对路径或受控系统目录发现 |
+| Tunnel client | 0.0.16 已有本地准入/Doctor 实机检查；官方 0.0.18 尚未完成 CE 运行兼容性验证。显式用户路径或严格受控目录发现 |
 | Store 平台 | allowlist 为 macOS arm64 / Linux x64；本轮实际回归为 macOS arm64，Node 26.12.1 仅作隔离预览，不表示未来版本、Linux 或所有客户端已验收 |
 
 ### 安装和加载扩展
@@ -51,6 +51,9 @@ CE_TUNNEL_BACKGROUND_ALLOW=1 \
 
 从 [OpenAI Tunnel 设置](https://platform.openai.com/settings/organization/tunnels)提供的下载入口或[官方 release](https://github.com/openai/tunnel-client/releases/latest)取得对应平台的 client；在执行前核实来源、版本及发布方提供的完整性信息。最新版本不自动等于本包已兼容版本。CE 不下载、安装或更新 client，也不创建云端 Tunnel。
 
+macOS 官方安装入口为 `brew install openai/tools/tunnel-client`；其他平台按[官方指南](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)和发布资产操作。该命令可能安装比 CE 已测版本更新的 client，本指南不授权自动升级，也不将 0.0.18 视为已获资格。信任该安装后，将 `CE_TUNNEL_CLIENT_PATH` 设为本机实际绝对路径（Apple silicon 常见 `/opt/homebrew/bin/tunnel-client`）。不要使用 `xattr`/`spctl` 或“Open Anyway”绕过 Gatekeeper 来满足 CE。
+
+
 进入 Pi 后运行：
 
 ```text
@@ -59,10 +62,12 @@ CE_TUNNEL_BACKGROUND_ALLOW=1 \
 
 它分别报告当前 host、独立选择的 child Node 与 client 路径信任结果；不启动 client、不读 credential/Store、不改 profile，也不证明云端认证或 readiness。child 检查的是当前 resolver 候选，不是已保存 profile command 或正在运行 child 的实测身份；已有 profile 还须核对 Review/Details，必要时在 verified STOPPED 下显式 migrate。根据闭合诊断结果区分 Node 不合格、client 缺失与 client 信任拒绝。
 
-- 显式 `CE_TUNNEL_CLIENT_PATH` / `CE_NODE_PATH` 必须是可信、规范化绝对路径；显式非法 override 不应靠别的候选掩盖。
+显式选择 Homebrew 后预期为 `client=TRUSTED_METADATA_ONLY`，只表示路径通过当前策略，不证明来源或运行兼容性。不设变量时，同一 group-writable 安装仍可能在严格自动发现中报 `CE_EXECUTABLE_UNTRUSTED`。`CE_TUNNEL_CLIENT_MISSING` 表示没有相应安装候选；核对所选路径，修改父进程环境后重启 Pi。不要“修复”Homebrew 权限。
+
+- `CE_TUNNEL_CLIENT_PATH` 是对非空、规范化绝对可执行路径的显式信任委托。它优先于自动发现；无效选择直接拒绝，不回退。仅放宽该客户端祖先目录的 group-write 检查，不增加首次确认、摘要绑定或授权数据库。
 - 系统候选仅来自 `/usr/local/bin`、`/usr/bin`、`/bin`、`/opt/homebrew/bin`，不扫描项目 PATH。Node 另兼容验证当前进程 executable 和旧 mise 安装位置；不是依赖 mise。
-- executable、原路径与 symlink 真实目标的所有祖先均检查 ownership/权限；拒绝项目、`node_modules`、可写文件/祖先及不可信 symlink 链。macOS 只接受无 ACL 或 deny-only ACL，未知/失败拒绝。
-- **Homebrew 已安装不等于可执行路径受信任。** 若其 wrapper 或 Cellar 祖先可被 group/other 写入，即使最终 binary 不可写仍拒绝。不要 chmod 放宽、绕过 symlink 检查或直接运行来“证明可信”；选择满足全链门槛的独立安装，再设置绝对 override。诊断不自动搬运 Homebrew 文件或清除 ACL。
+- 继续检查原路径与 symlink 目标链、owner、regular/X_OK、项目/`node_modules`/`.git`限制。文件自身 group-write、world-write 路径（现有 root-owned sticky 目录处理除外）、非 root 的其他 owner、macOS allow/未知 ACL 仍拒绝。`CE_NODE_PATH`、Native 与自动发现继续采用原严格规则。
+- 获准安装可能被其 group-writable 祖先目录的任何有效写入者替换。恶意 client 可取得当前用户权限并读取 Tunnel 凭据；CE 不证明全部写入者，也不消除检查到执行之间的竞争窗口。Homebrew 始终由用户管理，不要为满足 CE 修改其权限/ACL、复制到 CE 专有安装，或绕过 Gatekeeper。
 
 缺失或不可信 client 不会触发 spawn；可以先检查 Node、阅读文档和准备配置，但不能据此 Start。
 

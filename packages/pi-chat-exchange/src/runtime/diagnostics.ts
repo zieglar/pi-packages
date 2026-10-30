@@ -21,7 +21,7 @@ export function diagnoseInstallation(options: ExecutableResolutionOptions = {}):
 export function installationDiagnosticMessage(result: InstallationDiagnosis): string {
   return `ce-tunnel doctor: Pi host=${result.host} (in-memory SQLite/runtime check); MCP child=${result.child}; client=${result.client}. ` +
     "Client trust is metadata only, not compatibility or connectivity. No client executed; no profile/Store/transport changes. " +
-    "For a missing client, install separately; for rejected trust, repair the private installation and its ancestors/ACLs or select a trusted absolute CE_TUNNEL_CLIENT_PATH outside projects. Never use PATH fallback or relax trust. " +
+    "For a missing client, install separately. CE_TUNNEL_CLIENT_PATH explicitly trusts a user-managed client and permits group-writable ancestors; automatic discovery stays strict. Check the normalized absolute path, executable file, owner, world-write, ACL and project restrictions. Do not change Homebrew permissions/ACLs or bypass Gatekeeper for CE; no PATH fallback. " +
     "Select an independently qualified MCP child with CE_NODE_PATH. " + hostRuntimeRepairMessage() +
     ". Installation checks are not transport, delivery, ACK or completion evidence.";
 }
