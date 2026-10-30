@@ -21,7 +21,7 @@ launcher 从系统 home 取得固定 binding 路径，不接受模型参数或�
 ## Runtime 与已知部署限制
 
 - 支持 local plugins 的 ChatGPT Desktop；macOS 或 Linux。
-- 当前 CE 0.2.1 要求 **Node >=22.19.0**，默认使用固定信任版本的 Rust Native SQLite。先在 Pi 侧按 [Native 管理](../../docs/native-management.zh-CN.md)准备驱动并重启，再使用同一系统账号的 Desktop MCP server。Store 支持仍为 macOS arm64 / Linux x64 GNU。`mcp.json` 应选择可信本地 Node，不能依赖 Desktop 受限 PATH。制品测试不认证真实 Desktop UI 安装或云传输。
+- 当前 CE 0.2.2 要求 **Node >=22.19.0**，默认使用固定信任版本的 Rust Native SQLite。先在 Pi 侧按 [Native 管理](../../docs/native-management.zh-CN.md)准备驱动并重启，再使用同一系统账号的 Desktop MCP server。Store 支持仍为 macOS arm64 / Linux x64 GNU。`mcp.json` 应选择可信本地 Node，不能依赖 Desktop 受限 PATH。制品测试不认证真实 Desktop UI 安装或云传输。
 - 分发包的 `mcp.json` 默认没有启用的 server；既不嵌入开发机路径，也不回退到未验证的 `node`。先将 ZIP 解压到本机私有、操作者拥有的目录，再执行下面的显式配置。
 - 重新打包/刷新插件后用新对话发现工具；不要同时用 Tunnel 与本地插件争用同一个 Endpoint。
 

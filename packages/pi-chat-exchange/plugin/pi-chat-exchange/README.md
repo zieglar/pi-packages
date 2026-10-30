@@ -27,7 +27,7 @@ The launcher obtains the fixed binding path from the system home. Model argument
 ## Runtime and known deployment limits
 
 - Requires ChatGPT Desktop with local plugin support, on macOS or Linux.
-- Current CE 0.2.1 requires **Node >=22.19.0** and uses pinned Rust Native SQLite by default. Prepare Native with the Pi-side [Native management guide](../../docs/native-management.md), then restart Pi before using the same account’s Desktop MCP server. Store support remains macOS arm64 / Linux x64 GNU. `mcp.json` must select a trusted local Node executable, not Desktop’s restricted PATH. Artifact tests do not qualify actual Desktop UI installation or cloud transport.
+- Current CE 0.2.2 requires **Node >=22.19.0** and uses pinned Rust Native SQLite by default. Prepare Native with the Pi-side [Native management guide](../../docs/native-management.md), then restart Pi before using the same account’s Desktop MCP server. Store support remains macOS arm64 / Linux x64 GNU. `mcp.json` must select a trusted local Node executable, not Desktop’s restricted PATH. Artifact tests do not qualify actual Desktop UI installation or cloud transport.
 - Distributed `mcp.json` enables no server by default. It contains no developer-machine path and does not fall back to an unverified `node`. Extract the ZIP to a new private directory owned by the operator, then explicitly configure it below.
 - After repackaging/refreshing the plugin, discover tools in a new conversation. Do not let Tunnel and the local plugin compete for the same Endpoint.
 
