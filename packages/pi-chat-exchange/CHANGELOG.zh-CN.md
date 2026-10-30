@@ -2,6 +2,15 @@
 
 # 更新日志
 
+## 0.2.2
+
+### 修复
+
+- 显式 `CE_TUNNEL_CLIENT_PATH` 表示用户对外部程序及安装路径写入者的信任委托，允许祖先目录 group-write；自动发现继续严格准入。仍拒绝文件自身 group-write、world-write、异常 owner、macOS allow/未知 ACL 和项目路径。
+- 验证可识别的 Homebrew wrapper 字面 execTarget；不将 `$` 或反引号展开误认为字面执行身份证据。Node、Native、凭据传递、进程 ownership、Stop/Recovery 不变。
+- 本地 RC 使用物理 tarball 验证，npm 正式版仍为 0.2.1。0.0.16 有本地准入/Doctor 实机证据；官方 0.0.18 尚未完成 CE 运行兼容性验证，真实 Cloud E2E 仍未验证。
+- 其他有效写入者可替换获准程序，恶意 client 可读取用户 Tunnel 凭据；不承诺消除检查到执行之间的竞争窗口。无需修改 Homebrew 权限或绕过 Gatekeeper。
+
 ## 0.2.1
 
 0.2.1 包含：

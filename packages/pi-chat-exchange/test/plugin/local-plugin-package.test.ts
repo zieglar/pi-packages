@@ -244,8 +244,15 @@ describe("ChatGPT Desktop local plugin source package", () => {
     const approvedNodeCommand = resolve(runtimeRoot, "node");
     copyFileSync(process.execPath, approvedNodeCommand);
     chmodSync(approvedNodeCommand, 0o700);
+    // configure runs a Node/driver probe: keep both it and the launched server
+    // in this fixture's explicit compatibility HOME, never the operator HOME.
+    const fakeHome = resolve(root, "home");
+    const selectionDirectory = resolve(fakeHome, ".config/pi-chat-exchange");
+    mkdirSync(selectionDirectory, { recursive: true, mode: 0o700 });
+    writeFileSync(resolve(selectionDirectory, "sqlite-driver.json"),
+      `${JSON.stringify({ version: 1, driver: "node-sqlite" })}\n`, { mode: 0o600 });
     execFileSync(approvedNodeCommand, [resolve(localRoot, "server/configure.mjs"), "--node", approvedNodeCommand], {
-      env: { PATH: "/usr/bin:/bin" }, cwd: localRoot, stdio: "pipe",
+      env: { PATH: "/usr/bin:/bin", HOME: fakeHome }, cwd: localRoot, stdio: "pipe",
     });
     const stagedMcp = JSON.parse(readFileSync(resolve(localRoot, "mcp.json"), "utf8")) as {
       mcpServers: { "pi-chat-exchange": { type: string; command: string; args: string[]; cwd: string } };
@@ -266,7 +273,6 @@ describe("ChatGPT Desktop local plugin source package", () => {
     // $HOME. To keep this regression away from the operator's real store while
     // spawning the exact declared command, args, and cwd, a preload hook
     // redirects only os.userInfo inside the child environment.
-    const fakeHome = resolve(root, "home");
     const configDirectory = resolve(fakeHome, ".config/pi-chat-exchange");
     mkdirSync(configDirectory, { recursive: true });
     const storeDirectory = resolve(root, "store");

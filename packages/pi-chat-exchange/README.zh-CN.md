@@ -22,6 +22,8 @@ Pi Chat Exchange（CE）让 ChatGPT 和 Pi 通过显式工具交换持久化消�
 
 **0.2.1** 已发布到 npm。在 macOS arm64 上，从真实 Registry 安装的隔离 Pi 1.3.0 / Node 22.19.0 加载与持久化检查已通过。Linux x64 Native 检查在 Node 22.19.0、24.22.2 上各通过 227/227。**真实 Cloud transport 和完整 ChatGPT ↔ Pi 消息交换仍未验证。** 已测矩阵和限制见[运行时支持](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/runtime-support.zh-CN.md)，engine 范围不代表穷尽验证。
 
+本工作区准备 **0.2.2 本地候选**：显式 `CE_TUNNEL_CLIENT_PATH` 委托信任用户管理的 client 安装，允许 Homebrew 祖先目录 group-write；自动发现仍严格。安装路径写入者可能替换程序，程序可取得当前用户权限及 Tunnel 凭据。本地准入/Doctor 证据覆盖 **0.0.16**；官方 **0.0.18 尚未通过 CE 运行兼容性验证**。候选 tarball 用 npm 安装到专用 prefix，再将已安装包目录登记到 Pi，具体见快速开始；这不是 Registry 安装。下方 npm 命令仍选择正式版 0.2.1 及其旧准入规则。
+
 <a id="安装-pi-扩展"></a>
 <a id="选择连接方式"></a>
 

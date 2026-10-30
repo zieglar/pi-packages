@@ -29,6 +29,7 @@ if (pluginManifest.version !== sourcePackage.version) {
 const archivePath = resolve(outputRoot, `pi-chat-exchange-${pluginManifest.version}.zip`);
 const allowedPluginSourceFiles = [
   "README.md",
+  "README.zh-CN.md",
   "config/binding.example.json",
   "mcp.json",
   "plugin.json",

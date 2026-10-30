@@ -2,6 +2,15 @@
 
 # Changelog
 
+## 0.2.2
+
+### Patch Changes
+
+- Accept group-writable ancestor directories for an explicitly selected Tunnel Client while retaining strict automatic discovery. Validate literal Homebrew wrapper targets and exclude shell expansion from exec identity evidence. Native, Node, credential handoff and owned Stop behavior are unchanged.
+
+- Explicit selection delegates trust to the external program and its installation writers. File group-write, world-write, owner, macOS ACL and project-path checks remain. Other effective writers may replace a selected program and expose Tunnel credentials; check-to-execution races remain.
+- This is a local RC using a physical tarball; npm 0.2.1 remains the published release. Local admission/Doctor evidence covers client 0.0.16; official 0.0.18 has not completed CE runtime compatibility validation. Real Cloud E2E remains unverified. No Homebrew permission or Gatekeeper workaround is required.
+
 ## 0.2.1
 
 Version 0.2.1 includes:
