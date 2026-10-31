@@ -1,0 +1,142 @@
+{
+  "schemaVersion": 1,
+  "ce": {
+    "version": "0.2.2",
+    "baselineCommit": "e9144b796336705a7ec7be2a50176bd9f9042af5",
+    "runtimeSha256": "31ab4b2a18bdcea8538d7ab3691ad12eebc425cb56e854576b59d18dff883f9d",
+    "worktree": "modified"
+  },
+  "client": {
+    "version": "0.0.19",
+    "sourceCommit": "01d67bb4da0d8359b808b4761f8db171ab682cd7",
+    "publishedAt": "2026-10-30T20:26:10Z",
+    "url": "https://github.com/openai/tunnel-client/releases/tag/v0.0.19"
+  },
+  "testedAt": "2026-10-31T12:44:20Z",
+  "environment": {
+    "os": "darwin",
+    "arch": "arm64",
+    "node": "24.21.0",
+    "pi": "1.3.0",
+    "native": "0.1.0"
+  },
+  "offline": {
+    "status": "VERIFIED",
+    "kind": "automated-offline",
+    "result": "COMPAT02:1201 passed,1 skipped; build/typecheck/contracts PASS"
+  },
+  "lifecycle": {
+    "status": "VERIFIED",
+    "kind": "real-client-local",
+    "start": true,
+    "health": true,
+    "normalStop": true,
+    "cleanup": true,
+    "childFailureExit": true,
+    "failureStop": true,
+    "syntheticNamespace": true
+  },
+  "cloud": {
+    "status": "VERIFIED",
+    "kind": "manual-cloud",
+    "resourceKind": "existing-authorized-legacy-identity",
+    "forward": {
+      "messageId": "msg_01M68Z9HMT9MP6DFFMDBQZYRAZ",
+      "receiptId": "rcpt_01M68ZBJ6JXCAH77QVJXXWQBJA",
+      "createdAudit": 8,
+      "receiptAudit": 9
+    },
+    "reverse": {
+      "messageId": "msg_01M68ZC66D8JEKAMZ7VG7ZCMB7",
+      "receiptId": "rcpt_01M68ZRNGXYVEZCWZMQE0S0M1Z",
+      "createdAudit": 10,
+      "receiptAudit": 11
+    },
+    "durableMatch": true,
+    "normalOwnershipRelease": true,
+    "hardStopCleanup": true,
+    "receptionOnly": true
+  },
+  "provenance": {
+    "method": "sanitized-parent-verified-handoff-import",
+    "sourceArtifacts": [
+      {
+        "name": "final-verification.json",
+        "sha256": "020fd7d5c33d9c8c89843ccfcfeba8918e1b804807ef8fcfbffae8b9c1f59f77"
+      },
+      {
+        "name": "local-verified.json",
+        "sha256": "3b640ea1074b06dedba0c15a4af6cb5c643668326b6b42acc46de5a283fe45aa"
+      },
+      {
+        "name": "HANDOFF-PI-CE-TUNNEL-COMPAT-03-REPORT.md",
+        "sha256": "b79facfa99c9a9da28ef667a8a88fbb2dcbcb745d59e7035cfef44818ccfcfda"
+      }
+    ],
+    "patchManifest": [
+      {
+        "path": "packages/pi-chat-exchange/src/host/mcp-binding-config.ts",
+        "sha256": "e5d0b33e979676544246d8ecee1408d11fd73d91ec8ca69482338f4f6285a444"
+      },
+      {
+        "path": "packages/pi-chat-exchange/src/tunnel/background-manager.ts",
+        "sha256": "6a1511b132c5b5f531aeca1a99281f91d036826c35287ec890fb7cc85e1f2294"
+      },
+      {
+        "path": "packages/pi-chat-exchange/src/tunnel/keychain.ts",
+        "sha256": "2e4c9f375ff322fd6da95e1e7efece54646c9a425d22d7863bd4d618818b3a93"
+      },
+      {
+        "path": "packages/pi-chat-exchange/src/tunnel/managed-binding.ts",
+        "sha256": "0e31406a56751cbba5a687a17f6e971b791895bf26ca16fcaafc4ca0760e386f"
+      },
+      {
+        "path": "packages/pi-chat-exchange/src/tunnel/manager-panel.ts",
+        "sha256": "87e605a44030769b54bdf4c25de456aba883f4bce54250d14e2a0e37e297bd43"
+      },
+      {
+        "path": "packages/pi-chat-exchange/src/tunnel/profile.ts",
+        "sha256": "bad549d3e1518190dbe6d16ee6f4aa6a9f3053a96e13242ac539894f9667a1a2"
+      },
+      {
+        "path": "packages/pi-chat-exchange/src/tunnel/setup-ui.ts",
+        "sha256": "fe90c1f37bacf14d4da8724344c0bee808676d466073ca7d1e5433bd47b294b7"
+      },
+      {
+        "path": "packages/pi-chat-exchange/test/tunnel/background-manager.test.ts",
+        "sha256": "c6db72f4481fecadda1bd69919e147ab796520205d620ab72a471eb749fb60a4"
+      },
+      {
+        "path": "packages/pi-chat-exchange/test/tunnel/manager-panel.test.ts",
+        "sha256": "c70d001e469b34b7891fd540aacabdefb7a1adbbe0a12d6de70240e641f78e30"
+      },
+      {
+        "path": "packages/pi-chat-exchange/test/tunnel/profile.test.ts",
+        "sha256": "f7e8df3902bfb3bd0f9f2f0499b97e1bb7331ffd62354e2b15f8cb7f479a8cb9"
+      },
+      {
+        "path": "packages/pi-chat-exchange/test/tunnel/setup-ui.test.ts",
+        "sha256": "da935560f9ab5cb8f88c7ac5e01853fd8fd9f1a1e06cb279c19c38580bafa19f"
+      },
+      {
+        "path": "packages/pi-chat-exchange/src/tunnel/tunnel-id.ts",
+        "sha256": "6e096e31681ae51ce298dc3d41890e1bb8616be6bbc3ba100aed727e338449fa"
+      },
+      {
+        "path": "packages/pi-chat-exchange/test/tunnel/tunnel-id-compat.test.ts",
+        "sha256": "6b04aa01d5e69891efa6d64178cb9256a079e25847fd31d7b6f3a71957732b7b"
+      }
+    ],
+    "note": "Baseline commit is not a claim the uncommitted patch is in HEAD. Runtime digest binds actual tested source and runtime package metadata.",
+    "previousRuntimeDigestPolicy": {
+      "schemaVersion": 1,
+      "omittedPackagedKeychainHelper": true,
+      "previousRuntimeSha256": "cfd135df1cb6080bc0b7fbbbe130dedb573d3fafc9154a94402f57bcefda7dd0"
+    },
+    "digestPolicy": "src/, pi-extension/, native/tunnel-keychain.swift, runtime package metadata; review-required policy migration after tci-review"
+  },
+  "limitations": [
+    "macOS arm64 combination only; Linux/Windows not covered by historical manual evidence",
+    "Namespaced Cloud identity NOT_VERIFIED; synthetic local namespace coverage is separate"
+  ]
+}
