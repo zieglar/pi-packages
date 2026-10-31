@@ -1,0 +1,82 @@
+name: Tunnel release integration (no publication)
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    if: github.head_ref == 'verify/ce-tunnel-ci-15'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      result_sha256: ${{ steps.identity.outputs.result_sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24.21.0'
+      - run: npm install --global pnpm@12.9.1
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm --dir packages/pi-chat-exchange run build
+      - name: Generate this-run official latest evidence
+        working-directory: packages/pi-chat-exchange
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          node scripts/tunnel-compat.mjs run
+          "$RUNNER_TEMP/release-integration/result.json" latest
+      - name: Bind artifact bytes to producer
+        id: identity
+        run: |
+          result="$RUNNER_TEMP/release-integration/result.json"
+          digest=$(sha256sum "$result" | cut -d ' ' -f 1)
+          echo "result_sha256=$digest" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-integration-latest
+          path: ${{ runner.temp }}/release-integration/result.json
+          if-no-files-found: error
+          retention-days: 30
+
+  verify:
+    needs: qualify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24.21.0'
+      - run: npm install --global pnpm@12.9.1
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm --dir packages/pi-chat-exchange run build
+      - name: Verify substitute execution boundary
+        working-directory: packages/pi-chat-exchange
+        run: node --test scripts/test/tunnel-release-integration.check.mjs
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-integration-latest
+          path: ${{ runner.temp }}/release-integration-input
+      - name: Production entrypoints with npm substitute
+        working-directory: packages/pi-chat-exchange
+        env:
+          CE_EXPECTED_RESULT_SHA256: ${{ needs.qualify.outputs.result_sha256 }}
+        run: >-
+          node scripts/test/tunnel-release-integration.mjs
+          "$RUNNER_TEMP/release-integration-input/result.json"
+          "$RUNNER_TEMP/release-integration-summary.json"
+      - name: Upload sanitized verification summary only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-integration-summary
+          path: ${{ runner.temp }}/release-integration-summary.json
+          if-no-files-found: error
+          retention-days: 30
