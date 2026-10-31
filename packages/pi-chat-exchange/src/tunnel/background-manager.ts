@@ -168,6 +168,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize } from "node:path";
 import { TunnelRefusal } from "./codes.js";
+import { TUNNEL_ID_PATTERN } from "./tunnel-id.js";
 import { resolveTunnelClient } from "../runtime/executables.js";
 import { resolveWrapperIdentityEvidence } from "../runtime/wrapper-identity.js";
 import { createHealthCompletionRecorder, type HealthProbeInput } from "./health.js";
@@ -475,7 +476,7 @@ export function parseTunnelProfile(text: string): TunnelProfileFacts {
       default: throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", tag);
     }
   }
-  if (found.tunnelId === undefined || !/^tunnel_[A-Za-z0-9]{8,}$/.test(found.tunnelId)) {
+  if (found.tunnelId === undefined || !TUNNEL_ID_PATTERN.test(found.tunnelId)) {
     throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "control_plane.tunnel_id");
   }
   if (found.apiKey === undefined) {

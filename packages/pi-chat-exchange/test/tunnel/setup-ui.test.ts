@@ -78,6 +78,25 @@ async function finish(s: ReturnType<typeof setup>) {
 }
 
 describe("Kit setup interaction contract", () => {
+  it("preserves a namespaced Tunnel ID through validation, Review and explicit Save", async () => {
+    const tunnelId = `tunnel_ab12_${"0123456789abcdef".repeat(2)}`;
+    const s = setup({ existing: { ...existing, tunnelId } });
+    const { task } = await start(s);
+    await enter(s.h, "tunnel_abc_0123456789abcdef0123456789abcdef");
+    expect(frame(s.h)).toContain("Invalid Tunnel ID");
+    await enter(s.h, tunnelId);
+    expect(frame(s.h)).toContain("Tunnel Setup · 2/4");
+    await enter(s.h, existing.organizationId);
+    await selectLabel(s.h, "Keep existing credential");
+    await selectLabel(s.h, "Review");
+    expect(await fullFrame(s.h)).toContain(tunnelId);
+    await press(s.h);
+    await selectLabel(s.h, "Save configuration");
+    expect(await task).toEqual({ status: "saved" });
+    expect(s.save).toHaveBeenCalledTimes(1);
+    expect(s.save.mock.calls[0]?.[0].tunnelId).toBe(tunnelId);
+  });
+
   it("passes the invocation signal to Save and honors explicit precommit cancellation", async () => {
     let invocationSignal: AbortSignal | undefined;
     const s = setup({ existing, save: (async (_proposal: SetupProposal, signal: AbortSignal) => {
@@ -440,6 +459,15 @@ describe("Kit setup interaction contract", () => {
     const f = setup({ existing, save: async () => { throw new Error("test-only-PRIVATE"); } }); const { task } = await start(f);
     await existingToCredential(f); await selectLabel(f.h, "Keep existing credential"); await finish(f);
     const outcome: SetupUiOutcome = await task; expect(outcome.status).toBe("refused"); expect(JSON.stringify(outcome).includes("PRIVATE")).toBe(false); expect(f.notify).not.toHaveBeenCalled();
+  });
+
+  it("status accepts the masked namespaced projection", async () => {
+    const s = setup(); const mod = await adapter();
+    const result = await mod.presentTunnelStatus({ ...s.ctx, mode: "print" }, {
+      profilePath: "/fixtures/tunnel.yaml", maskedTunnel: "tunnel_ab12_a…", organization: "configured",
+      binding: "configured", credential: "configured", configurationState: "STOPPED", runtimeState: "STOPPED", evidence: "none",
+    });
+    expect(result.lines).toContain("Tunnel: tunnel_ab12_a…");
   });
 
   it("status uses a Kit detail view and keeps configuration distinct from runtime authority", async () => {

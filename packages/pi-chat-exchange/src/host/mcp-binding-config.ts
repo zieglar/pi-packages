@@ -9,6 +9,7 @@
  * structural field path).
  */
 import { isAbsolute, normalize } from "node:path";
+import { TUNNEL_ID_PATTERN as MANAGED_TUNNEL_ID } from "../tunnel/tunnel-id.js";
 import { LEASE_MAX_TTL_SECONDS, LEASE_MIN_TTL_SECONDS } from "../storage/ownership.js";
 import type { CeRecipientRef } from "./endpoint-host.js";
 
@@ -173,7 +174,6 @@ function debugExecutionGuardPolicy(value: unknown): McpBindingConfig["debugExecu
   return Object.freeze({ enabled: fields.enabled });
 }
 
-const MANAGED_TUNNEL_ID = /^tunnel_[A-Za-z0-9]{8,}$/;
 const MANAGED_ORGANIZATION_ID = /^org-[A-Za-z0-9]{1,128}$/;
 
 /** Managed provenance is validated with the same label discipline as every

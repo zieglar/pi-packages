@@ -54,7 +54,7 @@ const EVIDENCE: readonly string[] = ["none", "process-identity", "health-probe",
 function readProjection(projection: TunnelManagerUiProjection) {
   const state = STATES.includes(projection.state) ? projection.state : "UNKNOWN";
   // A caller accidentally passing an unmasked ID cannot disclose it here.
-  const tunnel = typeof projection.tunnelIdAlreadyMasked === "string" && /^tunnel_[A-Za-z0-9]{6}…$/.test(projection.tunnelIdAlreadyMasked)
+  const tunnel = typeof projection.tunnelIdAlreadyMasked === "string" && /^tunnel_(?:[A-Za-z0-9]{6}|[a-z0-9]{4}_[a-z0-9])…$/.test(projection.tunnelIdAlreadyMasked)
     ? projection.tunnelIdAlreadyMasked : "Not configured";
   const binding = projection.binding === "configured" ? "Configured"
     : projection.binding === "invalid" ? "Invalid" : "Not configured";
