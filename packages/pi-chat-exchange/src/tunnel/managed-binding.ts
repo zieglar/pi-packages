@@ -25,6 +25,7 @@ import fs from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join, normalize } from "node:path";
 import { TunnelRefusal } from "./codes.js";
+import { TUNNEL_ID_PATTERN as TUNNEL_ID } from "./tunnel-id.js";
 import { MCP_BINDING_CONFIG_MAX_BYTES, MCP_BINDING_CONFIG_VERSION, parseMcpBindingConfig, type McpBindingConfig } from "../host/mcp-binding-config.js";
 import type { CeRecipientRef } from "../host/endpoint-host.js";
 
@@ -67,7 +68,6 @@ export interface ManagedBindingResult {
   readonly created?: { readonly ino: number; readonly dev: number };
 }
 
-const TUNNEL_ID = /^tunnel_[A-Za-z0-9]{8,}$/;
 const ORG_ID = /^org-[A-Za-z0-9]{1,128}$/;
 const ADAPTER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 

@@ -110,7 +110,8 @@ describe("childEnvironment — ALLOWLIST (r2)", () => {
     expect(env.PATH).toBe("/usr/bin");
     expect(env.HOME).toBe("/Users/someone");
     expect(env.TMPDIR).toBe("/tmp");
-    expect(Object.keys(env).sort()).toEqual(["HOME", "PATH", "TMPDIR"]);
+    expect(Object.keys(env).sort()).toEqual(["HOME", "MCP_STDIO_FAILURE_POLICY", "PATH", "TMPDIR"]);
+    expect(env.MCP_STDIO_FAILURE_POLICY).toBe("exit");
   });
 
   it("drops every variable an attacker might add — nothing is inherited by default (denylist trap closed)", () => {

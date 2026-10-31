@@ -11,6 +11,7 @@
  * S1–S10 + S2-R1…R8 + S3-1…7 + F1…F7 and Lane C C1–C8 + C-v2-1…6 + C-v3-1…7 +
  * C-v4-1…7; each test names its finding.
  */
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, chmodSync, readFileSync, symlinkSync, mkdirSync, readdirSync, rmSync, lstatSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -30,7 +31,7 @@ const SELF_KEY = "Mon Oct 12 00:00:00 2026";
 interface Harness {
   readonly options: BackgroundManagerOptions;
   readonly procs: Map<number, ProcessIdentity>;
-  readonly spawnCalls: { executable: string; args: readonly string[]; detached: boolean }[];
+  readonly spawnCalls: { executable: string; args: readonly string[]; detached: boolean; env: NodeJS.ProcessEnv }[];
   readonly signals: { pid: number; signal: string }[];
   readonly dir: string;
   readonly profilePath: string;
@@ -115,7 +116,7 @@ function makeHarness(env: NodeJS.ProcessEnv = {}): Harness {
       clientPath: client,
       timing: { startupTimeoutMs: 5_000, pollIntervalMs: 5_000, freshnessMs: 15_000, failThresholdN: 3, recoverThresholdM: 2, stopGraceMs: 1_000 },
       spawn: (executable, args, opts) => {
-        spawnCalls.push({ executable, args, detached: opts.detached });
+        spawnCalls.push({ executable, args, detached: opts.detached, env: { ...opts.env } });
         harness.onSpawn?.();
         const pid = 40_000 + spawnCalls.length;
         procs.set(pid, { pid, command: `${client} run --profile-file ${profilePath}`, startedKey: "Tue Oct 20 06:30:09 2026" });
@@ -287,6 +288,52 @@ describe("BACKGROUND-05 default background startup budget", () => {
 });
 
 describe("background manager v2 — baseline acceptance", () => {
+  it("uses full namespaced identity and fixed exit policy at the spawn boundary, then stops once", async () => {
+    const h = makeHarness({ MCP_STDIO_FAILURE_POLICY: "restart", MCP_COMMAND: "untrusted", OPENAI_API_KEY: "dummy-not-a-key", PATH: "/usr/bin" });
+    const tunnelId = `tunnel_ab12_${"0123456789abcdef".repeat(2)}`;
+    writeFileSync(h.profilePath, readFileSync(h.profilePath, "utf8").replace(TUNNEL_ID, tunnelId));
+    h.probes.push(healthyProbe());
+    const m = createBackgroundTunnelManager({ ...h.options, spawn: (executable, args, options) => {
+      // Execute only a synthetic Node child to observe the actual received environment.
+      const child = spawnSync(process.execPath, ["-e", "console.log(JSON.stringify(process.env))"], { env: { ...options.env }, encoding: "utf8" });
+      expect(child.status).toBe(0);
+      expect(JSON.parse(child.stdout)).toMatchObject({ MCP_STDIO_FAILURE_POLICY: "exit" });
+      expect(JSON.parse(child.stdout).MCP_COMMAND).toBeUndefined();
+      expect(JSON.parse(child.stdout).OPENAI_API_KEY).toBeUndefined();
+      return h.options.spawn!(executable, args, options);
+    } });
+    await m.start();
+    expect(recordState(h).tunnelId).toBe(tunnelId);
+    expect(h.spawnCalls).toHaveLength(1);
+    expect(h.spawnCalls[0]!.env).toEqual({ PATH: "/usr/bin", MCP_STDIO_FAILURE_POLICY: "exit" });
+    const stop = m.stop();
+    await flush();
+    expect(h.signals).toEqual([{ pid: 40_001, signal: "SIGTERM" }]);
+    h.procs.delete(40_001);
+    await stop;
+    expect(recordState(h).state).toBe("stopped");
+    await m.stop();
+    expect(h.spawnCalls).toHaveLength(1);
+    expect(h.signals).toHaveLength(1);
+  });
+
+  it("retains explicit recovery after observed unexpected client exit without respawning", async () => {
+    const h = makeHarness();
+    h.probes.push(healthyProbe());
+    const m = createBackgroundTunnelManager(h.options);
+    await m.start();
+    expect(h.spawnCalls[0]!.env.MCP_STDIO_FAILURE_POLICY).toBe("exit");
+    h.procs.delete(40_001);
+    h.exitListeners.get(40_001)?.exit?.(1, null);
+    await m.refresh();
+    expect(recordState(h).state).toBe("stopped");
+    expect(m.status().state).not.toBe("CONNECTED");
+    await m.refresh();
+    await m.stop();
+    expect(h.spawnCalls).toHaveLength(1);
+    expect(h.signals).toEqual([]);
+  });
+
   it("first start spawns ONE detached client and persists a 0600 record", async () => {
     const h = makeHarness();
     h.probes.push(UNREACHABLE, healthyProbe());

@@ -13,6 +13,7 @@
  */
 import { defineMenu, runMenu, sanitizeTerminalText, type MenuContext, type MenuScreen, type MenuTransition } from "@narumitw/pi-tui-kit";
 import { isTunnelRefusalCode, TunnelRefusal, type TunnelRefusalCode } from "./codes.js";
+import { TUNNEL_ID_PATTERN as TUNNEL } from "./tunnel-id.js";
 import { captureTunnelSecret, type SecureInputUiView, type TunnelKeyProtocol } from "./secure-input.js";
 import { formatRecipientList, parseRecipientList } from "./managed-binding.js";
 import type { CeRecipientRef } from "../host/endpoint-host.js";
@@ -92,7 +93,6 @@ const PI_ENDPOINT_ID = "pi/main";
 /** Render untrusted identity/storage text as one terminal line. This projection
  * never normalizes the raw values later passed to the authorized transaction. */
 const terminalLine = (value: string): string => sanitizeTerminalText(value).replace(/[\r\n\x00-\x1F\x7F]/g, " ");
-const TUNNEL = /^tunnel_[A-Za-z0-9]{8,}$/;
 const ORGANIZATION = /^org-[A-Za-z0-9]{1,128}$/;
 const cancelled = (): SetupUiOutcome => ({ status: "cancelled" });
 const failed = (): SetupUiOutcome => ({ status: "refused", code: "CE_TUNNEL_SETUP_FAILED" });
@@ -155,7 +155,7 @@ export async function runSetupWizard(ctx: SetupUiContext, options: SetupWizardOp
   const STEPS = 4;
   /** Per-field help: what is required, in what format, and what empty means. */
   const HELP = Object.freeze({
-    tunnel: "Required · tunnel_ followed by at least 8 alphanumeric characters",
+    tunnel: "Required · tunnel_ followed by at least 8 alphanumeric characters, or a 4-character namespace and 32-character ID",
     organization: "Optional · org- followed by 1-128 alphanumeric characters · leave empty if not required",
     recipients: "Optional · adapter:endpointId, comma-separated · empty keeps the CE-managed default",
     credential: "Existing credential configured · Replace opens a masked input",
@@ -435,7 +435,7 @@ export async function presentTunnelStatus(ctx: SetupUiContext, view: TunnelStatu
   const configurationState = closed(view.configurationState, /^[A-Z_]{1,32}$/);
   const lines = [
     `Profile: ${sanitizeTerminalText(view.profilePath)}`,
-    `Tunnel: ${view.maskedTunnel === undefined ? "Not configured" : closed(view.maskedTunnel, /^tunnel_[A-Za-z0-9]{1,16}\u2026?$/)}`,
+    `Tunnel: ${view.maskedTunnel === undefined ? "Not configured" : closed(view.maskedTunnel, /^tunnel_(?:[A-Za-z0-9]{1,16}|[a-z0-9]{4}_[a-z0-9]{1,11})…?$/)}`,
     `Organization: ${view.organization}`, `MCP binding: ${view.binding}`, `Credential: ${view.credential}`,
     `Configuration State: ${configurationState}`, `Runtime state: ${closed(view.runtimeState, /^[A-Z_]{1,32}$/)}`,
     `Evidence: ${sanitizeTerminalText(view.evidence).slice(0, 120)}`,
