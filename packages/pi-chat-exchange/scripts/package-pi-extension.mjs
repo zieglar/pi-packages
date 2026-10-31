@@ -44,7 +44,7 @@ export function buildPackageArtifact({ root = defaultRoot, out, run = cliNpm, va
       if (manifest.scripts?.[hook]) fail(`consumer lifecycle hook ${hook}`);
     const modules = [...walk(join(root, "dist"), root).filter((p) => p.endsWith(".js")),
       ...walk(join(root, "pi-extension"), root).filter((p) => p.endsWith(".ts"))];
-    const required = ["README.md", "package.json", "LICENSE", "dist/bin/mcp-stdio.js", "dist/tunnel/multi-session-policy.js", "dist/tunnel/offline-client.js", "pi-extension/index.ts", "native/tunnel-keychain.swift", "scripts/recover-stale-ownership.mjs", "scripts/reconcile-session-process-mutex.mjs"];
+    const required = ["skills/ce-hook-script/SKILL.md", "skills/ce-hook-script/examples/file-notification.py", "README.md", "package.json", "LICENSE", "dist/bin/mcp-stdio.js", "dist/tunnel/multi-session-policy.js", "dist/tunnel/offline-client.js", "pi-extension/index.ts", "native/tunnel-keychain.swift", "scripts/recover-stale-ownership.mjs", "scripts/reconcile-session-process-mutex.mjs"];
     for (const path of required) regular(join(root, path), root);
     for (const path of modules) {
       regular(path, root);
@@ -69,7 +69,7 @@ export function buildPackageArtifact({ root = defaultRoot, out, run = cliNpm, va
     if (dryRun.status !== 0) fail(`npm pack --dry-run failed: ${dryRun.stderr ?? dryRun.stdout}`);
     const inventory = JSON.parse(dryRun.stdout)[0].files.filter((entry) => entry.path !== "README.zh-CN.md");
     if (inventory.length === 0) fail("npm package content inventory is empty");
-    const allowed = /^(?:package\.json|README\.md|LICENSE(?:\.[^/]+)?|pi-extension\/[^/]+\.ts|pi-extension\/allowlist\.example\.json|dist\/.+\.js|native\/tunnel-keychain\.swift|scripts\/(?:recover-stale-ownership|reconcile-session-process-mutex)\.mjs)$/;
+    const allowed = /^(?:package\.json|README\.md|LICENSE(?:\.[^/]+)?|pi-extension\/[^/]+\.ts|pi-extension\/allowlist\.example\.json|skills\/ce-hook-script\/(?:SKILL\.md|examples\/file-notification\.py)|dist\/.+\.js|native\/tunnel-keychain\.swift|scripts\/(?:recover-stale-ownership|reconcile-session-process-mutex)\.mjs)$/;
     for (const entry of inventory) if (!allowed.test(entry.path)) fail(`native release or private files must not enter the npm payload: ${entry.path}`);
     for (const path of [...modules.map((path) => relative(root, path)), ...required])
       if (!inventory.some((entry) => entry.path === path)) fail(`native pack excludes ${path}`);

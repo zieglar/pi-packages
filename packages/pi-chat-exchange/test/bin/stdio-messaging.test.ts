@@ -8,7 +8,7 @@
  * release on SIGTERM, clean restart, and fail-closed restart after a crash.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import readline from "node:readline";
@@ -31,7 +31,7 @@ interface Child {
   readonly waitExit: () => Promise<number | null>;
 }
 
-function writeConfig(root: string): string {
+function writeConfig(root: string, hooks?: unknown): string {
   const config = {
     version: 1,
     store: { directory: join(root, "store") },
@@ -39,6 +39,7 @@ function writeConfig(root: string): string {
     endpoint: { adapter: "chatgpt", endpointId: "chatgpt/main" },
     recipients: [{ adapter: "pi", endpointId: "pi/main" }],
     payloadRead: { enabled: true },
+    ...(hooks === undefined ? {} : { hooks }),
   };
   const path = join(root, "binding.json");
   writeFileSync(path, `${JSON.stringify(config, undefined, 2)}\n`);
@@ -314,6 +315,66 @@ describe("MCP stdio entrypoint in --config mode (built artifact)", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("runs a real local Hook without polluting MCP protocol output", { timeout: 30_000 }, async () => {
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ce-mcp-hook-"));
+    try {
+      const script = join(root, "notify.mjs");
+      const output = join(root, "pi-notified.json");
+      writeFileSync(script, `import { readFileSync, writeFileSync } from "node:fs";\nconst event = JSON.parse(readFileSync(0, "utf8"));\nwriteFileSync(process.argv[2], JSON.stringify(event));\nprocess.stdout.write("HOOK_STDOUT_MARKER");\nprocess.stderr.write("HOOK_STDERR_MARKER");\n`);
+      const configPath = writeConfig(root, [{ id: "hook-a", event: "ce.message.committed.v1", recipient: { adapter: "pi", endpointId: "pi/main" }, command: process.execPath, args: [script, output], timeoutMs: 5000 }]);
+      const server = await launch(configPath);
+      expect(server.stderr.some(line => line.includes("CE_HOOKS_ACTIVE active=1 configured=1"))).toBe(true);
+      const sent = await server.call("tools/call", { name: "ce_send", arguments: { to: "pi/main", text: "PAYLOAD_NOT_FOR_HOOK", idempotencyKey: "hook-1" } });
+      expect((sent.result as { isError?: boolean }).isError).not.toBe(true);
+      const deadline = Date.now() + 5000;
+      while (!existsSync(output) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+      const envelope = JSON.parse(readFileSync(output, "utf8"));
+      expect(envelope).toMatchObject({ event: "ce.message.committed.v1", recipient: { adapter: "pi", endpointId: "pi/main" } });
+      expect(JSON.stringify(envelope)).not.toContain("PAYLOAD_NOT_FOR_HOOK");
+      await server.call("tools/call", { name: "ce_send", arguments: { to: "pi/main", text: "PAYLOAD_NOT_FOR_HOOK", idempotencyKey: "hook-1" } });
+      server.process.kill("SIGTERM");
+      expect(await server.waitExit()).toBe(0);
+      expect(server.stderr.join("\n")).not.toContain("HOOK_STDOUT_MARKER");
+      expect(server.stderr.join("\n")).not.toContain("HOOK_STDERR_MARKER");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("releases CE ownership while an active Hook is still draining", { timeout: 15_000 }, async () => {
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ce-mcp-hook-release-"));
+    let server: Child | undefined;
+    let store: ReturnType<typeof openStore> | undefined;
+    try {
+      const script = join(root, "slow.mjs");
+      const started = join(root, "started");
+      const finish = join(root, "finish");
+      writeFileSync(script, `import { existsSync, writeFileSync } from "node:fs";\nwriteFileSync(process.argv[2], "started");\nconst timer = setInterval(() => { if (existsSync(process.argv[3])) { clearInterval(timer); process.exit(0); } }, 20);\n`);
+      server = await launch(writeConfig(root, [{ id: "slow", event: "ce.message.committed.v1", recipient: { adapter: "pi", endpointId: "pi/main" }, command: process.execPath, args: [script, started, finish], timeoutMs: 10000 }]));
+      await server.call("tools/call", { name: "ce_send", arguments: { to: "pi/main", text: "metadata-only", idempotencyKey: "slow-hook" } });
+      const deadline = Date.now() + 5000;
+      while (!existsSync(started) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+      expect(existsSync(started)).toBe(true);
+      server.process.kill("SIGTERM");
+      store = openStore({ directory: join(root, "store"), filename: "ce-store.sqlite", busyTimeoutMs: 1000 });
+      const participant = readParticipantByEndpoint(store, "chatgpt", "chatgpt/main")!;
+      const releaseDeadline = Date.now() + 2000;
+      while (readCurrentOwnership(store, participant.participantId) !== undefined && Date.now() < releaseDeadline) await new Promise(resolve => setTimeout(resolve, 20));
+      expect(readCurrentOwnership(store, participant.participantId)).toBeUndefined();
+      expect(existsSync(finish)).toBe(false);
+      expect(server.process.exitCode).toBeNull();
+      writeFileSync(finish, "finish");
+      expect(await server.waitExit()).toBe(0);
+    } finally {
+      writeFileSync(join(root, "finish"), "finish");
+      server?.process.kill("SIGTERM");
+      await server?.waitExit();
+      store?.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
 
   it("refuses invalid launch arguments and configs before any durable write", { timeout: 20_000 }, async () => {
     const root = mkdtempSync(join(realpathSync(tmpdir()), "ce-mcp-bad-"));

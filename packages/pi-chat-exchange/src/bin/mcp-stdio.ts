@@ -38,6 +38,7 @@ import { debugEvent, errorSummary } from "../control/debug-log.js";
 import { observeTransport } from "../control/mcp/debug-transport.js";
 import { initializeStore, openStore } from "../storage/store.js";
 import { createMcpPolicyAdmission } from "../tunnel/multi-session-admission.js";
+import { CeHookRunner } from "../hooks/runner.js";
 
 debugEvent("server", "SERVER_ENTRY", { version: process.version });
 // Monitor rather than handle exceptions: preserve Node's fatal exit behavior.
@@ -106,6 +107,9 @@ async function main(): Promise<void> {
   const admission = createMcpPolicyAdmission(config, configPath);
   admission?.({ kind: "begin" });
 
+  const hookRunner = new CeHookRunner({ directory: config.store.directory, rules: config.hooks ?? [] });
+  const hookAudit = hookRunner.snapshot();
+  console.error(`CE_HOOKS_ACTIVE active=${hookAudit.active} configured=${hookAudit.configured} rules=${hookAudit.rules.filter(rule => rule.enabled).map(rule => rule.id).join(",") || "none"}`);
   const host = new CeEndpointHost(openBindingStore(config), {
     adapter: config.endpoint.adapter,
     allowlist: [{ endpointId: config.endpoint.endpointId }],
@@ -115,6 +119,7 @@ async function main(): Promise<void> {
     leaseTtlSeconds: config.lease.ttlSeconds,
     payloadRead: { enabled: config.payloadRead.enabled },
     ack: { enabled: config.ack.enabled },
+    onMessageCommitted: event => hookRunner.publish(event),
   });
 
   debugEvent("authority", "AUTHORITY_CHECK_STARTED", { stage: "requireUnowned" });
@@ -156,6 +161,7 @@ async function main(): Promise<void> {
     } catch {
       // Transport already gone; the lease release below is what matters.
     }
+    const hookCleanup = hookRunner.close();
     const shutdown = await bound.shutdown();
     debugEvent("authority", "OWNERSHIP_RELEASED", { released: shutdown.released, detached: shutdown.detached });
     console.error(
@@ -163,6 +169,7 @@ async function main(): Promise<void> {
         ? `CE_MCP_STOPPED released=true detached=${shutdown.detached}`
         : `CE_MCP_STOPPED released=false code=${shutdown.code ?? "CE_HOST_UNAVAILABLE"}`,
     );
+    await hookCleanup;
   };
 
   let resolveShutdown!: () => void;

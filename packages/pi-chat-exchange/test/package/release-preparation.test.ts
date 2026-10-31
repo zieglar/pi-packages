@@ -21,7 +21,7 @@ it("prepares the owner-authorized MIT package without consumer hooks", () => {
   expect(manifest.exports).toBeUndefined(); // Pi manifest is the entry, not a public library API.
   for (const hook of ["prepare", "prepack", "postpack", "preinstall", "install", "postinstall"])
     expect(manifest.scripts[hook]).toBeUndefined();
-  expect(manifest.files.some((file: string) => file.startsWith("docs/") || file.endsWith(".md"))).toBe(false);
+  expect(manifest.files.filter((file: string) => file.startsWith("docs/") || file.endsWith(".md"))).toEqual(["skills/ce-hook-script/SKILL.md"]);
 });
 
 it.each([
