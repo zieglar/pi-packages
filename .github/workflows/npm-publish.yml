@@ -24,7 +24,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  tunnel-latest:
+    if: >-
+      inputs.publish && github.event_name == 'workflow_dispatch' &&
+      github.repository == 'zieglar/pi-packages' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "24.21.0"
+      - run: npm install --global pnpm@12.9.1
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm --dir packages/pi-chat-exchange run build
+      - name: Fresh latest stable offline qualification (no OIDC write permission)
+        working-directory: packages/pi-chat-exchange
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/tunnel-compat.mjs run "$RUNNER_TEMP/tunnel-release/result.json" latest
+      - name: Upload sanitized release compatibility result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tunnel-release-result
+          path: ${{ runner.temp }}/tunnel-release/result.json
+          if-no-files-found: error
+          retention-days: 30
+
   publish:
+    needs: tunnel-latest
     if: >-
       inputs.publish && github.event_name == 'workflow_dispatch' &&
       github.repository == 'zieglar/pi-packages' &&
@@ -36,6 +70,7 @@ jobs:
       id-token: write
     env:
       EXPECTED_SHA: ${{ inputs.publish_sha }}
+      CE_TUNNEL_COMPAT_RESULT: ${{ runner.temp }}/tunnel-release/result.json
     steps:
       - name: Checkout exact release commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -60,6 +95,11 @@ jobs:
           pnpm run build
           pnpm run typecheck
           node --test scripts/test/npm-release.check.mjs scripts/test/native-release.check.mjs scripts/test/native-release.auth.test.mjs
+      - name: Download same-run latest compatibility evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: tunnel-release-result
+          path: ${{ runner.temp }}/tunnel-release
       - name: Verify identity, package contents and version absence
         working-directory: packages/pi-chat-exchange
         run: node scripts/npm-release.mjs preflight

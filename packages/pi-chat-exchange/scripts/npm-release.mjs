@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { buildPackageArtifact } from "./package-pi-extension.mjs";
+import { assertTunnelReleaseReady } from './tunnel-compat.mjs';
 
 export const PACKAGE_NAME = "@zieglar/pi-chat-exchange";
 export const REPOSITORY_URL = "git+https://github.com/zieglar/pi-packages.git";
@@ -80,6 +81,7 @@ export async function preflight({ directory = process.cwd(), expectedSha = proce
   // Read the actual built manifest, never evaluate a TypeScript source expression.
   const compatModule = await import(pathToFileURL(join(directory, "dist/storage/native-compat.js")).href);
   assertNativeDefaultPublishable({ manifest: compatModule.NATIVE_COMPAT, parseNativeCompat: compatModule.parseNativeCompat });
+  await assertTunnelReleaseReady({ directory });
   assertVersionAbsent(pkg, directory, run);
   const { artifactPath, inventory } = buildPackageArtifact({ root: directory, out: join(directory, ".pi-artifacts"), run });
   return { name: pkg.name, version: pkg.version, fileCount: inventory.length, artifactPath };

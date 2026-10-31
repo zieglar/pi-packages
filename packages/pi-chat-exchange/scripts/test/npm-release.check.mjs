@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import vm from "node:vm";
+import { runtimeDigest } from '../tunnel-compat.mjs';
 
 const releaseScript = resolve(import.meta.dirname, "../npm-release.mjs");
 const stub = resolve(import.meta.dirname, "support/npm-stub.mjs");
@@ -32,7 +33,12 @@ function harness(routes) {
 
 function invoke(args, { env = {}, routes = {}, scriptPath = releaseScript, cwd = packageDirectory } = {}) {
   const { bin, logPath, routesPath } = harness(routes);
-  const result = spawnSync(process.execPath, [scriptPath, ...args], {
+  const resultPath = join(cwd, "tunnel-result.json");
+  if (existsSync(resultPath)) {
+    const result = JSON.parse(readFileSync(resultPath, "utf8")); result.testedAt = new Date().toISOString();
+    writeFileSync(resultPath, JSON.stringify(result));
+  }
+  const result = spawnSync(process.execPath, ["--import", resolve(import.meta.dirname, "support/tunnel-release-fetch.mjs"), scriptPath, ...args], {
     encoding: "utf8",
     cwd,
     env: {
@@ -42,6 +48,7 @@ function invoke(args, { env = {}, routes = {}, scriptPath = releaseScript, cwd =
       CE_NPM_STUB_ROUTES: routesPath,
       EXPECTED_SHA: SHA,
       GITHUB_SHA: SHA,
+      CE_TUNNEL_COMPAT_RESULT: resultPath,
       ...env,
     },
   });
@@ -59,6 +66,7 @@ function healthyRoutes() {
 function tempPackage(fields = {}) {
   const directory = mkdtempSync(join(tmpdir(), "ce-pkg-"));
   const sourceRoot = resolve(import.meta.dirname, "../..");
+  cpSync(join(sourceRoot, "src"), join(directory, "src"), { recursive: true });
   cpSync(join(sourceRoot, "dist"), join(directory, "dist"), { recursive: true });
   cpSync(join(sourceRoot, "pi-extension"), join(directory, "pi-extension"), { recursive: true });
   cpSync(join(sourceRoot, "README.md"), join(directory, "README.md"));
@@ -78,6 +86,15 @@ function tempPackage(fields = {}) {
   const compatPath = join(directory, "dist/storage/native-compat.js");
   const compat = readFileSync(compatPath, "utf8");
   writeFileSync(compatPath, compat);
+  const digest = runtimeDigest(directory);
+  const client = { version: "0.0.19", sourceCommit: SHA, publishedAt: "2026-10-30T20:26:10Z", url: "https://github.com/openai/tunnel-client/releases/tag/v0.0.19" };
+  const ce = { version: JSON.parse(readFileSync(join(directory, "package.json"))).version, baselineCommit: SHA, runtimeSha256: digest, worktree: "clean" };
+  const lanes = Object.fromEntries([["offline", "automated-offline"], ["lifecycle", "real-client-local"], ["cloud", "manual-cloud"]].map(([key, kind]) => [key, { status: "VERIFIED", kind, evidence: "evidence/test.json" }]));
+  mkdirSync(join(directory, "compatibility/evidence"), { recursive: true });
+  const testedAt = new Date().toISOString();
+  writeFileSync(join(directory, "compatibility/tunnel-client.json"), JSON.stringify({ schemaVersion: 1, regressionVersion: "0.0.19", records: [{ ce, client, testedAt, environment: { os: "darwin", arch: "arm64", node: "24.21.0", pi: "1.3.0", native: "0.1.0" }, ...lanes, limitations: [] }] }));
+  writeFileSync(join(directory, "compatibility/evidence/test.json"), JSON.stringify({ ce, client, testedAt, ...lanes, lifecycle: { ...lanes.lifecycle, start: true, health: true, normalStop: true, cleanup: true }, cloud: { ...lanes.cloud, durableMatch: true, normalOwnershipRelease: true, hardStopCleanup: true, receptionOnly: true, forward: { messageId: "msg_ABC", receiptId: "rcpt_DEF", createdAudit: 1, receiptAudit: 2 }, reverse: { messageId: "msg_GHI", receiptId: "rcpt_JKL", createdAudit: 3, receiptAudit: 4 } } }));
+  writeFileSync(join(directory, "tunnel-result.json"), JSON.stringify({ schemaVersion: 1, status: "VERIFIED", kind: "automated-offline", client, ceVersion: ce.version, runtimeSha256: digest, testedAt: new Date().toISOString(), checks: { profile: true, health: true, normalStop: true, childFailureExit: true, failureStop: true, cleanup: true } }));
   return directory;
 }
 
@@ -204,6 +221,13 @@ test("fully pinned production assets pass the publish trust gate", async () => {
   wrongAsset.versions["0.1.0"].assets[all[0]].asset = "wrong.node";
   assert.throws(() => assertNativeDefaultPublishable({ manifest: wrongAsset, parseNativeCompat }));
 });
+test("missing latest-client result blocks publication before npm access", () => {
+  const result = invoke(["publish"], { env: { CE_TUNNEL_COMPAT_RESULT: "" }, routes: healthyRoutes() });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /RELEASE_NOT_READY/);
+  assert.equal(result.calls.length, 0);
+});
+
 test("a new version with a clean pack passes preflight", () => {
   const result = invoke(["preflight"], { routes: healthyRoutes() });
   assert.equal(result.status, 0, result.stderr);
