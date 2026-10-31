@@ -22,7 +22,9 @@ Pi Chat Exchange（CE）让 ChatGPT 和 Pi 通过显式工具交换持久化消�
 
 **0.2.1** 已发布到 npm。在 macOS arm64 上，从真实 Registry 安装的隔离 Pi 1.3.0 / Node 22.19.0 加载与持久化检查已通过。Linux x64 Native 检查在 Node 22.19.0、24.22.2 上各通过 227/227。**真实 Cloud transport 和完整 ChatGPT ↔ Pi 消息交换仍未验证。** 已测矩阵和限制见[运行时支持](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/runtime-support.zh-CN.md)，engine 范围不代表穷尽验证。
 
-本工作区准备 **0.2.2 本地候选**：显式 `CE_TUNNEL_CLIENT_PATH` 委托信任用户管理的 client 安装，允许 Homebrew 祖先目录 group-write；自动发现仍严格。安装路径写入者可能替换程序，程序可取得当前用户权限及 Tunnel 凭据。本地准入/Doctor 证据覆盖 **0.0.16**；官方 **0.0.18 尚未通过 CE 运行兼容性验证**。候选 tarball 用 npm 安装到专用 prefix，再将已安装包目录登记到 Pi，具体见快速开始；这不是 Registry 安装。下方 npm 命令仍选择正式版 0.2.1 及其旧准入规则。
+本工作区准备 **0.2.2 本地候选**：显式 `CE_TUNNEL_CLIENT_PATH` 委托信任用户管理的 client 安装，允许 Homebrew 祖先目录 group-write；自动发现仍严格。安装路径写入者可能替换程序，程序可取得当前用户权限及 Tunnel 凭据。候选 tarball 用 npm 安装到专用 prefix，再将已安装包目录登记到 Pi，具体见快速开始；这不是 Registry 安装。下方 npm 命令仍选择正式版 0.2.1 及其旧准入规则。
+
+候选证据见[兼容矩阵](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/compatibility/README.md)。0.0.19 有与源码匹配的 macOS arm64 legacy identity 手工双向 Cloud E2E；Linux x64 CI 覆盖合成本地生命周期。历史 0.0.16 证据受运行时范围限制；0.0.18 和真实 namespaced Cloud 仍为 NOT_VERIFIED。独立 latest 监测和实际同次运行发布集成仍为 NOT_VERIFIED。受管 profile 显式设置 `MCP_STDIO_FAILURE_POLICY=exit`：0.0.19 的 child 失败会使 client 退出，不自动拉起或恢复；重新启动前应检查 ownership 并显式恢复。
 
 <a id="安装-pi-扩展"></a>
 <a id="选择连接方式"></a>

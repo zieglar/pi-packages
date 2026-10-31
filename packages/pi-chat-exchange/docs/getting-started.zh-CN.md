@@ -6,14 +6,16 @@
 
 Pi Chat Exchange（CE）让 ChatGPT 和 Pi 通过显式工具交换持久化消息。ChatGPT 经 Secure MCP Tunnel 调用本地 MCP server，两个 Endpoint 使用同一个私有 SQLite Store。发送、发现和读取消息都由你决定。消息本身不授予执行任务的权限，也不证明任务完成。
 
-本指南面向 **0.2.2 本地 Release Candidate**，配置一组 ChatGPT ↔ Pi 配对。当前 npm 正式版仍为 **0.2.1**，其不可变包不包含本次 Homebrew 显式路径修复；验证候选时使用下方已审查的本地 tarball。独立的 [Desktop stdio 连接](chatgpt-installation.zh-CN.md)无需 Tunnel。**真实 Cloud transport 及完整 ChatGPT ↔ Pi 消息交换仍未验证。**
+本指南面向 **0.2.2 本地 Release Candidate**，配置一组 ChatGPT ↔ Pi 配对。当前 npm 正式版仍为 **0.2.1**，其不可变包不包含本次 Homebrew 显式路径修复；验证候选时使用下方已审查的本地 tarball。独立的 [Desktop stdio 连接](chatgpt-installation.zh-CN.md)无需 Tunnel。[兼容矩阵](../compatibility/README.md)分别记录 0.0.19 macOS arm64 legacy identity 手工双向 Cloud E2E 和 Linux x64 合成生命周期检查。**真实 namespaced Cloud 和 0.0.18 仍为 NOT_VERIFIED。** 独立 latest 监测和实际同次运行发布集成仍为 NOT_VERIFIED。
+
+受管 profile 显式设置 `MCP_STDIO_FAILURE_POLICY=exit`，覆盖父环境的 restart 策略。在 0.0.19 中，MCP child 失败会使 client 退出，不再重启 child。CE 不自动拉起、接管 ownership 或重试消息；重新启动前应检查 ownership 并由操作者显式恢复。兼容范围以矩阵中的精确条目为限，包括旧 client 的历史范围。
 
 ## 2. 前提条件
 
 - Pi **1.3.0**，系统终端中可用 `pi` 命令。Setup 与确认对话框需要交互式 Pi TUI。
 - Pi 与 MCP child 均使用 Node **>=22.19.0**。已测版本和限制见[运行时支持](runtime-support.zh-CN.md)；版本范围不代表所有后续版本都经过测试。
 - **macOS arm64 或 Linux x64 GNU**，Store 所在的本地文件系统须通过准入检查。其他 Native 制品不代表 Store 支持相应平台。Windows Native 不受支持，WSL2 集成尚未验证；若使用 WSL，Store 应放在 Linux 文件系统，避免 `/mnt/c`。
-- 单独安装并由你信任的 `tunnel-client`。CE 已对 **0.0.16** 做本地准入与 Doctor 实机检查；官方较新的 **0.0.18 尚未完成 CE 运行兼容性验证**。安装入口见[官方 Tunnel 指南](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)和[官方 releases](https://github.com/openai/tunnel-client/releases)。CE 不负责 client 的安装、升级或供应链审计。
+- 单独安装并由你信任的 `tunnel-client`。按[官方 Tunnel 指南](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)及[官方 releases](https://github.com/openai/tunnel-client/releases)安装官方最新稳定版，再按[兼容矩阵](../compatibility/README.md)核对精确版本与源码。CI 固定的 0.0.19 是回归目标，不是安装要求，也不证明后续版本资格。CE 不负责 client 的安装、升级或供应链审计。
 - 一个 Tunnel、获准使用它的凭据，以及具备该 Tunnel 使用资格的 ChatGPT workspace/account。云端权限和最新界面步骤以[官方 Tunnel 指南](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)为准，CE 不创建这些云端资源。
 
 首次交换使用无敏感内容的文字。扩展以当前用户权限运行，安装前应审查包。不要把凭据放入 prompt、shell history、截图或消息。

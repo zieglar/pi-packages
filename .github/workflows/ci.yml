@@ -76,6 +76,9 @@ jobs:
           node --test scripts/test/tunnel-compat.check.mjs scripts/test/tunnel-workflow.check.mjs
       - name: Build once for real local client lifecycle
         run: pnpm --dir packages/pi-chat-exchange run build
+      - name: npm release entrypoint regression (substitutes only)
+        working-directory: packages/pi-chat-exchange
+        run: node --test scripts/test/npm-release.check.mjs
       - name: Fixed official release, attestation and no-Cloud lifecycle
         working-directory: packages/pi-chat-exchange
         env:

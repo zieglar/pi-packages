@@ -15,6 +15,13 @@ test('fixed PR lane is required, pinned and does not depend on latest', () => {
   assert.match(commands(job), /tunnel-compat\.check\.mjs/);
   // Existing validate job already owns full TS tests/build/typecheck.
   assert.match(commands(ci.jobs.validate), /pnpm typecheck/); assert.match(commands(ci.jobs.validate), /pnpm test/);
+  const steps = job.steps;
+  const buildIndex = steps.findIndex(step => step.run === 'pnpm --dir packages/pi-chat-exchange run build');
+  const npmIndex = steps.findIndex(step => step.run === 'node --test scripts/test/npm-release.check.mjs');
+  assert(buildIndex >= 0 && npmIndex > buildIndex, 'npm entrypoint regression requires built fixtures');
+  assert.equal(steps[npmIndex]['working-directory'], 'packages/pi-chat-exchange');
+  assert.deepEqual(job.permissions, { contents: 'read' });
+  assert.equal(steps[npmIndex].env, undefined);
 });
 test('latest monitor only scheduled/manual, read-only, no writes or raw log upload', () => {
   const w = load('tunnel-client-latest.yml'); assert(w.on.schedule); assert(w.on.workflow_dispatch !== undefined);

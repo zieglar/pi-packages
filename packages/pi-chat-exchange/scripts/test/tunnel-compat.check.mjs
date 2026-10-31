@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { validateMatrix, parseRelease, releaseDecision, runtimeDigest } from '../tunnel-compat.mjs';
+import { validateMatrix, parseRelease, releaseDecision, runtimeDigest, installOfficial } from '../tunnel-compat.mjs';
 const sha = 'a'.repeat(40), digest = 'b'.repeat(64);
 const release = { version: '0.0.19', sourceCommit: sha, publishedAt: '2026-10-30T20:26:10Z', url: 'https://github.com/openai/tunnel-client/releases/tag/v0.0.19' };
 const lane = kind => ({ status: 'VERIFIED', kind, evidence: 'evidence/test.json' });
@@ -50,11 +51,54 @@ test("readMatrix rejects damaged and identity-mismatched evidence files", async 
   writeFileSync(join(root, "compatibility/evidence/test.json"), JSON.stringify(evidence)); assert.deepEqual(readMatrix(root), m);
   evidence.ce.runtimeSha256 = "c".repeat(64); writeFileSync(join(root, "compatibility/evidence/test.json"), JSON.stringify(evidence)); assert.throws(() => readMatrix(root));
 });
-test("official archive provenance and checksum failures are refused", async () => {
-  const { verifyOfficialChecksumAndAttestation } = await import("../tunnel-compat.mjs");
-  const dir = mkdtempSync(join(tmpdir(), "ce-installer-")); const zipName = `tunnel-client-v${release.version}-linux-amd64.zip`;
-  const runner = (binary, args) => { if (binary === "gh") return; const name = args[args.indexOf("--output") + 1]; if (name.endsWith(".zip")) writeFileSync(name, "synthetic-archive"); else if (name.endsWith("SHA256SUMS.txt")) writeFileSync(name, `${"a".repeat(64)} *${zipName}`); };
-  await assert.rejects(verifyOfficialChecksumAndAttestation(release, dir, runner), /official archive checksum/);
-  const rejected = mkdtempSync(join(tmpdir(), "ce-installer-"));
-  await assert.rejects(verifyOfficialChecksumAndAttestation(release, rejected, (binary, args) => { if (binary === "gh") throw new Error("attestation refused"); if (args.at(-1) === "SHA256SUMS.txt") writeFileSync(args[args.indexOf("--output") + 1], "sha256: unused\n"); }), /attestation refused/);
-});
+for (const failure of ['archive attestation', 'checksum attestation', 'checksum mismatch', null]) {
+  test(`actual installer ${failure ? `refuses ${failure} before extraction or execution` : 'executes only after verification and extraction'}`, async t => {
+    const root = mkdtempSync(join(tmpdir(), 'ce-installer-'));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const zipName = `tunnel-client-v${release.version}-linux-amd64.zip`;
+    const archive = Buffer.from('synthetic-archive');
+    const checksum = createHash('sha256').update(archive).digest('hex');
+    const calls = [];
+    const runner = (binary, args) => {
+      calls.push({ binary, args });
+      if (binary === 'curl') {
+        const path = args[args.indexOf('--output') + 1];
+        if (path.endsWith('.zip')) writeFileSync(path, archive);
+        else if (path.endsWith('SHA256SUMS.txt')) writeFileSync(path, `${failure === 'checksum mismatch' ? '0'.repeat(64) : checksum} *${zipName}\n`);
+        else writeFileSync(path, '{}');
+        return '';
+      }
+      if (binary === 'gh') {
+        assert.deepEqual(args.slice(0, 2), ['attestation', 'verify']);
+        for (const [flag, value] of Object.entries({ '--repo': 'openai/tunnel-client', '--signer-workflow': 'openai/tunnel-client/.github/workflows/release.yml', '--source-ref': `refs/tags/v${release.version}`, '--source-digest': release.sourceCommit, '--signer-digest': release.sourceCommit, '--predicate-type': 'https://slsa.dev/provenance/v1' })) assert.equal(args[args.indexOf(flag) + 1], value);
+        assert(args.includes('--deny-self-hosted-runners'));
+        if ((failure === 'archive attestation' && args[2].endsWith('.zip')) || (failure === 'checksum attestation' && args[2].endsWith('SHA256SUMS.txt'))) throw new Error('attestation refused');
+        return '';
+      }
+      if (binary === 'unzip' && args[0] === '-Z1') return 'tunnel-client\ncloudflared\ncloudflared-manifest.json\n';
+      if (binary === 'unzip' && args[0] === '-q') {
+        mkdirSync(join(root, 'bin'));
+        writeFileSync(join(root, 'bin/tunnel-client'), 'synthetic-client');
+        return '';
+      }
+      assert.equal(binary, join(root, 'bin/tunnel-client'));
+      assert.deepEqual(args, ['--version']);
+      assert(existsSync(binary));
+      return `${release.version}+${release.sourceCommit}`;
+    };
+    const install = () => installOfficial(release, root, { runCommand: runner, platform: 'linux', arch: 'x64' });
+    if (failure) {
+      await assert.rejects(install(), failure.includes('attestation') ? /attestation refused/ : /official archive checksum/);
+      assert(calls.some(call => call.binary === 'gh'), 'must reach actual verification, not platform refusal');
+      assert(calls.every(call => ['curl', 'gh'].includes(call.binary)), 'no archive listing, extraction or executable invocation');
+      assert(!existsSync(join(root, 'bin')), 'no extracted installation remains');
+    } else {
+      const result = await install();
+      assert.equal(result.binary, join(root, 'bin/tunnel-client'));
+      assert.equal(result.sha256, checksum);
+      assert.deepEqual(calls.map(call => call.binary), ['curl', 'curl', 'curl', 'gh', 'gh', 'unzip', 'unzip', result.binary]);
+      assert.equal(calls[5].args[0], '-Z1');
+      assert.deepEqual(calls[6].args, ['-q', join(root, zipName), 'tunnel-client', 'cloudflared', 'cloudflared-manifest.json', '-d', join(root, 'bin')]);
+    }
+  });
+}

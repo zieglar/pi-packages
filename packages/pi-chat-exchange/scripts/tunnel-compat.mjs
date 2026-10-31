@@ -23,17 +23,6 @@ function client(x) {
   requireValue(object(x) && semver.test(x.version) && sha.test(x.sourceCommit) && date(x.publishedAt)
     && x.url === `https://github.com/${repository}/releases/tag/v${x.version}`, 'client');
 }
-export async function verifyOfficialChecksumAndAttestation(release, directory, runCommand = run) {
-  client(release);
-  const stem = `tunnel-client-v${release.version}-linux-amd64`, bundle = `tunnel-client-v${release.version}-provenance.sigstore.json`;
-  const base = `https://github.com/${repository}/releases/download/v${release.version}`;
-  for (const name of [`${stem}.zip`, 'SHA256SUMS.txt', bundle]) runCommand('curl', ['--fail', '--silent', '--show-error', '--location', '--proto', '=https', '--proto-redir', '=https', '--max-time', '120', '--output', join(directory, name), `${base}/${name}`]);
-  const verify = ['--bundle', join(directory, bundle), '--repo', repository, '--signer-workflow', `${repository}/.github/workflows/release.yml`, '--source-ref', `refs/tags/v${release.version}`, '--source-digest', release.sourceCommit, '--signer-digest', release.sourceCommit, '--predicate-type', 'https://slsa.dev/provenance/v1', '--deny-self-hosted-runners'];
-  for (const name of [`${stem}.zip`, 'SHA256SUMS.txt']) runCommand('gh', ['attestation', 'verify', join(directory, name), ...verify]);
-  const sums = readFileSync(join(directory, 'SHA256SUMS.txt'), 'utf8').split('\n').map(line => /^([a-f0-9]{64})\s+\*?(.+)$/.exec(line)).filter(Boolean).filter(x => x[2] === `${stem}.zip`);
-  requireValue(sums.length === 1 && createHash('sha256').update(readFileSync(join(directory, `${stem}.zip`))).digest('hex') === sums[0][1], 'official archive checksum');
-  return { stem, bundle, base, checksum: sums[0][1] };
-}
 function readJson(path) {
   try { return JSON.parse(readFileSync(path, 'utf8')); }
   catch { throw new Error('Invalid or unreadable Tunnel compatibility JSON'); }
@@ -132,24 +121,25 @@ export async function assertTunnelReleaseReady({ directory = packageRoot, result
   return decision;
 }
 function run(binary, args, options = {}) { return execFileSync(binary, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000, ...options }); }
-export async function installOfficial(release, output, trustedDirectory = undefined) {
-  requireValue(process.platform === 'linux' && process.arch === 'x64', 'CI installer supports Linux x64 only');
+// Author-tooling seam only: the CLI always uses the real executor and host platform.
+export async function installOfficial(release, output, { runCommand = run, platform = process.platform, arch = process.arch } = {}) {
+  client(release);
+  requireValue(platform === 'linux' && arch === 'x64', 'CI installer supports Linux x64 only');
   const root = resolve(output); mkdirSync(root, { recursive: true, mode: 0o700 });
   const stem = `tunnel-client-v${release.version}-linux-amd64`, bundle = `tunnel-client-v${release.version}-provenance.sigstore.json`;
   const names = [`${stem}.zip`, 'SHA256SUMS.txt', bundle];
   const base = `https://github.com/${repository}/releases/download/v${release.version}`;
-  for (const name of names) run('curl', ['--fail', '--silent', '--show-error', '--location', '--proto', '=https', '--proto-redir', '=https', '--max-time', '120', '--output', join(root, name), `${base}/${name}`], { timeout: 125_000 });
+  for (const name of names) runCommand('curl', ['--fail', '--silent', '--show-error', '--location', '--proto', '=https', '--proto-redir', '=https', '--max-time', '120', '--output', join(root, name), `${base}/${name}`], { timeout: 125_000 });
   const verify = ['--bundle', join(root, bundle), '--repo', repository, '--signer-workflow', `${repository}/.github/workflows/release.yml`, '--source-ref', `refs/tags/v${release.version}`, '--source-digest', release.sourceCommit, '--signer-digest', release.sourceCommit, '--predicate-type', 'https://slsa.dev/provenance/v1', '--deny-self-hosted-runners'];
-  for (const name of [`${stem}.zip`, 'SHA256SUMS.txt']) run('gh', ['attestation', 'verify', join(root, name), ...verify]);
+  for (const name of [`${stem}.zip`, 'SHA256SUMS.txt']) runCommand('gh', ['attestation', 'verify', join(root, name), ...verify]);
   const sums = readFileSync(join(root, 'SHA256SUMS.txt'), 'utf8').split('\n').map(line => /^([a-f0-9]{64})\s+\*?(.+)$/.exec(line)).filter(Boolean).filter(x => x[2] === `${stem}.zip`);
   requireValue(sums.length === 1 && createHash('sha256').update(readFileSync(join(root, `${stem}.zip`))).digest('hex') === sums[0][1], 'official archive checksum');
   // The full official bundle is equivalent to Linux manual installation; never execute archive scripts.
-  const members = run('unzip', ['-Z1', join(root, `${stem}.zip`)]).trim().split('\n');
+  const members = runCommand('unzip', ['-Z1', join(root, `${stem}.zip`)]).trim().split('\n');
   for (const name of ['tunnel-client', 'cloudflared', 'cloudflared-manifest.json']) requireValue(members.filter(x => x === name).length === 1, `archive member ${name}`);
-  // Negative checksum/attestation paths are checked in targeted CI tests.
-  run('unzip', ['-q', join(root, `${stem}.zip`), 'tunnel-client', 'cloudflared', 'cloudflared-manifest.json', '-d', join(root, 'bin')]);
+  runCommand('unzip', ['-q', join(root, `${stem}.zip`), 'tunnel-client', 'cloudflared', 'cloudflared-manifest.json', '-d', join(root, 'bin')]);
   const binary = join(root, 'bin/tunnel-client');
-  const version = run(binary, ['--version']).trim();
+  const version = runCommand(binary, ['--version']).trim();
   requireValue(version.startsWith(`${release.version}+${release.sourceCommit} `) || version === `${release.version}+${release.sourceCommit}`, 'installed version/source');
   return { binary, version, source: `${base}/${stem}.zip`, sha256: sums[0][1], provenance: 'gh attestation verify: official release workflow, tag, source and signer commit, SLSA v1, hosted runner' };
 }
@@ -168,7 +158,7 @@ async function main() {
     requireValue(typeof output === 'string' && output.length > 0, 'result output path');
     let release; const testedAt = new Date().toISOString();
     try {
-      release = await discoverRelease(version); const installed = await installOfficial(release, join(dirname(resolve(output)), 'official-client'), process.env.CE_TUNNEL_VERIFY_DIR);
+      release = await discoverRelease(version); const installed = await installOfficial(release, join(dirname(resolve(output)), 'official-client'));
       const { exerciseClient } = await import('./tunnel-compat-lifecycle.mjs');
       const checks = await exerciseClient({ binary: installed.binary, root: packageRoot });
       writeResult(output, { schemaVersion: 1, status: 'VERIFIED', kind: 'automated-offline', ceVersion: JSON.parse(readFileSync(join(packageRoot, 'package.json'))).version, runtimeSha256: runtimeDigest(), testedAt, client: release, installation: installed, checks, environment: { os: process.platform, arch: process.arch, node: process.version }, cloud: { status: 'NOT_VERIFIED' } });
