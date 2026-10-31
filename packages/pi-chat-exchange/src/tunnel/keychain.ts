@@ -35,6 +35,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TunnelRefusal } from "./codes.js";
+import { TUNNEL_ID_PATTERN } from "./tunnel-id.js";
 
 /** Fixed service for every B1.1 item. Never derived from input. */
 export const TUNNEL_KEYCHAIN_SERVICE = "pi-chat-exchange-tunnel";
@@ -78,7 +79,6 @@ export const OFFLINE_SYNTHETIC_SCOPE: KeychainScope = Object.freeze({
   tunnelId: "tunnel_b11offline",
 });
 
-const TUNNEL_ID_PATTERN = /^tunnel_[A-Za-z0-9]{8,}$/;
 const ORIGIN_PATTERN = /^https:\/\/[A-Za-z0-9.-]+(:\d{1,5})?$/;
 const ACCOUNT_PATTERN = /^v1:[0-9a-f]{64}$/;
 const SECRET_PATTERN = /^[\x21-\x7e]{1,4096}$/;

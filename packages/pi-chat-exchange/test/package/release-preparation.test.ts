@@ -7,7 +7,7 @@ const read = (path: string) => readFileSync(resolve(root, path), "utf8");
 
 it("prepares the owner-authorized MIT package without consumer hooks", () => {
   const manifest = JSON.parse(read("package.json"));
-  expect(manifest.version).toBe("0.2.1");
+  expect(manifest.version).toBe("0.2.2");
   // Owner authorization plus the completed third-party audit meet the
   // handoff's private-removal condition.
   expect(manifest.private).toBeUndefined();

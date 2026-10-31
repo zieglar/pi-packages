@@ -2,6 +2,17 @@
 
 # Changelog
 
+## 0.2.2
+
+### Patch Changes
+
+- Accept group-writable ancestor directories for an explicitly selected Tunnel Client while retaining strict automatic discovery. Validate literal Homebrew wrapper targets and exclude shell expansion from exec identity evidence. Native, Node, credential handoff and owned Stop behavior are unchanged.
+
+- Managed profiles explicitly set `MCP_STDIO_FAILURE_POLICY=exit`, overriding an inherited restart policy. With 0.0.19, an MCP child failure exits the client instead of restarting the child. CE does not respawn it, take over ownership or retry messages; inspect ownership and use explicit operator recovery before restarting. Compatibility is limited to the exact matrix entries, including historical older-client scope.
+
+- Explicit selection delegates trust to the external program and its installation writers. File group-write, world-write, owner, macOS ACL and project-path checks remain. Other effective writers may replace a selected program and expose Tunnel credentials; check-to-execution races remain.
+- This is a local RC using a physical tarball; npm 0.2.1 remains published. The [compatibility matrix](compatibility/README.md) records source-matched 0.0.19 macOS arm64 legacy-identity manual bidirectional Cloud E2E and Linux x64 synthetic lifecycle checks. Historical 0.0.16 evidence is limited to its recorded RC runtime; 0.0.18 and real namespaced Cloud remain NOT_VERIFIED. Latest monitoring and actual same-run publication integration remain NOT_VERIFIED. No Homebrew permission or Gatekeeper workaround is required.
+
 ## 0.2.1
 
 Version 0.2.1 includes:

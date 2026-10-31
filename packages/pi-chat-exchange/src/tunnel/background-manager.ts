@@ -168,7 +168,9 @@ import {
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize } from "node:path";
 import { TunnelRefusal } from "./codes.js";
+import { TUNNEL_ID_PATTERN } from "./tunnel-id.js";
 import { resolveTunnelClient } from "../runtime/executables.js";
+import { resolveWrapperIdentityEvidence } from "../runtime/wrapper-identity.js";
 import { createHealthCompletionRecorder, type HealthProbeInput } from "./health.js";
 import { checkKeyFileRequirements, childEnvironment } from "./profile.js";
 import {
@@ -474,7 +476,7 @@ export function parseTunnelProfile(text: string): TunnelProfileFacts {
       default: throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", tag);
     }
   }
-  if (found.tunnelId === undefined || !/^tunnel_[A-Za-z0-9]{8,}$/.test(found.tunnelId)) {
+  if (found.tunnelId === undefined || !TUNNEL_ID_PATTERN.test(found.tunnelId)) {
     throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "control_plane.tunnel_id");
   }
   if (found.apiKey === undefined) {
@@ -597,72 +599,8 @@ function defaultSpawnDaemon(logPath: string): BackgroundSpawnSeam {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Wrapper identity evidence (LOCAL-BACKGROUND-03 F2). Homebrew installs the
-// client as a two-line shim (`#!/bin/bash` + `exec "<Cellar libexec>" "$@"`);
-// ps therefore shows `/bin/bash <shim> run …` before the exec and `<cellar>
-// run …` after it — same pid, same lstart. The exact-argv matcher must accept
-// ONLY the forms backed by explicit evidence gathered here; anything unknown
-// or ambiguous yields no form (fail closed). Basename equality is never
-// evidence, and neither is a pidfile or a process name.
-// ---------------------------------------------------------------------------
-export interface WrapperIdentityEvidence {
-  /** Interpreter of a no-argument `#!/abs/path` shebang (e.g. /bin/bash).
-   *  A shebang carrying arguments (`#!/usr/bin/env bash`) is ambiguous about
-   *  the final argv0 and yields NO shell-prefix form. */
-  readonly shellPrefix?: string | undefined;
-  /** Literal target of a single strict `exec "<abs>" "$@"` line. The target
-   *  must be absolute, normalized, printable, and an existing regular file;
-   *  anything else (relative, unquoted, extra args, multiple exec lines,
-   *  missing target) yields NO exec form. */
-  readonly execTarget?: string | undefined;
-}
-
-const MAX_WRAPPER_BYTES = 4096;
-const SHEBANG_RE = /^#!(\/[^\s\u0000]+)$/;
-const WRAPPER_EXEC_RE = /^exec "(\/[^"\\\r\n\u0000]+)" "\$@"$/;
-
-export function resolveWrapperIdentityEvidence(clientPath: string): WrapperIdentityEvidence | undefined {
-  let text: string;
-  try {
-    const stat = statSync(clientPath); // follows the brew bin symlink
-    if (!stat.isFile() || stat.size === 0 || stat.size > MAX_WRAPPER_BYTES) return undefined;
-    text = readFileSync(clientPath, "utf8");
-  } catch {
-    return undefined;
-  }
-  if (!text.startsWith("#!")) return {}; // direct binary: no wrapper forms
-  const lines = text.split("\n");
-  const shebang = SHEBANG_RE.exec((lines[0] ?? "").replace(/\r$/, ""));
-  const shellPrefix = shebang !== null && /^[ -~]+$/.test(shebang[1]!) && normalize(shebang[1]!) === shebang[1]!
-    ? shebang[1]!
-    : undefined;
-  const evidence: { shellPrefix?: string | undefined; execTarget?: string | undefined } =
-    shellPrefix === undefined ? {} : { shellPrefix };
-  // C-1 (Lane C): the exec form is accepted only when the ENTIRE file is the
-  // canonical shim shape — shebang, then exactly ONE strict exec line, with
-  // every other line blank or a comment. Anything else (heredocs, indented or
-  // argument-carrying exec, conditionals, extra statements) means the file's
-  // execution semantics are not fully understood here, so NO exec evidence is
-  // produced (fail closed). The shell-prefix form rests on the shebang alone,
-  // which the kernel honors regardless of the script body.
-  const meaningful = lines.slice(1).filter((line) => {
-    const trimmed = line.trim();
-    return trimmed !== "" && !trimmed.startsWith("#");
-  });
-  if (meaningful.length !== 1) return evidence;
-  const execMatch = WRAPPER_EXEC_RE.exec(meaningful[0]!); // column-0, strict
-  if (execMatch === null) return evidence;
-  const target = execMatch[1]!;
-  if (!/^[ -~]+$/.test(target) || normalize(target) !== target) return evidence;
-  try {
-    if (!statSync(target).isFile()) return evidence;
-  } catch {
-    return evidence;
-  }
-  evidence.execTarget = target;
-  return evidence;
-}
+// Keep the existing manager export; selection and ownership share one parser.
+export { resolveWrapperIdentityEvidence, type WrapperIdentityEvidence } from "../runtime/wrapper-identity.js";
 
 // ---------------------------------------------------------------------------
 // Ownership record (S7/S8): strict load, random-name O_EXCL temp, 0700 dir.

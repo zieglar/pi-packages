@@ -6,14 +6,16 @@
 
 Pi Chat Exchange (CE) lets ChatGPT and Pi exchange durable messages through explicit tools. ChatGPT calls the local MCP server through Secure MCP Tunnel; both endpoints use the same private SQLite Store. You choose when to send, discover or read a message. A message does not authorize a task or prove its completion.
 
-This guide installs the published **0.2.1** package into an existing Pi installation and configures one ChatGPT ↔ Pi pair. The separate [Desktop stdio connection](chatgpt-installation.md) does not need Tunnel. Local installation and command checks have passed; **real Cloud transport and the complete ChatGPT ↔ Pi exchange have not been verified for this guide**.
+This guide covers the **0.2.2 local release candidate** and one ChatGPT ↔ Pi pair. The current published npm version is **0.2.1**; its immutable package does not include the explicit Homebrew path fix. Install the reviewed local tarball below for this candidate. The separate [Desktop stdio connection](chatgpt-installation.md) does not need Tunnel. The [compatibility matrix](../compatibility/README.md) records 0.0.19 macOS arm64 legacy-identity manual bidirectional Cloud E2E separately from Linux x64 synthetic lifecycle checks. **Real namespaced Cloud and 0.0.18 remain NOT_VERIFIED.** Independent latest monitoring and actual same-run publication integration remain NOT_VERIFIED.
+
+Managed profiles explicitly set `MCP_STDIO_FAILURE_POLICY=exit`, overriding an inherited restart policy. With 0.0.19, an MCP child failure exits the client instead of restarting the child. CE does not respawn it, take over ownership or retry messages; inspect ownership and use explicit operator recovery before restarting. Compatibility is limited to the exact matrix entries, including historical older-client scope.
 
 ## 2. Requirements
 
 - Pi **1.3.0**, with its `pi` command available in your system terminal. Use an interactive Pi TUI for Setup and confirmation dialogs.
 - Node **>=22.19.0** for both Pi and its MCP child. Tested versions and limits are in [runtime support](runtime-support.md); the version range is not proof that every later release has been tested.
 - **macOS arm64 or Linux x64 GNU**, with a local filesystem accepted by the Store. Other Native artifacts do not establish Store support. Windows Native is unsupported; WSL2 integration is unverified. Keep any WSL Store on its Linux filesystem, not `/mnt/c`.
-- A separately installed, trusted `tunnel-client`. The documented compatibility baseline is **0.0.16**. Obtain it from [OpenAI Tunnel settings](https://platform.openai.com/settings/organization/tunnels) or [official releases](https://github.com/openai/tunnel-client/releases/latest), and check its source, version and integrity before using it. CE does not install or update this client.
+- A separately installed `tunnel-client` that you trust. Install the official latest stable from the [official Tunnel installation guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) and [official releases](https://github.com/openai/tunnel-client/releases), then check its exact version/source against the [compatibility matrix](../compatibility/README.md). Pinned CI 0.0.19 is a regression target, not an installation requirement or proof for later versions. CE does not install, upgrade or audit the client.
 - A Tunnel, its authorized credential, and a ChatGPT workspace/account eligible for that Tunnel. Cloud permissions and current UI steps follow the [official Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels). CE does not create these cloud resources.
 
 Use non-sensitive text for the first exchange. Extensions run with your user permissions; review the package before installing it. Keep credentials out of prompts, shell history, screenshots and messages.
@@ -25,22 +27,25 @@ Use non-sensitive text for the first exchange. Extensions run with your user per
 ```sh
 node --version
 pi --version
-pi install npm:@zieglar/pi-chat-exchange@0.2.1
+npm install --prefix /absolute/path/to/ce-rc-prefix --omit=dev --ignore-scripts /absolute/path/to/zieglar-pi-chat-exchange-0.2.2.tgz
+pi install /absolute/path/to/ce-rc-prefix/node_modules/@zieglar/pi-chat-exchange
 pi list
 ```
 
-Success: `pi list` includes the exact npm source `@zieglar/pi-chat-exchange@0.2.1`. The package is prebuilt; you do not need a repository clone, pnpm or a TypeScript build. Do not also load it with `-e`.
+Replace both paths with your reviewed artifact and a dedicated installation prefix. Then `pi install` registers the installed package directory, not the `.tgz` itself. Success: `pi list` shows that directory, and its installed manifest is `@zieglar/pi-chat-exchange` version `0.2.2`. This is a local artifact installation, **not a Registry installation**. Do not compile in the consumer or also load it with `-e`. Published 0.2.1 remains available as `npm:@zieglar/pi-chat-exchange@0.2.1`, with its older client admission policy.
 
 Before launching Pi for this guide, set these variables in the **same system terminal**. Replace the two executable paths with trusted, normalized absolute paths on your machine:
 
 ```sh
 export CE_NODE_PATH=/trusted/node-install/bin/node
-export CE_TUNNEL_CLIENT_PATH=/trusted/client-install/tunnel-client
+export CE_TUNNEL_CLIENT_PATH=/opt/homebrew/bin/tunnel-client
 export CE_TUNNEL_BACKGROUND_ALLOW=1
 pi
 ```
 
 `CE_NODE_PATH` selects the MCP child; Pi itself must already run under the supported Node. The background opt-in permits a later explicit Start and does not start anything. Setting variables in a child shell inside Pi cannot update the parent Pi process. Leave `CE_TUNNEL_OFFLINE_TEST` unset for ordinary use.
+
+Setting `CE_TUNNEL_CLIENT_PATH` is your explicit trust delegation to that external program and its installation writers. CE accepts group-writable ancestor directories in this mode, without an extra confirmation/database; automatic discovery remains strict. Other effective writers may replace the program, and malicious client code can run as you and read the Tunnel credential. This does not remove check-to-execution races. File/world-write, owner, macOS ACL and project-path refusals still apply. Use your actual absolute client path; the Homebrew example is not a whitelist.
 
 If you already have CE configuration or a running Tunnel, follow the existing-installation precautions in step 5 before changing it. For a dedicated Host prefix, tarball installation or source development, use the [advanced documentation](#10-advanced-documentation).
 
@@ -182,7 +187,7 @@ To also release this Pi messaging binding, use `/ce-tunnel deactivate` and confi
 |---|---|
 | `/ce-native` or `/ce-tunnel` is unknown | Check `pi list`, exact version and selected Pi installation; restart/reload that Host without loading a second extension copy. |
 | Native is missing or not ready | Follow step 4 and [Native management](native-management.md); installation needs restart, repair needs explicit confirmation. |
-| Doctor refuses host/child/client | Fix the reported runtime or trusted executable path in the parent environment; [path checks](tunnel-setup.md#client-安装与只读诊断) include ancestors and symlinks. Do not relax checks to start. |
+| Doctor refuses host/child/client | Correct the parent environment using [client path diagnostics](tunnel-setup.md#client-安装与只读诊断). On 0.2.2, explicitly select the user-managed Homebrew client; automatic discovery remains strict. Do not change Homebrew permissions or ACLs to satisfy CE. |
 | No endpoint bound / `CE_HOST_MAPPING_INVALID` | Confirm Setup authorized this Session, reload its policy, then explicitly activate. For stale/foreign mappings or unknown release, use [recovery guidance](tunnel-setup.md) without editing identifiers. |
 | `CE_HOST_ENDPOINT_NOT_ALLOWED` | Compare the exact configured Endpoint ID with `to`; do not add an adapter prefix or invent recipients. |
 | Payload/ACK tools missing | Confirm the intended Setup grants, Pi reload and fresh Tunnel MCP binding; refresh ChatGPT tools. For an existing connection, Stop/verify then Start separately. |

@@ -3,7 +3,8 @@ import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { admitExecutable, qualifyNodeExecutable, resolveApprovedNode, resolveTunnelClient, diagnoseTunnelClient } from "../../src/runtime/executables.js";
+import { admitExecutable, admitInstallationDirectory, qualifyNodeExecutable, resolveApprovedNode, resolveTunnelClient, diagnoseTunnelClient } from "../../src/runtime/executables.js";
+import { resolveWrapperIdentityEvidence } from "../../src/runtime/wrapper-identity.js";
 
 import { APPROVED_NODE_VERSION, APPROVED_SQLITE_VERSION, APPROVED_SQLITE_SOURCE_ID, readRuntimeIdentity } from "../../src/storage/runtime.js";
 const roots: string[] = [];
@@ -175,6 +176,83 @@ describe("client selection", () => {
   });
   it("refuses unsafe explicit clients rather than using a default", () => {
     expect(() => resolveTunnelClient({ env: { CE_TUNNEL_CLIENT_PATH: "tunnel-client" } })).toThrow("CE_EXECUTABLE_UNTRUSTED");
+  });
+  it("accepts explicitly selected Homebrew-style 0775 ancestors while discovery and Node remain strict", () => {
+    const root = fixture(); const bin = join(root, "bin"); const cellar = join(root, "Cellar");
+    mkdirSync(bin); mkdirSync(cellar); chmodSync(bin, 0o775); chmodSync(cellar, 0o775);
+    const target = binary(cellar, "client"); const link = join(bin, "tunnel-client"); symlinkSync(target, link);
+    const env = { CE_TUNNEL_CLIENT_PATH: link };
+    expect(resolveTunnelClient({ env, systemDirectories: [bin] })).toBe(target);
+    expect(diagnoseTunnelClient({ env, systemDirectories: [bin] })).toBe("TRUSTED_METADATA_ONLY");
+    expect(resolveTunnelClient({ env: {}, systemDirectories: [bin] })).toBeUndefined();
+    expect(diagnoseTunnelClient({ env: {}, systemDirectories: [bin] })).toBe("CE_EXECUTABLE_UNTRUSTED");
+    expect(() => resolveApprovedNode({ env: { ...env, CE_NODE_PATH: target } })).toThrow("CE_EXECUTABLE_UNTRUSTED");
+    expect(() => admitExecutable(target)).toThrow("CE_EXECUTABLE_UNTRUSTED");
+    expect(() => admitInstallationDirectory(cellar)).toThrow("CE_EXECUTABLE_UNTRUSTED");
+  });
+  it.each(["", "relative", "/missing/ce-client", "non-executable", "directory", "non-normalized", "control"])("refuses explicit %j without discovery fallback", kind => {
+    const root = fixture(); const fallback = binary(root, "tunnel-client");
+    const invalid = join(root, "invalid-client"); writeFileSync(invalid, "not executable", { mode: 0o600 });
+    const path = kind === "non-executable" ? invalid : kind === "directory" ? root
+      : kind === "non-normalized" ? `${root}/../${root.split("/").at(-1)}/tunnel-client`
+      : kind === "control" ? `${fallback}\n` : kind;
+    const options = { env: { CE_TUNNEL_CLIENT_PATH: path }, systemDirectories: [root] };
+    expect(() => resolveTunnelClient(options)).toThrow("CE_EXECUTABLE_UNTRUSTED");
+    expect(diagnoseTunnelClient(options)).toBe("CE_EXECUTABLE_UNTRUSTED");
+  });
+  it.each(["world-writable ancestor", "world-writable file", "group-writable file", "project", "node_modules"])("explicit trust retains %s refusal", kind => {
+    const root = fixture(); const dir = join(root, kind === "node_modules" ? "node_modules" : "installation");
+    mkdirSync(dir); const path = binary(dir, "client");
+    if (kind === "world-writable ancestor") chmodSync(dir, 0o777);
+    if (kind === "world-writable file") chmodSync(path, 0o707);
+    if (kind === "group-writable file") chmodSync(path, 0o775);
+    const options = { env: { CE_TUNNEL_CLIENT_PATH: path }, ...(kind === "project" ? { projectRoot: root } : {}) };
+    expect(() => resolveTunnelClient(options)).toThrow("CE_EXECUTABLE_UNTRUSTED");
+    expect(diagnoseTunnelClient(options)).toBe("CE_EXECUTABLE_UNTRUSTED");
+  });
+  it("does not admit an explicit client owned by a different non-root uid", () => {
+    const path = binary(fixture(), "client");
+    const euid = vi.spyOn(process, "geteuid").mockReturnValue(2147483647);
+    try { expect(() => resolveTunnelClient({ env: { CE_TUNNEL_CLIENT_PATH: path } })).toThrow("CE_EXECUTABLE_UNTRUSTED"); }
+    finally { euid.mockRestore(); }
+  });
+  it.skipIf(process.platform !== "darwin").each(["file", "ancestor"])("explicit trust retains macOS allow ACL refusal on %s", kind => {
+    const root = fixture(); const path = binary(root, "client"); const subject = kind === "file" ? path : root;
+    execFileSync("/bin/chmod", ["+a", "everyone allow write", subject]);
+    try { expect(() => resolveTunnelClient({ env: { CE_TUNNEL_CLIENT_PATH: path } })).toThrow("CE_EXECUTABLE_UNTRUSTED"); }
+    finally { execFileSync("/bin/chmod", ["-N", subject]); }
+  });
+  it("admits the actual Homebrew wrapper target without invoking either file", () => {
+    const root = fixture(); const cellar = join(root, "Cellar with spaces"); mkdirSync(cellar); chmodSync(cellar, 0o775);
+    const target = binary(cellar, "client"); const targetLink = join(cellar, "client-link"); symlinkSync(target, targetLink);
+    const wrapper = join(root, "client-wrapper"); const link = join(root, "tunnel-client");
+    writeFileSync(wrapper, `#!/bin/bash\nexec "${targetLink}" "$@"\n`, { mode: 0o755 }); symlinkSync(wrapper, link);
+    expect(resolveTunnelClient({ env: { CE_TUNNEL_CLIENT_PATH: link } })).toBe(wrapper);
+    expect(resolveWrapperIdentityEvidence(wrapper)?.execTarget).toBe(targetLink);
+    const output = JSON.parse(execFileSync(wrapper, ["--input-type=commonjs", "-e",
+      "process.stdout.write(JSON.stringify({ executable: process.execPath, args: process.argv.slice(1) }))",
+      "--", "run", "--profile-file", "fixture-profile"], {
+      encoding: "utf8", env: { PATH: "/usr/bin:/bin", HOME: root }, timeout: 5_000,
+    }));
+    expect(output).toEqual({ executable: target, args: ["run", "--profile-file", "fixture-profile"] });
+    expect(diagnoseTunnelClient({ env: { CE_TUNNEL_CLIENT_PATH: link } })).toBe("TRUSTED_METADATA_ONLY");
+    chmodSync(target, 0o600);
+    expect(() => resolveTunnelClient({ env: { CE_TUNNEL_CLIENT_PATH: link } })).toThrow("CE_EXECUTABLE_UNTRUSTED");
+    expect(diagnoseTunnelClient({ env: { CE_TUNNEL_CLIENT_PATH: link } })).toBe("CE_EXECUTABLE_UNTRUSTED");
+  });
+  it.each(["$CLIENT", "`printf target`", "$(printf target)"])("does not claim literal exec identity for shell expansion %j", name => {
+    const root = fixture(); const target = binary(root, name); const wrapper = join(root, "wrapper");
+    writeFileSync(wrapper, `#!/bin/bash\nexec "${target}" "$@"\n`, { mode: 0o755 });
+    expect(resolveWrapperIdentityEvidence(wrapper)?.execTarget).toBeUndefined();
+  });
+  it("rejects a strict wrapper whose execTarget is missing or has unsafe ancestors", () => {
+    const root = fixture(); const dir = join(root, "target"); mkdirSync(dir);
+    const wrapper = join(root, "client-wrapper"); const target = join(dir, "client");
+    writeFileSync(wrapper, `#!/bin/bash\nexec "${target}" "$@"\n`, { mode: 0o755 });
+    const options = { env: { CE_TUNNEL_CLIENT_PATH: wrapper } };
+    expect(() => resolveTunnelClient(options)).toThrow("CE_EXECUTABLE_UNTRUSTED");
+    binary(dir, "client"); chmodSync(dir, 0o777);
+    expect(() => resolveTunnelClient(options)).toThrow("CE_EXECUTABLE_UNTRUSTED");
   });
 });
 

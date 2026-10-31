@@ -1,10 +1,11 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { acquireOwnership, bindSession, readCurrentOwnership } from "../../src/storage/ownership.js";
+import { acquireOwnership, bindSession, readCurrentOwnership, readFencingHighWater, readSessionLifecycle } from "../../src/storage/ownership.js";
+import { recoverExpiredOwnership } from "../../src/host/ownership-recovery.js";
 import { openStore } from "../../src/storage/store.js";
 import {
   capabilityFor,
@@ -12,6 +13,7 @@ import {
   fixture,
   NOW,
   participant,
+  rowCounts,
 } from "../storage/support/participant-fixture.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -131,6 +133,43 @@ describe("operator stale-ownership recovery CLI", () => {
     expect(result.stdout).not.toContain(active.databasePath);
   });
 
+  it("refuses stale evidence without writes while another recovery holds its committed takeover", () => {
+    const world = staleWorld("ce-recovery-window-");
+    const store = openStore({ directory: world.active.directory, filename: world.active.filename });
+    let refused = false;
+    try {
+      const receipt = recoverExpiredOwnership(store, {
+        adapter: "mcp", endpointId: "chatgpt-desktop",
+        expectedOwner: { sessionId: OLD_SESSION, fencingToken: 1, leaseStartedAt: at(-60), expiresAt: at(-30) },
+      }, {
+        afterTakeover: () => {
+          const owner = readCurrentOwnership(store, world.participantId)!;
+          expect(owner.fencingToken).toBe(2);
+          expect(owner.sessionId).not.toBe(OLD_SESSION);
+          const before = rowCounts(world.active);
+          const loser = spawnSync(process.execPath, [recoveryEntry,
+            "--config", world.configPath, "--confirm-endpoint", "mcp/chatgpt-desktop",
+            "--expect-owner-session", OLD_SESSION, "--expect-fencing-token", "1",
+            "--expect-lease-started-at", at(-60), "--expect-expires-at", at(-30),
+          ], { encoding: "utf8", timeout: 10_000 });
+          expect(loser.error).toBeUndefined();
+          expect(loser.status).toBe(1);
+          expect(loser.stdout).toBe("");
+          expect(loser.stderr).toBe("CE_RECOVERY_OWNER_MISMATCH\n");
+          expect(rowCounts(world.active)).toEqual(before);
+          expect(readCurrentOwnership(store, world.participantId)).toEqual(owner);
+          expect(readFencingHighWater(store, world.participantId)).toBe(2);
+          refused = true;
+        },
+      });
+      expect(refused).toBe(true);
+      expect(receipt.disposition).toBe("RECOVERED");
+      expect(readCurrentOwnership(store, world.participantId)).toBeUndefined();
+      expect(readFencingHighWater(store, world.participantId)).toBe(2);
+      expect(readSessionLifecycle(store, { participantId: world.participantId, sessionId: receipt.recoverySessionId }).state).toBe("DETACHED");
+    } finally { store.close(); }
+  });
+
   it("admits only one winner across concurrent recovery processes", async () => {
     const active = fixture("ce-recovery-concurrent-");
     const participantId = participant(active, "chatgpt-desktop", "create-chatgpt", "mcp").participant.participantId;
@@ -165,7 +204,20 @@ describe("operator stale-ownership recovery CLI", () => {
     const results = await Promise.all([run(args), run(args)]);
     expect(results.map((result) => result.code).sort()).toEqual([0, 1]);
     const loser = results.find((result) => result.code === 1)!;
-    expect(["CE_RECOVERY_OWNER_ABSENT\n", "CE_RECOVERY_RACE_LOST\n"]).toContain(loser.stderr);
+    // A loser may observe the winner after takeover commits but before release.
+    expect(["CE_RECOVERY_OWNER_ABSENT\n", "CE_RECOVERY_RACE_LOST\n", "CE_RECOVERY_OWNER_MISMATCH\n"]).toContain(loser.stderr);
+    expect(loser.stdout).toBe("");
+    const winner = results.find((result) => result.code === 0)!;
+    expect(JSON.parse(winner.stdout)).toMatchObject({
+      disposition: "RECOVERED", participantId,
+      takeover: { fencingToken: 2 },
+      final: { ownership: "UNOWNED", fencingHighWater: 2, recoverySession: "DETACHED" },
+    });
+    const store = openStore({ directory: active.directory, filename: active.filename });
+    try {
+      expect(readCurrentOwnership(store, participantId)).toBeUndefined();
+      expect(readFencingHighWater(store, participantId)).toBe(2);
+    } finally { store.close(); }
     expect(results.map((result) => result.stdout + result.stderr).join("\n")).not.toContain("cap_");
   });
 

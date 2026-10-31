@@ -53,6 +53,45 @@ jobs:
           fi
           pnpm format:check
 
+
+  tunnel-compat:
+    name: Tunnel compatibility (pinned 0.0.19)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "24.21.0"
+      - run: npm install --global pnpm@12.9.1
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Matrix and gate regression
+        working-directory: packages/pi-chat-exchange
+        run: |
+          node scripts/tunnel-compat.mjs validate
+          node --test scripts/test/tunnel-compat.check.mjs scripts/test/tunnel-workflow.check.mjs
+      - name: Build once for real local client lifecycle
+        run: pnpm --dir packages/pi-chat-exchange run build
+      - name: npm release entrypoint regression (substitutes only)
+        working-directory: packages/pi-chat-exchange
+        run: node --test scripts/test/npm-release.check.mjs
+      - name: Fixed official release, attestation and no-Cloud lifecycle
+        working-directory: packages/pi-chat-exchange
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/tunnel-compat.mjs run "$RUNNER_TEMP/tunnel-pinned/result.json" 0.0.19
+      - name: Upload sanitized result only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tunnel-pinned-result
+          path: ${{ runner.temp }}/tunnel-pinned/result.json
+          if-no-files-found: error
+          retention-days: 30
   # Real Native qualification. The immutable ce-sqlite-v0.1.0 release is downloaded, its checksums and
   # attestations are bound to the exact source commit, and an isolated HOME carries the pin. This never
   # edits the production NATIVE_COMPAT pins; it proves the default driver loads the attested bytes and

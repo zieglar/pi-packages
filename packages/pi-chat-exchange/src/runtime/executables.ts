@@ -7,6 +7,7 @@ import { resolveSqliteDriver } from "../storage/sqlite-driver-selection.js";
 import { createNodeSqliteDriver } from "../storage/sqlite-driver-node.js";
 import { createRustNativeDriver } from "../storage/sqlite-driver-rust.js";
 import type { SqliteDriver } from "../storage/sqlite-driver.js";
+import { resolveWrapperIdentityEvidence } from "./wrapper-identity.js";
 
 /** These are locations, not PATH search. Every discovered file still needs admission. */
 const SYSTEM_DIRECTORIES = ["/usr/local/bin", "/usr/bin", "/bin", "/opt/homebrew/bin"] as const;
@@ -53,7 +54,7 @@ function assertDarwinAclSafe(path: string): void {
 
 /** Admission is deliberately before probing. Same-account filesystem mutation is
  * outside this boundary; a private installation is required, not a signature claim. */
-function admitPath(path: string, options: ExecutableTrustOptions, kind: "executable" | "directory"): string {
+function admitPath(path: string, options: ExecutableTrustOptions, kind: "executable" | "directory", explicitClient = false): string {
   try {
     if (!isAbsolute(path) || normalize(path) !== path || /[\x00-\x1f\x7f]/.test(path)) untrusted();
     const project = options.projectRoot === undefined ? currentProjectRoot() : realpathSync(options.projectRoot);
@@ -70,7 +71,11 @@ function admitPath(path: string, options: ExecutableTrustOptions, kind: "executa
         assertDarwinAclSafe(candidate);
         // OS-owned sticky temp roots protect independently owned private children.
         const stickyRoot = stat.isDirectory() && stat.uid === 0 && (stat.mode & 0o1000) !== 0;
-        if ((stat.mode & 0o022) !== 0 && !stickyRoot) untrusted();
+        // Explicit client selection delegates ancestor group writers to the user.
+        // File writes, world writes, owner and ACL checks remain strict; Node and
+        // Native callers never receive this client-only directory exception.
+        const unsafeWrites = explicitClient && stat.isDirectory() ? 0o002 : 0o022;
+        if ((stat.mode & unsafeWrites) !== 0 && !stickyRoot) untrusted();
       }
       const parent = dirname(candidate);
       if (parent !== candidate) check(parent);
@@ -159,6 +164,13 @@ export function resolveApprovedNode(options: ExecutableResolutionOptions = {}): 
   return undefined;
 }
 
+function admitExplicitTunnelClient(path: string, options: ExecutableTrustOptions): string {
+  const canonical = admitPath(path, options, "executable", true);
+  resolveWrapperIdentityEvidence(canonical, target => {
+    admitPath(target, options, "executable", true);
+  });
+  return canonical;
+}
 export type TunnelClientDiagnosis = "TRUSTED_METADATA_ONLY" | "CE_TUNNEL_CLIENT_MISSING" | "CE_EXECUTABLE_UNTRUSTED";
 
 /** Diagnostic-only closed outcome. Same runtime admission, retaining discovery
@@ -167,7 +179,7 @@ export type TunnelClientDiagnosis = "TRUSTED_METADATA_ONLY" | "CE_TUNNEL_CLIENT_
 export function diagnoseTunnelClient(options: ExecutableResolutionOptions = {}): TunnelClientDiagnosis {
   const env = options.env ?? {};
   if (env.CE_TUNNEL_CLIENT_PATH !== undefined) {
-    try { admitExecutable(env.CE_TUNNEL_CLIENT_PATH, options); return "TRUSTED_METADATA_ONLY"; }
+    try { admitExplicitTunnelClient(env.CE_TUNNEL_CLIENT_PATH, options); return "TRUSTED_METADATA_ONLY"; }
     catch { return "CE_EXECUTABLE_UNTRUSTED"; }
   }
   let rejected = false;
@@ -187,7 +199,7 @@ export function diagnoseTunnelClient(options: ExecutableResolutionOptions = {}):
 /** Discovery is metadata-only: never execute a client to find or qualify it. */
 export function resolveTunnelClient(options: ExecutableResolutionOptions = {}): string | undefined {
   const env = options.env ?? {};
-  if (env.CE_TUNNEL_CLIENT_PATH !== undefined) return admitExecutable(env.CE_TUNNEL_CLIENT_PATH, options);
+  if (env.CE_TUNNEL_CLIENT_PATH !== undefined) return admitExplicitTunnelClient(env.CE_TUNNEL_CLIENT_PATH, options);
   for (const directory of options.systemDirectories ?? SYSTEM_DIRECTORIES) {
     try { return admitExecutable(join(directory, "tunnel-client"), options); } catch { /* Next controlled location. */ }
   }

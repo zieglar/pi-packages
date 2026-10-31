@@ -1,0 +1,47 @@
+name: Tunnel Client latest stable
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tunnel-latest-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  latest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24.21.0'
+      - run: npm install --global pnpm@12.9.1
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Validate maintained evidence and build
+        working-directory: packages/pi-chat-exchange
+        run: |
+          node scripts/tunnel-compat.mjs validate
+          pnpm run build
+      - name: Discover official latest, verify archive and run no-Cloud checks
+        working-directory: packages/pi-chat-exchange
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          node scripts/tunnel-compat.mjs run
+          "$RUNNER_TEMP/tunnel-latest/result.json" latest
+      - name: Upload sanitized result only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tunnel-latest-result
+          path: ${{ runner.temp }}/tunnel-latest/result.json
+          if-no-files-found: error
+          retention-days: 30

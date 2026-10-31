@@ -2,6 +2,16 @@
 
 # 更新日志
 
+## 0.2.2
+
+### 修复
+
+- 显式 `CE_TUNNEL_CLIENT_PATH` 表示用户对外部程序及安装路径写入者的信任委托，允许祖先目录 group-write；自动发现继续严格准入。仍拒绝文件自身 group-write、world-write、异常 owner、macOS allow/未知 ACL 和项目路径。
+- 验证可识别的 Homebrew wrapper 字面 execTarget；不将 `$` 或反引号展开误认为字面执行身份证据。Node、Native、凭据传递、进程 ownership、Stop/Recovery 不变。
+- 本地 RC 使用物理 tarball 验证，npm 正式版仍为 0.2.1。[兼容矩阵](compatibility/README.md)记录与源码匹配的 0.0.19 macOS arm64 legacy identity 手工双向 Cloud E2E 及 Linux x64 合成生命周期检查。历史 0.0.16 证据仅限记录中的 RC 运行时；0.0.18 和真实 namespaced Cloud 仍为 NOT_VERIFIED。独立 latest 监测和实际同次运行发布集成仍为 NOT_VERIFIED。
+- 其他有效写入者可替换获准程序，恶意 client 可读取用户 Tunnel 凭据；不承诺消除检查到执行之间的竞争窗口。无需修改 Homebrew 权限或绕过 Gatekeeper。
+- 受管 profile 显式设置 `MCP_STDIO_FAILURE_POLICY=exit`，覆盖父环境的 restart 策略。在 0.0.19 中，MCP child 失败会使 client 退出，不再重启 child。CE 不自动拉起、接管 ownership 或重试消息；重新启动前应检查 ownership 并由操作者显式恢复。兼容范围以矩阵中的精确条目为限，包括旧 client 的历史范围。
+
 ## 0.2.1
 
 0.2.1 包含：

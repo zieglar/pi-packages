@@ -29,6 +29,13 @@ function render(projection: TunnelManagerUiProjection, width: number, theme = PL
 }
 
 describe("tunnel manager visual panel", () => {
+  it("accepts the domain-masked namespaced prefix without exposing a full ID", () => {
+    const masked = "tunnel_ab12_a…";
+    expect(render({ ...CONNECTED, tunnelIdAlreadyMasked: masked }, 72).join("\n")).toContain(masked);
+    const full = `tunnel_ab12_${"a".repeat(32)}`;
+    expect(render({ ...CONNECTED, tunnelIdAlreadyMasked: full }, 72).join("\n")).not.toContain(full);
+  });
+
   it("projects complete Store and Exchange facts separately from runtime", () => {
     const messaging = { configured: true, payloadRead: true, ack: true, storeDirectory: "/actual/store", storeFile: "/actual/store/ce.sqlite", exchangeNamespace: "namespace", exchangeIdempotencyKey: "idem-key" };
     const model = tunnelPanelModel({ ...CONNECTED, messaging }, "details");

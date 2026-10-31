@@ -18,6 +18,7 @@
  */
 import { isAbsolute, join, normalize } from "node:path";
 import { TunnelRefusal } from "./codes.js";
+import { TUNNEL_ID_PATTERN } from "./tunnel-id.js";
 import { APPROVED_NODE_VERSION } from "../storage/runtime.js";
 
 /** Configuration-shaped refusal for profile construction. */
@@ -54,7 +55,6 @@ export interface TunnelProfile {
   readonly localUiExposureAcknowledged: true;
 }
 
-const TUNNEL_ID_PATTERN = /^tunnel_[A-Za-z0-9]{8,}$/;
 const CREDENTIAL_SHAPED = /(sk-[A-Za-z0-9_-]{8,})|(cap_[0-9a-f]{16,})|(BEGIN [A-Z ]*PRIVATE KEY)/i;
 
 // Exact CE stdio argv, single-space separators, narrow ASCII paths. Space-
@@ -216,7 +216,9 @@ export function serializeTunnelProfile(profile: TunnelProfile): string {
 const ALLOWED_ENV_PATTERN = /^(PATH|HOME|TMPDIR|LANG|LC_[A-Z_]+|TZ|TERM|SSL_CERT_FILE|SSL_CERT_DIR)$/;
 
 export function childEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
+  // Keep recovery explicit: 0.0.19 otherwise restarts the MCP child internally.
+  // Older clients ignore this env setting; new YAML/flags would break rollback.
+  const env: NodeJS.ProcessEnv = { MCP_STDIO_FAILURE_POLICY: "exit" };
   for (const [name, value] of Object.entries(source)) {
     if (ALLOWED_ENV_PATTERN.test(name)) env[name] = value;
   }
