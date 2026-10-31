@@ -27,7 +27,7 @@
  */
 import { runSessionConfiguration } from "./multi-session-commands.js";
 import { PiMultiSessionRuntime, runtimeEnvironment } from "./multi-session-runtime.js";
-import { readSelectedMultiSessionPolicy, projectPiRegistration, type MultiSessionSnapshot } from "../dist/tunnel/multi-session-policy.js";
+import { readSelectedMultiSessionPolicy, projectPiRegistration, effectivePiHookRules, type MultiSessionSnapshot } from "../dist/tunnel/multi-session-policy.js";
 import { runSetupWizard, presentTunnelStatus } from "../dist/tunnel/setup-ui.js";
 import { confirmMessagingActivation } from "../dist/tunnel/messaging-activation-ui.js";
 import { piTunnelKeyProtocol } from "./tui-keys.js";
@@ -35,6 +35,7 @@ import { createTunnelProfileSetup, readGeneratedPiAllowlist } from "../dist/tunn
 import { resolveTunnelProfilePath } from "../dist/tunnel/background-manager.js";
 import { validMessagingStore } from "../dist/tunnel/messaging-config.js";
 import { runTunnelManagerUi, type TunnelManagerUiProjection } from "../dist/tunnel/manager-ui.js";
+import { isDeepStrictEqual } from "node:util";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -632,7 +633,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   let hookConfig = loadedHookConfiguration(allowlist);
   let hookRunner: CeHookRunner | undefined;
   let hookClose: Promise<void> | undefined;
-  const hookSource = multiPolicy !== undefined ? "selected multi-session profile (Hooks unsupported)" : process.env.CE_ALLOWLIST ? "CE_ALLOWLIST" : "generated profile / package allowlist";
+  const hookSource = multiPolicy !== undefined ? "selected multi-session profile registration" : process.env.CE_ALLOWLIST ? "CE_ALLOWLIST" : "generated profile / package allowlist";
   const hookSnapshot = (): CeHookAuditSnapshot => hookRunner?.snapshot() ?? ({
     configured: hookConfig.rules.length,
     active: hookConfig.rules.filter(rule => rule.enabled).length,
@@ -703,6 +704,15 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       const runner = new CeHookRunner({
         directory: envOr("CE_STORE_DIR", allowlistStore(allowlist)?.directory ?? join(EXTENSION_DIR, "store")),
         rules: hookConfig.rules,
+        ...(multiPolicy === undefined ? {} : { admit: (rule, event) => {
+          const loaded = multiPolicy;
+          const runtime = multiRuntime;
+          if (loaded === undefined || runtime === undefined || generation === undefined) return false;
+          if (event !== undefined && (event.sender.adapter !== "pi" || event.sender.endpointId !== generation.endpointId)) return false;
+          try {
+            return runtime.run("hook", () => effectivePiHookRules(loaded, readSelectedMultiSessionPolicy(loaded.profilePath), generation!.piSessionId).some(candidate => isDeepStrictEqual(candidate, rule)));
+          } catch { return false; }
+        } }),
       });
       hookRunner = runner;
       const sessions = Object.entries(allowlist.sessions ?? {}).map(([piSessionId, entry]) => ({

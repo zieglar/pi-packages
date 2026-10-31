@@ -10,9 +10,13 @@ CE 0.3 提供显式启用的本地 Hook，在消息提交后通知本地程序�
 
 ## 配置
 
-在操作者控制的 MCP binding 或 Pi allowlist 中增加可选 `hooks` 数组；缺省表示没有 Hook。规则来自已经加载的配置，`/ce-hooks` 不会把之后的磁盘修改误报为 Active。
+在操作者控制的 MCP binding、显式 `CE_ALLOWLIST`／旧版 Pi allowlist，或所选多会话 manifest 的各 registration 中增加可选 `hooks` 数组；缺省表示没有 Hook，保持向后兼容。
 
-本轮支持 MCP binding 文件与显式 `CE_ALLOWLIST`／旧版 Pi allowlist。selected multi-session profile registration 尚不承载 Hook 规则，`/ce-hooks` 会注明此模式不支持。MCP 与 Pi 配置独立：ChatGPT → Pi 规则放在发送方 MCP binding，Pi → ChatGPT 规则放在发送方 Pi allowlist。
+MCP 与 Pi 配置独立。ChatGPT → Pi 规则放在 MCP binding 的 `hooks` 中；多会话模式下，recipient 必须是已注册且 active 的 Pi Endpoint。Pi → ChatGPT 规则放在 Pi allowlist 的 `hooks` 中，或现有 `ce-multi-session-v1` manifest 对应 `registrations[]` 项的 `hooks` 中。各 registration 使用下方相同的规则语法，`recipient` 必须精确等于 `manifest.chatgptEndpoint`。manifest 没有全局 `hooks` 字段。Pi 仅投影对应 registration 的规则，Hook 不创建新权限。
+
+多会话模式的有效规则是已加载快照与当前所选 generation 中完全相同且均 enabled 的静态规则交集。两侧 registration 的身份、Endpoint、epoch 和 active 状态必须持续有效；MCP 规则对应的已注册 recipient 也必须仍获准使用。移除、禁用或修改规则可立即收窄执行范围。当前配置新增或修改的规则不能扩大已加载快照；新增规则须通过正常生命周期重新加载所属进程／配置。
+
+下方 JSON 是编写配置的片段，不是完整配置。多会话 MCP binding 与 manifest 是不可变 generation 内分别存储、通过 digest 配对的文件。应离线准备编写输入，再经现有、获操作者授权的受控 generation 流程发布；不要原地修改生产环境的内容寻址文件。本功能没有自动迁移或 Hook 配置 CLI，`/ce-tunnel convert` 与 `/ce-tunnel register` 不提供添加 Hook 的参数。
 
 ```json
 {
@@ -51,7 +55,9 @@ MCP 会在 Store 启动前拒绝无效 Hook 配置。Pi 会报告配置无效并
 
 每个 Runner 最多有 1 个活跃子进程和 32 个等待项，溢出记录 `SKIPPED_QUEUE_FULL`。子进程 stdout/stderr 会被忽略，不能污染 MCP stdio 或写入 CE 日志；仅提供最小环境。
 
-按实际情况记录 `SUCCEEDED`、`FAILED`、`SPAWN_FAILED`、`TIMEOUT`、`SKIPPED_QUEUE_FULL` 和 `SKIPPED_SHUTDOWN`。脚本失败、程序缺失或超时不会自动重试，也不改变已提交的 send 结果、Delivery、ACK、Pi 状态或 Wayforge 完成判定。Shutdown 跳过未开始的工作；启动时不扫描旧 Audit，也不重放脚本。超时或缺少结束记录不能证明脚本没有副作用。
+Runner 的可选准入门禁在每次实际启动子进程前检查当前策略，包括已排队的工作。拒绝时记录 `SKIPPED_POLICY_DENIED`，不启动子进程；不会取消已经运行的子进程。
+
+按实际情况记录 `SUCCEEDED`、`FAILED`、`SPAWN_FAILED`、`TIMEOUT`、`SKIPPED_QUEUE_FULL`、`SKIPPED_SHUTDOWN` 和 `SKIPPED_POLICY_DENIED`。脚本失败、程序缺失或超时不会自动重试，也不改变已提交的 send 结果、Delivery、ACK、Pi 状态或 Wayforge 完成判定。Shutdown 跳过未开始的工作；启动时不扫描旧 Audit，也不重放脚本。超时或缺少结束记录不能证明脚本没有副作用。
 
 Shutdown 对活跃的直接子进程等待至其配置超时，CE ownership 释放不等待该脚本。超时向直接子进程发送 SIGKILL；这不是 sandbox，也不保证脚本派生进程或外部副作用已停止。
 
@@ -65,4 +71,4 @@ Shutdown 对活跃的直接子进程等待至其配置超时，CE ownership 释�
 /ce-hooks
 ```
 
-命令显示当前进程实际加载的快照：Hook ID、event、精确 recipient、command、固定 args、timeout、enabled/disabled 和配置来源。它不会重新加载文件，也不会显示环境变量的值。MCP 启动时在 stderr 输出对应的脱敏数量摘要。
+命令显示已加载的规则：Hook ID、event、精确 recipient、command、固定 args、timeout、enabled/disabled 和配置来源。`configured` 是已加载规则数；多会话模式下，`active` 是当前有效交集数量，来源显示为 `selected multi-session profile registration`。命令检查当前策略的准入结果，但不把新增规则加载进快照，也不显示环境变量的值。MCP 启动时在 stderr 输出对应的脱敏数量摘要。

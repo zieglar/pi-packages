@@ -6,7 +6,7 @@ import type { CeCommittedMessageEvent } from "./events.js";
 
 const MAX_PENDING = 32;
 
-type ExecutionStatus = "STARTED" | "SUCCEEDED" | "FAILED" | "TIMEOUT" | "SPAWN_FAILED" | "SKIPPED_QUEUE_FULL" | "SKIPPED_SHUTDOWN";
+type ExecutionStatus = "STARTED" | "SUCCEEDED" | "FAILED" | "TIMEOUT" | "SPAWN_FAILED" | "SKIPPED_QUEUE_FULL" | "SKIPPED_SHUTDOWN" | "SKIPPED_POLICY_DENIED";
 
 interface ExecutionRecord {
   readonly hookId: string;
@@ -29,6 +29,8 @@ interface QueueItem {
 export interface CeHookRunnerOptions {
   readonly directory: string;
   readonly rules: readonly CeHookRule[];
+  /** Deny-only local policy, checked for audit and immediately before process start. */
+  readonly admit?: (rule: CeHookRule, event?: CeCommittedMessageEvent) => boolean;
 }
 
 export interface CeHookAuditSnapshot {
@@ -42,6 +44,7 @@ export interface CeHookAuditSnapshot {
 export class CeHookRunner {
   readonly #directory: string;
   readonly #rules: readonly CeHookRule[];
+  readonly #admit: CeHookRunnerOptions["admit"];
   readonly #queue: QueueItem[] = [];
   #draining: Promise<void> | undefined;
   #closed = false;
@@ -49,14 +52,12 @@ export class CeHookRunner {
   constructor(options: CeHookRunnerOptions) {
     this.#directory = options.directory;
     this.#rules = Object.freeze([...options.rules]);
+    this.#admit = options.admit;
   }
 
   snapshot(): CeHookAuditSnapshot {
-    return Object.freeze({
-      configured: this.#rules.length,
-      active: this.#rules.filter(rule => rule.enabled).length,
-      rules: Object.freeze(this.#rules.map(rule => Object.freeze({ ...rule, recipient: Object.freeze({ ...rule.recipient }), args: Object.freeze([...rule.args]) }))),
-    });
+    const rules = Object.freeze(this.#rules.map(rule => Object.freeze({ ...rule, enabled: rule.enabled && this.#allowed(rule), recipient: Object.freeze({ ...rule.recipient }), args: Object.freeze([...rule.args]) })));
+    return Object.freeze({ configured: this.#rules.length, active: rules.filter(rule => rule.enabled).length, rules });
   }
 
   publish(input: CeCommittedMessageEvent): void {
@@ -118,7 +119,15 @@ export class CeHookRunner {
     }
   }
 
+  #allowed(rule: CeHookRule, event?: CeCommittedMessageEvent): boolean {
+    try { return this.#admit === undefined || this.#admit(rule, event); } catch { return false; }
+  }
+
   async #execute(rule: CeHookRule, event: CeCommittedMessageEvent): Promise<void> {
+    if (!this.#allowed(rule, event)) {
+      this.#record(rule, event, "SKIPPED_POLICY_DENIED", null, new Date().toISOString());
+      return;
+    }
     const startedAt = new Date().toISOString();
     const startedMs = Date.now();
     this.#record(rule, event, "STARTED", startedAt, null);

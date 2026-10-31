@@ -148,4 +148,41 @@ describe("real local Hook Runner", () => {
     expect(JSON.parse(readFileSync(output, "utf8")).messageId).toBe(event().messageId);
   });
 
+  it("rechecks policy before queued execution and reports only effective active rules", async () => {
+    const directory = root();
+    const output = join(directory, "event.json");
+    let allowed = true;
+    const rule = parseHookRules([{ id: "gated", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: "pi/main" }, command: process.execPath, args: [notifyScript(directory), output] }])[0]!;
+    const runner = new CeHookRunner({ directory, rules: [rule], admit: () => allowed });
+    try {
+      runner.publish(event());
+      await vi.waitFor(() => expect(records(directory).some(row => row.status === "SUCCEEDED")).toBe(true));
+      allowed = false;
+      expect(runner.snapshot().active).toBe(0);
+      runner.publish(event(undefined, "2"));
+      await vi.waitFor(() => expect(records(directory).some(row => row.status === "SKIPPED_POLICY_DENIED")).toBe(true));
+      expect(JSON.parse(readFileSync(output, "utf8")).messageId).toBe(event().messageId);
+    } finally { await runner.close(); }
+  });
+
+  it("denies a queued item revoked while the earlier direct child was active", async () => {
+    const directory = root();
+    const started = join(directory, "started");
+    const finish = join(directory, "finish");
+    const script = join(directory, "wait.mjs");
+    writeFileSync(script, `import fs from "node:fs"; fs.writeFileSync(process.argv[2], "started"); const timer=setInterval(() => { if(fs.existsSync(process.argv[3])) { clearInterval(timer); process.exit(0); } }, 10);`);
+    let allowed = true;
+    const rule = parseHookRules([{ id: "queued", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: "pi/main" }, command: process.execPath, args: [script, started, finish], timeoutMs: 5000 }])[0]!;
+    const runner = new CeHookRunner({ directory, rules: [rule], admit: () => allowed });
+    try {
+      runner.publish(event());
+      await vi.waitFor(() => expect(existsSync(started)).toBe(true));
+      runner.publish(event(undefined, "2"));
+      allowed = false;
+      writeFileSync(finish, "done");
+      await vi.waitFor(() => expect(records(directory).some(row => row.status === "SKIPPED_POLICY_DENIED")).toBe(true));
+      expect(records(directory).filter(row => row.status === "STARTED")).toHaveLength(1);
+    } finally { writeFileSync(finish, "done"); await runner.close(); }
+  });
+
 });

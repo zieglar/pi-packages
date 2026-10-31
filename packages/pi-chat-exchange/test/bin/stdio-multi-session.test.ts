@@ -2,12 +2,15 @@ import fs from "node:fs";
 import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { multiSessionFixture } from "../tunnel/support/multi-session-fixture.js";
 import { CeEndpointHost } from "../../src/host/endpoint-host.js";
 import { initializeStore, openStore } from "../../src/storage/store.js";
 import { readCurrentOwnership, readSessionBindings } from "../../src/storage/ownership.js";
 import { readParticipantByEndpoint } from "../../src/storage/participant.js";
+import { publishMessagingGeneration } from "../../src/tunnel/messaging-config.js";
+import { parseTunnelProfile } from "../../src/tunnel/background-manager.js";
+import { replaceTunnelMcpBindingPath } from "../../src/tunnel/profile.js";
 
 const qualificationChildren = [...new Set(["A", "B", "C", "D", "E", "F", "G"].map((label) => process.env[`CE_TEST_NODE_${label}`])
   .filter((path): path is string => typeof path === "string" && path.length > 0))];
@@ -79,4 +82,43 @@ it.each(qualificationChildren)("actual MCP child %s intersects loaded/current gr
     await client.close(); await transport.close();
     pi.end("pi/A"); pi.end("pi/B"); store.close(); f.cleanup();
   }
+});
+
+it("actual multi-session MCP Hook uses loaded rules and honors current removal", { timeout: 15000 }, async () => {
+  const f = await multiSessionFixture();
+  const output = resolve(f.dir, "notify.json");
+  const script = resolve(f.dir, "notify.mjs");
+  fs.writeFileSync(script, `import fs from "node:fs"; fs.writeFileSync(process.argv[2], fs.readFileSync(0,"utf8"));`);
+  const select = (config: ReturnType<typeof f.selected>["config"]) => {
+    const s = f.selected();
+    const pair = publishMessagingGeneration(f.profilePath, config, { ...s.manifest });
+    const text = fs.readFileSync(f.profilePath, "utf8");
+    const command = parseTunnelProfile(text).mcpCommand!;
+    fs.writeFileSync(f.profilePath, text.replace(command, replaceTunnelMcpBindingPath(command, pair.bindingPath)));
+  };
+  select({ ...f.selected().config, hooks: [{ id: "mcp-notify", event: "ce.message.committed.v1", recipient: { adapter: "pi", endpointId: "pi/A" }, command: process.execPath, args: [script, output], timeoutMs: 5000, enabled: true }] });
+  const transport = new StdioClientTransport({ command: process.execPath, args: [resolve("dist/bin/mcp-stdio.js"), "--config", f.selected().bindingPath], stderr: "pipe" });
+  const client = new Client({ name: "hook-multi", version: "1" });
+  try {
+    await client.connect(transport);
+    const first = await client.callTool({ name: "ce_send", arguments: { to: "pi/A", text: "no body exposure", idempotencyKey: "hook-one" } });
+    expect(first.isError).not.toBe(true);
+    const executionLog = resolve(f.selected().config.store.directory, "ce-hooks", "executions.jsonl");
+    await vi.waitFor(() => {
+      const rows = fs.readFileSync(executionLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
+      expect(rows).toContainEqual(expect.objectContaining({ hookId: "mcp-notify", status: "SUCCEEDED", messageId: (first.structuredContent as { messageId: string }).messageId }));
+    }, { timeout: 5000 });
+    const notification = fs.readFileSync(output, "utf8");
+    expect(JSON.parse(notification).messageId).toBe((first.structuredContent as { messageId: string }).messageId);
+    select({ ...f.selected().config, hooks: [] });
+    const second = await client.callTool({ name: "ce_send", arguments: { to: "pi/A", text: "still durable", idempotencyKey: "hook-two" } });
+    expect(second.isError).not.toBe(true);
+    await vi.waitFor(() => {
+      const rows = fs.readFileSync(executionLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
+      expect(rows).toContainEqual(expect.objectContaining({ hookId: "mcp-notify", status: "SKIPPED_POLICY_DENIED", messageId: (second.structuredContent as { messageId: string }).messageId }));
+    }, { timeout: 5000 });
+    await client.close(); await transport.close();
+    expect(fs.readFileSync(output, "utf8")).toBe(notification);
+    expect(fs.readFileSync(resolve(f.selected().config.store.directory, "ce-hooks", "executions.jsonl"), "utf8")).toContain("SKIPPED_POLICY_DENIED");
+  } finally { await client.close(); await transport.close(); f.cleanup(); }
 });

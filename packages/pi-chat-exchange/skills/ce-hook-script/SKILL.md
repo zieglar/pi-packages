@@ -15,12 +15,13 @@ Hooks run after a new Message and Payload successfully commit to Store, without 
 | --- | --- | --- |
 | ChatGPT → Pi | Sender MCP binding configuration, top-level `hooks` | `{ "adapter": "pi", "endpointId": "pi/main" }` |
 | Pi → ChatGPT | Sender Pi explicit `CE_ALLOWLIST` file or legacy allowlist, top-level `hooks` | `{ "adapter": "chatgpt", "endpointId": "chatgpt/main" }` |
+| Pi → ChatGPT (multi-session) | Selected `ce-multi-session-v1` manifest, the sending Session's `registrations[]` item, optional `hooks` | Exactly `manifest.chatgptEndpoint` |
 
-Replace sample Endpoint IDs with the actual complete recipient identity. The currently selected multi-session profile does **not** support Hook rules. Do not add `hooks` to that profile or silently switch configuration modes. Use an operator-controlled supported configuration when appropriate.
+Replace sample Endpoint IDs with the actual complete recipient identity. In multi-session mode, MCP → Pi rules remain in binding `hooks` and must target active registered Pi Endpoints. Pi projects only the selected Session registration's rules. There is no global manifest `hooks` field or new permission; absence remains backward compatible. Do not silently switch configuration modes.
 
 ## Static local rule
 
-Locate the actual interpreter with `python3 -c 'import sys; print(sys.executable)'`. Resolve the bundled script to its absolute installed path. Prepare an operator-owned private directory (mode 0700) outside Store for notifications. Replace all illustrative paths below with absolute local paths; keep interpreter, script, and output filename fixed in local configuration. Merge this array into the existing supported configuration, preserving its other required fields:
+Locate the actual interpreter with `python3 -c 'import sys; print(sys.executable)'`. Resolve the bundled script to its absolute installed path. Prepare an operator-owned private directory (mode 0700) outside Store for notifications. Replace all illustrative paths below with absolute local paths; keep interpreter, script, and output filename fixed in local configuration. Use this fragment in operator-controlled authoring inputs, preserving all other required fields. For multi-session Pi, place the array on the relevant manifest registration. MCP binding and manifest are separate digest-paired files in an immutable generation: prepare inputs offline and publish through the existing operator-authorized controlled generation path. Never edit production content-addressed files in place. There is no automatic migration or new Hook CLI; `/ce-tunnel convert` and `/ce-tunnel register` have no flags for adding Hooks:
 
 ```json
 {
@@ -38,7 +39,7 @@ Locate the actual interpreter with `python3 -c 'import sys; print(sys.executable
 }
 ```
 
-For Pi → ChatGPT, use the same static command and args in the Pi allowlist, with a distinct rule ID and `recipient` exactly `{ "adapter": "chatgpt", "endpointId": "chatgpt/main" }`. Matching requires both event and complete recipient. Timeout accepts 1000–60000 ms. CE directly spawns the interpreter with `shell:false`; never interpolate remote content or metadata into paths, arguments, or shell code. Remote messages cannot select commands.
+For Pi → ChatGPT, use the same static command and args in the Pi allowlist or corresponding multi-session manifest registration, with a distinct rule ID and the actual ChatGPT recipient (exactly `manifest.chatgptEndpoint` in multi-session mode). Matching requires both event and complete recipient. Timeout accepts 1000–60000 ms. CE directly spawns the interpreter with `shell:false`; never interpolate remote content or metadata into paths, arguments, or shell code. Remote messages cannot select commands.
 
 ## stdin contract
 
@@ -54,6 +55,8 @@ The example bounds input to 16384 bytes, rejects duplicate/unknown fields and in
 
 ## Audit and failure handling
 
-Pi `/ce-hooks` displays the **loaded snapshot**, including configuration source, fixed command/args, recipient and active/configured counts. It does not reread disk edits. Reload the owning process/configuration through its normal lifecycle to apply changes. MCP reports sanitized counts on stderr.
+Pi `/ce-hooks` displays the **loaded rules**, including configuration source, fixed command/args and recipient. `configured` counts loaded rules; in multi-session mode `active` counts the effective current subset, with source `selected multi-session profile registration`. Only identical enabled static rules in both loaded and current policy remain effective, with matching registration identity, Endpoint and epoch, and active status in both. MCP rules additionally require an admitted registered recipient. Current policy can narrow the loaded snapshot but cannot expand it; additions or changed rules require reloading the owning process/configuration through its normal lifecycle. MCP reports sanitized counts on stderr.
+
+An optional runner admission gate checks current policy before each child starts, including queued work. Denial records `SKIPPED_POLICY_DENIED` without spawning; already running children are not cancelled by this check.
 
 Execution records are `<store.directory>/ce-hooks/executions.jsonl`. The runner ignores child stdout/stderr. Failures, timeouts, queue overflow and shutdown skips do not change delivery, ACK, task completion, or the committed send result. There is no automatic retry, startup replay, or exactly-once guarantee. Do not replay side-effecting scripts after a missing final record or timeout: a notification may already have been written. This example is a notification sink, not a durable task queue or deduplication mechanism.

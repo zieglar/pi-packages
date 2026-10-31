@@ -39,6 +39,8 @@ import { observeTransport } from "../control/mcp/debug-transport.js";
 import { initializeStore, openStore } from "../storage/store.js";
 import { createMcpPolicyAdmission } from "../tunnel/multi-session-admission.js";
 import { CeHookRunner } from "../hooks/runner.js";
+import { isDeepStrictEqual } from "node:util";
+import { effectiveMcpHookRules, readLoadedMultiSessionPolicy, readSelectedMultiSessionPolicy } from "../tunnel/multi-session-policy.js";
 
 debugEvent("server", "SERVER_ENTRY", { version: process.version });
 // Monitor rather than handle exceptions: preserve Node's fatal exit behavior.
@@ -107,7 +109,14 @@ async function main(): Promise<void> {
   const admission = createMcpPolicyAdmission(config, configPath);
   admission?.({ kind: "begin" });
 
-  const hookRunner = new CeHookRunner({ directory: config.store.directory, rules: config.hooks ?? [] });
+  const loadedHookPolicy = config.admissionPolicy === undefined ? undefined : readLoadedMultiSessionPolicy(config.admissionPolicy.profilePath, configPath);
+  const hookRunner = new CeHookRunner({
+    directory: config.store.directory, rules: config.hooks ?? [],
+    ...(loadedHookPolicy === undefined ? {} : { admit: (rule, event) => {
+      if (event !== undefined && !isDeepStrictEqual(event.sender, config.endpoint)) return false;
+      return effectiveMcpHookRules(loadedHookPolicy, readSelectedMultiSessionPolicy(loadedHookPolicy.profilePath)).some(candidate => isDeepStrictEqual(candidate, rule));
+    } }),
+  });
   const hookAudit = hookRunner.snapshot();
   console.error(`CE_HOOKS_ACTIVE active=${hookAudit.active} configured=${hookAudit.configured} rules=${hookAudit.rules.filter(rule => rule.enabled).map(rule => rule.id).join(",") || "none"}`);
   const host = new CeEndpointHost(openBindingStore(config), {

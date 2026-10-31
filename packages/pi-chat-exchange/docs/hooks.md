@@ -10,9 +10,13 @@ Rules match the committed recipient's complete Endpoint identity (`adapter` plus
 
 ## Configuration
 
-Add an optional `hooks` array to the operator-controlled MCP binding or Pi allowlist. Absence means no Hooks. Rules are parsed from the loaded configuration; `/ce-hooks` never treats later disk edits as active.
+Add an optional `hooks` array to the operator-controlled MCP binding, explicit `CE_ALLOWLIST` / legacy Pi allowlist, or each selected multi-session manifest registration. Absence means no Hooks and remains backward compatible.
 
-This iteration supports MCP binding files and the explicit `CE_ALLOWLIST` / legacy Pi allowlist. Selected multi-session profile registrations do not carry Hook rules; `/ce-hooks` reports this mode as unsupported. MCP and Pi configurations are independent: configure ChatGPT → Pi on the sending MCP binding, and Pi → ChatGPT on the sending Pi allowlist.
+MCP and Pi configurations are independent. ChatGPT → Pi rules belong in MCP binding `hooks`; in multi-session mode their recipients must be active registered Pi Endpoints. Pi → ChatGPT rules belong in Pi allowlist `hooks`, or in the relevant `registrations[]` item's `hooks` in the existing `ce-multi-session-v1` manifest. Each registration uses the same rule grammar below, with `recipient` exactly equal to `manifest.chatgptEndpoint`. There is no global manifest `hooks` field. Pi projects only that registration's rules; Hooks create no new permissions.
+
+In multi-session mode, effective rules are the identical, enabled static rules present in both the loaded snapshot and current selected generation. Registration identity, Endpoint, epoch and active status must remain valid in both; MCP rules also require the corresponding registered recipient to remain admitted. Removing, disabling or changing a rule can narrow execution immediately. Adding or changing current rules cannot widen the loaded snapshot: additions require reloading the owning process/configuration through its normal lifecycle.
+
+The JSON below is an authoring fragment, not a complete configuration. Multi-session MCP binding and manifest are separate, digest-paired files in an immutable generation. Prepare authoring inputs offline and publish through the existing operator-authorized controlled generation path; never edit production content-addressed files in place. No automatic migration or Hook configuration CLI is provided. `/ce-tunnel convert` and `/ce-tunnel register` do not accept flags to add Hooks.
 
 ```json
 {
@@ -51,7 +55,9 @@ A script that needs message text must use an independently authorized Endpoint t
 
 Each runner has at most one active child and 32 pending items. Overflow is recorded as `SKIPPED_QUEUE_FULL`. Child stdout and stderr are ignored so they cannot corrupt MCP stdio or leak into CE logs. Only a minimal environment is supplied.
 
-The runner records `SUCCEEDED`, `FAILED`, `SPAWN_FAILED`, `TIMEOUT`, `SKIPPED_QUEUE_FULL`, and `SKIPPED_SHUTDOWN` as applicable. A failed, missing, or timed-out program is never retried automatically and does not change the committed send result, Delivery, ACK, Pi state, or Wayforge completion. Shutdown skips unstarted work; startup never scans old Audit rows or replays scripts. Timeout or a missing final record does not prove the script had no side effects.
+The runner's optional admission gate checks current policy before each actual child starts, including queued work. A denied check records `SKIPPED_POLICY_DENIED` without spawning a child; it does not cancel an already running child.
+
+The runner records `SUCCEEDED`, `FAILED`, `SPAWN_FAILED`, `TIMEOUT`, `SKIPPED_QUEUE_FULL`, `SKIPPED_SHUTDOWN`, and `SKIPPED_POLICY_DENIED` as applicable. A failed, missing, or timed-out program is never retried automatically and does not change the committed send result, Delivery, ACK, Pi state, or Wayforge completion. Shutdown skips unstarted work; startup never scans old Audit rows or replays scripts. Timeout or a missing final record does not prove the script had no side effects.
 
 Shutdown waits for the active direct child within its configured timeout while CE releases its ownership independently. Timeout sends SIGKILL to that child; it is not a sandbox or a guarantee that descendants or external side effects stopped.
 
@@ -65,4 +71,4 @@ Pi startup reports the active and configured Hook counts when Hook configuration
 /ce-hooks
 ```
 
-The command displays the currently loaded snapshot: Hook ID, event, exact recipient, command, fixed args, timeout, enabled/disabled state, and configuration source. It does not reload the file or display environment-variable values. MCP writes a corresponding sanitized active/configured summary to stderr at startup.
+The command displays the loaded rules: Hook ID, event, exact recipient, command, fixed args, timeout, enabled/disabled state, and configuration source. `configured` counts loaded rules; in multi-session mode `active` counts the effective current subset, and the source is `selected multi-session profile registration`. It checks current policy for admission without loading new rules into the snapshot, and does not display environment-variable values. MCP writes a corresponding sanitized active/configured summary to stderr at startup.
