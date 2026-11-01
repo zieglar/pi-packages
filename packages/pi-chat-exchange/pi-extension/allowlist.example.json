@@ -7,5 +7,16 @@
   "recipients": [{ "adapter": "mcp", "endpointId": "chatgpt-desktop" }],
   "sessions": {
     "pi-main": { "endpointId": "pi-main" }
-  }
+  },
+  "hooks": [
+    {
+      "id": "pi-notify-example",
+      "event": "ce.message.committed.v1",
+      "recipient": { "adapter": "mcp", "endpointId": "chatgpt-desktop" },
+      "command": "/absolute/path/to/node",
+      "args": ["/absolute/path/to/local-hook.mjs"],
+      "timeoutMs": 30000,
+      "enabled": false
+    }
+  ]
 }

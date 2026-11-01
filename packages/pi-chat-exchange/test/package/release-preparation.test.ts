@@ -7,7 +7,7 @@ const read = (path: string) => readFileSync(resolve(root, path), "utf8");
 
 it("prepares the owner-authorized MIT package without consumer hooks", () => {
   const manifest = JSON.parse(read("package.json"));
-  expect(manifest.version).toBe("0.2.2");
+  expect(manifest.version).toBe("0.3.0");
   // Owner authorization plus the completed third-party audit meet the
   // handoff's private-removal condition.
   expect(manifest.private).toBeUndefined();
@@ -21,7 +21,7 @@ it("prepares the owner-authorized MIT package without consumer hooks", () => {
   expect(manifest.exports).toBeUndefined(); // Pi manifest is the entry, not a public library API.
   for (const hook of ["prepare", "prepack", "postpack", "preinstall", "install", "postinstall"])
     expect(manifest.scripts[hook]).toBeUndefined();
-  expect(manifest.files.some((file: string) => file.startsWith("docs/") || file.endsWith(".md"))).toBe(false);
+  expect(manifest.files.filter((file: string) => file.startsWith("docs/") || file.endsWith(".md"))).toEqual(["skills/ce-hook-script/SKILL.md"]);
 });
 
 it.each([

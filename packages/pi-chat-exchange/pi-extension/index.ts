@@ -27,7 +27,7 @@
  */
 import { runSessionConfiguration } from "./multi-session-commands.js";
 import { PiMultiSessionRuntime, runtimeEnvironment } from "./multi-session-runtime.js";
-import { readSelectedMultiSessionPolicy, projectPiRegistration, type MultiSessionSnapshot } from "../dist/tunnel/multi-session-policy.js";
+import { readSelectedMultiSessionPolicy, projectPiRegistration, effectivePiHookRules, type MultiSessionSnapshot } from "../dist/tunnel/multi-session-policy.js";
 import { runSetupWizard, presentTunnelStatus } from "../dist/tunnel/setup-ui.js";
 import { confirmMessagingActivation } from "../dist/tunnel/messaging-activation-ui.js";
 import { piTunnelKeyProtocol } from "./tui-keys.js";
@@ -35,6 +35,7 @@ import { createTunnelProfileSetup, readGeneratedPiAllowlist } from "../dist/tunn
 import { resolveTunnelProfilePath } from "../dist/tunnel/background-manager.js";
 import { validMessagingStore } from "../dist/tunnel/messaging-config.js";
 import { runTunnelManagerUi, type TunnelManagerUiProjection } from "../dist/tunnel/manager-ui.js";
+import { isDeepStrictEqual } from "node:util";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,6 +48,8 @@ import {
 } from "../dist/endpoints/pi/session-host.js";
 import { PI_ADAPTER_KIND } from "../dist/endpoints/pi/contract.js";
 import { initializeStore, openStore } from "../dist/storage/store.js";
+import { parseHookRules, type CeHookRule } from "../dist/hooks/config.js";
+import { CeHookRunner, type CeHookAuditSnapshot } from "../dist/hooks/runner.js";
 import { RuntimeEligibilityError } from "../dist/storage/runtime.js";
 import { diagnoseInstallation, hostRuntimeRepairMessage, installationDiagnosticMessage } from "../dist/runtime/diagnostics.js";
 import { assertNativeReadyForTunnel, inspectNativeReadiness, runNativeCommand, NATIVE_STARTUP_WARNING } from "../dist/runtime/native-readiness.js";
@@ -162,6 +165,8 @@ interface AllowlistFile {
    * the ce_ack tool and forwards the ACK capability policy. Receipt semantics
    * only — never completion authority. Missing/false/malformed fails closed. */
   readonly ack?: { readonly enabled?: boolean };
+  /** Optional local Hook rules, parsed once from the loaded document. */
+  readonly hooks?: unknown;
   /** MESSAGING-INTEGRATION-01: generated Store location shared with the
    * Tunnel-managed binding. Valid only as a complete, safe shape; malformed is
    * refused before Store/session activation, never guessed. */
@@ -250,6 +255,21 @@ function ackEnabled(allowlist: AllowlistFile): boolean {
     return false;
   }
 }
+interface LoadedHookConfiguration {
+  readonly rules: readonly CeHookRule[];
+  readonly invalid: boolean;
+}
+
+function loadedHookConfiguration(allowlist: AllowlistFile): LoadedHookConfiguration {
+  try {
+    if (!Object.hasOwn(allowlist, "hooks")) return Object.freeze({ rules: Object.freeze([]), invalid: false });
+    return Object.freeze({ rules: parseHookRules(allowlist.hooks), invalid: false });
+  } catch {
+    return Object.freeze({ rules: Object.freeze([]), invalid: true });
+  }
+}
+
+
 
 /** MESSAGING-INTEGRATION-01: strict validation of the generated Store
  * location. Only a complete, safe shape is honored — an absolute normalized
@@ -610,6 +630,24 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   }
   let allowlist = multiPolicy === undefined ? loadAllowlist() : {} as AllowlistFile;
   let notificationConfig = inboxNotificationConfig(allowlist);
+  let hookConfig = loadedHookConfiguration(allowlist);
+  let hookRunner: CeHookRunner | undefined;
+  let hookClose: Promise<void> | undefined;
+  const hookSource = multiPolicy !== undefined ? "selected multi-session profile registration" : process.env.CE_ALLOWLIST ? "CE_ALLOWLIST" : "generated profile / package allowlist";
+  const hookSnapshot = (): CeHookAuditSnapshot => hookRunner?.snapshot() ?? ({
+    configured: hookConfig.rules.length,
+    active: hookConfig.rules.filter(rule => rule.enabled).length,
+    rules: hookConfig.rules,
+  });
+  const closeHookRunner = (): Promise<void> => {
+    if (hookClose !== undefined) return hookClose;
+    const runner = hookRunner;
+    hookRunner = undefined;
+    if (runner === undefined) return Promise.resolve();
+    const task = runner.close().catch(() => undefined).finally(() => { if (hookClose === task) hookClose = undefined; });
+    hookClose = task;
+    return task;
+  };
   let multiRuntime: PiMultiSessionRuntime | undefined;
   let host: CeSessionHost | undefined;
   let currentEndpoint: string | undefined;
@@ -663,6 +701,20 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   const getHost = (): CeSessionHost => {
     if (host === undefined) {
       const store = openHostStore(allowlist);
+      const runner = new CeHookRunner({
+        directory: envOr("CE_STORE_DIR", allowlistStore(allowlist)?.directory ?? join(EXTENSION_DIR, "store")),
+        rules: hookConfig.rules,
+        ...(multiPolicy === undefined ? {} : { admit: (rule, event) => {
+          const loaded = multiPolicy;
+          const runtime = multiRuntime;
+          if (loaded === undefined || runtime === undefined || generation === undefined) return false;
+          if (event !== undefined && (event.sender.adapter !== "pi" || event.sender.endpointId !== generation.endpointId)) return false;
+          try {
+            return runtime.run("hook", () => effectivePiHookRules(loaded, readSelectedMultiSessionPolicy(loaded.profilePath), generation!.piSessionId).some(candidate => isDeepStrictEqual(candidate, rule)));
+          } catch { return false; }
+        } }),
+      });
+      hookRunner = runner;
       const sessions = Object.entries(allowlist.sessions ?? {}).map(([piSessionId, entry]) => ({
         piSessionId,
         endpointId: typeof entry.endpointId === "string" ? entry.endpointId : "",
@@ -687,6 +739,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         // cross-adapter recipients; absent or malformed stays disabled so
         // Pi sends exactly as before.
         ...(recipients === undefined ? {} : { recipients }),
+        onMessageCommitted: event => runner.publish(event),
       };
       host = new CeSessionHost(store, policy);
     }
@@ -984,12 +1037,14 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
    */
   const shutdown = (reason: string): Promise<void> => {
     const transport = clearTunnelStatus();
+    const hooks = closeHookRunner();
     const ce = shutdownCe(reason);
     return (async () => {
       try {
         await ce;
       } finally {
         await transport;
+        await hooks;
       }
     })();
   };
@@ -1007,10 +1062,14 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     }
 
     const transport = clearTunnelStatus();
+    const hooks = closeHookRunner();
     if (generation !== undefined || shutdownInFlight !== undefined) await shutdownCe(event.reason === "reload" ? "reload" : "new");
     // A new session must never begin while the previous owned child is still
     // exiting, and must never inherit the released handle.
     await transport;
+    await hooks;
+    // Host callbacks and their runner share one session lifetime in legacy mode too.
+    host = undefined;
     currentEndpoint = undefined;
     startupFailure = undefined;
     startupRuntimeRepair = undefined;
@@ -1023,8 +1082,13 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       catch { allowlist = {}; }
       notificationConfig = inboxNotificationConfig(allowlist);
       host = undefined;
+      hookConfig = loadedHookConfiguration(allowlist);
     }
     const endpointId = endpointForPiSession(allowlist, piSessionId);
+    if (hookConfig.invalid || hookConfig.rules.length > 0) {
+      const audit = hookSnapshot();
+      notify(ctx, `ce-hooks: active=${audit.active} configured=${audit.configured} source=${hookSource} rules=${audit.rules.map(rule => rule.id).join(",") || "none"}${hookConfig.invalid ? " configuration=invalid" : ""}`, hookConfig.invalid ? "warning" : "info");
+    }
     if (endpointId === undefined) {
       notify(ctx, `ce-chat-exchange: Pi session is not in the allowlist; chat-exchange disabled`, "warning");
       return;
@@ -1416,6 +1480,20 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       },
     });
   }
+  pi.registerCommand("ce-hooks", {
+    description: "Show the local Hook rules actually loaded by this Pi extension process",
+    handler(_args, ctx) {
+      const audit = hookSnapshot();
+      const lines = [`ce-hooks: active=${audit.active} configured=${audit.configured} source=${hookSource}${hookConfig.invalid ? " configuration=invalid" : ""}`];
+      if (audit.rules.length === 0) lines.push("ce-hooks: no active local Hook configuration");
+      for (const rule of audit.rules) {
+        lines.push(`hook ${rule.id} | event=${rule.event} | recipient=${rule.recipient.adapter}/${rule.recipient.endpointId} | command=${rule.command} | args=${JSON.stringify(rule.args)} | timeout=${rule.timeoutMs}ms | ${rule.enabled ? "enabled" : "disabled"}`);
+      }
+      notify(ctx, lines.join("\n"), hookConfig.invalid ? "warning" : "info");
+    },
+  });
+
+
   pi.registerCommand("ce-status", {
     description: "Show this session's chat-exchange endpoint, ownership lease, and fencing status",
     async handler(_args, ctx) {

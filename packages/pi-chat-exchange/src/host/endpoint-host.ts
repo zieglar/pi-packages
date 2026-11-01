@@ -35,6 +35,7 @@
  */
 import { EXCHANGE_ID_PATTERN, MESSAGE_ID_PATTERN } from "../protocol/identity.js";
 import { SHA256_HEX_PATTERN } from "../protocol/entities.js";
+import { createCommittedMessageEvent, type CeCommittedMessageEvent } from "../hooks/events.js";
 import { recordDeliveryAck, type DeliveryAckResult } from "../storage/delivery-ack.js";
 import { CreationDomainError } from "../storage/creation.js";
 import { createExchange } from "../storage/creation.js";
@@ -118,6 +119,9 @@ export interface CeEndpointHostPolicy {
    * disabled (fail closed). Fixed for the Host instance's lifetime and never
    * re-read from the policy object. */
   readonly ack?: { readonly enabled?: boolean };
+  /** Optional local post-commit sink. Called only for a newly committed
+   * CREATED Message; exceptions are isolated from durable send evidence. */
+  readonly onMessageCommitted?: (event: CeCommittedMessageEvent) => void;
   /** Test seam for the advisory clock used by lease status reads. */
   readonly now?: () => string;
 }
@@ -447,6 +451,7 @@ export class CeEndpointHost {
   /** Explicit cross-adapter recipients, validated and frozen at construction. */
   readonly #recipients: readonly CeRecipientRef[];
   readonly #seams: ClockSeam;
+  readonly #onMessageCommitted: ((event: CeCommittedMessageEvent) => void) | undefined;
   readonly #authorities = new Map<string, EndpointAuthority>();
 
   constructor(store: DurableStore, policy: CeEndpointHostPolicy) {
@@ -467,6 +472,10 @@ export class CeEndpointHost {
     this.#payloadReadEnabled = payloadReadEnabled(policy);
     this.#ackEnabled = ackEnabled(policy);
     this.#seams = policy.now === undefined ? {} : { now: policy.now };
+    if (policy.onMessageCommitted !== undefined && typeof policy.onMessageCommitted !== "function") {
+      throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
+    }
+    this.#onMessageCommitted = policy.onMessageCommitted;
   }
 
   /** The durable Exchange this host operates. Creation is idempotent by the
@@ -838,6 +847,13 @@ export class CeEndpointHost {
       );
     } catch (error) {
       throw toRefusal(error);
+    }
+    if (creation.disposition === "CREATED" && this.#onMessageCommitted !== undefined) {
+      try {
+        this.#onMessageCommitted(createCommittedMessageEvent(creation));
+      } catch {
+        // The Message is already committed. Local Hook failures are not CE evidence.
+      }
     }
     return Object.freeze({
       disposition: creation.disposition,
