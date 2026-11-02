@@ -243,6 +243,19 @@ it("new selected registration needs explicit reload; activation after reload use
   expect((await fresh.call("ce_inbox_list")).isError).toBe(true);
   await fresh.command("activate"); expect((await fresh.call("ce_inbox_list")).isError).not.toBe(true);
 });
+it("daily disconnect gates current tools, preserves other Session ownership and reconnects the same registration", async () => {
+  const f = await fixture(); const a = await f.runtime("real-A"); const b = await f.runtime("real-B");
+  await a.start(); await b.start(); const selected = readSelectedMultiSessionPolicy(f.profilePath);
+  await a.command("disconnect");
+  expect((await a.call("ce_inbox_list")).isError).toBe(true);
+  expect((await b.call("ce_inbox_list")).isError).not.toBe(true);
+  expect(readSelectedMultiSessionPolicy(f.profilePath)).toEqual(selected);
+  await a.stop(); const restored = await f.runtime("real-A", a.entries); await restored.start("resume");
+  expect((await restored.call("ce_inbox_list")).isError).toBe(true);
+  await restored.command("activate");
+  expect((await restored.call("ce_inbox_list")).isError).not.toBe(true);
+  expect(readSelectedMultiSessionPolicy(f.profilePath)).toEqual(selected);
+});
 it("unknown selected policy blocks reads/status and heartbeat without losing safe end cleanup", async () => {
   const f = await fixture(); const a = await f.runtime("real-A"); await a.start();
   const renew = vi.spyOn(seam.hosts[0]!, "renew"); const end = vi.spyOn(seam.hosts[0]!, "end");

@@ -6,6 +6,8 @@
 
 Current package: **CE 0.2.1 / Pi 1.3.0 / Node >=22.19.0**, using pinned Rust Native SQLite by default. Host and MCP child qualify independently; built-in SQLite restrictions apply only to explicit non-production `node-sqlite` selection. Store support remains macOS arm64 / Linux x64 GNU; cloud transport and Desktop UI installation are not qualified by local tests. Start with [Getting started](../docs/getting-started.md); this page is the command/configuration reference.
 
+See [Daily use](../docs/daily-use.md) for the added connect/disconnect commands and a once-configured external launcher. Connect validates the registered current session; disconnect confirms local release and shared Tunnel Stop. Existing start/stop remain transport-only.
+
 <a id="加载与两种配置方式"></a>
 
 ## Loading and the two configuration paths

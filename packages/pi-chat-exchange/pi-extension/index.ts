@@ -402,11 +402,15 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   // belong to THIS factory instance, independently of CE generation.
   let lastUiPort: ExtensionContextView | undefined;
   let tunnelManager: TunnelManager | BackgroundTunnelManager | undefined;
+  let tunnelManagerProfilePath: string | undefined;
+  const loadedRuntimeEnvironment = runtimeEnvironment();
   type BoundedTaskCleanup = { readonly task: Promise<void>; readonly wait: Promise<void> };
   let credentialCapture: AbortController | undefined;
   let setupTask: Promise<void> | undefined;
   let activationTask: Promise<void> | undefined;
   let activationCapture: AbortController | undefined;
+  let dailyTask: Promise<void> | undefined;
+  let dailyCapture: AbortController | undefined;
   let managerUiCapture: AbortController | undefined;
   let managerUiTask: Promise<void> | undefined;
   /** REAL-START-FIX-01: guard for a non-blocking background start's deferred
@@ -444,6 +448,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   const activeManager = (): TunnelManager | BackgroundTunnelManager => {
     if (!isRealBackground()) return offlineManager();
     if (tunnelManager === undefined || !("kind" in tunnelManager)) {
+      tunnelManagerProfilePath = resolveTunnelProfilePath({ env: process.env });
       tunnelManager = createBackgroundTunnelManager({ env: process.env });
     }
     return tunnelManager;
@@ -518,6 +523,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
    */
   const clearTunnelStatus = (): Promise<void> => {
     activationCapture?.abort();
+    dailyCapture?.abort();
     managerUiCapture?.abort();
     managerUiCapture = undefined;
     startCapture?.abort();
@@ -593,7 +599,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       transportRelease = attempt;
       return attempt;
     })();
-    const taskWaits = [setupCleanup?.wait, authorizeCleanup?.wait, managerUiCleanup?.wait, activationTask].filter((wait): wait is Promise<void> => wait !== undefined);
+    const taskWaits = [setupCleanup?.wait, authorizeCleanup?.wait, managerUiCleanup?.wait, activationTask, dailyTask].filter((wait): wait is Promise<void> => wait !== undefined);
     // Round 3 (Lane C R2-C2) / Closure remediation (SEC-CLOSE-01) and R5 Lane B:
     // manager transport, setup, authorize, and Manager-UI cleanup settle TOGETHER.
     // A timeout only caps the returned wait; task registration remains until its
@@ -1449,6 +1455,8 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   const SUBCOMMANDS: ReadonlyArray<{ value: string; description: string }> = [
     { value: "setup", description: "open the real profile Setup Wizard (masked API key; explicit Save only)" },
     { value: "authorize", description: "synthetic Keychain authorization in the explicit offline harness only" },
+    { value: "connect", description: "restore the registered current Pi session and explicitly connect existing transport" },
+    { value: "disconnect", description: "release current Pi messaging and stop owned transport; preserve registration/history" },
     { value: "start", description: "start the real background tunnel client (or the offline simulator under CE_TUNNEL_OFFLINE_TEST=1)" },
     { value: "stop", description: "stop the tunnel instance this manager provably owns (one SIGTERM, verified exit)" },
     { value: "migrate", description: "repair a saved real profile in place (drop rejected admin_ui keys + repoint the mcp node) without re-entering the credential" },
@@ -2068,9 +2076,115 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     }
   };
 
+  /** Daily commands reuse current authority. They never publish policy or recover an Owner. */
+  const runDailyConnection = async (connect: boolean, ctx: ExtensionContextView): Promise<void> => {
+    const action = connect ? "connect" : "disconnect";
+    if (dailyTask !== undefined || activationTask !== undefined || setupTask !== undefined || managerUiTask !== undefined || startCapture !== undefined) {
+      notify(ctx, `ce-tunnel: ${action} refused CE_TUNNEL_MANAGER_BUSY`, "warning"); return;
+    }
+    if (ctx.mode !== "tui" || !ctx.hasUI || !isRealBackground()) {
+      notify(ctx, `ce-tunnel: ${action} refused CE_TUNNEL_INPUT_UNAVAILABLE`, "warning"); return;
+    }
+    if (connect && process.env.CE_TUNNEL_BACKGROUND_ALLOW !== "1") {
+      notify(ctx, "ce-tunnel: connect refused CE_TUNNEL_BACKGROUND_UNAUTHORIZED; start the parent Pi with CE_TUNNEL_BACKGROUND_ALLOW=1 and resume the registered session; /reload or a child-shell export cannot grant permission", "warning"); return;
+    }
+    const controller = new AbortController();
+    dailyCapture = controller;
+    const piSessionId = ctx.sessionManager.getSessionId();
+    const environment = runtimeEnvironment();
+    const task = Promise.resolve().then(async () => {
+      try {
+        if (connect) assertNativeReadyForTunnel();
+        const manager = activeManager();
+        if (!("kind" in manager)) throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID");
+        const current = (): void => {
+          if (controller.signal.aborted || ctx.sessionManager.getSessionId() !== piSessionId || runtimeEnvironment() !== environment) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+        };
+        current();
+        const profilePath = resolveTunnelProfilePath({ env: process.env });
+        // A cached Manager and a factory-loaded policy may not silently change targets.
+        if (environment !== loadedRuntimeEnvironment || tunnelManagerProfilePath !== profilePath ||
+            (multiPolicy !== undefined && multiPolicy.profilePath !== profilePath)) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+        const profile = readFileSync(profilePath, "utf8");
+        if (!connect) {
+          if (typeof ctx.ui.confirm !== "function") throw new TunnelRefusal("CE_TUNNEL_INPUT_UNAVAILABLE");
+          const confirmed = await ctx.ui.confirm("Disconnect current Pi and shared Tunnel?",
+            "Release only this Pi session binding, and stop the selected profile’s shared Tunnel. This may interrupt transport for other sessions; their Owners, registrations and history remain. Already admitted operations may finish.",
+            { signal: controller.signal, timeout: 120_000 });
+          current();
+          if (!confirmed) return;
+          if (readFileSync(profilePath, "utf8") !== profile) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+          const previous = generation;
+          if (previous !== undefined && previous.piSessionId !== piSessionId) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+          // Close admission before either independent cleanup phase awaits.
+          const released = shutdownCe("daily-disconnect");
+          let stopError: unknown;
+          try { await manager.stop(); } catch (error) { stopError = error; }
+          await released;
+          current();
+          publishTunnelStatus(ctx);
+          const releaseFailure = previous?.failure ?? (startupFailure?.code === "CE_HOST_MAPPING_INVALID" ? undefined : startupFailure);
+          if (releaseFailure !== undefined || stopError !== undefined) {
+            notify(ctx, `ce-tunnel: disconnect incomplete; Pi release=${releaseFailure?.code ?? "verified"}; shared tunnel stop=${stopError === undefined ? "verified" : refusalText(stopError)}; CE admission remains closed; inspect status, no automatic retry`, "warning"); return;
+          }
+          const note = manager.status().note;
+          notify(ctx, `ce-tunnel: disconnected; current Pi binding released and selected shared tunnel stopped; registration/history retained${note === undefined ? "" : `; transport note=${note}`}; other Pi bindings and model/task authority are separate`);
+          return;
+        }
+        const configured = (): void => {
+          current();
+          if (process.env.CE_TUNNEL_BACKGROUND_ALLOW !== "1" || readFileSync(profilePath, "utf8") !== profile) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+        };
+        configured();
+        if (generation === undefined) {
+          // Activation itself enforces STOPPED, explicit confirmation and requireUnowned.
+          await runMessagingActivation(ctx);
+          configured();
+          if (generation === undefined) {
+            notify(ctx, "ce-tunnel: connect stopped before transport start; resume the registered Pi session, load its policy, and confirm activation; a running shared tunnel requires explicit Stop first", "warning"); return;
+          }
+        }
+        const endpointId = guardedEndpoint(ctx);
+        const status = withHost("status", () => getHost().status(endpointId));
+        if (!status.registered || status.lease !== "ACTIVE") throw new CeHostRefusal("CE_HOST_AUTHORITY_ABSENT");
+        configured();
+        const started = await manager.start();
+        configured();
+        // An existing run is returned without a health probe by Start; measure it now.
+        const measured = await manager.refresh();
+        configured();
+        guardedEndpoint(ctx);
+        publishTunnelStatus(ctx);
+        notify(ctx, `ce-tunnel: current Pi endpoint ${endpointId} bound; tunnel=${measured.state} evidence=${measured.evidence}${started.alreadyRunning ? "; existing run retained" : ""}; model availability and business task execution are not measured; not delivery/ACK/completion evidence`);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        publishTunnelStatus(ctx);
+        const code = error instanceof CeHostRefusal || error instanceof TunnelRefusal || error instanceof RuntimeEligibilityError ? error.code : "CE_HOST_UNAVAILABLE";
+        notify(ctx, `ce-tunnel: ${action} refused ${code}${mutexRefusalHint(error)}${staleOwnershipHint(error)}; no automatic retry, takeover or configuration change; inspect status before another action`, "warning");
+      }
+    });
+    dailyTask = task;
+    try { await task; } finally {
+      if (dailyTask === task) dailyTask = undefined;
+      if (dailyCapture === controller) dailyCapture = undefined;
+    }
+  };
+
   /** Direct shortcuts and the Manager invoke this same operation path. */
   const runTunnelCommand = async (args: string, ctx: ExtensionContextView): Promise<void> => {
         const sub = args.trim().split(/\s+/)[0] ?? "";
+        if (dailyTask !== undefined && !["status", "help", "doctor"].includes(sub)) {
+          if (sub === "stop") {
+            dailyCapture?.abort();
+            activationCapture?.abort();
+            const manager = activeManager();
+            try { await manager.stop(); } catch (error) {
+              notify(ctx, `ce-tunnel: stop refused ${refusalText(error)}; ownership retained`, "warning"); return;
+            }
+            await dailyTask;
+          } else { notify(ctx, "ce-tunnel: operation refused CE_TUNNEL_MANAGER_BUSY", "warning"); return; }
+        }
+        if (sub === "connect" || sub === "disconnect") { await runDailyConnection(sub === "connect", ctx); return; }
         // The start gate precedes every manager, profile and process side effect.
         if (sub === "start") {
           try { assertNativeReadyForTunnel(); }
@@ -2176,6 +2290,8 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
             `ce-tunnel subcommands: ${SUBCOMMANDS.map((s) => s.value).join(", ")}. ` +
               `setup = Kit TUI Wizard for a real YAML profile and separate 0600 credential; bare command = persistent Manager; ` +
               `authorize = synthetic Keychain fixture only with CE_TUNNEL_OFFLINE_TEST=1; ` +
+              `connect = restore only this registered Pi session, confirm activation if needed, then start or measure the selected tunnel; exact parent CE_TUNNEL_BACKGROUND_ALLOW=1 required. ` +
+              `disconnect = confirm release of this Pi binding and Stop of the selected shared tunnel (other sessions may lose transport); registration/history stay. ` +
               `start/stop = with CE_TUNNEL_OFFLINE_TEST=1 the bundled OFFLINE simulator; otherwise the REAL background client ` +
                 `(detached, survives this session; ownership record + process-identity verified; manual only — no autostart/reconnect); ` +
               `migrate = repair a saved real profile in place (drop the rejected admin_ui keys + repoint the mcp node); ` +
@@ -2262,7 +2378,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
                   if (startCapture === controller) startCapture = undefined;
                   if (controller.signal.aborted) return;
                   publishTunnelStatus(ctx);
-                  notify(ctx, `ce-tunnel: start refused ${refusalText(error)}`, "warning");
+                  notify(ctx, `ce-tunnel: start refused ${refusalText(error)}${error instanceof TunnelRefusal && error.code === "CE_TUNNEL_BACKGROUND_UNAUTHORIZED" ? "; start the parent Pi with CE_TUNNEL_BACKGROUND_ALLOW=1; /reload or a child-shell export cannot grant permission" : ""}`, "warning");
                 },
               );
             } else {

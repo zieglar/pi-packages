@@ -4,6 +4,8 @@
 
 当前包：**CE 0.2.1 / Pi 1.3.0 / Node >=22.19.0**，默认使用固定信任版本的 Rust Native SQLite。Host 与 MCP child 分别验证，内置 SQLite 限制仅用于显式非生产 `node-sqlite` 选择。Store 支持仍为 macOS arm64 / Linux x64 GNU；本地测试不认证云传输或 Desktop UI 安装。新用户从[快速开始](../docs/getting-started.zh-CN.md)进入，本页作为命令/配置参考。
 
+新增日常入口与一次设置的外部启动方式见[日常使用](../docs/daily-use.zh-CN.md)。`connect` 复核并连接当前已注册会话；`disconnect` 确认后释放当前绑定并停止所选共享 Tunnel。原 start/stop 仍仅管理传输。
+
 ## 加载与两种配置方式
 
 在仓库根目录、已选中批准 Node 的 shell 中，先 build 再临时加载一次。mise 不是要求：

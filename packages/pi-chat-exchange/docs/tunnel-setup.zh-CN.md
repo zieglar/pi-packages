@@ -4,6 +4,8 @@
 
 这是 Secure MCP Tunnel 路径。本工作区准备 **0.2.2 本地候选**，npm 正式版仍为 **0.2.1**。候选 tarball 安装从[快速开始](getting-started.zh-CN.md)进入；独立的 [Desktop stdio 指南](chatgpt-installation.zh-CN.md)无需 Tunnel。下文构建命令用于源码开发，示例是占位值，不是已生效配置。
 
+日常恢复已有注册会话见[日常使用](daily-use.zh-CN.md)：新增 connect/disconnect 复用现有激活、释放与传输门禁；需要加载包含该修改的扩展。
+
 ## Tunnel 启动前的 Native 就绪检查（0.2.2 候选）
 
 用 `/ce-native status` 或 `/ce-native verify` 只读检查。显式 `/ce-native install` 仅下载可信默认版本，校验后才修改选择，完成后需重启 Pi。修复需执行 `/ce-native repair confirm`；`/ce-native check-updates` 只读取 GitHub Release 元数据，不信任 `latest` 或改变选择。CE 不会自动下载、修复、升级或回退。已发布的 0.2.1 包含 Native 默认驱动和固定信任 pins。

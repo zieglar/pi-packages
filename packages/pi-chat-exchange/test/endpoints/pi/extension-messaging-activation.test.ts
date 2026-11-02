@@ -35,6 +35,11 @@ vi.mock("../../../dist/tunnel/background-manager.js", async original => {
     spawn: seam.defaultSpawn, signal: seam.signal,
   }) };
 });
+// These are lifecycle tests; Native artifact qualification has its own guarded suites.
+vi.mock("../../../dist/runtime/native-readiness.js", async original => ({
+  ...await original<typeof import("../../../dist/runtime/native-readiness.js")>(),
+  assertNativeReadyForTunnel: () => ({ state: "READY", code: "CE_NATIVE_READY", driver: "rust-native" }),
+}));
 // Setup, loader, Host and SQLite are real; process discovery is synthetic.
 vi.mock("../../../dist/tunnel/messaging-activation-ui.js", () => ({ confirmMessagingActivation: (...args: [unknown, unknown]) => seam.confirm(...args) }));
 vi.mock("../../../dist/endpoints/pi/session-host.js", async (original) => {
@@ -353,4 +358,104 @@ it("a malformed selected generated pair cannot redirect deactivation to the fall
   fs.writeFileSync(selectedBinding, "{}", { mode: 0o600 });
   const end = vi.spyOn(seam.hosts[0]!, "end"); await h.command("deactivate");
   expect(end).not.toHaveBeenCalled(); expect(h.ctx.ui.confirm).not.toHaveBeenCalled(); expect(counts().owners).toBe(1);
+});
+
+describe("daily configured-session connection", () => {
+  it("refuses an unauthorized connect before activation and explains the parent opt-in", async () => {
+    const h = await fixture(); await h.start(); const before = counts();
+    await h.command("connect");
+    expect(h.notices()).toContain("CE_TUNNEL_BACKGROUND_UNAUTHORIZED");
+    expect(h.notices()).toContain("parent Pi");
+    expect(seam.confirm).not.toHaveBeenCalled(); expect(counts()).toEqual(before);
+  });
+  it("connect activates the existing registration and disconnect releases it without changing configuration", async () => {
+    const h = await fixture(); await h.start(); vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");
+    const profile = fs.readFileSync(h.profilePath, "utf8");
+    // Only the transport boundary is controlled; activation, Host, Store and release are real.
+    const manager = createBackgroundTunnelManager({ env: {}, profilePath: h.profilePath, listProcesses: async () => ({ kind: "ok", processes: [] }) });
+    const connect = vi.spyOn(manager, "start").mockResolvedValue({ runId: "synthetic", pid: 40001, tunnelId: "tunnel_abcdefgh123456", startedAt: new Date().toISOString(), health: "connected", alreadyRunning: false });
+    const stop = vi.spyOn(manager, "stop").mockResolvedValue();
+    const background = await import("../../../dist/tunnel/background-manager.js");
+    vi.spyOn(background, "createBackgroundTunnelManager").mockReturnValue(manager);
+    await h.command("connect");
+    expect(h.mapping()?.endpointId).toBe("pi/main"); expect(counts().owners).toBe(1);
+    expect(connect).toHaveBeenCalledTimes(1); expect(seam.confirm).toHaveBeenCalledTimes(1);
+    const participants = seam.stores[0]!.database.prepare("SELECT * FROM participant").all();
+    await h.command("disconnect");
+    expect(stop).toHaveBeenCalledTimes(1); expect(counts().owners).toBe(0);
+    expect(fs.readFileSync(h.profilePath, "utf8")).toBe(profile);
+    expect(seam.stores[0]!.database.prepare("SELECT * FROM participant").all()).toEqual(participants);
+    expect(h.notices()).toContain("disconnected");
+    await h.command("connect");
+    expect(counts().owners).toBe(1); expect(connect).toHaveBeenCalledTimes(2);
+    expect(fs.readFileSync(h.profilePath, "utf8")).toBe(profile);
+  });
+  it("cancelled connect never starts transport or binds messaging", async () => {
+    const h = await fixture(); await h.start(); vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");
+    seam.confirm.mockResolvedValue(false); await h.command("connect");
+    expect(seam.confirm).toHaveBeenCalledTimes(1); expect(counts().owners).toBe(0);
+    expect(seam.defaultSpawn).not.toHaveBeenCalled();
+  });
+  it("disconnect reports uncertain release and retains fail-closed activation", async () => {
+    const h = await fixture(); await h.start(); await h.activate();
+    const end = vi.spyOn(seam.hosts[0]!, "end").mockImplementation(() => { throw Error("private-release-error"); });
+    await h.command("disconnect"); await h.activate();
+    expect(end).toHaveBeenCalledTimes(1); expect(h.notices()).toContain("CE_HOST_UNAVAILABLE");
+    expect(h.notices()).not.toContain("disconnected"); expect(h.notices()).not.toContain("private-release-error");
+  });
+  it.each(["session", "profile", "policy"])("connect refuses %s drift before transport start", async change => {
+    const h = await fixture(); await h.start(); vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");
+    const manager = createBackgroundTunnelManager({ env: {}, profilePath: h.profilePath, listProcesses: async () => ({ kind: "ok", processes: [] }) });
+    const start = vi.spyOn(manager, "start");
+    const background = await import("../../../dist/tunnel/background-manager.js");
+    vi.spyOn(background, "createBackgroundTunnelManager").mockReturnValue(manager);
+    if (change === "profile") vi.stubEnv("CE_TUNNEL_PROFILE", join(h.dir, "other.yaml"));
+    else seam.confirm.mockImplementation(async () => {
+      if (change === "session") h.switchSession(); else fs.appendFileSync(h.profilePath, "\n# changed\n"); return true;
+    });
+    await h.command("connect");
+    expect(start).not.toHaveBeenCalled(); expect(counts().owners).toBe(0);
+    expect(h.notices()).not.toContain("tunnel=CONNECTED");
+  });
+  it("cancelled disconnect preserves current binding and never stops shared transport", async () => {
+    const h = await fixture(); await h.start(); await h.activate(); h.ctx.ui.confirm.mockResolvedValue(false);
+    const before = counts(); await h.command("disconnect");
+    expect(counts()).toEqual(before); expect(h.notices()).not.toContain("disconnected");
+    expect(h.ctx.ui.confirm.mock.calls[0]![1]).toContain("other sessions");
+  });
+  it("a failed shared stop still closes current CE admission and releases its owner", async () => {
+    const h = await fixture(); await h.start();
+    const manager = createBackgroundTunnelManager({ env: {}, profilePath: h.profilePath, listProcesses: async () => ({ kind: "ok", processes: [] }) });
+    const { TunnelRefusal } = await import("../../../dist/tunnel/codes.js");
+    vi.spyOn(manager, "stop").mockRejectedValue(new TunnelRefusal("CE_TUNNEL_STOP_UNCONFIRMED"));
+    const background = await import("../../../dist/tunnel/background-manager.js");
+    vi.spyOn(background, "createBackgroundTunnelManager").mockReturnValue(manager);
+    await h.activate();
+    await h.command("disconnect");
+    expect(counts().owners).toBe(0); expect(h.notices()).toContain("disconnect incomplete");
+    expect(h.notices()).toContain("CE_TUNNEL_STOP_UNCONFIRMED");
+    expect(h.notices()).not.toContain("disconnected");
+  });
+  it("Stop aborts an in-flight connect confirmation without later binding or Start", async () => {
+    const h = await fixture(); await h.start(); vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");
+    let entered!: () => void; const opened = new Promise<void>(resolve => { entered = resolve; });
+    seam.confirm.mockImplementation(async (_ctx, options) => {
+      const signal = (options as { signal: AbortSignal }).signal; entered();
+      return new Promise<boolean>(resolve => { signal.addEventListener("abort", () => resolve(false), { once: true }); });
+    });
+    const connecting = h.command("connect"); await opened;
+    await h.command("stop"); await connecting;
+    expect(counts().owners).toBe(0); expect(seam.defaultSpawn).not.toHaveBeenCalled();
+    expect(h.notices()).not.toContain("current Pi endpoint pi/main bound; tunnel=");
+  });
+  it("restores a normally ended same Pi session through explicit connect without registering again", async () => {
+    const h = await fixture(); await h.start(); await h.activate(); await h.shutdown();
+    h.reloadFactory(); await h.start("startup");
+    vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");
+    const manager = createBackgroundTunnelManager({ env: {}, profilePath: h.profilePath, listProcesses: async () => ({ kind: "ok", processes: [] }) });
+    vi.spyOn(manager, "start").mockResolvedValue({ runId: "synthetic", pid: 40001, tunnelId: "tunnel_abcdefgh123456", startedAt: new Date().toISOString(), health: "connected", alreadyRunning: false });
+    const background = await import("../../../dist/tunnel/background-manager.js"); vi.spyOn(background, "createBackgroundTunnelManager").mockReturnValue(manager);
+    h.ctx.ui.notify.mockClear(); await h.command("connect");
+    expect(counts().owners).toBe(1); expect(h.notices()).not.toContain("activation refused");
+  });
 });

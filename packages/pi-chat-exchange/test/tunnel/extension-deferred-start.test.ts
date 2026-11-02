@@ -92,4 +92,11 @@ describe("real start command session latch", () => {
     await f.command.handler("start", f.ctx);
     expect(f.start).toHaveBeenCalledTimes(2);
   });
+  it("explains missing parent process permission on a deferred refusal", async () => {
+    const f = await fixture(); await f.command.handler("start", f.ctx);
+    const { TunnelRefusal } = await import("../../dist/tunnel/codes.js");
+    const error = new TunnelRefusal("CE_TUNNEL_BACKGROUND_UNAUTHORIZED");
+    f.ack.reject(error); f.settled.reject(error); await flush();
+    expect(f.ctx.ui.notify.mock.calls.some(([text]) => String(text).includes("parent Pi with CE_TUNNEL_BACKGROUND_ALLOW=1"))).toBe(true);
+  });
 });

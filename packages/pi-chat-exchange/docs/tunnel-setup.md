@@ -6,6 +6,8 @@
 
 This is the Secure MCP Tunnel path. This working tree prepares local candidate **0.2.2**; npm **0.2.1** remains the published release. Start with [Getting started](getting-started.md) for candidate tarball installation. The separate [Desktop stdio guide](chatgpt-installation.md) does not need Tunnel. Repository build commands below are for source development; examples are placeholders, not active configuration.
 
+For restoring an existing registered session, see [Daily use](daily-use.md). The added connect/disconnect commands reuse existing activation, release and transport gates; load an extension containing this change first.
+
 <a id="1-前提与安装"></a>
 
 ## Native readiness before Tunnel start (0.2.2 candidate)
