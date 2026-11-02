@@ -4,6 +4,8 @@ A bounded macOS CLI integration for Pi Host1.3.0 and the published Pi Chat Excha
 
 Prerequisites: Ovis0.4.19, agent-desktop1.0.2/JSON2.5, Python3.11+, Node24.21.0, Pi1.3.0 and CE0.3.0 installed into a common node_modules directory. Accessibility permission is required. Physical input needs explicit operator authorization (`headedAuthorized:true`). The integration never silently enables it. Read `agent-desktop skills get desktop`, `skills get platform`, and the official [JSON contract](https://github.com/vercel-labs/agent-desktop/blob/main/docs/json-output.md).
 
+Use the dedicated common-prefix installation described in [the wake runtime guide](../ce-chatgpt-wake/README.md#runtime-installation-and-coexistence): published CE 0.3.0 and Pi 1.3.0, not this checkout's historical core candidate. `modules` is that prefix's `node_modules`. The tools are repository utilities, not files installed by the CE npm package. The recorded Cloud E2E used official Tunnel Client 0.0.19 on macOS arm64; qualify a different Client/version independently. Absolute internal Pi SDK and CE module paths are pinned to the listed versions.
+
 ## Desktop configuration
 
 Keep configuration, task and runtime state outside Git in an owned0700directory. Example:
@@ -41,6 +43,7 @@ Set an actual near-term deadline; desktop execution is capped at300seconds. Task
 ```sh
 python3 tools/ce-ovis-desktop/bridge.py --config /private/operator-state/desktop.json --task /private/operator-state/task.json
 python3 -m unittest discover -s tools/ce-ovis-desktop -v
+node --test tools/ce-ovis-desktop/*.test.mjs
 ```
 
 The driver uses fresh snapshots around actions. Ovis's semantic `set-value` did not change its React input in actual testing. Explicitly authorized headed input uses short chunks and checks the cumulative draft after every chunk; single long Unicode input lost content in actual testing. Full draft equality is mandatory before the one send click. The response must have the task-specific end-marker and idle/send UI. Text stability alone is UNKNOWN. Read-only observations cannot prove model correctness or remote business completion.
@@ -52,6 +55,8 @@ The0600task journal and flock serialize this local bridge. A task is journaled b
 Operator config additionally contains `modules`, `runDirectory`, `existingProfile`, `endpointId`, `testId`, `deadline`, `taskPayloadSha256`, `python`, `bridge`, `desktopConfig`, `taskFile`, `node`, `client`, `isolatedHome`. Paths are trusted local operator configuration, never supplied by CE payload. `taskPayloadSha256` binds the exact UTF-8 JSON sent by ChatGPT; send the provided text verbatim.
 
 For continuous testing, keep one Session/window and add `tasks`, an ordered array of 1–8 operator entries: `{taskId,taskFile,desktopConfig,taskPayloadSha256}`. Each desktop config authorizes only that task ID and text. The allowlist is loaded at startup; CE cannot add tasks or paths. Evidence and one-attempt result markers are separated under `runDirectory/tasks/<taskId>/`. Tasks execute serially in that order. Send the next task only after reading and ACKing the previous result. Unknown/failed desktop outcomes stop the sequence. Existing result markers are never replayed.
+
+The peer checks an actual ChatGPT reception receipt in this run's isolated Store before ACKing or executing the next task. The receipt must match the previous result and have a strictly smaller audit sequence than the next message's creation event; otherwise `PRIOR_RESULT_ACK_REQUIRED` stops the run. Sequence ordering remains correct even when timestamps share a millisecond. This read-only check neither grants authority nor writes the Store. Early next-task messages are not queued for automatic replay; inspect evidence and prepare a new authorized window if needed.
 
 Run `node tools/ce-ovis-desktop/verify.mjs /private/operator-state/config.json` after all result ACKs. It checks every task's actual message/receipt/digest/endpoints and that each previous ChatGPT ACK predates the next inbound task, under the same published runtimeSessionId. This is bounded serial testing, not arbitrary autonomous chat.
 

@@ -3,16 +3,20 @@
 import datetime
 import json
 import os
-from pathlib import Path
 import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'ce-ovis-desktop'))
-from lifecycle import stop_group, stop_hosts, namespace_hosts
+from health_probe import health_probe  # type: ignore[import-not-found]
+from lifecycle import stop_group, stop_hosts, namespace_hosts  # type: ignore[import-not-found]
 config_file = Path(sys.argv[1]).resolve()
-config = json.loads(config_file.read_text())
+try:
+    config = json.loads(config_file.read_text())
+except (OSError, ValueError) as error:
+    raise ValueError(f'INVALID_SUPERVISOR_CONFIG: {error}') from error
 root = Path(config['runDirectory'])
 os.umask(0o077)
 stop = False
@@ -30,7 +34,10 @@ if not 0 < end - time.time() <= 900:
     raise ValueError('BOUNDED_WINDOW_REQUIRED')
 if any((root / name).exists() for name in ('supervisor.json', 'peer-ready.json', 'peer-closed.json', 'peer-failure.json', 'stop-request')):
     raise ValueError('WINDOW_ALREADY_USED_PREPARE_NEW_DIRECTORY')
-desktop_configs = [json.loads(Path(t['desktopConfig']).read_text()) for t in config.get('tasks', [config])]
+try:
+    desktop_configs = [json.loads(Path(t['desktopConfig']).read_text()) for t in config.get('tasks', [config])]
+except (OSError, ValueError) as error:
+    raise ValueError(f'INVALID_DESKTOP_CONFIG: {error}') from error
 desktop_namespaces = {(d['desktopTmpDir'], d['agentDesktop']) for d in desktop_configs}
 for directory, _executable in desktop_namespaces:
     Path(directory).mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -79,11 +86,11 @@ try:
         if peer.poll() is not None or client.poll() is not None or (root / 'peer-failure.json').exists():
             raise RuntimeError('CHILD_EXITED')
         if (root / 'health.url').exists() and status['state'] != 'READY':
-            probe = subprocess.run([config['client'], 'health', '--url-file', str(root / 'health.url'), '--pid', str(client.pid), '--require-control-plane-poll', '--json'], env=env, capture_output=True, text=True, timeout=10)
-            if probe.returncode == 0:
-                status.update(state='READY', readyAt=datetime.datetime.now(datetime.timezone.utc).isoformat())
+            probe = health_probe([config['client'], 'health', '--url-file', str(root / 'health.url'), '--pid', str(client.pid), '--require-control-plane-poll', '--json'], env=env, cwd=root, deadline=time.monotonic()+max(0,end-time.time()), stop_requested=lambda: stop or (root / 'stop-request').exists())
+            if probe is not None and probe.returncode == 0:
+                status.update(state='READY', readyAt=datetime.datetime.now(datetime.UTC).isoformat())
                 save()
-        if (root / 'stop-request').exists():
+        if stop or time.time() >= end or (root / 'stop-request').exists():
             break
         time.sleep(1)
 except Exception as error:
@@ -123,5 +130,5 @@ finally:
     status['desktopHostsStopped'] = cleanup_ok
     for log in logs:
         log.close()
-    status.update(state='CLOSED' if cleanup_ok else 'CLEANUP_UNCONFIRMED', healthAbsent=not (root / 'health.url').exists(), closedAt=datetime.datetime.now(datetime.timezone.utc).isoformat())
+    status.update(state='CLOSED' if cleanup_ok else 'CLEANUP_UNCONFIRMED', healthAbsent=not (root / 'health.url').exists(), closedAt=datetime.datetime.now(datetime.UTC).isoformat())
     save()

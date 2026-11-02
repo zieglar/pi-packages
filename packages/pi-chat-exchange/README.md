@@ -52,6 +52,12 @@ ACK records reception only, not delivery, reading, processing or task completion
 
 Closing Manager or exiting Pi does not stop the detached Tunnel client. Use `/ce-tunnel stop`, then `/ce-tunnel status` to verify `STOPPED`. Keep credentials and capabilities out of messages, screenshots and reports.
 
+## Optional desktop test integrations
+
+The repository also contains [CE → Ovis](../../tools/ce-ovis-desktop/README.md) and [Pi → ChatGPT wake](../../tools/ce-chatgpt-wake/README.md). These operator-run macOS test tools require the separately installed, published **CE 0.3.0** and Pi 1.3.0; they do not use this checkout's CE 0.2.2 candidate or the historical 0.2.1 install command above. Their source is not included in the CE npm package and adds no CE core dependency.
+
+The wake notice carries fixed instructions and message identifiers only; the actual task stays in CE. Each integration requires explicit window authorization and its own isolated run. They refuse an already running Tunnel Client, so plan a separate test window after a normal Stop and confirmed STOPPED. See the tools' READMEs for setup, stop/cleanup and the limits of the recorded E2E evidence.
+
 <a id="阅读导航"></a>
 
 ## Documentation

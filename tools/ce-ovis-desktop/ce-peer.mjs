@@ -6,6 +6,7 @@ import {pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
 import {requireRunning, runDesktop} from './execution.mjs';
 import {loadTasks, authorizeTask} from './tasks.mjs';
+import {requirePriorReceipt} from './receipt.mjs';
 
 process.umask(0o077);
 const [mode, configFile] = process.argv.slice(2);
@@ -70,6 +71,7 @@ if (mode === 'prepare') {
   const {wrapRegisteredTool} = await load(pi + '/dist/core/extensions/wrapper.js');
   let sequence = 0;
   async function call(name, args) {
+    requireRunning(window);
     const tool = session.extensionRunner.getAllRegisteredTools().find(t => t.definition.name === name);
     if (!tool || !['ce_send', 'ce_inbox_list', 'ce_read_payload', 'ce_ack'].includes(name)) throw Error('CE_TOOL_UNAVAILABLE');
     const result = await wrapRegisteredTool(tool, session.extensionRunner).execute(config.testId + '/' + (++sequence), args, undefined, undefined);
@@ -81,6 +83,7 @@ if (mode === 'prepare') {
   }
   let cursor = 0;
   let nextTask = 0;
+  let priorResultMessage;
   for (const task of tasks) fs.mkdirSync(task.recordRoot, {recursive:true,mode:0o700});
   try {
     await session.bindExtensions({mode: 'rpc', onError: () => {stop = true;}});
@@ -98,6 +101,7 @@ if (mode === 'prepare') {
         const attemptFile = path.join(authorized.recordRoot, 'result-send-attempt.json');
         if (fs.existsSync(attemptFile)) continue;
         if (tasks[nextTask]?.taskId !== task.taskId) throw Error('TASK_ORDER_DENIED');
+        if (priorResultMessage) requirePriorReceipt(path.join(root,'store/ce-store.sqlite'),priorResultMessage,publication.chatgptEndpoint,message.messageId);
         const ack = (await call('ce_ack', {messageId: read.details.messageId, payloadDigest: read.details.payloadDigest, payloadLength: read.details.payloadLength, messageCreatedAuditSequence: read.details.auditSequence})).details;
         write('received.json', {messageId: message.messageId, taskId: task.taskId, receipt: ack, receivedAt: new Date().toISOString(), ceReception: 'ACKED_RECEPTION_ONLY'}, authorized.recordRoot);
         // Keep CE lease renewal/event loop live while Ovis is responding.
@@ -110,6 +114,8 @@ if (mode === 'prepare') {
         fs.writeFileSync(attemptFile, JSON.stringify({taskId: task.taskId, idempotencyKey: task.taskId + ':result', at: new Date().toISOString()}), {flag: 'wx', mode: 0o600});
         const sent = (await call('ce_send', {to: publication.chatgptEndpoint, text: JSON.stringify(result), idempotencyKey: task.taskId + ':result'})).details;
         write('returned.json', {result, ceSend: sent, remoteReceipt: 'AWAITING_CHATGPT_ACK'}, authorized.recordRoot);
+        if (sent.disposition !== 'CREATED') throw Error('RESULT_SEND_NOT_CREATED');
+        priorResultMessage = sent.messageId;
         if (desktop.scriptState !== 'FINISHED' || desktop.ovisState !== 'COMPLETED' || desktop.submission !== 'OBSERVED') throw Error('DESKTOP_NOT_COMPLETED_STOP_SEQUENCE');
         nextTask += 1;
       }

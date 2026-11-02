@@ -54,6 +54,12 @@ ACK 只记录接收回执，不证明送达、已读、处理或任务完成。C
 
 关闭 Manager 或退出 Pi 不会停止 detached Tunnel client。执行 `/ce-tunnel stop`，再用 `/ce-tunnel status` 核实 `STOPPED`。不要把凭据和 capability 放入消息、截图或报告。
 
+## 可选桌面测试集成
+
+仓库另提供 [CE → Ovis](../../tools/ce-ovis-desktop/README.md) 和 [Pi → ChatGPT 唤醒](../../tools/ce-chatgpt-wake/README.md)。这些由操作者运行的 macOS 测试工具要求独立安装已发布的 **CE 0.3.0** 和 Pi 1.3.0，不使用本 checkout 的 CE 0.2.2 候选，也不使用上文历史安装命令中的 0.2.1。工具源码不包含在 CE npm 包中，不增加 CE 核心依赖。
+
+唤醒通知只携带固定指令与消息标识，实际任务仍在 CE 中。每项集成都要求明确授权目标窗口及独立测试目录；已运行的 Tunnel Client 会使测试拒绝启动，请先按正常流程 Stop 并确认 STOPPED，再安排单独测试窗口。配置、停止与清理流程及既有 E2E 证据范围见各工具 README。
+
 <a id="阅读导航"></a>
 
 ## 文档
