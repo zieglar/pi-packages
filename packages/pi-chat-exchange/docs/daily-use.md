@@ -47,6 +47,10 @@ Normally exit Pi afterward. Next time, restore the same native session and conne
 | `activate` / `deactivate` | Existing explicit binding/release, without automatic transport changes |
 | `status` / `/ce-status` | Transport/Native measurements versus current CE binding and lease |
 
+Open `/ce-tunnel` without arguments for the existing state-aware Manager. Alongside setup/start/stop, it offers Connect, Disconnect, Status and Manage Permission. The Permission submenu shows the current state, View Status, applicable Grant Permission / Revoke Permission actions and Back. These reuse the command confirmations; revocation does not stop a running Tunnel. All permission subcommands remain available.
+
+Interactive `/ce-status` and `/ce-tunnel status` show a separate bottom `Esc  Close` row with the key in the active theme accent. Short terminals prioritize this row over status content. Esc, the configured cancel key and Ctrl-C close the screen; status admission and notification fallback are unchanged.
+
 To leave other sessions' shared transport running, normally exit Pi or explicitly deactivate. On restoration, fresh activation while that Tunnel is still running requires an operator-coordinated explicit Stop before connect. Connect never silently interrupts the shared instance. Manual Stop can interrupt an in-flight connect; there is no automatic reconnect or background retry.
 
 ## Refusals and remaining cost

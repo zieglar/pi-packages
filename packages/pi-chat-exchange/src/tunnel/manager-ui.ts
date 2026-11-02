@@ -9,6 +9,7 @@
  * width-adaptive, state-coloured panel is only possible from a component that
  * receives the real render width and the host theme.
  */
+import { renderBoundedFrame } from "@narumitw/pi-tui-kit";
 import { isTunnelRefusalCode, type TunnelRefusalCode } from "./codes.js";
 import {
   PLAIN_TUNNEL_PANEL_THEME, clipTunnelPanelText, renderTunnelPanel, tunnelPanelModel,
@@ -18,12 +19,13 @@ import {
 export type TunnelManagerUiState =
   | "UNCONFIGURED" | "STOPPED" | "STARTING" | "CONNECTED" | "STOPPING"
   | "ERROR" | "UNKNOWN" | "DEGRADED";
-export type TunnelManagerUiAction = "setup" | "edit" | "start" | "stop" | "refresh" | "details" | "close";
+export type TunnelManagerUiAction = "setup" | "edit" | "start" | "stop" | "connect" | "disconnect" | "status" | "permission" | "refresh" | "details" | "close";
 export type TunnelManagerUiEvidence = "none" | "process-identity" | "health-probe" | "offline-simulated" | "unavailable";
 
 /** Safe projection only: never pass a key value or credential reference here. */
 export interface TunnelManagerUiProjection {
   readonly state: TunnelManagerUiState;
+  readonly permission?: "absent" | "invalid" | "revoked" | "changed" | "granted" | "environment";
   readonly profilePath: string;
   readonly tunnelIdAlreadyMasked?: string;
   readonly organizationConfigured: boolean;
@@ -54,6 +56,7 @@ export interface TunnelManagerUiPorts {
   setup(): Promise<unknown>;
   start(): Promise<unknown>;
   stop(): Promise<unknown>;
+  permission?(action: "status" | "grant" | "revoke"): Promise<unknown>;
 }
 export interface TunnelManagerUiContext {
   readonly mode: string;
@@ -67,7 +70,8 @@ export interface TunnelManagerUiOptions {
 }
 export type TunnelManagerUiOutcome =
   | { readonly status: "closed" | "cancelled" | "unsupported" }
-  | { readonly status: "refused"; readonly code: TunnelRefusalCode };
+  | { readonly status: "refused"; readonly code: TunnelRefusalCode }
+  | { readonly status: "command"; readonly command: "connect" | "disconnect" | "status" };
 
 /** Presentation is conservative; authorization remains in the injected ports.
  * Runtime UNKNOWN/ERROR must never be conflated with STOPPED, but they also
@@ -86,14 +90,16 @@ export function tunnelManagerActions(projection: TunnelManagerUiProjection): rea
   // Start/Stop authority follows the measured runtime lifecycle only.
   const lifecycle: readonly TunnelManagerUiAction[] = state === "STOPPED" ? ["start"]
     : state === "CONNECTED" ? ["stop"] : [];
-  return [...(repair !== undefined ? [repair] : []), ...lifecycle, "refresh", "details", "close"];
+  return [...(repair !== undefined ? [repair] : []), ...lifecycle, "connect", "disconnect", "status", "permission", "refresh", "details", "close"];
 }
 
-/** Menu items include one navigation-only entry that is not a domain action. */
-type TunnelManagerUiItem = TunnelManagerUiAction | "back";
+/** Navigation entries never authorize a domain operation. */
+type TunnelManagerUiItem = TunnelManagerUiAction | "back" | "permission-status" | "permission-grant" | "permission-revoke";
 
 const LABELS: Readonly<Record<TunnelManagerUiItem, string>> = Object.freeze({
   setup: "Set Up Tunnel", edit: "Edit Configuration", start: "Start Tunnel", stop: "Stop Tunnel",
+  connect: "Connect", disconnect: "Disconnect", status: "Status", permission: "Manage Permission",
+  "permission-status": "View Status", "permission-grant": "Grant Permission", "permission-revoke": "Revoke Permission",
   refresh: "Refresh", details: "Details", close: "Close", back: "Back",
 });
 const DETAIL_ITEMS: readonly TunnelManagerUiItem[] = Object.freeze(["back", "close"]);
@@ -115,6 +121,7 @@ function closedCode(error: unknown): TunnelRefusalCode {
  * consumed structurally and validated at runtime before use. */
 interface ManagerTuiView {
   requestRender?(): void;
+  readonly terminal?: { readonly rows: number };
 }
 interface ManagerComponentView {
   render(width: number): string[];
@@ -198,13 +205,13 @@ function panelTheme(theme: unknown): TunnelPanelTheme {
 /** What the operator chose. `details`/`back` never leave the component: they are
  * internal views, so diagnostics never take a second component ownership. */
 type ManagerSelection =
-  | { readonly kind: "action"; readonly action: Exclude<TunnelManagerUiAction, "details" | "close"> }
+  | { readonly kind: "action"; readonly action: Exclude<TunnelManagerUiItem, "details" | "close" | "back" | "permission"> }
   | { readonly kind: "close" };
 
 const CLOSE_SELECTION: ManagerSelection = Object.freeze({ kind: "close" });
 
 class TunnelManagerPanel implements ManagerComponentView {
-  private view: "manager" | "details" = "manager";
+  private view: "manager" | "details" | "permission";
   private cursor = 0;
   private finished = false;
   private readonly theme: TunnelPanelTheme;
@@ -217,19 +224,34 @@ class TunnelManagerPanel implements ManagerComponentView {
     private readonly done: (result: ManagerSelection) => void,
     private readonly projection: TunnelManagerUiProjection,
     private readonly operationError: TunnelRefusalCode | undefined,
+    view: "manager" | "permission" = "manager",
   ) {
+    this.view = view;
     this.theme = panelTheme(theme);
     this.key = keyReader(keybindings);
   }
 
   private items(): readonly TunnelManagerUiItem[] {
-    return this.view === "details" ? DETAIL_ITEMS : tunnelManagerActions(this.projection);
+    if (this.view === "details") return DETAIL_ITEMS;
+    if (this.view === "permission") {
+      const permission = this.projection.permission;
+      return ["permission-status",
+        ...(permission !== "granted" && permission !== "invalid" ? ["permission-grant" as const] : []),
+        ...(permission === "granted" || permission === "environment" || permission === "changed" ? ["permission-revoke" as const] : []),
+        "back"];
+    }
+    return tunnelManagerActions(this.projection);
   }
 
   render(width: number): string[] {
     const total = Math.max(1, Math.floor(width));
     const panelWidth = Math.min(total, PANEL_MAX_WIDTH);
-    const lines = [...renderTunnelPanel(tunnelPanelModel(this.projection, this.view), panelWidth, this.theme)];
+    const lines = this.view === "permission"
+      ? ["Manage Permission", "",
+        `Background permission: ${this.projection.permission ?? "unavailable"}`,
+        "Revoke denies future starts. Running transport needs Stop/disconnect.",
+      ].map(line => clipTunnelPanelText(line, total))
+      : [...renderTunnelPanel(tunnelPanelModel(this.projection, this.view), panelWidth, this.theme)];
     if (this.operationError !== undefined) {
       lines.push("", this.theme.fg("error", clipTunnelPanelText(`Last operation: ${this.operationError}`, total)));
     }
@@ -239,8 +261,15 @@ class TunnelManagerPanel implements ManagerComponentView {
       const row = clipTunnelPanelText(`${index === this.cursor ? "❯ " : "  "}${LABELS[item]}`, total);
       lines.push(index === this.cursor ? this.theme.bold(this.theme.fg("accent", row)) : this.theme.fg("text", row));
     }
-    lines.push("", this.theme.fg("dim", clipTunnelPanelText(this.view === "details" ? DETAILS_HINT : MANAGER_HINT, total)));
-    return lines;
+    lines.push("", this.theme.fg("dim", clipTunnelPanelText(this.view !== "manager" ? DETAILS_HINT : MANAGER_HINT, total)));
+    const rows = this.tui.terminal?.rows;
+    const budget = rows === undefined ? lines.length : Math.max(1, Math.floor(rows) - 2);
+    if (lines.length <= budget) return lines;
+    return renderBoundedFrame({ width: total, maxRows: budget, rule: "",
+      title: [], content: lines.slice(0, -2), hints: [lines.at(-1)!],
+      compactHint: lines.at(-1)!, focusedRow: lines.findIndex(line => line.includes("❯ ")),
+      priorityRows: [lines.findIndex(line => line.includes("❯ "))],
+    });
   }
 
   invalidate(): void {
@@ -279,9 +308,8 @@ class TunnelManagerPanel implements ManagerComponentView {
   }
 
   private cancel(): void {
-    // Escape in diagnostics returns to the landing panel; only the landing
-    // panel closes the Manager, so a glance at Details cannot end the session.
-    if (this.view === "details") {
+    // Escape from a submenu returns; only the landing panel closes the Manager.
+    if (this.view !== "manager") {
       this.show("manager");
       return;
     }
@@ -292,12 +320,13 @@ class TunnelManagerPanel implements ManagerComponentView {
     const item = this.items()[this.cursor];
     if (item === undefined) return;
     if (item === "details") { this.show("details"); return; }
+    if (item === "permission") { this.show("permission"); return; }
     if (item === "back") { this.show("manager"); return; }
     if (item === "close") { this.finish(CLOSE_SELECTION); return; }
     this.finish({ kind: "action", action: item });
   }
 
-  private show(view: "manager" | "details"): void {
+  private show(view: "manager" | "details" | "permission"): void {
     this.view = view;
     this.cursor = 0;
     this.requestRender();
@@ -345,6 +374,7 @@ export async function runTunnelManagerUi(
   }
   let lastProjection: TunnelManagerUiProjection | undefined;
   let operationError: TunnelRefusalCode | undefined;
+  let view: "manager" | "permission" = "manager";
   const current = (): boolean => !controller.signal.aborted && (options.isCurrent?.() ?? true);
   /** Set while a panel owns the screen so an abort can close it immediately. */
   let closeActive: (() => void) | undefined;
@@ -384,7 +414,7 @@ export async function runTunnelManagerUi(
       let selection: ManagerSelection | undefined;
       try {
         selection = await custom<ManagerSelection | undefined>((tui, theme, keybindings, done) => {
-          const panel = new TunnelManagerPanel(tui, theme, keybindings, done, projection, operationError);
+          const panel = new TunnelManagerPanel(tui, theme, keybindings, done, projection, operationError, view);
           closeActive = () => panel.requestClose();
           // Never call `done` synchronously inside the factory: the runtime has
           // not installed (and therefore cannot dispose) this component yet.
@@ -403,7 +433,19 @@ export async function runTunnelManagerUi(
       // An externally disposed component resolves without a selection: that is
       // a close, never an implied action.
       if (selection === undefined || selection.kind === "close") return { status: "closed" };
-      if (selection.action === "refresh") { operationError = undefined; continue; }
+      if (selection.action === "refresh") { view = "manager"; operationError = undefined; continue; }
+      if (selection.action === "connect" || selection.action === "disconnect" || selection.action === "status") {
+        return { status: "command", command: selection.action };
+      }
+      if (selection.action === "permission-status" || selection.action === "permission-grant" || selection.action === "permission-revoke") {
+        view = "permission"; operationError = undefined;
+        try {
+          if (ports.permission === undefined) throw new Error("Permission UI port unavailable");
+          await ports.permission(selection.action === "permission-status" ? "status" : selection.action === "permission-grant" ? "grant" : "revoke");
+        } catch (error) { operationError = closedCode(error); }
+        continue;
+      }
+      view = "manager";
       await perform(selection.action === "edit" ? "setup" : selection.action);
     }
     return { status: "cancelled" };

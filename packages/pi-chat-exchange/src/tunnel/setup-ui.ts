@@ -12,6 +12,7 @@
  * extensions and external terminal/process recording are not isolated by this UI.
  */
 import { defineMenu, runMenu, sanitizeTerminalText, type MenuContext, type MenuScreen, type MenuTransition } from "@narumitw/pi-tui-kit";
+import { presentCeStatus } from "./status-ui.js";
 import { isTunnelRefusalCode, TunnelRefusal, type TunnelRefusalCode } from "./codes.js";
 import { TUNNEL_ID_PATTERN as TUNNEL } from "./tunnel-id.js";
 import { captureTunnelSecret, type SecureInputUiView, type TunnelKeyProtocol } from "./secure-input.js";
@@ -442,9 +443,6 @@ export async function presentTunnelStatus(ctx: SetupUiContext, view: TunnelStatu
     ...(isTunnelRefusalCode(view.errorCode) ? [`Error: ${view.errorCode}`] : []),
     "Configured != Connected", "transport only; not delivery/ACK/completion evidence.",
   ];
-  if (ctx.mode === "tui" && ctx.hasUI && typeof ctx.ui.custom === "function") {
-    const menu = defineMenu<null, "status", never, SetupUiContext>({ start: "status", screens: { status: () => ({ kind: "detail", title: "Tunnel status", lines, hint: "close" }) }, actions: {} });
-    await runMenu(ctx, menu, { getState: () => null, ...(options.signal ? { signal: options.signal } : {}), onError: () => undefined });
-  }
+  await presentCeStatus(ctx, "Tunnel Status", lines, options);
   return { lines };
 }

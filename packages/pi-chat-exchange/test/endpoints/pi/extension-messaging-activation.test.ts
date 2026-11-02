@@ -122,6 +122,7 @@ async function fixture(source: "generated" | "absent-profile" | "nonmessaging-pr
     start: (reason = "reload") => events.get("session_start")!({ reason }, ctx),
     activate: () => commands.get("ce-tunnel")!.handler("activate", ctx),
     command: (args: string) => commands.get("ce-tunnel")!.handler(args, ctx),
+    ceStatus: () => commands.get("ce-status")!.handler("", ctx),
     switchSession: () => { runtimeId = "runtime-other"; },
     mapping: () => entries.findLast((e) => e.customType === "ce-mapping")?.data as CeMappingIdentifiers | undefined,
     notices: () => ctx.ui.notify.mock.calls.map(([text]) => String(text)).join("\n"),
@@ -393,6 +394,110 @@ async function permissionManager(h: Awaited<ReturnType<typeof fixture>>, env: No
 }
 
 describe("persistent permission through real daily command handlers", () => {
+  it.each([false, true])("Manager Connect uses existing permission confirmation (accepted %s)", async accepted => {
+    const h = await fixture(); const f = await permissionManager(h); await h.start();
+    const { createTuiHarness } = await import("@narumitw/pi-tui-kit/testing");
+    const tui = createTuiHarness({ width: 100, rows: 40 });
+    h.ctx.ui.custom.mockImplementation(tui.custom);
+    vi.spyOn(f.manager, "refresh").mockResolvedValue(f.manager.status());
+    h.ctx.ui.confirm.mockResolvedValue(accepted);
+    const task = h.command(""); await tui.waitForOpen();
+    try {
+      const rows = tui.render().filter(line => /^[❯ ] /.test(line) && line.trim());
+      const cursor = rows.findIndex(line => line.startsWith("❯"));
+      const target = rows.findIndex(line => line.trim().replace(/^❯ /, "") === "Connect");
+      expect(target).toBeGreaterThanOrEqual(0);
+      for (let i = cursor; i < target; i++) tui.press("tui.select.down");
+      tui.press("tui.select.confirm"); await task;
+      expect(tui.isOpen).toBe(false); expect(h.ctx.ui.confirm).toHaveBeenCalledTimes(1);
+      expect(f.manager.authorizationStatus()).toBe(accepted ? "granted" : "absent");
+      expect(f.start).toHaveBeenCalledTimes(accepted ? 1 : 0);
+      expect(counts().owners).toBe(accepted ? 1 : 0);
+    } finally { tui.dispose(); await task; }
+  });
+  it("ce-status opens the guarded status screen and Esc closes it", async () => {
+    const h = await fixture(); await h.start(); await h.activate();
+    const { createTuiHarness } = await import("@narumitw/pi-tui-kit/testing");
+    const tui = createTuiHarness({ width: 60, rows: 12 });
+    h.ctx.ui.custom.mockImplementation(tui.custom);
+    const promise = h.ceStatus();
+    for (let i = 0; i < 80; i++) await Promise.resolve();
+    try {
+      expect(tui.isOpen).toBe(true);
+      expect(tui.render().at(-1)).toBe("Esc  Close");
+      tui.send("\x1b"); await promise;
+      expect(tui.isOpen).toBe(false);
+    } finally { tui.dispose(); await promise; }
+  });
+  it("Manager permission actions reuse the command handlers and cancel safely", async () => {
+    const h = await fixture(); const f = await permissionManager(h); await h.start();
+    const { createTuiHarness } = await import("@narumitw/pi-tui-kit/testing");
+    const tui = createTuiHarness({ width: 100, rows: 40 });
+    h.ctx.ui.custom.mockImplementation(tui.custom);
+    vi.spyOn(f.manager, "refresh").mockResolvedValue(f.manager.status());
+    const pending = h.command(""); await tui.waitForOpen();
+    const choose = async (label: string) => {
+      const items = tui.render().filter(line => /^[❯ ] /.test(line) && line.trim());
+      const target = items.findIndex(line => line.trim().replace(/^❯ /, "") === label);
+      expect(target, label).toBeGreaterThanOrEqual(0);
+      const cursor = items.findIndex(line => line.startsWith("❯"));
+      for (let i = cursor; i < target; i++) tui.press("tui.select.down");
+      for (let i = cursor; i > target; i--) tui.press("tui.select.up");
+      tui.press("tui.select.confirm");
+      for (let i = 0; i < 80; i++) await Promise.resolve();
+      await tui.waitForOpen();
+    };
+    try {
+      await choose("Manage Permission"); expect(tui.render().join("\n")).toContain("permission: absent");
+      h.ctx.ui.confirm.mockResolvedValue(false); await choose("Grant Permission");
+      expect(f.manager.authorizationStatus()).toBe("absent"); expect(f.start).not.toHaveBeenCalled();
+      h.ctx.ui.confirm.mockResolvedValue(true); await choose("Grant Permission");
+      expect(f.manager.authorizationStatus()).toBe("granted"); expect(f.start).not.toHaveBeenCalled();
+      await choose("View Status"); expect(h.notices()).toContain("permission=granted");
+      h.ctx.ui.confirm.mockResolvedValue(false); await choose("Revoke Permission");
+      expect(f.manager.authorizationStatus()).toBe("granted");
+      h.ctx.ui.confirm.mockResolvedValue(true); await choose("Revoke Permission");
+      expect(f.manager.authorizationStatus()).toBe("revoked");
+      expect(h.ctx.ui.confirm.mock.calls.at(-1)?.[1]).toContain("existing client keeps running until Stop/disconnect");
+      await choose("Back"); tui.send(""); await pending;
+    } finally { tui.dispose(); await pending; }
+  });
+  it.each(["grant", "revoke"])("Manager permission %s writes nothing after the session is torn down", async action => {
+    const h = await fixture(); const f = await permissionManager(h); await h.start();
+    if (action === "revoke") { h.ctx.ui.confirm.mockResolvedValue(true); await h.command("permission grant"); h.ctx.ui.confirm.mockReset(); }
+    const { createTuiHarness } = await import("@narumitw/pi-tui-kit/testing");
+    const tui = createTuiHarness({ width: 100, rows: 40 });
+    h.ctx.ui.custom.mockImplementation(tui.custom);
+    vi.spyOn(f.manager, "refresh").mockResolvedValue(f.manager.status());
+    let accept!: (value: boolean) => void;
+    let entered!: () => void; const opened = new Promise<void>(resolve => { entered = resolve; });
+    h.ctx.ui.confirm.mockImplementationOnce(() => { entered(); return new Promise<boolean>(resolve => { accept = resolve; }); });
+    const pending = h.command(""); await tui.waitForOpen();
+    const choose = async (label: string) => {
+      const items = tui.render().filter(line => /^[❯ ] /.test(line) && line.trim());
+      const target = items.findIndex(line => line.trim().replace(/^❯ /, "") === label);
+      expect(target, label).toBeGreaterThanOrEqual(0);
+      const cursor = items.findIndex(line => line.startsWith("❯"));
+      for (let i = cursor; i < target; i++) tui.press("tui.select.down");
+      tui.press("tui.select.confirm"); for (let i = 0; i < 80; i++) await Promise.resolve();
+    };
+    try {
+      await choose("Manage Permission");
+      await choose(action === "grant" ? "Grant Permission" : "Revoke Permission");
+      await opened;
+      // The teardown aborts the Manager, so the pending confirmation cannot write.
+      await h.shutdown();
+      accept(true);
+      await pending;
+      expect(f.manager.authorizationStatus()).toBe(action === "grant" ? "absent" : "granted");
+      expect(f.start).not.toHaveBeenCalled();
+      // The permission guard is released: a later explicit grant still works.
+      h.reloadFactory(); await h.start();
+      h.ctx.ui.confirm.mockResolvedValue(true);
+      await h.command("permission grant");
+      expect(f.manager.authorizationStatus()).toBe("granted");
+    } finally { tui.dispose(); await pending; }
+  });
   it("Stop cancels a pending Start permission prompt before a late acceptance", async () => {
     const h = await fixture(); const f = await permissionManager(h); await h.start();
     const deferred = vi.spyOn(f.manager, "startDeferred").mockImplementation(() => ({ ack: Promise.reject(new Error("synthetic refusal")), settled: Promise.reject(new Error("synthetic refusal")) }));
@@ -437,6 +542,13 @@ describe("persistent permission through real daily command handlers", () => {
     h.ctx.ui.confirm.mockClear().mockResolvedValue(false); await h.command("connect");
     expect(h.ctx.ui.confirm).toHaveBeenCalledTimes(1); expect(start).not.toHaveBeenCalled(); expect(counts().owners).toBe(0);
     await h.command("permission status"); expect(h.notices()).toContain("permission=revoked");
+  });
+  it("direct permission revoke retains its untimed confirmation", async () => {
+    const h = await fixture(); const f = await permissionManager(h); await h.start();
+    await h.command("permission grant"); h.ctx.ui.confirm.mockClear();
+    await h.command("permission revoke");
+    expect(h.ctx.ui.confirm.mock.calls[0]).toHaveLength(2);
+    expect(f.manager.authorizationStatus()).toBe("revoked");
   });
   it("malformed persistent storage fails closed without prompting, binding or transport", async () => {
     const h = await fixture(); const f = await permissionManager(h); await h.start();

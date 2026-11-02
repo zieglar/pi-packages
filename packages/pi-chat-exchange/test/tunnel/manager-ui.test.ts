@@ -16,7 +16,7 @@ async function api() {
   return loaded as ManagerApi;
 }
 
-const ITEMS = /(?:Set Up Tunnel|Start Tunnel|Edit Configuration|Stop Tunnel|Refresh|Details|Back|Close)/;
+const ITEMS = /(?:Set Up Tunnel|Start Tunnel|Edit Configuration|Stop Tunnel|Connect|Disconnect|Status|Refresh|Details|Back|Close|Manage Permission|View Status|Grant Permission|Revoke Permission)/;
 
 function projection(state = "STOPPED"): {
   state: string; profilePath: string; tunnelIdAlreadyMasked: string | undefined;
@@ -125,7 +125,8 @@ describe("Tunnel Manager custom panel interaction", () => {
     [projection("UNKNOWN"), ["refresh", "details", "close"]],
   ])("limits contextual actions to the projection", async (proj, expected) => {
     const mod = await api();
-    expect(mod.tunnelManagerActions(proj)).toEqual(expected);
+    const navigation = ["connect", "disconnect", "status", "permission"];
+    expect(mod.tunnelManagerActions(proj)).toEqual([...expected.slice(0, -3), ...navigation, ...expected.slice(-3)]);
     const f = await open((proj as ReturnType<typeof projection>).state);
     expect(f.tui.render().join("\n")).toContain((proj as ReturnType<typeof projection>).state);
     await close(f);
@@ -209,6 +210,51 @@ describe("Tunnel Manager custom panel interaction", () => {
     expect(f.tui.render().join("\n")).toContain("Chat Exchange Tunnel");
     await close(f);
   });
+  it("small Manager view keeps the selected Permission entry visible", async () => {
+    const f = await open("CONNECTED");
+    f.tui.resize({ width: 32, rows: 8 });
+    for (let i = 0; i < 4; i++) f.tui.press("tui.select.down");
+    const lines = f.tui.render();
+    expect(lines.length).toBeLessThanOrEqual(6);
+    expect(lines.join("\n")).toContain("❯ Manage Permission");
+    f.tui.press("tui.select.confirm"); await flush();
+    expect(f.tui.render().join("\n")).toContain("❯ View Status");
+    f.tui.press("tui.select.cancel"); await flush(); await close(f);
+  });
+
+  it.each(["Connect", "Disconnect", "Status"])("%s releases the panel before handing off to its existing command", async label => {
+    const f = await open("CONNECTED");
+    await activate(f, label);
+    await expect(f.running).resolves.toEqual({ status: "command", command: label.toLowerCase() });
+    expect(f.tui.isOpen).toBe(false);
+    for (const port of [f.ports.setup, f.ports.start, f.ports.stop]) expect(port).not.toHaveBeenCalled();
+  });
+
+  it.each(["absent", "granted", "revoked", "changed", "invalid", "environment"])("Permission submenu presents %s and only delegates explicit operations", async permission => {
+    const f = await open("CONNECTED");
+    const command = vi.fn(async (_action: string) => undefined);
+    f.set({ ...projection("CONNECTED"), permission } as ReturnType<typeof projection>);
+    Object.assign(f.ports, { permission: command });
+    await activate(f, "Refresh");
+    await activate(f, "Manage Permission");
+    expect(f.tui.render().join("\n")).toContain(`Background permission: ${permission}`);
+    expect(command).not.toHaveBeenCalled();
+    if (permission === "granted") expect(f.tui.render().join("\n")).not.toContain("Grant Permission");
+    else if (permission !== "invalid") expect(f.tui.render().join("\n")).toContain("Grant Permission");
+    await activate(f, "View Status"); expect(command).toHaveBeenLastCalledWith("status");
+    expect(f.tui.render().join("\n")).toContain("Background permission:");
+    if (permission === "granted" || permission === "environment" || permission === "changed") {
+      await activate(f, "Revoke Permission"); expect(command).toHaveBeenLastCalledWith("revoke");
+    } else if (permission !== "invalid") {
+      await activate(f, "Grant Permission"); expect(command).toHaveBeenLastCalledWith("grant");
+    }
+    await activate(f, "Back");
+    expect(f.tui.render().join("\n")).toContain("Chat Exchange Tunnel");
+    await activate(f, "Manage Permission"); f.tui.press("tui.select.cancel"); await flush();
+    expect(f.tui.render().join("\n")).toContain("Chat Exchange Tunnel");
+    await close(f);
+  });
+
 
   it("neither Manager nor Details renders a secret or any credential reference", async () => {
     const secretish = ["synthetic", "key", "material"].join("-");
@@ -232,7 +278,7 @@ describe("Tunnel Manager custom panel interaction", () => {
     expect(f.tui.render().join("\n")).toMatch(/State +UNKNOWN/);
     expect(f.tui.render().join("\n")).toMatch(/Credential +Not configured/);
     expect(f.tui.render().join("\n")).not.toContain("STOPPED");
-    expect((await api()).tunnelManagerActions(projection("UNKNOWN"))).toEqual(["refresh", "details", "close"]);
+    expect((await api()).tunnelManagerActions(projection("UNKNOWN"))).toEqual(["connect", "disconnect", "status", "permission", "refresh", "details", "close"]);
     await close(f);
   });
 

@@ -29,12 +29,13 @@ import { runSessionConfiguration } from "./multi-session-commands.js";
 import { PiMultiSessionRuntime, runtimeEnvironment } from "./multi-session-runtime.js";
 import { readSelectedMultiSessionPolicy, projectPiRegistration, type MultiSessionSnapshot } from "../dist/tunnel/multi-session-policy.js";
 import { runSetupWizard, presentTunnelStatus } from "../dist/tunnel/setup-ui.js";
+import { presentCeStatus } from "../dist/tunnel/status-ui.js";
 import { confirmMessagingActivation } from "../dist/tunnel/messaging-activation-ui.js";
 import { piTunnelKeyProtocol } from "./tui-keys.js";
 import { createTunnelProfileSetup, readGeneratedPiAllowlist } from "../dist/tunnel/setup.js";
 import { resolveTunnelProfilePath } from "../dist/tunnel/background-manager.js";
 import { validMessagingStore } from "../dist/tunnel/messaging-config.js";
-import { runTunnelManagerUi, type TunnelManagerUiProjection } from "../dist/tunnel/manager-ui.js";
+import { runTunnelManagerUi, type TunnelManagerUiProjection, type TunnelManagerUiOutcome } from "../dist/tunnel/manager-ui.js";
 import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -1442,13 +1443,25 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         notify(ctx, "ce-chat-exchange: status unavailable (CE_HOST_UNAVAILABLE)", "warning");
         return;
       }
-      notify(
-        ctx,
-        `ce-chat-exchange: piSession=${ctx.sessionManager.getSessionId()} exchange=${status.exchangeId ?? "none"} ` +
-          `endpoint=${status.endpointId} registered=${status.registered} ` +
-          `participant=${status.participantId ?? "none"} session=${status.sessionId ?? "none"} ` +
-          `lease=${status.lease} fencing=${status.fencingToken ?? "none"}`,
-      );
+      const message = `ce-chat-exchange: piSession=${ctx.sessionManager.getSessionId()} exchange=${status.exchangeId ?? "none"} ` +
+        `endpoint=${status.endpointId} registered=${status.registered} ` +
+        `participant=${status.participantId ?? "none"} session=${status.sessionId ?? "none"} ` +
+        `lease=${status.lease} fencing=${status.fencingToken ?? "none"}`;
+      notify(ctx, message);
+      if (ctx.mode === "tui" && ctx.hasUI && typeof ctx.ui.custom === "function" && managerUiTask === undefined && activationTask === undefined) {
+        const controller = new AbortController(); managerUiCapture = controller;
+        const task = presentCeStatus({ ...ctx, mode: "tui" }, "Chat Exchange Status", [
+          `Pi session: ${ctx.sessionManager.getSessionId()}`, `Exchange: ${status.exchangeId ?? "none"}`,
+          `Endpoint: ${status.endpointId}`, `Registered: ${status.registered}`,
+          `Participant: ${status.participantId ?? "none"}`, `Session: ${status.sessionId ?? "none"}`,
+          `Lease: ${status.lease}`, `Fencing: ${status.fencingToken ?? "none"}`,
+        ], { signal: controller.signal });
+        managerUiTask = task;
+        try { await task; } finally {
+          if (managerUiTask === task) managerUiTask = undefined;
+          if (managerUiCapture === controller) managerUiCapture = undefined;
+        }
+      }
     },
   });
   // Real setup persists an operator-confirmed profile; synthetic Keychain
@@ -1969,6 +1982,8 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         const runtime = manager.status();
         return { view: { state: "UNKNOWN", profilePath, organizationConfigured: false, binding: "missing", credentialConfigured: false, evidence: "offline-simulated" }, runtimeState: runtime.state, evidence: "offline-simulated" };
       }
+      let permission: TunnelManagerUiProjection["permission"];
+      try { permission = manager.authorizationStatus(); } catch { permission = "invalid"; }
       const runtime = await manager.refresh();
       publishTunnelStatus(ctx);
       try {
@@ -1995,14 +2010,14 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           ...(inspection.messaging.exchangeNamespace === undefined ? {} : { exchangeNamespace: inspection.messaging.exchangeNamespace }),
           ...(inspection.messaging.exchangeIdempotencyKey === undefined ? {} : { exchangeIdempotencyKey: inspection.messaging.exchangeIdempotencyKey }),
         };
-        return { view: { state, profilePath: inspection.profilePath,
+        return { view: { state, profilePath: inspection.profilePath, permission,
           ...(inspection.tunnelId ? { tunnelIdAlreadyMasked: `${inspection.tunnelId.slice(0, 13)}…` } : {}),
           organizationConfigured: Boolean(inspection.organizationId), binding, credentialConfigured: inspection.credentialConfigured,
           evidence: runtime.evidence === "health-probe" ? "health-probe" : "none",
           ...(messaging === undefined ? {} : { messaging }),
         }, runtimeState: runtime.state, evidence: runtime.evidence };
       } catch (error) {
-        return { view: { state: "UNKNOWN", profilePath, organizationConfigured: false, binding: "invalid", credentialConfigured: false,
+        return { view: { state: "UNKNOWN", profilePath, permission, organizationConfigured: false, binding: "invalid", credentialConfigured: false,
           evidence: "unavailable", errorCode: error instanceof TunnelRefusal ? error.code : "CE_TUNNEL_PROFILE_INVALID",
         }, runtimeState: runtime.state, evidence: runtime.evidence };
       }
@@ -2062,24 +2077,44 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       ui: { ...ctx.ui, notify: (text, level) => { if (!controller.signal.aborted) ctx.ui.notify(text, level); },
         setStatus: (key, text) => { if (!controller.signal.aborted) ctx.ui.setStatus?.(key, text); } },
     };
+    let selected: TunnelManagerUiOutcome | undefined;
     const task = (async () => {
       const result = await runTunnelManagerUi(liveCtx, {
         read: async () => (await readTunnelUi(liveCtx)).view,
         setup: async () => { await runTunnelCommand("setup", liveCtx); },
         start: async () => { await runTunnelCommand("start", liveCtx); },
         stop: async () => { await runTunnelCommand("stop", liveCtx); },
+        permission: async action => { await runTunnelCommand(`permission ${action}`, liveCtx, { signal: controller.signal }); },
       }, { signal: controller.signal });
-      if (!controller.signal.aborted && result.status === "refused") notify(ctx, `ce-tunnel: Manager refused ${result.code}`, "warning");
+      selected = result;
     })();
     managerUiTask = task;
     try { await task; } finally {
       if (managerUiTask === task) managerUiTask = undefined;
       if (managerUiCapture === controller) managerUiCapture = undefined;
     }
+    // Daily actions keep their existing busy/session checks after UI ownership ends.
+    if (!controller.signal.aborted && selected?.status === "command") await runTunnelCommand(selected.command, ctx);
+    if (!controller.signal.aborted && selected?.status === "refused") notify(ctx, `ce-tunnel: Manager refused ${selected.code}`, "warning");
   };
 
   /** Daily commands reuse current authority. They never publish policy or recover an Owner. */
   let permissionPrompt = false;
+  /** A confirmation that also settles when the owning operation is aborted, so a
+   * torn-down Manager never leaves a pending prompt holding the permission guard. */
+  const confirmWithAbort = async (
+    ctx: ExtensionContextView, title: string, message: string, signal: AbortSignal | undefined,
+  ): Promise<boolean> => {
+    if (signal?.aborted) return false;
+    if (typeof ctx.ui.confirm !== "function") throw new TunnelRefusal("CE_TUNNEL_INPUT_UNAVAILABLE");
+    if (signal === undefined) return ctx.ui.confirm(title, message);
+    const pending = ctx.ui.confirm(title, message, { signal, timeout: 120_000 });
+    return Promise.race([pending, new Promise<boolean>((resolve) => {
+      if (signal.aborted) resolve(false);
+      else signal.addEventListener("abort", () => resolve(false), { once: true });
+    })]);
+  };
+
   const requestBackgroundPermission = async (manager: BackgroundTunnelManager, ctx: ExtensionContextView, signal: AbortSignal, force = false): Promise<boolean> => {
     if (resolveTunnelProfilePath({ env: process.env }) !== manager.profilePath()) throw new TunnelRefusal("CE_TUNNEL_CONFIG_CONFLICT", "profile.selection");
     const status = manager.authorizationStatus();
@@ -2090,9 +2125,9 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     const sessionId = ctx.sessionManager.getSessionId();
     permissionPrompt = true;
     try {
-      const confirmed = await ctx.ui.confirm("Allow persistent CE background Tunnel startup?",
+      const confirmed = await confirmWithAbort(ctx, "Allow persistent CE background Tunnel startup?",
         `This OS user may manually start ${scope.clientPath} run for Profile ${manager.profilePath()}. The client reads the existing credential reference ${scope.credentialPath}; CE stores no credential body. Connection may incur costs and survives Pi exit. Stop with /ce-tunnel disconnect or stop; revoke future startup with /ce-tunnel permission revoke. Profile/client changes require fresh permission.`,
-        { signal, timeout: 120_000 });
+        signal);
       if (!confirmed || signal.aborted) return false;
       if (ctx.sessionManager.getSessionId() !== sessionId) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
       if (resolveTunnelProfilePath({ env: process.env }) !== manager.profilePath()) throw new TunnelRefusal("CE_TUNNEL_CONFIG_CONFLICT", "profile.selection");
@@ -2196,7 +2231,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   };
 
   /** Direct shortcuts and the Manager invoke this same operation path. */
-  const runTunnelCommand = async (args: string, ctx: ExtensionContextView): Promise<void> => {
+  const runTunnelCommand = async (args: string, ctx: ExtensionContextView, options: { signal?: AbortSignal } = {}): Promise<void> => {
         const sub = args.trim().split(/\s+/)[0] ?? "";
         if (sub === "permission") {
           const action = args.trim().split(/\s+/)[1] ?? "status";
@@ -2209,10 +2244,14 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
             if (action === "revoke") {
               const target = manager.profilePath();
               if (resolveTunnelProfilePath({ env: process.env }) !== target) throw new TunnelRefusal("CE_TUNNEL_CONFIG_CONFLICT", "profile.selection");
+              // A Manager-bound revoke must not outlive its own operation or session.
+              const signal = options.signal;
+              const sessionId = signal === undefined ? undefined : ctx.sessionManager.getSessionId();
               permissionPrompt = true;
               try {
-                const confirmed = await ctx.ui.confirm("Revoke CE background startup permission?", `Deny future startup for Profile ${target}, including inherited CE_TUNNEL_BACKGROUND_ALLOW=1. An existing client keeps running until Stop/disconnect.`);
-                if (!confirmed) return;
+                const confirmed = await confirmWithAbort(ctx, "Revoke CE background startup permission?", `Deny future startup for Profile ${target}, including inherited CE_TUNNEL_BACKGROUND_ALLOW=1. An existing client keeps running until Stop/disconnect.`, signal);
+                if (!confirmed || signal?.aborted) return;
+                if (sessionId !== undefined && ctx.sessionManager.getSessionId() !== sessionId) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
                 if (resolveTunnelProfilePath({ env: process.env }) !== target) throw new TunnelRefusal("CE_TUNNEL_CONFIG_CONFLICT");
                 manager.revokeAuthorization();
                 notify(ctx, "ce-tunnel: background startup permission revoked; existing transport requires explicit Stop/disconnect");
@@ -2221,7 +2260,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
             }
             if (action === "grant") {
               if (dailyTask !== undefined || activationTask !== undefined || startCapture !== undefined) throw new TunnelRefusal("CE_TUNNEL_MANAGER_BUSY");
-              const accepted = await requestBackgroundPermission(manager, ctx, new AbortController().signal, true);
+              const accepted = await requestBackgroundPermission(manager, ctx, options.signal ?? new AbortController().signal, true);
               if (accepted) notify(ctx, "ce-tunnel: background permission verified; connect/start remains explicit");
               return;
             }

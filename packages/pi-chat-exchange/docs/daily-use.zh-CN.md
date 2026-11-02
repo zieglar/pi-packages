@@ -47,6 +47,10 @@ connect 先检查交互 TUI、持久启动许可、Native/运行时与已加载�
 | `activate` / `deactivate` | 保留原有显式绑定/释放语义，不自动启停传输 |
 | `status` / `/ce-status` | 前者测量 transport 与 Native；后者报告当前 CE 绑定与租约 |
 
+不带参数执行 `/ce-tunnel` 可打开原有的状态感知 Manager。除配置与 start/stop 外，菜单提供 Connect、Disconnect、Status 和 Manage Permission。Permission 子菜单显示当前状态，并提供 View Status、适用的 Grant Permission / Revoke Permission 及 Back，复用原命令的确认流程；撤销不停止正在运行的 Tunnel。原有 permission 子命令保留。
+
+交互模式的 `/ce-status` 与 `/ce-tunnel status` 在底部独立显示 `Esc  Close`，按键使用当前主题强调色。小终端优先显示关闭提示；Esc、配置的取消键与 Ctrl-C 均可关闭，状态准入和通知回退保持原有行为。
+
 只想退出当前 Pi、让其他会话继续使用共享 Tunnel时，可正常退出或显式 deactivate；但下次需要新激活且共享 Tunnel 仍在运行时，当前架构要求操作者另行协调 Stop，再 connect。connect 不会替你中断共享实例。手动 Stop 可以打断进行中的 connect；没有自动重连或后台重试。
 
 ## 拒绝与剩余操作成本
