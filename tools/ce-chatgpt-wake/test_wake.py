@@ -30,15 +30,27 @@ class Desktop:
 class WakeTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
-        self.config={'windowId':'w-1','windowTitle':'test-chat','conversationMarker':'HANDOFF-CE-CHATGPT-WAKE-01','stateDir':self.tmp.name,'maxWaitSeconds':1,'pollSeconds':.001}
+        self.config={'windowId':'w-1','windowTitle':'test-chat','conversationMarker':'HANDOFF-CE-CHATGPT-WAKE-01','stateDir':self.tmp.name,'maxWaitSeconds':1,'pollSeconds':.001,'targetEndpoint':'chatgpt/main','replyEndpoint':'pi/wake-test'}
         self.record={'testId':'CE-WAKE-TEST-01-1','messageId':'msg_01M6D7BPKRDG38PE854761T7MN','to':'chatgpt/main','replyTo':'pi/wake-test','disposition':'CREATED'}
+    def test_nondefault_endpoint_requires_exact_operator_authorization(self):
+        self.record['to']='chatgpt/alternate'
+        self.record['replyTo']='pi/alternate'
+        self.config.update(targetEndpoint='chatgpt/alternate',replyEndpoint='pi/alternate')
+        self.assertEqual(wake.run(self.record,self.config,Desktop())['noticeSubmission'],'OBSERVED')
+    def test_mismatched_or_missing_endpoint_authorization_prevents_input(self):
+        for field in ('targetEndpoint','replyEndpoint'):
+            with self.subTest(field=field):
+                config=dict(self.config);config.pop(field,None)
+                with self.assertRaisesRegex(ValueError,'ENDPOINT_DENIED'):wake.run(self.record,config,None)
+        self.config.update(targetEndpoint='chatgpt/other',replyEndpoint='pi/wake-test')
+        with self.assertRaisesRegex(ValueError,'ENDPOINT_DENIED'):wake.run(self.record,self.config,None)
     def test_created_required_before_any_desktop(self):
         self.record['disposition']='UNKNOWN'
         with self.assertRaises(ValueError):wake.run(self.record,self.config,None)
     def test_notice_has_only_identifiers_not_payload(self):
-        text=wake.notice(self.record)
+        text=wake.notice(self.record,self.config)
         self.assertIn(self.record['messageId'],text);self.assertIn('ce_read_payload',text)
-        with self.assertRaises(ValueError):wake.notice({**self.record,'payload':'secret'})
+        with self.assertRaises(ValueError):wake.notice({**self.record,'payload':'secret'},self.config)
     def test_wrong_window_or_conversation_refused(self):
         with self.assertRaises(ValueError):wake.observe(snapshot(title='other'),self.config)
         v=snapshot();v['data']['tree']['children'][0]['children'][0]['name']='unrelated'

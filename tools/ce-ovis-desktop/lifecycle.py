@@ -1,9 +1,48 @@
 """Bounded cleanup for groups created with start_new_session and private AX hosts."""
 import os
-from pathlib import Path
+import re
 import signal
 import subprocess
 import time
+from pathlib import Path
+
+
+def require_executable(value, label):
+    # Operator configuration uses absolute native paths, never PATH lookup or probing.
+    try:
+        path = Path(value)
+        valid = path.is_absolute() and path.is_file() and os.access(path, os.X_OK)
+    except (TypeError, ValueError, OSError):
+        valid = False
+    if not valid:
+        raise ValueError(label + '_EXECUTABLE_REQUIRED')
+
+
+def client_running(inventory, executable, existing_paths=()):
+    # ps renders paths with spaces without shell quoting. Match the configured
+    # path before considering argument boundaries; inventory conveys no ownership.
+    if not isinstance(existing_paths, (list, tuple)) or any(not isinstance(value, str) or not Path(value).is_absolute() for value in existing_paths):
+        raise ValueError('EXISTING_CLIENT_PATHS_REQUIRED')
+    paths = {value for item in (executable, *existing_paths) for value in (item, str(Path(item).resolve()))}
+    configured = [re.compile(r'^(?:' + re.escape(value) + r'|"' + re.escape(value) + r'"|\'' + re.escape(value) + r'\')\s+run(?:\s|$)') for value in paths]
+    standard = re.compile(r'^(?:.*/)?tunnel-client\s+run(?:\s|$)')
+    for line in inventory.splitlines():
+        fields = line.strip().split(None, 1)
+        if len(fields) != 2:
+            continue
+        command = fields[1]
+        invocation = re.match(r'^(.*?)\s+run(?:\s|$)', command)
+        same_binary = invocation is not None and str(Path(invocation[1].strip('\"\'')).resolve()) in paths
+        if same_binary or any(pattern.match(command) for pattern in configured) or standard.match(command):
+            return True
+    return False
+
+
+def child_environment(config, root):
+    env = {key: value for key, value in os.environ.items() if not key.startswith('CE_')}
+    env.update(HOME=config['isolatedHome'], XDG_CONFIG_HOME=config['isolatedHome'] + '/.config',
+               CE_TUNNEL_PROFILE=str(root / 'tunnel.yaml'), CE_TUNNEL_CLIENT_PATH=config['client'])
+    return env
 
 
 def group_members(pgid):

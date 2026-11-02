@@ -11,6 +11,7 @@ import re
 import subprocess
 import time
 
+from lifecycle import require_executable
 
 def digest(text):
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
@@ -187,6 +188,10 @@ def run_task(task, config, desktop):
 class DesktopCli:
     def __init__(self, config):
         self.config = config
+        require_executable(config.get('agentDesktop'), 'DESKTOP')
+        for field in ('desktopTmpDir', 'stateDir'):
+            if not isinstance(config.get(field), str) or not Path(config[field]).is_absolute():
+                raise ValueError('ABSOLUTE_PATH_REQUIRED_' + field)
         self.env = {**os.environ, 'TMPDIR': config['desktopTmpDir']}
         tmp = Path(config['desktopTmpDir'])
         tmp.mkdir(mode=0o700, parents=True, exist_ok=True)

@@ -16,12 +16,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'ce-ovis-desktop'))
 from bridge import DesktopCli, nodes, remaining, write_state
 
 
-def notice(record):
+def notice(record, config):
     if set(record) != {'testId', 'messageId', 'to', 'replyTo', 'disposition'} or record['disposition'] != 'CREATED':
         raise ValueError('CE_CREATED_REQUIRED')
     if not re.fullmatch(r'CE-WAKE-TEST-[A-Za-z0-9-]{1,64}', record['testId']) or not re.fullmatch(r'msg_[A-Z0-9]{26}', record['messageId']):
         raise ValueError('CORRELATION_DENIED')
-    if record['to'] != 'chatgpt/main' or not re.fullmatch(r'pi/[A-Za-z0-9-]{1,64}', record['replyTo']):
+    if (not isinstance(config.get('targetEndpoint'), str) or not re.fullmatch(r'chatgpt/[A-Za-z0-9-]{1,64}', config['targetEndpoint'])
+            or not isinstance(config.get('replyEndpoint'), str) or not re.fullmatch(r'pi/[A-Za-z0-9-]{1,64}', config['replyEndpoint'])
+            or record['to'] != config['targetEndpoint'] or record['replyTo'] != config['replyEndpoint']):
         raise ValueError('ENDPOINT_DENIED')
     return (f"[CE-WAKE:{record['testId']}] CE 中有待处理测试消息 {record['messageId']}。"
             f"请用 ce_inbox_list 定位并用 ce_read_payload 实际读取该 Message ID，按真实 Payload 处理，"
@@ -57,7 +59,7 @@ def observe(envelope, config, allow_busy=False):
 
 
 def run(record, config, desktop):
-    text = notice(record)
+    text = notice(record, config)
     directory = Path(config['stateDir'])
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     if directory.is_symlink() or directory.stat().st_uid != os.getuid() or directory.stat().st_mode & 0o077:

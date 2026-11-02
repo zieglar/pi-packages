@@ -10,12 +10,18 @@ import time
 from pathlib import Path
 
 from health_probe import health_probe  # type: ignore[import-not-found]
-from lifecycle import stop_group, stop_hosts, namespace_hosts
+from lifecycle import stop_group, stop_hosts, namespace_hosts, require_executable, client_running, child_environment
 config_file = Path(sys.argv[1]).resolve()
 try:
     config = json.loads(config_file.read_text())
 except (OSError, ValueError) as error:
     raise ValueError(f'INVALID_SUPERVISOR_CONFIG: {error}') from error
+for field in ('runDirectory', 'isolatedHome', *(() if 'tasks' in config else ('desktopConfig',))):
+    if not isinstance(config.get(field), str) or not Path(config[field]).is_absolute():
+        raise ValueError('ABSOLUTE_PATH_REQUIRED_' + field)
+for task in config.get('tasks', []):
+    if not Path(task['desktopConfig']).is_absolute():
+        raise ValueError('ABSOLUTE_PATH_REQUIRED_desktopConfig')
 root = Path(config['runDirectory'])
 os.umask(0o077)
 stop = False
@@ -38,15 +44,24 @@ try:
 except (OSError, ValueError) as error:
     raise ValueError(f'INVALID_DESKTOP_CONFIG: {error}') from error
 desktop_namespaces = {(d['desktopTmpDir'], d['agentDesktop']) for d in desktop_configs}
+require_executable(config['node'], 'NODE')
+require_executable(config['client'], 'CLIENT')
+if 'python' in config:
+    require_executable(config['python'], 'PYTHON')
+for _directory, executable in desktop_namespaces:
+    require_executable(executable, 'DESKTOP')
+for directory, _executable in desktop_namespaces:
+    if not isinstance(directory, str) or not Path(directory).is_absolute():
+        raise ValueError('ABSOLUTE_PATH_REQUIRED_desktopTmpDir')
 for directory, _executable in desktop_namespaces:
     Path(directory).mkdir(mode=0o700, parents=True, exist_ok=True)
     if (Path(directory) / 'command-in-flight').exists() or namespace_hosts(directory):
         raise ValueError('DESKTOP_NAMESPACE_ALREADY_IN_USE')
 # Exact existing runtime conflict check; never terminate someone else's Client.
 ps = subprocess.check_output(['/bin/ps', '-axo', 'pid=,command='], text=True)
-if any('tunnel-client run ' in line and 'ctx-mode' not in line for line in ps.splitlines()):
+if client_running(ps, config['client'], config.get('existingClientPaths', [])):
     raise ValueError('EXISTING_CLIENT_RUNNING')
-env = {**os.environ, 'HOME': config['isolatedHome'], 'XDG_CONFIG_HOME': config['isolatedHome'] + '/.config', 'CE_TUNNEL_PROFILE': str(root / 'tunnel.yaml'), 'CE_TUNNEL_CLIENT_PATH': config['client']}
+env = child_environment(config, root)
 peer = client = None
 logs = []
 status = {'state': 'STARTING', 'deadline': config['deadline'], 'supervisorPid': os.getpid()}

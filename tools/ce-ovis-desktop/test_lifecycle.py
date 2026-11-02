@@ -94,7 +94,7 @@ else:
 ''')
             client.chmod(0o700)
             desktop=root/'desktop.json'
-            desktop.write_text(json.dumps({'desktopTmpDir':str(root/'ax'),'agentDesktop':'/bin/true'}))
+            desktop.write_text(json.dumps({'desktopTmpDir':str(root/'ax'),'agentDesktop':sys.executable}))
             config=root/'config.json'
             config.write_text(json.dumps({'runDirectory':str(root),'node':str(peer),'client':str(client),'isolatedHome':str(root),'desktopConfig':str(desktop),'deadline':(datetime.datetime.now(datetime.UTC)+datetime.timedelta(seconds=30)).isoformat()}))
             supervisor=Path(__file__).with_name('supervise.py')

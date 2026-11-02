@@ -11,12 +11,15 @@ import {requirePriorReceipt} from './receipt.mjs';
 process.umask(0o077);
 const [mode, configFile] = process.argv.slice(2);
 const config = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+for (const field of ['modules','runDirectory',...(mode==='prepare'?['existingProfile','node']:['python','bridge'])]) {
+  if (typeof config[field] !== 'string' || !path.isAbsolute(config[field])) throw Error('ABSOLUTE_PATH_REQUIRED_'+field);
+}
+if (mode==='prepare' && fs.realpathSync(config.node)!==fs.realpathSync(process.execPath)) throw Error('PREPARE_NODE_MISMATCH');
 const root = config.runDirectory;
 const ce = path.join(config.modules, '@zieglar/pi-chat-exchange');
 const pi = path.join(config.modules, '@earendil-works/pi-coding-agent');
 const load = (p) => import(pathToFileURL(p).href);
 if (JSON.parse(fs.readFileSync(ce + '/package.json')).version !== '0.3.0' || JSON.parse(fs.readFileSync(pi + '/package.json')).version !== '1.3.0') throw Error('RUNTIME_VERSION_MISMATCH');
-const tasks = loadTasks(config);
 const write = (name, value, directory = root) => {
   const tmp = path.join(directory, name + '.tmp');
   const fd = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW, 0o600);
@@ -55,6 +58,7 @@ if (mode === 'prepare') {
   write('publication.json', {sessionFile: native.getSessionFile(), runtimeSessionId, endpointId, chatgptEndpoint: binding.endpoint.endpointId, originalProfileSha256: createHash('sha256').update(original).digest('hex'), preparedAt: new Date().toISOString()});
   console.log(JSON.stringify({prepared: true, endpointId, sameExistingCloudIdentity: true, isolatedStore: true}));
 } else if (mode === 'run') {
+  const tasks = loadTasks(config);
   const publication = JSON.parse(fs.readFileSync(path.join(root, 'publication.json')));
   const end = Date.parse(config.deadline);
   if (!Number.isFinite(end) || end <= Date.now() || end - Date.now() > 15 * 60_000) throw Error('BOUNDED_WINDOW_REQUIRED');

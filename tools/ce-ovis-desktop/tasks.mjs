@@ -8,7 +8,7 @@ export function loadTasks(config) {
   if (!Array.isArray(entries) || entries.length < 1 || entries.length > 8) throw Error('BOUNDED_TASK_LIST_REQUIRED');
   const seen = new Set();
   return entries.map(entry => {
-    if (!/^CE-OVIS-TEST-[A-Za-z0-9-]{1,64}$/.test(entry.taskId) || !/^[0-9a-f]{64}$/.test(entry.taskPayloadSha256) || typeof entry.taskFile !== 'string' || typeof entry.desktopConfig !== 'string') throw Error('INVALID_TASK_CONFIG');
+    if (!/^CE-OVIS-TEST-[A-Za-z0-9-]{1,64}$/.test(entry.taskId) || !/^[0-9a-f]{64}$/.test(entry.taskPayloadSha256) || typeof entry.taskFile !== 'string' || !path.isAbsolute(entry.taskFile) || typeof entry.desktopConfig !== 'string' || !path.isAbsolute(entry.desktopConfig)) throw Error('INVALID_TASK_CONFIG');
     if (seen.has(entry.taskId)) throw Error('DUPLICATE_TASK_ID');
     seen.add(entry.taskId);
     return {...entry,recordRoot:config.tasks ? path.join(config.runDirectory,'tasks',entry.taskId) : config.runDirectory};

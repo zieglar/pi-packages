@@ -31,7 +31,7 @@ sys.exit(1 if c['outcome']=='nonzero' else 0)
                 client.write_text('#!'+sys.executable+'\nimport signal,time,sys\nsignal.signal(signal.SIGTERM,lambda *_:sys.exit(0))\nwhile True:time.sleep(.1)\n')
                 client.chmod(0o700)
                 desktop=root/'desktop.json'
-                desktop.write_text(json.dumps({'desktopTmpDir':str(root/'ax'),'agentDesktop':'/bin/true'}))
+                desktop.write_text(json.dumps({'desktopTmpDir':str(root/'ax'),'agentDesktop':sys.executable}))
                 config=root/'config.json'
                 config.write_text(json.dumps({'runDirectory':str(root),'node':str(peer),'client':str(client),'isolatedHome':str(root),'desktopConfig':str(desktop),'outcome':outcome,'deadline':(datetime.datetime.now(datetime.UTC)+datetime.timedelta(seconds=20)).isoformat()}))
                 # The fixture owns its stub Client; the user's real Client is outside this test.
@@ -87,7 +87,7 @@ else:
 ''')
             client.chmod(0o700)
             desktop=root/'desktop.json'
-            desktop.write_text(json.dumps({'desktopTmpDir':str(root/'ax'),'agentDesktop':'/bin/true'}))
+            desktop.write_text(json.dumps({'desktopTmpDir':str(root/'ax'),'agentDesktop':sys.executable}))
             config=root/'config.json'
             config.write_text(json.dumps({'runDirectory':str(root),'node':str(peer),'client':str(client),'isolatedHome':str(root),'desktopConfig':str(desktop),'deadline':(datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(seconds=2 if trigger=='deadline' else 30)).isoformat()}))
             supervisor=Path(__file__).with_name('supervise.py')

@@ -6,8 +6,14 @@ import {runDesktop,requireRunning} from '../ce-ovis-desktop/execution.mjs';
 import {validateReply} from './reply.mjs';
 process.umask(0o077);
 const config=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
+for(const field of ['runDirectory','modules','desktopConfig','python','bridge']) {
+ if(typeof config[field]!=='string'||!path.isAbsolute(config[field]))throw Error('ABSOLUTE_PATH_REQUIRED_'+field);
+}
+const desktopConfig=JSON.parse(fs.readFileSync(config.desktopConfig,'utf8'));
+if(typeof desktopConfig.targetEndpoint!=='string'||!/^chatgpt\/[A-Za-z0-9-]{1,64}$/.test(desktopConfig.targetEndpoint)||typeof desktopConfig.replyEndpoint!=='string'||!/^pi\/[A-Za-z0-9-]{1,64}$/.test(desktopConfig.replyEndpoint))throw Error('DESKTOP_ENDPOINT_AUTHORIZATION_REQUIRED');
 const root=config.runDirectory;
 const publication=JSON.parse(fs.readFileSync(path.join(root,'publication.json')));
+if(desktopConfig.targetEndpoint!==publication.chatgptEndpoint||desktopConfig.replyEndpoint!==publication.endpointId)throw Error('DESKTOP_ENDPOINT_AUTHORIZATION_MISMATCH');
 const ce=path.join(config.modules,'@zieglar/pi-chat-exchange');
 const pi=path.join(config.modules,'@earendil-works/pi-coding-agent');
 const load=p=>import(pathToFileURL(p).href);
