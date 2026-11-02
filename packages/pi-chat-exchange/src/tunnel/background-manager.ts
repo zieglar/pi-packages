@@ -171,6 +171,8 @@ import { TunnelRefusal } from "./codes.js";
 import { TUNNEL_ID_PATTERN } from "./tunnel-id.js";
 import { resolveTunnelClient } from "../runtime/executables.js";
 import { resolveWrapperIdentityEvidence } from "../runtime/wrapper-identity.js";
+import { createBackgroundAuthorizationStore } from "./background-authorization.js";
+import { captureBackgroundAuthorizationScope, type BackgroundAuthorizationScope } from "./background-scope.js";
 import { createHealthCompletionRecorder, type HealthProbeInput } from "./health.js";
 import { checkKeyFileRequirements, childEnvironment } from "./profile.js";
 import {
@@ -219,6 +221,8 @@ export interface BackgroundManagerOptions {
   readonly profilePath?: string;
   readonly stateFilePath?: string;
   readonly clientPath?: string;
+  /** Isolated-test storage injection only; never selected from environment/configuration. */
+  readonly authorizationDirectory?: string;
   readonly timing?: TunnelTiming;
   readonly spawn?: BackgroundSpawnSeam;
   readonly inspectProcess?: InspectProcessSeam;
@@ -284,8 +288,13 @@ export interface ProfileConfigurationGuard {
 
 export interface BackgroundTunnelManager {
   readonly kind: "real-background";
-  start(): Promise<BackgroundStartResult>;
-  /** REAL-START-FIX-01: non-blocking supervised start (see BackgroundStartDeferred). */
+  profilePath(): string;
+  authorizationScope(): BackgroundAuthorizationScope;
+  authorizationStatus(): "absent" | "invalid" | "revoked" | "changed" | "granted" | "environment";
+  grantAuthorization(expectedDigest: string): void;
+  revokeAuthorization(): void;
+  start(expectedProfileSha256?: string): Promise<BackgroundStartResult>;
+  /** Supervised start uses the same independently validated permission. */
   startDeferred(): BackgroundStartDeferred;
   /** Setup only: holds the SAME lifecycle/ownership lock as start/stop. The
    * callback must be synchronous and must not invoke lifecycle methods. No
@@ -686,10 +695,12 @@ function mapStateName(name: TunnelStateName): BackgroundStatusName {
 
 /** Single path-selection authority for manager, setup and configuration status.
  * Reject control bytes before a path can reach any visible TUI/status surface. */
-export function resolveTunnelProfilePath(options: Pick<BackgroundManagerOptions, "env" | "profilePath">): string {
+export function resolveTunnelProfilePath(options: Pick<BackgroundManagerOptions, "env" | "profilePath" | "authorizationDirectory">): string {
+  const selection = createBackgroundAuthorizationStore(options.authorizationDirectory === undefined ? {} : { directory: options.authorizationDirectory }).readSelection();
+  if (options.profilePath === undefined && !options.env.CE_TUNNEL_PROFILE && selection.kind === "invalid") throw new TunnelRefusal("CE_TUNNEL_BACKGROUND_UNAUTHORIZED", "authorization.selection");
   const path = options.profilePath ??
     (typeof options.env.CE_TUNNEL_PROFILE === "string" && options.env.CE_TUNNEL_PROFILE.length > 0
-      ? options.env.CE_TUNNEL_PROFILE : defaultProfilePath());
+      ? options.env.CE_TUNNEL_PROFILE : selection.kind === "valid" ? selection.profilePath : defaultProfilePath());
   if (!isAbsolute(path) || normalize(path) !== path || !/^[\x20\x21\x23-\x5B\x5D-\x7E]+$/.test(path)) {
     throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "profile.path");
   }
@@ -702,11 +713,53 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
   const timing = options.timing ?? DEFAULT_BACKGROUND_TUNNEL_TIMING;
   // Constructor overrides remain domain-test dependencies. Operator settings
   // and discovered production executables always cross the trust boundary.
+  const selection = options.authorizationDirectory === undefined ? createBackgroundAuthorizationStore().readSelection() : createBackgroundAuthorizationStore({ directory: options.authorizationDirectory }).readSelection();
   const clientPath = options.clientPath ?? (() => {
-    try { return resolveTunnelClient({ env }); } catch { return undefined; }
+    try {
+      if (env.CE_TUNNEL_CLIENT_PATH !== undefined) return resolveTunnelClient({ env });
+      if (selection.kind === "valid") return resolveTunnelClient({ env: { CE_TUNNEL_CLIENT_PATH: selection.clientPath } });
+      return resolveTunnelClient({ env });
+    } catch { return undefined; }
   })();
   const profilePath = resolveTunnelProfilePath(options);
   const stateFilePath = options.stateFilePath ?? `${dirname(profilePath)}/background-state.json`;
+  const authorizationStore = createBackgroundAuthorizationStore(options.authorizationDirectory === undefined ? {} : { directory: options.authorizationDirectory });
+  const authorizationScope = (): BackgroundAuthorizationScope => {
+    const entry = lstatSync(profilePath);
+    if (!entry.isFile() || entry.nlink !== 1) throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "profile");
+    const profileText = readFileSync(profilePath, "utf8");
+    const facts = parseTunnelProfile(profileText);
+    checkKeyFileMetadata(facts.keyFile);
+    return captureBackgroundAuthorizationScope({ profilePath, profileText, credentialPath: facts.keyFile, mcpCommand: facts.mcpCommand, clientPath });
+  };
+  const authorizationStatus = (): "absent" | "invalid" | "revoked" | "changed" | "granted" | "environment" => {
+    const selected = authorizationStore.readSelection();
+    if (selected.kind === "invalid") return "invalid";
+    const record = authorizationStore.inspect(profilePath);
+    if (record.kind === "invalid") return "invalid";
+    if (record.kind === "absent") return env[BACKGROUND_OPT_IN] === "1" ? "environment" : "absent";
+    if (record.state === "revoked") return "revoked";
+    return record.scopeDigest === authorizationScope().digest ? "granted" : "changed";
+  };
+  const assertAuthorization = (): void => {
+    const status = authorizationStatus();
+    if (status !== "granted" && status !== "environment") throw new TunnelRefusal("CE_TUNNEL_BACKGROUND_UNAUTHORIZED", `authorization.${status}`);
+  };
+  const grantAuthorization = (expectedDigest: string): void => {
+    if (authorizationStore.inspect(profilePath).kind === "invalid") throw new TunnelRefusal("CE_TUNNEL_BACKGROUND_UNAUTHORIZED", "authorization.invalid");
+    const scope = authorizationScope();
+    if (scope.digest !== expectedDigest) throw new TunnelRefusal("CE_TUNNEL_CONFIG_CONFLICT", "authorization.scope");
+    const saved = authorizationStore.write(profilePath, "granted", scope.digest);
+    if (saved.durability !== "synced") throw new TunnelRefusal("CE_TUNNEL_BACKGROUND_UNAUTHORIZED", "authorization.durability-uncertain");
+    if (clientPath === undefined) throw new TunnelRefusal("CE_TUNNEL_SPAWN_FAILED");
+    const selection = authorizationStore.writeSelection(profilePath, clientPath);
+    if (selection.durability !== "synced") throw new TunnelRefusal("CE_TUNNEL_BACKGROUND_UNAUTHORIZED", "authorization.selection-uncertain");
+  };
+  const revokeAuthorization = (): void => {
+    if (authorizationStore.inspect(profilePath).kind === "invalid") throw new TunnelRefusal("CE_TUNNEL_BACKGROUND_UNAUTHORIZED", "authorization.invalid");
+    const saved = authorizationStore.write(profilePath, "revoked", "0".repeat(64));
+    if (saved.durability !== "synced") throw new TunnelRefusal("CE_TUNNEL_BACKGROUND_UNAUTHORIZED", "authorization.revocation-uncertain");
+  };
   const logPath = `${dirname(stateFilePath)}/background-tunnel.log`;
   const spawnSeam = options.spawn ?? defaultSpawnDaemon(logPath);
   /** Exact command lines this manager's own spawn may show in ps (F2): the
@@ -1266,11 +1319,11 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
     return status();
   };
 
-  const start = (): Promise<BackgroundStartResult> => {
+  const start = (expectedProfileSha256?: string): Promise<BackgroundStartResult> => {
     // R5/C-v2-2: the lifecycle generation is captured AT CALL TIME, so a stop
     // submitted before this start executes still invalidates it.
     const fenceAtCall = startFence;
-    const op = enqueue(() => startImpl(fenceAtCall));
+    const op = enqueue(() => startImpl(fenceAtCall, undefined, expectedProfileSha256));
     activeStart = op;
     const settled = op.then(
       (result) => { if (activeStart === op) activeStart = undefined; return result; },
@@ -1295,11 +1348,11 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
     );
     return { ack, settled };
   };
-  const startImpl = async (fenceAtCall: number, onSpawned?: (ack: BackgroundStartAck) => void): Promise<BackgroundStartResult> => {
+  const startImpl = async (fenceAtCall: number, onSpawned?: (ack: BackgroundStartAck) => void, expectedProfileSha256?: string): Promise<BackgroundStartResult> => {
     if (fenceAtCall !== startFence) throw new TunnelRefusal("CE_TUNNEL_READY_TIMEOUT");
     if (disposed) throw new TunnelRefusal("CE_TUNNEL_SPAWN_FAILED");
-    // S1: the real start gate is exact and independent of the offline flag.
-    if (env[BACKGROUND_OPT_IN] !== "1") throw new TunnelRefusal("CE_TUNNEL_BACKGROUND_UNAUTHORIZED");
+    // Durable revocation and invalid records override legacy process permission.
+    assertAuthorization();
     if (!isAbsolute(profilePath) || normalize(profilePath) !== profilePath) {
       throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "profile");
     }
@@ -1312,6 +1365,7 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
     const facts = parseTunnelProfile(profileText);
     checkKeyFileMetadata(facts.keyFile);
     const profileSha256 = createHash("sha256").update(profileText, "utf8").digest("hex");
+    if (expectedProfileSha256 !== undefined && expectedProfileSha256 !== profileSha256) throw new TunnelRefusal("CE_TUNNEL_CONFIG_CONFLICT", "profile");
     // S6/C4: prove the record location is writable BEFORE spawning.
     ensureStateDir(dirname(stateFilePath));
     const writabilityProbe = `${stateFilePath}.${randomUUID()}.probe`;
@@ -1365,6 +1419,9 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
       catch { throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "profile"); }
       if (currentProfileText !== profileText) throw new TunnelRefusal("CE_TUNNEL_CONFIG_CONFLICT", "profile");
       checkKeyFileMetadata(facts.keyFile);
+      // Admission uses this final grant snapshot. A concurrent revoke cannot
+      // retract an admitted start; Stop is the explicit process cleanup barrier.
+      assertAuthorization();
       if (clientPath === undefined) throw new TunnelRefusal("CE_TUNNEL_SPAWN_FAILED", "client");
       const runId = `bg-${randomUUID()}`;
       const startedAt = now();
@@ -1670,6 +1727,8 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
 
   return {
     kind: "real-background" as const,
+    profilePath: () => profilePath,
+    authorizationScope, authorizationStatus, grantAuthorization, revokeAuthorization,
     start,
     startDeferred,
     withProfileConfigurationLock: <T>(operation: (guard: ProfileConfigurationGuard) => T): Promise<T> => enqueue(async () => {

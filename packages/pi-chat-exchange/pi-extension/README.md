@@ -6,7 +6,7 @@
 
 Current package: **CE 0.2.1 / Pi 1.3.0 / Node >=22.19.0**, using pinned Rust Native SQLite by default. Host and MCP child qualify independently; built-in SQLite restrictions apply only to explicit non-production `node-sqlite` selection. Store support remains macOS arm64 / Linux x64 GNU; cloud transport and Desktop UI installation are not qualified by local tests. Start with [Getting started](../docs/getting-started.md); this page is the command/configuration reference.
 
-See [Daily use](../docs/daily-use.md) for the added connect/disconnect commands and a once-configured external launcher. Connect validates the registered current session; disconnect confirms local release and shared Tunnel Stop. Existing start/stop remain transport-only.
+See [Daily use](../docs/daily-use.md) for connect/disconnect and persistent startup permission in current source. After initial confirmation, ordinary `pi` restores the chosen profile/client without shell configuration or `CE_TUNNEL_BACKGROUND_ALLOW`; restore the same registered native session. Connect confirms permission before activation/start; disconnect confirms local release and shared Tunnel Stop. Existing start/stop remain transport-only. Installed CE 0.3.0 is not updated by this checkout; source metadata remains the historical 0.2.2 candidate.
 
 <a id="加载与两种配置方式"></a>
 
@@ -104,6 +104,8 @@ See the [user guide](../docs/tunnel-setup.md#4-双向-send--inbox--read--ack) fo
 <a id="生命周期状态与恢复"></a>
 
 ## Lifecycle, status and recovery
+
+`/ce-tunnel permission status|grant|revoke` inspects, explicitly grants or revokes future startup. Connect/start prompts when permission is needed; cancellation does not grant, activate or spawn. Revoke does not stop a running client. See [persistent startup permission](../docs/tunnel-manager-background.md#persistent-startup-permission) for fixed OS-home storage, exact scope, trust checks, legacy fallback and uncertain-write handling. Saved selection is not authority; profile/binding/script/client changes require fresh confirmation. Real Pi restart, cloud, desktop and production acceptance remain unverified for this change.
 
 `/ce-status` displays the native Pi Session, Endpoint, registered state, Participant, CE Session, Exchange, lease and fencing after current admission checks. CE Session is an Owner incarnation, not the native Pi Session. Identifiers are not credentials. `/ce-tunnel status` inspects transport; `/ce-tunnel doctor` checks host/child Node and client trust read-only, without network or Store reads.
 

@@ -6,6 +6,8 @@
 
 ## 安全与私有状态
 
+持久后台启动授权与 transport ownership、注册 revoke、绑定释放相互独立。执行 grant/revoke 前阅读[持久启动许可](tunnel-manager-background.zh-CN.md#persistent-startup-permission)。授权路径应保密，不通过删除损坏记录绕过拒绝。`/ce-tunnel permission revoke` 拒绝后续启动；已运行 client 仍需 Stop/disconnect。当前持久授权测试文件使用隔离存储和受控 Manager 边界；本文档修改未运行测试，真实 Pi 重启、云端、桌面和生产行为仍未验证。
+
 扩展以你的用户权限执行。Masked 输入保护屏幕呈现，不隔离同进程恶意扩展、录屏、剪贴板访问或内存观测。不要公开凭据、capability、消息正文、完整 Session/环境、health URL 或原始日志。只分享固定拒绝码与最少非秘密上下文。公开报告中的私有文件路径、运行时标识应改为通用占位值，配置键和协议字段仍须保留原文。
 
 Profile 默认 `~/.config/pi-chat-exchange/tunnel/tunnel.yaml`，生成内容使用规范化绝对路径。`.credentials/` 下的凭据 generation 是私有明文，目录 0700 / 文件 0600。Keep existing credential 不读内容；旧 generation 保留，没有自动 credential/generation GC。`.ce-bindings/` 保存 binding/sidecar 与 Store 状态，包括 WAL/SHM、host-secret。不要合并/复制 Store、重置 ownership，或手改生成 generation、history mapping、释放标记。
@@ -22,7 +24,7 @@ Storage 强制检查 identity、migration checksum、integrity、lease/fencing �
 | 没有 `/ce-tunnel` / `/ce-status` | 对照 `pi list`、原 source 与 `-e`，查看加载拒绝码，只加载一份。源码变更先 build 再 `/reload`。 |
 | Host / child 资格拒绝 | `/ce-tunnel doctor` 分开报告。Host 用批准 Node 重启；canonical 保存配置中的 child 命令只在 verified STOPPED 后显式 migrate。`CE_NODE_PATH` 不修复运行中的 host。 |
 | Client 缺失/不可信 | Doctor 不 spawn，只查 metadata。核对来源与全链权限，不绕过已拒绝 Homebrew 祖先、不执行不可信 binary。 |
-| `CE_TUNNEL_BACKGROUND_UNAUTHORIZED` | 父 Pi 环境设置精确 `CE_TUNNEL_BACKGROUND_ALLOW=1`，子 shell export 无效。 |
+| `CE_TUNNEL_BACKGROUND_UNAUTHORIZED` | 查看 `/ce-tunnel permission status`；缺失、撤销或范围变化时明确确认 connect/grant。无效存储须人工检查，不删除或修复。精确 `CE_TUNNEL_BACKGROUND_ALLOW=1` 仅在没有托管记录时提供旧版兼容。 |
 | Legacy profile 登记报 `CE_TUNNEL_PROFILE_INVALID` | 显式 `/ce-tunnel convert`，确认旧 runtime 已停止/更新后创建多 Session generation。不会自动转换；该拒绝也不表明 transport 状态有问题。 |
 | CONNECTED 但不能通信 / `recipients: []` | 核对 Advanced Messaging、当前 Pi binding、当前 ChatGPT 工具、精确 Store/Exchange 与 recipients。不重发原消息测通。 |
 | 发送失败 / 响应丢失 | 保留原 key/Message ID，检查 `/ce-status`、`/ce-tunnel status`、Endpoint 与固定拒绝码。缺 ACK、BUSY、超时或未知结果均不授权重试/换 key。 |

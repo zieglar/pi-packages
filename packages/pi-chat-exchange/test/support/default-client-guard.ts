@@ -35,6 +35,7 @@
  */
 import { createRequire } from "node:module";
 import { basename } from "node:path";
+import { realpathSync } from "node:fs";
 
 const FORBIDDEN_PATH = "/opt/homebrew/bin/tunnel-client";
 export const GUARD_MESSAGE =
@@ -89,6 +90,17 @@ if (guardActive()) install();
 // so plain-Node imports never touch the uninitialized vitest mocker.
 if (process.env.VITEST !== undefined) {
   const { vi } = await import("vitest");
+  // Persistent authorization must never consult the actual OS-account store in tests.
+  vi.mock("../../src/tunnel/background-authorization.js", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../../src/tunnel/background-authorization.js")>();
+    return { ...actual, createBackgroundAuthorizationStore: (options: Parameters<typeof actual.createBackgroundAuthorizationStore>[0] = {}) =>
+      actual.createBackgroundAuthorizationStore({ readAcl: () => "drwx------ 1 synthetic synthetic 0 path", ...options, directory: options.directory ?? `${realpathSync(process.env.HOME!)}/authorization-test` }) };
+  });
+  vi.mock("../../dist/tunnel/background-authorization.js", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../../src/tunnel/background-authorization.js")>();
+    return { ...actual, createBackgroundAuthorizationStore: (options: Parameters<typeof actual.createBackgroundAuthorizationStore>[0] = {}) =>
+      actual.createBackgroundAuthorizationStore({ readAcl: () => "drwx------ 1 synthetic synthetic 0 path", ...options, directory: options.directory ?? `${realpathSync(process.env.HOME!)}/authorization-test` }) };
+  });
   vi.mock("node:child_process", async (importOriginal) => {
     const actual = await importOriginal<typeof import("node:child_process")>();
     const mock = { ...actual } as Record<string, unknown>;

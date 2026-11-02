@@ -48,12 +48,11 @@ If shell Pi does not start under approved Node, invoke its installed JavaScript 
 ```sh
 CE_NODE_PATH="/trusted/node-install/bin/node" \
 CE_TUNNEL_CLIENT_PATH="/trusted/client-install/tunnel-client" \
-CE_TUNNEL_BACKGROUND_ALLOW=1 \
 "/trusted/node-install/bin/node" "/absolute/installed-pi/dist/cli.js" \
   -e "/absolute/path/to/packages/pi-chat-exchange/pi-extension/index.ts"
 ```
 
-`CE_NODE_PATH` **selects only the MCP child**, not the running Pi host. `CE_TUNNEL_BACKGROUND_ALLOW=1` permits explicit Start without connecting automatically. Export in a Pi child shell cannot change the parent Pi environment. Never put credentials in this command.
+`CE_NODE_PATH` **selects only the MCP child**, not the running Pi host. No shell startup permission is required after explicit persistent authorization. Never put credentials in this command.
 
 <a id="client-安装与只读诊断"></a>
 
@@ -74,7 +73,7 @@ Doctor separately reports the current host, independently selected child Node an
 
 With explicit Homebrew selection, expect `client=TRUSTED_METADATA_ONLY`; it means the selected path passed this policy, not provenance or runtime compatibility. Without the variable, the same group-writable installation may report `CE_EXECUTABLE_UNTRUSTED` under strict discovery. `CE_TUNNEL_CLIENT_MISSING` means no admitted/discovered installation; inspect the selected path and restart Pi after parent-environment changes. Do not “repair” Homebrew permissions.
 
-- `CE_TUNNEL_CLIENT_PATH` is an explicit trust delegation to a non-empty, normalized absolute executable path. It takes priority; an invalid selection refuses without discovery fallback. Only its ancestor directory group-write check is relaxed. No extra confirmation, digest binding or authorization database is added.
+- `CE_TUNNEL_CLIENT_PATH` is an explicit trust delegation to a non-empty, normalized absolute executable path. It takes priority; an invalid selection refuses without discovery fallback. Only its ancestor directory group-write check is relaxed. Confirmed startup permission binds client identity; a changed client requires fresh confirmation.
 - System candidates come only from `/usr/local/bin`, `/usr/bin`, `/bin`, `/opt/homebrew/bin`, not project PATH. Node also checks the current process executable and historical mise installation location; mise is not required.
 - Original and resolved symlink chains, owner, regular/X_OK, project/`node_modules`/`.git` restrictions remain checked. Files with group-write, world-write paths (apart from existing root-owned sticky directory handling), foreign non-root owners, and macOS allow/unknown ACLs still refuse. `CE_NODE_PATH`, Native and automatic client discovery retain their existing strict rules.
 - A selected installation may be replaced by any effective writer of its group-writable ancestors. Malicious client code can run with your user permissions and read the Tunnel credential. CE does not prove all writers or eliminate check-to-execution races. Homebrew stays user-managed: do not change its permissions/ACLs, copy the binary into a CE-owned installation or bypass Gatekeeper to satisfy CE.
@@ -121,7 +120,9 @@ Skip step 1 on initial configuration without an old binding. Stop and verify on 
 
 ## 3. Real background startup and Manager
 
-Real Start can incur cost; authorize the running window first. With exact `CE_TUNNEL_BACKGROUND_ALLOW=1` in the parent Pi environment, explicitly `/ce-tunnel start`. To change parent environment, exit normally and restore the same Pi Session using approved Node and the same extension loading method. `--continue` selects the latest session; `--resume` allows manual selection. Environment permission does not start transport.
+Real Start can incur cost; authorize the running window first. Explicit `/ce-tunnel connect` or `/ce-tunnel start` asks for persistent startup permission when the selected scope has none. Refusal/cancellation grants nothing and does not activate or spawn. After confirmation, ordinary `pi` needs no shell startup variable or alias. Permission never starts transport automatically.
+
+`/ce-tunnel permission status|grant|revoke` inspects, grants or denies future startup. Revoke does not terminate a running client: explicitly Stop/disconnect. Selection remembers profile/client but passes real trust checks and is not messaging authority. Restore the same registered native Pi session; `--continue` selects the latest and `--resume` offers manual selection. See [persistent startup permission](tunnel-manager-background.md#persistent-startup-permission) for exact scope and persistence failures.
 
 | Operation | Meaning |
 |---|---|
@@ -131,6 +132,7 @@ Real Start can incur cost; authorize the running window first. With exact `CE_TU
 | Stop / `/ce-tunnel stop` | Stops only instances the Manager can prove it owns; unconfirmed exit is not STOPPED |
 | Close | Closes UI only, without stopping startup work or daemon |
 | `/ce-tunnel status` | Displays measured transport state; no automatic Start |
+| `/ce-tunnel permission status\|grant\|revoke` | Read, grant or revoke future startup; revoke does not Stop |
 | `/ce-status` | Displays Pi / CE identity, Exchange and Owner lease/fencing after current admission checks |
 | `/ce-tunnel deactivate` | Confirms and normally ends the current local CE binding; retains registration/history and does not Stop Tunnel |
 
@@ -223,7 +225,7 @@ Pairing requires exact Store directory/file and Exchange namespace/idempotencyKe
 | `CE_TUNNEL_PROFILE` | Selects normalized absolute profile; does not switch a running child automatically |
 | `CE_NODE_PATH` | Trusted approved Node for MCP child; does not alter the running Pi host |
 | `CE_TUNNEL_CLIENT_PATH` | Trusted absolute client override, not a profile field |
-| `CE_TUNNEL_BACKGROUND_ALLOW=1` | Parent Pi permits explicit Start; no autostart |
+| `CE_TUNNEL_BACKGROUND_ALLOW=1` | Legacy explicit Start permission only when no managed grant exists; revoked/invalid/changed scope overrides it; no autostart |
 | Nonempty `CE_ALLOWLIST` | Explicit Pi policy takes precedence and blocks generated conversion/registration; not recommended for ordinary Tunnel use |
 | `CE_STORE_DIR` / `CE_STORE_FILE` | With declared Store, only confirm the same location; conflicts refuse rather than switch Store |
 | `CE_LEASE_TTL_SECONDS` | Overrides configured TTL within Host bounds after reload; not recovery |
@@ -242,7 +244,7 @@ Without explicit allowlist, the selected complete generated policy takes precede
 | Send failure / lost send response | May be unbound, unauthorized recipient, pairing mismatch or unknown result. Inspect `/ce-status`, `/ce-tunnel status`, fixed refusal codes and exact Endpoint. Retain original key/Message ID; stop on unknown result. New key, missing ACK or another Start does not permit resend |
 | Unqualified host / child Node | Doctor separates them. Approved Node must pass full SQLite qualification. Start host with correct Node; fix canonical child profile through explicit migrate after verified STOPPED |
 | Missing/untrusted client | Doctor; verify independent installation and full permission chain. Do not copy around untrusted Homebrew ancestors, run unqualified binaries or weaken guards |
-| `CE_TUNNEL_BACKGROUND_UNAUTHORIZED` | Check exact parent Pi opt-in; child-shell export has no effect |
+| `CE_TUNNEL_BACKGROUND_UNAUTHORIZED` | Check `/ce-tunnel permission status`; explicitly confirm connect/grant for absent, revoked or changed scope. Invalid storage needs inspection, not deletion or automatic repair. Environment fallback is only for absent grants |
 | register / sessions / revoke refuses `CE_TUNNEL_PROFILE_INVALID` on legacy single-session profile | Explicit `/ce-tunnel convert` must create a multi-session generation first. Confirm old runtimes stopped/updated and conversion authorization. No automatic conversion; this is distinct from transport STOPPED refusal |
 | `recipients: []` / CONNECTED but cannot send | Check Advanced Messaging, Pi binding, current ChatGPT tools, Store/Exchange/recipient. Do not resend an original message as a connectivity test |
 | `CE_HOST_UNAVAILABLE` after unclean exit with local session-process mutex unreleased slot | Operator-only reconciliation under a complete offline maintenance window; see the exact procedure below |

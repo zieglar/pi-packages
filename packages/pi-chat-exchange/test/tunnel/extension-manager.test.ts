@@ -69,10 +69,12 @@ describe("real tunnel manager extension routing", () => {
     try {
       await h.waitForOpen();
       await activateUi(h); // Manager Set Up Tunnel -> Wizard step 1
+      await vi.waitFor(() => expect(h.render().join("\n")).toContain("Tunnel Setup · 1/4"));
       await inputUi(h, "tunnel_12345678");
+      await vi.waitFor(() => expect(h.render().join("\n")).toContain("Tunnel Setup · 2/4"));
       await inputUi(h, "");
-      // Step 3 is the masked credential input itself: no intermediate choice,
-      // and recipients are Advanced-only (CE-managed default applies).
+      await vi.waitFor(() => expect(h.render().join("\n")).toContain("Tunnel Setup · 3/4"));
+      // Credential content stays masked in the real Setup UI.
       h.type(privateValue);
       expect(h.render().join("\n").includes(privateValue)).toBe(false);
       h.send("\r"); await flushUi();
@@ -89,8 +91,6 @@ describe("real tunnel manager extension routing", () => {
       expect(text.includes(privateValue)).toBe(false);
       expect(readFileSync(facts.keyFile, "utf8") === privateValue).toBe(true);
       expect(lstatSync(facts.keyFile).mode & 0o777).toBe(0o600);
-      // The binding is CE-managed: identity-derived name beside the profile,
-      // never the operator-typed path, with no implicit recipients.
       const managedBinding = join(f.directory, ".ce-bindings", "ce-345678-none.yaml");
       expect(facts.mcpCommand?.includes(managedBinding)).toBe(true);
       const managedDoc = JSON.parse(readFileSync(managedBinding, "utf8"));
@@ -98,9 +98,9 @@ describe("real tunnel manager extension routing", () => {
       expect(managedDoc.recipients).toEqual([]);
       expect(existsSync(store)).toBe(false);
       expect(h.render().join("\n").includes("tunnel_12345678")).toBe(false);
-      await activateUi(h); // Start: exact gate remains closed
+      await activateUi(h); // Start needs permission confirmation
       await vi.waitFor(() => expect(h.render().join("\n")).toContain("Chat Exchange Tunnel"));
-      expect(f.notify.mock.calls.some(([text]) => String(text).includes("CE_TUNNEL_BACKGROUND_UNAUTHORIZED"))).toBe(true);
+      await vi.waitFor(() => expect(f.notify.mock.calls.some(([text]) => String(text).includes("CE_TUNNEL_INPUT_UNAVAILABLE"))).toBe(true));
       expect(existsSync(join(f.directory, "background-state.json"))).toBe(false);
       expect(f.notify.mock.calls.some(([text]) => String(text).includes(privateValue))).toBe(false);
       expect(f.appendEntry).not.toHaveBeenCalled();
@@ -261,9 +261,8 @@ describe("real tunnel manager extension routing", () => {
   it("direct start still enforces the exact background authorization gate", async () => {
     const f = await fixture();
     await f.command.handler("start", f.ctx);
-    // REAL-START-FIX-01: non-blocking start acknowledges first; the gate refusal
-    // then surfaces asynchronously on the supervised start promise.
-    await vi.waitFor(() => expect(f.notify.mock.calls.some(([text]) => String(text).includes("CE_TUNNEL_BACKGROUND_UNAUTHORIZED"))).toBe(true));
+    // Direct start needs permission confirmation rather than a silent legacy spawn.
+    await vi.waitFor(() => expect(f.notify.mock.calls.some(([text]) => String(text).includes("CE_TUNNEL_INPUT_UNAVAILABLE"))).toBe(true));
     expect(f.custom).not.toHaveBeenCalled();
   });
   it("TUI start with a malformed CE_TUNNEL_PROFILE refuses closed and never rejects the handler", async () => {

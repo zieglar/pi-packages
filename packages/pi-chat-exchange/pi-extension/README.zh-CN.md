@@ -4,7 +4,7 @@
 
 当前包：**CE 0.2.1 / Pi 1.3.0 / Node >=22.19.0**，默认使用固定信任版本的 Rust Native SQLite。Host 与 MCP child 分别验证，内置 SQLite 限制仅用于显式非生产 `node-sqlite` 选择。Store 支持仍为 macOS arm64 / Linux x64 GNU；本地测试不认证云传输或 Desktop UI 安装。新用户从[快速开始](../docs/getting-started.zh-CN.md)进入，本页作为命令/配置参考。
 
-新增日常入口与一次设置的外部启动方式见[日常使用](../docs/daily-use.zh-CN.md)。`connect` 复核并连接当前已注册会话；`disconnect` 确认后释放当前绑定并停止所选共享 Tunnel。原 start/stop 仍仅管理传输。
+新增日常入口与当前源码中的持久启动许可见[日常使用](../docs/daily-use.zh-CN.md)。首次确认后，普通 `pi` 会恢复所选 profile/client，无需 shell 配置或 `CE_TUNNEL_BACKGROUND_ALLOW`；仍须恢复同一已注册原生会话。connect 先确认许可再激活/启动；disconnect 确认后释放当前绑定并停止所选共享 Tunnel。原 start/stop 仍仅管理传输。本次源码修改不会升级已安装的 CE 0.3.0；仓库源码元数据仍为历史 0.2.2 候选。
 
 ## 加载与两种配置方式
 
@@ -92,6 +92,8 @@ Storage 在读取任何正文 bytes 前检查 payload_read scope、ATTACHED Sess
 完整双向流程与带占位符示例见[用户指南](../docs/tunnel-setup.zh-CN.md#4-双向-send--inbox--read--ack)。
 
 ## 生命周期、状态与恢复
+
+`/ce-tunnel permission status|grant|revoke` 分别检查、明确授予或撤销后续启动。connect/start 需要许可时先询问；取消不授权、不激活、不启动。撤销不终止已运行 client。固定 OS home 存储、精确范围、信任检查、旧版兼容与不确定写入处理见[持久启动许可](../docs/tunnel-manager-background.zh-CN.md#persistent-startup-permission)。记住的选择不是授权；profile、binding、script、client 变化须重新确认。此变更的真实 Pi 重启、云端、桌面与生产验收仍未验证。
 
 `/ce-status` 展示经当前 admission 校验的 native Pi Session、Endpoint、registered、Participant、CE Session、Exchange、lease 和 fencing。CE Session 是 Owner incarnation，不是 native Pi Session；标识符都不是认证凭据。`/ce-tunnel status` 查看 transport；`/ce-tunnel doctor` 只读检查 host/child Node 与 client 信任，不联网或读 Store。
 

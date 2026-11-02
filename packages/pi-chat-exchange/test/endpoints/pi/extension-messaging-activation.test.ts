@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +17,8 @@ const seam = vi.hoisted(() => ({ hosts: [] as CeSessionHost[], stores: [] as Dur
   defaultSpawn: vi.fn(() => { throw Error("FORBIDDEN default process spawn"); }),
   signal: vi.fn(() => { throw Error("FORBIDDEN process signal"); }),
   fallback: undefined as string | undefined,
+  authorizationDirectory: undefined as string | undefined,
+  clientPath: undefined as string | undefined,
 }));
 // Virtualize ONLY this isolated extension's default allowlist path; never
 // create/read an installed or parent runtime allowlist.
@@ -30,11 +33,21 @@ vi.mock("node:child_process", async original => ({ ...await original<typeof impo
 vi.mock("../../../dist/tunnel/background-manager.js", async original => {
   const actual = await original<typeof import("../../../dist/tunnel/background-manager.js")>();
   return { ...actual, createBackgroundTunnelManager: (options: Parameters<typeof actual.createBackgroundTunnelManager>[0]) => actual.createBackgroundTunnelManager({ ...options,
+    ...(seam.authorizationDirectory === undefined ? {} : { authorizationDirectory: seam.authorizationDirectory }),
+    ...(seam.clientPath === undefined ? {} : { clientPath: seam.clientPath }),
     listProcesses: async () => ({ kind: "ok", processes: [] }),
     inspectProcess: async () => ({ kind: "absent" }),
     spawn: seam.defaultSpawn, signal: seam.signal,
   }) };
 });
+// Scope executable qualification is synthetic; manager permission decisions and disk commits are real.
+vi.mock("../../../dist/tunnel/background-scope.js", () => ({
+  captureBackgroundAuthorizationScope: (input: { profileText: string; credentialPath: string; clientPath: string }) => ({
+    digest: createHash("sha256").update(JSON.stringify(input)).digest("hex"),
+    profileSha256: createHash("sha256").update(input.profileText).digest("hex"),
+    clientPath: input.clientPath, credentialPath: input.credentialPath,
+  }),
+}));
 // These are lifecycle tests; Native artifact qualification has its own guarded suites.
 vi.mock("../../../dist/runtime/native-readiness.js", async original => ({
   ...await original<typeof import("../../../dist/runtime/native-readiness.js")>(),
@@ -57,7 +70,7 @@ type Entry = { type: string; customType: string; data: unknown };
 type Context = { mode: string; hasUI: boolean; cwd: string; sessionManager: { getSessionId(): string; getSessionFile(): string; getBranch(): Entry[] }; ui: { confirm: ReturnType<typeof vi.fn>; custom: ReturnType<typeof vi.fn>; notify: ReturnType<typeof vi.fn>; setStatus: ReturnType<typeof vi.fn> } };
 type Handler = (event: { reason: string }, ctx: Context) => Promise<void>;
 type Command = { handler(args: string, ctx: Context): Promise<void> };
-beforeEach(() => { seam.fallback = undefined; for (const key of Object.keys(process.env)) if (key.startsWith("CE_")) vi.stubEnv(key, undefined); vi.spyOn(process, "kill").mockImplementation(seam.signal); vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-22T00:00:00Z")); seam.hosts.length = 0; seam.stores.length = 0; seam.confirm.mockReset().mockResolvedValue(true); });
+beforeEach(() => { seam.fallback = undefined; seam.authorizationDirectory = undefined; seam.clientPath = undefined; for (const key of Object.keys(process.env)) if (key.startsWith("CE_")) vi.stubEnv(key, undefined); vi.spyOn(process, "kill").mockImplementation(seam.signal); vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-22T00:00:00Z")); seam.hosts.length = 0; seam.stores.length = 0; seam.confirm.mockReset().mockResolvedValue(true); });
 afterEach(async () => {
   for (const end of shutdowns.splice(0)) await end().catch(() => undefined);
   for (const store of new Set(seam.stores.splice(0))) store.close();
@@ -68,7 +81,10 @@ afterEach(async () => {
 async function fixture(source: "generated" | "absent-profile" | "nonmessaging-profile" | "explicit" = "generated") {
   const dir = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "ce-explicit-activation-"))); rootDirs.push(dir);
   const profilePath = join(dir, "tunnel.yaml"); const key = join(dir, "key");
+  const clientPath = join(dir, "tunnel-client"); const authorizationDirectory = join(dir, "authorization");
+  seam.clientPath = clientPath; seam.authorizationDirectory = authorizationDirectory;
   fs.writeFileSync(key, "SYNTHETIC-ONLY", { mode: 0o600 });
+  fs.writeFileSync(clientPath, "SYNTHETIC-ONLY", { mode: 0o700 });
   fs.writeFileSync(profilePath, serializeTunnelProfile(buildTunnelProfile({ tunnelId: "tunnel_abcdefgh123456", organizationId: "org-test", keyFile: key,
     healthUrlFile: join(dir, "health.url"), mcpCommand: buildTunnelMcpCommand({ nodePath: "/abs/node", scriptPath: "/abs/mcp-stdio.js", bindingPath: join(dir, "old.json") }) })), { mode: 0o600 });
   const manager = createBackgroundTunnelManager({ env: {}, profilePath, listProcesses: async () => ({ kind: "ok", processes: [] }),
@@ -102,7 +118,7 @@ async function fixture(source: "generated" | "absent-profile" | "nonmessaging-pr
   const reloadFactory = () => factory({ on: (name: string, handler: Handler) => events.set(name, handler), registerTool: vi.fn(), registerCommand: (name: string, command: Command) => commands.set(name, command), appendEntry: append });
   reloadFactory();
   const shutdown = (reason = "quit") => events.get("session_shutdown")!({ reason }, ctx); shutdowns.push(shutdown);
-  return { dir, profilePath, setup, save, binding, entries, ctx, append, shutdown, reloadFactory,
+  return { dir, profilePath, clientPath, authorizationDirectory, setup, save, binding, entries, ctx, append, shutdown, reloadFactory,
     start: (reason = "reload") => events.get("session_start")!({ reason }, ctx),
     activate: () => commands.get("ce-tunnel")!.handler("activate", ctx),
     command: (args: string) => commands.get("ce-tunnel")!.handler(args, ctx),
@@ -360,19 +376,119 @@ it("a malformed selected generated pair cannot redirect deactivation to the fall
   expect(end).not.toHaveBeenCalled(); expect(h.ctx.ui.confirm).not.toHaveBeenCalled(); expect(counts().owners).toBe(1);
 });
 
-describe("daily configured-session connection", () => {
-  it("refuses an unauthorized connect before activation and explains the parent opt-in", async () => {
-    const h = await fixture(); await h.start(); const before = counts();
+async function permissionManager(h: Awaited<ReturnType<typeof fixture>>, env: NodeJS.ProcessEnv = {}) {
+  const background = await import("../../../dist/tunnel/background-manager.js");
+  const create = background.createBackgroundTunnelManager;
+  const make = () => {
+    const manager = create({ env, profilePath: h.profilePath, authorizationDirectory: h.authorizationDirectory });
+    const start = vi.spyOn(manager, "start").mockResolvedValue({ runId: "synthetic", pid: 40001, tunnelId: "tunnel_abcdefgh123456", startedAt: new Date().toISOString(), health: "connected", alreadyRunning: false });
+    vi.spyOn(manager, "stop").mockResolvedValue();
+    return { manager, start };
+  };
+  const first = make();
+  vi.spyOn(background, "createBackgroundTunnelManager").mockReturnValue(first.manager);
+  return { ...first, replace: () => {
+    const next = make(); vi.mocked(background.createBackgroundTunnelManager).mockReturnValue(next.manager); return next;
+  } };
+}
+
+describe("persistent permission through real daily command handlers", () => {
+  it("Stop cancels a pending Start permission prompt before a late acceptance", async () => {
+    const h = await fixture(); const f = await permissionManager(h); await h.start();
+    const deferred = vi.spyOn(f.manager, "startDeferred").mockImplementation(() => ({ ack: Promise.reject(new Error("synthetic refusal")), settled: Promise.reject(new Error("synthetic refusal")) }));
+    let accept!: (value: boolean) => void;
+    let entered!: () => void; const opened = new Promise<void>(resolve => { entered = resolve; });
+    h.ctx.ui.confirm.mockImplementationOnce(() => { entered(); return new Promise<boolean>(resolve => { accept = resolve; }); });
+    const starting = h.command("start"); await opened;
+    await h.command("stop"); accept(true); await starting;
+    expect(f.manager.authorizationStatus()).toBe("absent"); expect(deferred).not.toHaveBeenCalled();
+    h.ctx.ui.confirm.mockResolvedValue(false); await h.command("start");
+    expect(h.ctx.ui.confirm).toHaveBeenCalledTimes(2); expect(deferred).not.toHaveBeenCalled();
+  });
+  it("grants without environment opt-in and reuses the durable grant in a new factory and manager", async () => {
+    const h = await fixture(); const f = await permissionManager(h); await h.start();
+    expect(process.env.CE_TUNNEL_BACKGROUND_ALLOW).toBeUndefined();
+    expect(f.manager.authorizationStatus()).toBe("absent");
     await h.command("connect");
-    expect(h.notices()).toContain("CE_TUNNEL_BACKGROUND_UNAUTHORIZED");
-    expect(h.notices()).toContain("parent Pi");
+    expect(f.manager.authorizationStatus()).toBe("granted");
+    expect(h.ctx.ui.confirm).toHaveBeenCalledTimes(1); expect(f.start).toHaveBeenCalledTimes(1);
+    expect(counts().owners).toBe(1); expect(h.notices()).toContain("current Pi endpoint pi/main bound; tunnel=");
+    await h.shutdown(); const next = f.replace(); h.reloadFactory(); await h.start();
+    h.ctx.ui.confirm.mockClear(); seam.confirm.mockClear();
+    expect(next.manager.authorizationStatus()).toBe("granted");
+    await h.command("connect");
+    expect(h.ctx.ui.confirm).not.toHaveBeenCalled(); expect(next.start).toHaveBeenCalledTimes(1);
+    expect(counts().owners).toBe(1);
+  });
+  it("explicit grant remains transport-free and revoke overrides inherited env1 after reload", async () => {
+    const h = await fixture(); const f = await permissionManager(h); await h.start();
+    await h.command("permission grant");
+    expect(f.manager.authorizationStatus()).toBe("granted"); expect(f.start).not.toHaveBeenCalled(); expect(counts().owners).toBe(0);
+    await h.command("permission revoke"); expect(f.manager.authorizationStatus()).toBe("revoked");
+    vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");
+    await h.shutdown(); h.reloadFactory();
+    const background = await import("../../../dist/tunnel/background-manager.js");
+    const { createBackgroundTunnelManager: create } = await vi.importActual<typeof background>("../../../dist/tunnel/background-manager.js");
+    const manager = create({ env: { CE_TUNNEL_BACKGROUND_ALLOW: "1" }, profilePath: h.profilePath, clientPath: h.clientPath, authorizationDirectory: h.authorizationDirectory,
+      listProcesses: async () => ({ kind: "ok", processes: [] }), inspectProcess: async () => ({ kind: "absent" }), spawn: seam.defaultSpawn, signal: seam.signal });
+    const start = vi.spyOn(manager, "start");
+    vi.mocked(background.createBackgroundTunnelManager).mockReturnValue(manager); await h.start();
+    expect(manager.authorizationStatus()).toBe("revoked");
+    h.ctx.ui.confirm.mockClear().mockResolvedValue(false); await h.command("connect");
+    expect(h.ctx.ui.confirm).toHaveBeenCalledTimes(1); expect(start).not.toHaveBeenCalled(); expect(counts().owners).toBe(0);
+    await h.command("permission status"); expect(h.notices()).toContain("permission=revoked");
+  });
+  it("malformed persistent storage fails closed without prompting, binding or transport", async () => {
+    const h = await fixture(); const f = await permissionManager(h); await h.start();
+    await h.command("permission grant");
+    const recordPath = join(h.authorizationDirectory, `${createHash("sha256").update(h.profilePath).digest("hex")}.json`);
+    fs.writeFileSync(recordPath, "{malformed", { mode: 0o600 });
+    h.ctx.ui.confirm.mockClear(); await h.command("connect");
+    expect(f.manager.authorizationStatus()).toBe("invalid"); expect(h.ctx.ui.confirm).not.toHaveBeenCalled();
+    expect(f.start).not.toHaveBeenCalled(); expect(counts().owners).toBe(0); expect(h.mapping()).toBeUndefined();
+    expect(h.notices()).toContain("CE_TUNNEL_BACKGROUND_UNAUTHORIZED"); expect(fs.readFileSync(recordPath, "utf8")).toBe("{malformed");
+  });
+  it("permission revoke stays accessible while connect awaits Start and suppresses later connection success", async () => {
+    const h = await fixture(); const f = await permissionManager(h); await h.start();
+    let entered!: () => void; const opened = new Promise<void>(resolve => { entered = resolve; });
+    let finish!: () => void;
+    f.start.mockImplementation(() => new Promise(resolve => { finish = () => resolve({ runId: "synthetic", pid: 40001, tunnelId: "tunnel_abcdefgh123456", startedAt: new Date().toISOString(), health: "connected", alreadyRunning: false }); entered(); }));
+    const connecting = h.command("connect"); await opened;
+    try {
+      await h.command("permission revoke"); expect(f.manager.authorizationStatus()).toBe("revoked");
+      expect(h.notices()).toContain("background startup permission revoked");
+    } finally { finish(); await connecting; }
+    expect(f.start).toHaveBeenCalledTimes(1); expect(h.notices()).toContain("CE_TUNNEL_BACKGROUND_UNAUTHORIZED");
+    expect(h.notices()).not.toContain("current Pi endpoint pi/main bound; tunnel=");
+  });
+  it("refuses permission mutation when the cached Manager differs from current selection", async () => {
+    const h = await fixture(); const f = await permissionManager(h); await h.start();
+    vi.stubEnv("CE_TUNNEL_PROFILE", join(h.dir, "another-profile.yaml"));
+    await h.command("permission grant"); await h.command("permission revoke");
+    expect(h.ctx.ui.confirm).not.toHaveBeenCalled(); expect(f.manager.authorizationStatus()).toBe("absent");
+    expect(h.notices()).toContain("CE_TUNNEL_CONFIG_CONFLICT");
+  });
+});
+
+describe("daily configured-session connection", () => {
+  it("asks for explicit persistent permission first; cancellation never grants, binds or spawns", async () => {
+    const h = await fixture(); await h.start(); const before = counts();
+    h.ctx.ui.confirm.mockResolvedValue(false);
+    await h.command("connect");
+    expect(h.ctx.ui.confirm).toHaveBeenCalledTimes(1);
+    const prompt = h.ctx.ui.confirm.mock.calls[0]!.join(" ");
+    for (const text of ["credential", "survives Pi exit", "disconnect", "stop", "permission revoke", "Profile/client changes", h.profilePath, h.clientPath, join(h.dir, "key")]) expect(prompt).toContain(text);
+    expect(prompt).not.toContain("SYNTHETIC-ONLY");
+    const manager = createBackgroundTunnelManager({ env: {}, profilePath: h.profilePath });
+    expect(manager.authorizationStatus()).toBe("absent");
     expect(seam.confirm).not.toHaveBeenCalled(); expect(counts()).toEqual(before);
+    expect(h.mapping()).toBeUndefined(); expect(seam.defaultSpawn).not.toHaveBeenCalled();
   });
   it("connect activates the existing registration and disconnect releases it without changing configuration", async () => {
     const h = await fixture(); await h.start(); vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");
     const profile = fs.readFileSync(h.profilePath, "utf8");
     // Only the transport boundary is controlled; activation, Host, Store and release are real.
-    const manager = createBackgroundTunnelManager({ env: {}, profilePath: h.profilePath, listProcesses: async () => ({ kind: "ok", processes: [] }) });
+    const manager = createBackgroundTunnelManager({ env: { CE_TUNNEL_BACKGROUND_ALLOW: "1" }, profilePath: h.profilePath, listProcesses: async () => ({ kind: "ok", processes: [] }) });
     const connect = vi.spyOn(manager, "start").mockResolvedValue({ runId: "synthetic", pid: 40001, tunnelId: "tunnel_abcdefgh123456", startedAt: new Date().toISOString(), health: "connected", alreadyRunning: false });
     const stop = vi.spyOn(manager, "stop").mockResolvedValue();
     const background = await import("../../../dist/tunnel/background-manager.js");
@@ -405,7 +521,7 @@ describe("daily configured-session connection", () => {
   });
   it.each(["session", "profile", "policy"])("connect refuses %s drift before transport start", async change => {
     const h = await fixture(); await h.start(); vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");
-    const manager = createBackgroundTunnelManager({ env: {}, profilePath: h.profilePath, listProcesses: async () => ({ kind: "ok", processes: [] }) });
+    const manager = createBackgroundTunnelManager({ env: { CE_TUNNEL_BACKGROUND_ALLOW: "1" }, profilePath: h.profilePath, listProcesses: async () => ({ kind: "ok", processes: [] }) });
     const start = vi.spyOn(manager, "start");
     const background = await import("../../../dist/tunnel/background-manager.js");
     vi.spyOn(background, "createBackgroundTunnelManager").mockReturnValue(manager);
@@ -452,7 +568,7 @@ describe("daily configured-session connection", () => {
     const h = await fixture(); await h.start(); await h.activate(); await h.shutdown();
     h.reloadFactory(); await h.start("startup");
     vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");
-    const manager = createBackgroundTunnelManager({ env: {}, profilePath: h.profilePath, listProcesses: async () => ({ kind: "ok", processes: [] }) });
+    const manager = createBackgroundTunnelManager({ env: { CE_TUNNEL_BACKGROUND_ALLOW: "1" }, profilePath: h.profilePath, listProcesses: async () => ({ kind: "ok", processes: [] }) });
     vi.spyOn(manager, "start").mockResolvedValue({ runId: "synthetic", pid: 40001, tunnelId: "tunnel_abcdefgh123456", startedAt: new Date().toISOString(), health: "connected", alreadyRunning: false });
     const background = await import("../../../dist/tunnel/background-manager.js"); vi.spyOn(background, "createBackgroundTunnelManager").mockReturnValue(manager);
     h.ctx.ui.notify.mockClear(); await h.command("connect");

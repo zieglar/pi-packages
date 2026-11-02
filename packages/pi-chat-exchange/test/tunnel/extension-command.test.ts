@@ -118,11 +118,9 @@ describe("/ce-tunnel — B1 offline wiring (T18)", () => {
     vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", undefined as unknown as string);
     const start = makeCtx("tui");
     await (await ceTunnel()).handler("start", start.ctx);
-    // REAL-START-FIX-01: the handler acknowledges the request immediately;
-    // only a positive spawn acknowledgement may claim STARTING.
-    expect(start.notifications[0]?.level).toBe("info");
-    expect(start.notifications[0]?.message).toContain("real background start requested; awaiting spawn acknowledgement");
-    await vi.waitFor(() => expect(start.notifications.some((n) => n.message.includes("CE_TUNNEL_BACKGROUND_UNAUTHORIZED"))).toBe(true));
+    // No permission-confirmation surface cannot silently authorize a background client.
+    expect(start.notifications[0]?.level).toBe("warning");
+    expect(start.notifications[0]?.message).toContain("CE_TUNNEL_INPUT_UNAVAILABLE");
 
     // With the gate open but no operator profile, the refusal is still clean.
     vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");

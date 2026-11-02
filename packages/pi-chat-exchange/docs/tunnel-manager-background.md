@@ -33,10 +33,7 @@ run side by side.
 
 ## Hard limits
 
-- **Explicit real-start gate.** `/ce-tunnel start` refuses
-  `CE_TUNNEL_BACKGROUND_UNAUTHORIZED` unless the operator exported exactly
-  `CE_TUNNEL_BACKGROUND_ALLOW=1` for this Pi session. `status`/`stop` are not
-  gated: they never create cost, and stop only reduces it.
+- **Explicit real-start gate.** Manager independently validates persistent startup permission and rechecks it immediately before spawn. Interactive connect/start requests confirmation when needed; cancellation does not grant, activate or spawn. `status`/`stop` remain available without startup permission. See [persistent startup permission](#persistent-startup-permission).
 - **Cross-process exclusion.** Start/stop (and any refresh that needs to
   persist) hold `<state>.lock.d` : a mkdir DIRECTORY lock whose holder is
   verified by pid + start key. Stale or crashed locks are reclaimed under
@@ -166,6 +163,21 @@ run side by side.
 
 ## Cost / authorization
 
-The first real background run is a paid connection: it still requires a separate
-operator authorization of cost and window, plus the `CE_TUNNEL_BACKGROUND_ALLOW=1`
-opt-in. This command is the manual trigger; there is no unattended path.
+Real background operation can incur cost. Confirm the intended target and running window; startup remains an explicit operator action.
+
+<a id="persistent-startup-permission"></a>
+
+## Persistent startup permission
+
+This describes current source for HANDOFF-CE-PERSISTENT-AUTH-01, not an installed update. Installed CE 0.3.0 is unchanged; historical source metadata remains 0.2.2. After initial confirmation, subsequent ordinary `pi` launches restore the selected profile/client without a shell alias or environment opt-in. Restore the same registered native session; startup permission grants no CE Owner, registration or messaging authority.
+
+- `/ce-tunnel permission status` inspects without writing; `grant` explicitly confirms permission; `revoke` confirms denial of future startup. The existing offline-only `authorize` command is unrelated.
+- Records live in `.config/pi-chat-exchange/background-authorization` under the OS account home (`os.userInfo().homedir`), independent of `HOME`, XDG and project settings. Per-profile files are keyed by the absolute profile path hash and store version, UID, profile path, granted/revoked state, scope digest and timestamp. `selection.json` stores chosen profile/client references, not authority. These files contain no credential body; keep path references private.
+- The authorization directory must be owner-only 0700 and records 0600 with a single hard link. Owner, ancestor, no-symlink and macOS ACL checks fail closed. Reads do not create storage or repair corruption. Unknown/invalid storage requires manual inspection, not deletion or permission bypass.
+- Scope binds exact profile bytes/path, credential reference and metadata, trusted client/wrapper identity, approved Node, this CE installation's MCP script and parsed binding content. CE checks credential metadata only; the client reads the existing credential reference. Profile, binding, script, client or other bound identity changes require fresh confirmation.
+- Restored selection passes the real profile and executable trust checks. Explicit profile/client overrides still select their targets and must match permission. The client resolver receives the saved reference as selector input; it is not injected into the child environment. A changed target or loaded-policy mismatch must be checked explicitly before connect; saved paths do not expand authority.
+- Exact `CE_TUNNEL_BACKGROUND_ALLOW=1` remains legacy compatibility only when the selected profile has no managed record. Revoked, invalid or changed records override it. Explicit confirmation can replace a revoked or changed grant; invalid storage is not automatically repaired.
+- Grant writes use private temporary files, file sync, atomic rename and directory sync. Grant or selection write failure, including uncertain directory-sync durability after rename, aborts continuation; do not assume rollback or retry automatically. Inspect permission status and the selected target before further action.
+- Revocation runs independently of the connect queue. Starts that observe authorization after the revocation commit refuse, including starts still awaiting process enumeration. A concurrent start that already acquired its final grant snapshot may finish admission and spawn after revoke returns; revocation is not a process-creation barrier. Use explicit Stop or disconnect to end transport. Startup permission, registration revoke and normal binding release are separate.
+
+No autostart, automatic reconnect or arbitrary MCP command authorization is introduced. Source evidence: `background-authorization.ts`, `background-scope.ts`, `background-manager.ts` and `pi-extension/index.ts`. Isolated store/manager/extension regression files describe controlled boundaries; this documentation pass did not run tests. Real Pi restart, cloud, desktop and production operation remain unverified for this change.

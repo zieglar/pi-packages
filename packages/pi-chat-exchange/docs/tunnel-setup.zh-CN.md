@@ -42,12 +42,11 @@ pi -e ./packages/pi-chat-exchange/pi-extension/index.ts
 ```sh
 CE_NODE_PATH="/trusted/node-install/bin/node" \
 CE_TUNNEL_CLIENT_PATH="/trusted/client-install/tunnel-client" \
-CE_TUNNEL_BACKGROUND_ALLOW=1 \
 "/trusted/node-install/bin/node" "/absolute/installed-pi/dist/cli.js" \
   -e "/absolute/path/to/packages/pi-chat-exchange/pi-extension/index.ts"
 ```
 
-`CE_NODE_PATH` **只选择 MCP child**，不会修复已经运行的 Pi host。`CE_TUNNEL_BACKGROUND_ALLOW=1` 仅许可显式 Start，不自动连接；在 Pi 子 shell 中 export 不能修改父 Pi 环境。不要把 credential 写入上述命令。
+`CE_NODE_PATH` **只选择 MCP child**，不会修复已经运行的 Pi host。明确确认持久授权后，无需在 shell 设置启动许可。不要把 credential 写入上述命令。
 
 ### Client 安装与只读诊断
 
@@ -66,7 +65,7 @@ macOS 官方安装入口为 `brew install openai/tools/tunnel-client`；其他�
 
 显式选择 Homebrew 后预期为 `client=TRUSTED_METADATA_ONLY`，只表示路径通过当前策略，不证明来源或运行兼容性。不设变量时，同一 group-writable 安装仍可能在严格自动发现中报 `CE_EXECUTABLE_UNTRUSTED`。`CE_TUNNEL_CLIENT_MISSING` 表示没有相应安装候选；核对所选路径，修改父进程环境后重启 Pi。不要“修复”Homebrew 权限。
 
-- `CE_TUNNEL_CLIENT_PATH` 是对非空、规范化绝对可执行路径的显式信任委托。它优先于自动发现；无效选择直接拒绝，不回退。仅放宽该客户端祖先目录的 group-write 检查，不增加首次确认、摘要绑定或授权数据库。
+- `CE_TUNNEL_CLIENT_PATH` 是对非空、规范化绝对可执行路径的显式信任委托。它优先于自动发现；无效选择直接拒绝，不回退。仅放宽该客户端祖先目录的 group-write 检查。已确认的启动许可绑定 client 身份；client 变化须重新确认。
 - 系统候选仅来自 `/usr/local/bin`、`/usr/bin`、`/bin`、`/opt/homebrew/bin`，不扫描项目 PATH。Node 另兼容验证当前进程 executable 和旧 mise 安装位置；不是依赖 mise。
 - 继续检查原路径与 symlink 目标链、owner、regular/X_OK、项目/`node_modules`/`.git`限制。文件自身 group-write、world-write 路径（现有 root-owned sticky 目录处理除外）、非 root 的其他 owner、macOS allow/未知 ACL 仍拒绝。`CE_NODE_PATH`、Native 与自动发现继续采用原严格规则。
 - 获准安装可能被其 group-writable 祖先目录的任何有效写入者替换。恶意 client 可取得当前用户权限并读取 Tunnel 凭据；CE 不证明全部写入者，也不消除检查到执行之间的竞争窗口。Homebrew 始终由用户管理，不要为满足 CE 修改其权限/ACL、复制到 CE 专有安装，或绕过 Gatekeeper。
@@ -105,7 +104,9 @@ macOS 官方安装入口为 `brew install openai/tools/tunnel-client`；其他�
 
 ## 3. 真实后台启动与 Manager
 
-真实 Start 可能计费，先授权运行窗口。在父 Pi 环境带精确 `CE_TUNNEL_BACKGROUND_ALLOW=1` 的前提下，显式 `/ce-tunnel start`。若需改变父环境，正常退出并以批准 Node、相同扩展加载方式恢复同一 Pi Session；`--continue` 选择最近会话，`--resume` 可人工选择。环境许可不等于已经启动。
+真实 Start 可能计费，先授权运行窗口。所选范围没有许可时，显式 `/ce-tunnel connect` 或 `/ce-tunnel start` 会请求持久启动授权。拒绝或取消不保存许可、不激活、不启动。确认后普通 `pi` 无需 shell 启动变量或 alias；许可不自动启动传输。
+
+`/ce-tunnel permission status|grant|revoke` 分别检查、授予或拒绝后续启动。撤销不终止已运行 client，须显式 Stop/disconnect。记住的 profile/client 仍经真实信任检查，不是消息授权。恢复同一已注册原生 Pi 会话；`--continue` 选择最近会话，`--resume` 可人工选择。精确范围及持久化失败见[持久启动许可](tunnel-manager-background.zh-CN.md#persistent-startup-permission)。
 
 | 操作 | 实际含义 |
 |---|---|
@@ -115,6 +116,7 @@ macOS 官方安装入口为 `brew install openai/tools/tunnel-client`；其他�
 | Stop / `/ce-tunnel stop` | 只停止可证明属于 Manager 的实例；退出未确认不算 STOPPED |
 | Close | 仅关闭界面，不停止后台启动任务或 daemon |
 | `/ce-tunnel status` | 查看实测 transport 状态，不自动 Start |
+| `/ce-tunnel permission status\|grant\|revoke` | 检查、授予或拒绝后续启动；撤销不执行 Stop |
 | `/ce-status` | 查看经当前 admission 校验的 Pi / CE 身份、Exchange、Owner lease/fencing |
 | `/ce-tunnel deactivate` | 确认后正常结束当前本地 CE binding；不改 registration/历史、不 Stop Tunnel |
 
@@ -197,7 +199,7 @@ Store directory/file 与 Exchange namespace/idempotencyKey 四项精确一致才
 | `CE_TUNNEL_PROFILE` | 选择规范化绝对 profile；不自动切换运行中的 child |
 | `CE_NODE_PATH` | MCP child 的可信批准 Node；不改变运行中的 Pi host |
 | `CE_TUNNEL_CLIENT_PATH` | 可信 client 绝对路径 override，不是 profile 字段 |
-| `CE_TUNNEL_BACKGROUND_ALLOW=1` | 父 Pi 许可显式 Start，不自动启动 |
+| `CE_TUNNEL_BACKGROUND_ALLOW=1` | 仅在没有托管 grant 时兼容显式 Start；撤销、无效或范围变化优先；不自动启动 |
 | 非空 `CE_ALLOWLIST` | 显式 Pi 策略优先；阻止生成策略 conversion/registration，不建议普通 Tunnel 用户设置 |
 | `CE_STORE_DIR` / `CE_STORE_FILE` | 已声明 Store 时仅可确认同一位置，冲突拒绝；不偷偷换库 |
 | `CE_LEASE_TTL_SECONDS` | 覆盖配置 TTL，仍受 Host 合法范围限制，需重载；不是恢复开关 |
@@ -214,7 +216,7 @@ Store directory/file 与 Exchange namespace/idempotencyKey 四项精确一致才
 | 发送失败 / 发送响应丢失 | 可能是未绑定、recipient 未授权、四项配对不符或结果未知；先 `/ce-status`、`/ce-tunnel status` 与固定拒绝码，核对当前精确 Endpoint；保留原 key/Message ID，未知结果停止核实，不以新 key、缺 ACK 或再次 Start 作为重发许可 |
 | host / child Node 不合格 | doctor 分开看两者；批准 Node 必须通过 SQLite 全资格。host 需用正确 Node 启动；child canonical profile 修复用显式 migrate，先核实 STOPPED |
 | client 缺失或信任拒绝 | doctor；核实独立安装及全链权限，不复制绕过不可信 Homebrew 祖先、不运行未准入 binary、不放宽 guard |
-| `CE_TUNNEL_BACKGROUND_UNAUTHORIZED` | 核实父 Pi 的精确许可；在子 shell export 无效 |
+| `CE_TUNNEL_BACKGROUND_UNAUTHORIZED` | 查看 `/ce-tunnel permission status`；许可缺失、撤销或范围变化时明确确认 connect/grant。无效存储须检查，不删除或自动修复；仅缺失 grant 时有环境兼容路径 |
 | legacy 单 Session profile 的 register / sessions / revoke 拒绝 `CE_TUNNEL_PROFILE_INVALID` | 需先显式 `/ce-tunnel convert` 创建多 Session generation，按提示分别确认旧 runtime 已停止或更新及转换授权；不自动转换，不是 transport 未 STOPPED |
 | `recipients: []` / CONNECTED 但不能发 | 核对 Advanced Messaging、Pi binding、当前 ChatGPT 工具、Store/Exchange/recipient，不重发原消息测通 |
 | unclean exit 后 `CE_HOST_UNAVAILABLE` 且提示 local session-process mutex unreleased slot | 仅 operator 在完整离线维护窗口（所有 Pi/CE、heartbeat、后台启动器、自动重启和 recovery jobs 均停止并禁止重启，覆盖检查、协调、持久化和复查全程）并独立确认 owner 已死亡后，显式运行 `pnpm run reconcile:session-mutex --expect-store-dir <canonical-dir> --expect-store-file <basename> --expect-endpoint <endpoint> --expect-runtime-session <session> --expect-slot <slot> --expect-owner-version 1 --expect-owner-scope <sha256> --expect-owner-pid <pid> --expect-owner-birth <birth> --expect-owner-process-token <token> --expect-owner-handle-token <token> --expect-owner-sha256 <raw-byte-sha256> --expect-store-dev <dev> --expect-store-ino <ino> --expect-slot-dev <dev> --expect-slot-ino <ino> --expect-owner-dev <dev> --expect-owner-ino <ino> --offline-window-confirmed --owner-death-evidence <independent-reference>`（无 `--audit-log` 参数，未知参数一律拒绝，脚本不写任何 audit 文件）；参数均须独立核实，无默认值。仅协调本地 mutex receipt，不是 CE ownership / Operator Recovery，不证明 CE end/detach；恢复本地可用性不授权恢复业务操作、CE read/ACK、detach、takeover 或 recovery，必须等待单独授权决定；不删锁、不对活 PID 协调、不在真实 Store 上试 acquire；发布分两阶段：先以 O_EXCL 写 `release-pending.json`（0600、内容与 owner 原始字节完全一致），fsync 文件与各层目录并完成全量复查后，才以原子 rename 为 `released.json` 作为唯一提交点；rename 之前的任何失败都原样保留 pending 制品并以固定理由退出；rename 抛错时仅当 `released.json` 与所准备的字节/身份完全一致才按已提交成功对待，否则同样硬停；rename 之后不再执行任何可失败操作；任何失败均要求人工复查，绝不重试、覆盖或删除 |

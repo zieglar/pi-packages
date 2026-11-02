@@ -114,7 +114,7 @@ describe("B1.1 /ce-tunnel — subcommand surface", () => {
   it("offers existing operations and explicit daily connect/disconnect completions", async () => {
     const command = await tunnel();
     const values = (command.getArgumentCompletions?.("") ?? []).map((item) => item.value);
-    expect([...values].sort()).toEqual(["activate", "authorize", "connect", "convert", "deactivate", "disconnect", "doctor", "help", "migrate", "register", "revoke", "sessions", "setup", "start", "status", "stop"]);
+    expect([...values].sort()).toEqual(["activate", "authorize", "connect", "convert", "deactivate", "disconnect", "doctor", "help", "migrate", "permission", "register", "revoke", "sessions", "setup", "start", "status", "stop"]);
     expect((command.getArgumentCompletions?.("sta") ?? []).map((i) => i.value).sort()).toEqual(["start", "status"]);
     for (const item of command.getArgumentCompletions?.("") ?? []) expect(typeof item.value).toBe("string");
   });
@@ -175,10 +175,9 @@ describe("B1.1 /ce-tunnel — start and stop stay offline", () => {
     vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", undefined as unknown as string);
     const ctx = context();
     await (await tunnel()).handler("start", ctx);
-    // REAL-START-FIX-01: acknowledge the request, not a spawn, before the
-    // gate refusal surfaces asynchronously on the supervised start.
-    expect(messages(ctx)).toContain("real background start requested; awaiting spawn acknowledgement");
-    await vi.waitFor(() => expect(messages(ctx)).toContain("CE_TUNNEL_BACKGROUND_UNAUTHORIZED"));
+    // Permission prompting requires an interactive confirmation surface.
+    expect(messages(ctx)).toContain("CE_TUNNEL_INPUT_UNAVAILABLE");
+    expect(messages(ctx)).not.toContain("real background start requested");
     // Even with the gate open, a missing operator profile refuses cleanly.
     vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");
     const ctx2 = context();

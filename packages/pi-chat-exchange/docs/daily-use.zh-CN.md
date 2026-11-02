@@ -2,36 +2,28 @@
 
 # 恢复已配置的 CE 会话
 
-本页描述 HANDOFF-CE-DAILY-UX-01 新增的 `/ce-tunnel connect` 与 `/ce-tunnel disconnect`。先加载包含这次修改的扩展；原先安装的 CE 0.3.0 不会因源码修改而自动升级。本仓库包元数据仍为历史 0.2.2 候选，本次没有改版本、发布或覆盖已安装包。
+本页描述日常 connect/disconnect 与持久启动授权（HANDOFF-CE-PERSISTENT-AUTH-01）。先加载包含这些修改的扩展；原先安装的 CE 0.3.0 不会因源码修改而自动升级。本仓库包元数据仍为历史 0.2.2 候选，本次没有改版本、发布或覆盖已安装包。
 
 ## 首次设置
 
-1. 按 [Tunnel 设置指南](tunnel-setup.zh-CN.md)选择已有合法 profile、Store、Exchange、Tunnel 与凭据引用。已有配置不必重建。若使用非默认 profile，在启动 Pi 的外部环境明确设置 `CE_TUNNEL_PROFILE` 为其规范化绝对文件路径；不要同时加载两份 CE 扩展。
+1. 按 [Tunnel 设置指南](tunnel-setup.zh-CN.md)选择已有合法 profile、Store、Exchange、Tunnel 与凭据引用。已有配置不必重建。首次选择非默认 profile 时，用 `CE_TUNNEL_PROFILE` 明确指定规范化绝对路径；确认授权后会记住所选 profile 与可信 client，供后续普通 `pi` 启动使用；不要同时加载两份 CE 扩展。
 2. 使用批准 Node 启动 Pi，保持原有 Magpie 与扩展加载方式。用 Pi `/name` 命名这个会话，用 `/session` 核对它的身份。已有 `pi/main` 属于原注册会话；恢复那个会话即可，不要在新会话重新登记 `pi/main`。
 3. 只有当前真实 Pi Session 尚未注册时才执行一次 [多会话注册](multi-session-usage.zh-CN.md)：明确 Stop 并核实 STOPPED，再 `/ce-tunnel register pi/你明确选择的独立名称`，核对 Store、Exchange、当前会话及权限后确认。需要正文或 ACK 才加 `--payload-read` 或 `--ack`。现有单会话配置可继续使用；只有需要多会话时才按指南显式 convert。不要重建 Exchange 来绕过注册问题。
 4. 配置发布后 `/reload`，加载对应策略。缺少 mapping 的首次 reload 或已经正常结束的绑定可能显示 `CE_HOST_MAPPING_INVALID`；显式 connect 会请求合法激活，不丢弃旧历史，也不接管 Owner。
-5. 为允许手动启动真实 Tunnel，在自己控制的外部 shell 配置中设置下面的函数一次。它只为新启动的父 Pi 进程提供原有许可，不启动 Tunnel，不改变 CE 权限架构，也不把凭据放进命令。
+5. 在交互 TUI 执行 `/ce-tunnel connect`。没有有效许可时，先确认所选 profile、client、凭据引用访问、可能费用及后台生命周期，再进行激活或启动。取消或拒绝不会新增 grant、激活绑定或启动 client。`/ce-tunnel start` 需要许可时也会询问。确认后保存许可与所选 profile/client，后续普通 `pi` 启动无需 shell alias、shell 配置或 `CE_TUNNEL_BACKGROUND_ALLOW`。
 
-```sh
-cepi() {
-  CE_TUNNEL_BACKGROUND_ALLOW=1 pi --resume
-}
-```
-
-此函数用于已按日常方式安装、可通过 `pi` 启动的批准运行时。若原来使用批准 Node 或专用 Pi 启动器，保留那条启动命令并只在前面加该环境变量；不要为了示例更换全局 Node、模型或扩展来源。需要指定非默认 profile 时，在函数中显式设置自己的 `CE_TUNNEL_PROFILE`，不从项目文件自动读取。取消这项日常启动许可可移除函数或移除其中的变量，并正常退出已带许可运行的 Pi。
-
-环境许可仍由当前 Pi 进程持有，必须精确为 `1`。在 Pi 内的子 shell 执行 export 或 `/reload` 不能为父进程补上许可。CE 没有新增持久权限文件、布尔授权或自动启动。
+保留原有批准运行时、模型与扩展配置。许可只允许显式启动，不自动启动，也不注册新的原生会话。范围与安全规则见[持久启动许可](tunnel-manager-background.zh-CN.md#persistent-startup-permission)。
 
 ## 每天使用
 
-在原项目目录的外部终端运行 `cepi`，在 Pi 选择器中选回**同一已注册会话**。然后：
+在原项目目录的外部终端运行普通 `pi`，在 Pi 选择器中选回**同一已注册会话**。然后：
 
 ```text
 /ce-tunnel connect
 /ce-tunnel status
 ```
 
-connect 先检查交互 TUI、进程启动许可、Native/运行时与已加载配置的一致性。已有绑定有效时保持它；需要新 CE incarnation 时沿用原激活确认、STOPPED 配置锁和 `requireUnowned`。确认后才启动已有 profile 的 Tunnel，或对已运行实例进行健康实测，不创建第二套 Tunnel、Session 或消息机制。
+connect 先检查交互 TUI、持久启动许可、Native/运行时与已加载配置的一致性。已有绑定有效时保持它；需要新 CE incarnation 时沿用原激活确认、STOPPED 配置锁和 `requireUnowned`。确认后才启动已有 profile 的 Tunnel，或对已运行实例进行健康实测，不创建第二套 Tunnel、Session 或消息机制。
 
 状态分别显示 CE 绑定与实际 transport health。它不检测 Magpie 模型是否可用，不证明业务任务获准执行，也不证明消息送达、ACK 或任务完成。Manager 页面是读取时的快照，长时间打开后使用 Refresh 或 `/ce-tunnel status` 重新测量。
 
@@ -59,13 +51,13 @@ connect 先检查交互 TUI、进程启动许可、Native/运行时与已加载�
 
 ## 拒绝与剩余操作成本
 
-- `CE_TUNNEL_BACKGROUND_UNAUTHORIZED`：正常退出，用外部启动函数恢复。不能靠重新输入密钥解决。
+- `CE_TUNNEL_BACKGROUND_UNAUTHORIZED`：先看 `/ce-tunnel permission status`。许可缺失、撤销或范围变化时，通过 connect 或 `/ce-tunnel permission grant` 明确确认。存储无效须人工检查，不删除或自动修复。重新输入密钥不能解决许可问题。
 - 当前 Session 不在 allowlist：选回已注册会话；全新 Session 需要自己的明确注册。Endpoint 不猜测、不换绑，不把旧 Session ID 当成任意新会话的通行证。
 - 未加载所选策略、profile/环境变化：显式 reload 后复核身份，不在旧 factory 中扩大权限。
 - 需要激活但 Tunnel 运行或状态未知：查看 status，协调后显式 Stop 并核实 STOPPED，再 connect。
 - Busy、过期 Owner、互斥或释放不确定：停止该恢复路径，按 [排障](tunnel-setup.zh-CN.md)核对精确证据；没有自动 takeover、Owner 删除或清理标记。
 - 已绑定但启动失败：绑定保持已建立状态，传输失败单独报告。先检查 status，再作下一次明确操作；不自动解绑、重建 Tunnel 或重试。
 
-本轮方案为 **ACCEPT WITH FOLLOW-UP** 路线：保留进程门禁，通过外部启动函数免去反复手输变量，通过一个 connect 入口减少激活/启动操作。仍需选择原 Pi 会话、在必要时确认激活；全新会话复用旧 Endpoint 和 CE 内部持久启动授权需要后续单独设计。
+持久授权取代此前的外部启动函数方案。仍需恢复同一已注册原生会话，必要时确认激活；记住 profile/client 路径不授权任意新会话使用 `pi/main`。
 
-隔离回归使用真实 Host/SQLite/策略与受控的进程、Native 资格和传输边界；Ovis/Wake 回归不等于真实桌面或云端验收。本次未安装生产更新、执行 Cloud E2E 或验证长时间在线；不承诺开机启动、无人值守重连或业务任务恢复。
+隔离回归使用真实 Host/SQLite/策略与受控的进程、Native 资格和传输边界。持久授权还通过独立 Node 进程、隔离 OS 账户 home 与生产可执行程序选择器验证；该检查不执行 client。Ovis/Wake 回归不等于真实桌面或云端验收。真实 Pi TUI 重启、云端、桌面、生产和长时间在线仍未验证；不承诺开机启动、无人值守重连或业务任务恢复。

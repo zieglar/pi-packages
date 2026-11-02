@@ -31,6 +31,7 @@ async function fixture() {
   const directory = mkdtempSync(join(tmpdir(), "ce-start-command-")); directories.push(directory);
   vi.stubEnv("CE_ALLOWLIST", "/dev/null");
   vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", "");
+  vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");
   vi.stubEnv("CE_TUNNEL_PROFILE", join(directory, "profile.yaml"));
   vi.stubEnv("CE_TUNNEL_STATE_DIR", join(directory, "state"));
   const ack = pending<BackgroundStartAck>();
@@ -92,11 +93,11 @@ describe("real start command session latch", () => {
     await f.command.handler("start", f.ctx);
     expect(f.start).toHaveBeenCalledTimes(2);
   });
-  it("explains missing parent process permission on a deferred refusal", async () => {
+  it("explains interactive authorization on a deferred refusal", async () => {
     const f = await fixture(); await f.command.handler("start", f.ctx);
     const { TunnelRefusal } = await import("../../dist/tunnel/codes.js");
     const error = new TunnelRefusal("CE_TUNNEL_BACKGROUND_UNAUTHORIZED");
     f.ack.reject(error); f.settled.reject(error); await flush();
-    expect(f.ctx.ui.notify.mock.calls.some(([text]) => String(text).includes("parent Pi with CE_TUNNEL_BACKGROUND_ALLOW=1"))).toBe(true);
+    expect(f.ctx.ui.notify.mock.calls.some(([text]) => String(text).includes("permission status or connect"))).toBe(true);
   });
 });

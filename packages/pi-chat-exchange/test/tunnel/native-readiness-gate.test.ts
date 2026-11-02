@@ -30,6 +30,7 @@ function deferred<T>() {
 }
 
 async function fixture() {
+  vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");
   const dir = mkdtempSync(join(tmpdir(), "ce-native-gate-"));
   vi.stubEnv("CE_ALLOWLIST", "/dev/null");
   vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", "");
@@ -39,6 +40,9 @@ async function fixture() {
   const start = vi.fn(() => ({ ack: ack.promise, settled: settled.promise }));
   const stop = vi.fn(async () => undefined);
   seam.manager.mockReturnValue({
+    profilePath: () => join(dir, "profile.yaml"),
+    authorizationStatus: () => "environment",
+    authorizationScope: () => ({ digest: "a".repeat(64), clientPath: "/synthetic/client", credentialPath: "/synthetic/credential" }),
     kind: "background",
     startDeferred: start,
     stop,
@@ -52,7 +56,7 @@ async function fixture() {
     registerCommand: (name: string, command: never) => commands.set(name, command) });
   const ctx = { mode: "tui", hasUI: true, cwd: dir,
     sessionManager: { getSessionId: () => "unbound", getSessionFile: () => undefined, getBranch: () => [] },
-    ui: { notify: vi.fn(), setStatus: vi.fn(), custom: vi.fn(async () => undefined) } };
+    ui: { notify: vi.fn(), setStatus: vi.fn(), confirm: vi.fn(async () => true), custom: vi.fn(async () => undefined) } };
   return { ctx, start, stop, command: commands.get("ce-tunnel")!, dir };
 }
 

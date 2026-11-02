@@ -14,7 +14,7 @@
 
 ## 硬边界
 
-- **真实 Start 显式许可。** 除非操作者为本次 Pi session 精确设置 `CE_TUNNEL_BACKGROUND_ALLOW=1`，否则 `/ce-tunnel start` 拒绝 `CE_TUNNEL_BACKGROUND_UNAUTHORIZED`。`status`/`stop` 不受该开关限制：它们不创建费用，stop 只降低费用。
+- **真实 Start 显式许可。** Manager 独立验证持久启动许可，并在 spawn 前再次检查。交互 connect/start 需要许可时请求确认；取消不授权、不激活、不启动。`status`/`stop` 无需启动许可。见[持久启动许可](#persistent-startup-permission)。
 - **跨进程互斥。** Start/stop 及需要持久化的 refresh 持有 `<state>.lock.d`，这是用 pid + start key 验证 holder 的 mkdir DIRECTORY lock。陈旧/崩溃锁的回收在回收者间互斥：先 rename-to-grave，再核实 grave holder 仍是判定为 stale 的同一个锁；不匹配则回滚 rename 并拒绝 `CE_TUNNEL_MANAGER_BUSY`。无 holder 且不足 60s 的锁拒绝。所有 persist/signal 前重验锁 ownership；锁内重读 record，防止两个 Pi session 重复启动或发信号。
 - **终止 ledger。** recorded run 必须先持久化 `termRequestedAt` intent 才能发信号；没有 ledger 就拒绝并保留 ownership。record 从未成功持久化的 run 由内存 once-set 保护，崩溃会同时丢失 record 和 guard。磁盘 ENOENT 或其他 run 的 stopped record 都不能丢弃该 pending ownership。
 - **Stop 延迟。** stop 先等待其作废的 start 落定，界限为一次 probe timeout + identity capture + stop grace，再取锁；被取消的 start 仍拥有工作时不会返回。
@@ -35,4 +35,21 @@
 
 ## 费用与授权
 
-首次真实后台运行是付费连接，仍需操作者单独授权费用及窗口，并设置 `CE_TUNNEL_BACKGROUND_ALLOW=1`。命令是人工触发，没有无人值守路径。
+真实后台运行可能计费，须确认目标和运行窗口，启动仍由操作者显式触发。
+
+<a id="persistent-startup-permission"></a>
+
+## 持久启动许可
+
+本节描述 HANDOFF-CE-PERSISTENT-AUTH-01 当前源码，不代表安装更新。已安装 CE 0.3.0 未改变，源码历史元数据仍为 0.2.2。首次确认后，后续普通 `pi` 启动会恢复所选 profile/client，无需 shell alias 或环境许可。仍须恢复同一已注册原生会话；启动许可不授予 CE Owner、注册或消息权限。
+
+- `/ce-tunnel permission status` 只读检查；`grant` 明确确认许可；`revoke` 确认拒绝后续启动。原有仅离线使用的 `authorize` 命令与此无关。
+- 存储位于 OS 账户 home（`os.userInfo().homedir`）下的 `.config/pi-chat-exchange/background-authorization`，不受 `HOME`、XDG 或项目设置控制。各 profile 文件以绝对路径哈希为名，记录 version、UID、profile 路径、granted/revoked 状态、范围摘要与时间。`selection.json` 保存所选 profile/client 引用，不是授权依据。不保存凭据正文；路径引用也应保密。
+- 授权目录须为账户所有的 0700，记录为单一硬链接的 0600 文件；检查 owner、祖先目录、非符号链接及 macOS ACL，无法确认即拒绝。读取不创建存储、不修复损坏。无效存储须人工检查，不删除或绕过权限。
+- 范围绑定精确 profile 内容及路径、凭据引用及元数据、可信 client/wrapper 身份、批准 Node、本次 CE 安装的 MCP script 及解析后的 binding 内容。CE 只查凭据元数据，由 client 读取现有凭据引用。profile、binding、script、client 或其他绑定身份变化须重新确认。
+- 恢复选择后仍执行真实 profile 与可执行文件信任检查。显式 profile/client override 仍选择对应目标，并须匹配许可。保存的 client 引用只作为 resolver 选择输入，不注入 child 环境。目标改变或已加载策略不匹配时须先核对再 connect；路径记录不扩大权限。
+- 精确 `CE_TUNNEL_BACKGROUND_ALLOW=1` 仅在所选 profile 没有托管记录时兼容旧流程。撤销、无效或范围变化均优先于该变量。明确确认可替换撤销或范围变化的 grant；无效存储不自动修复。
+- 授权写入使用私有临时文件、文件 sync、原子 rename 与目录 sync。grant 或 selection 写入失败，包括 rename 后目录 sync 导致持久性不确定，都中止后续流程；不能假定回滚或自动重试。后续操作前检查 permission status 与所选目标。
+- 撤销独立于 connect 队列。撤销提交后才观察授权的 Start 会拒绝，包括仍在等待进程枚举的请求。并发 Start 若此前已取得最终 grant 快照，仍可能完成验证并在撤销返回后创建进程；撤销不提供进程创建屏障。结束传输须显式 Stop 或 disconnect。启动许可、注册 revoke 与正常绑定释放相互独立。
+
+没有自动启动、自动重连或任意 MCP command 授权。源码依据为 `background-authorization.ts`、`background-scope.ts`、`background-manager.ts` 和 `pi-extension/index.ts`。隔离存储、Manager、扩展回归文件使用受控边界；本文档修改未运行测试。此变更的真实 Pi 重启、云端、桌面和生产运行仍未验证。

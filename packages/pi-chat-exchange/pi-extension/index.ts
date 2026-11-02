@@ -36,6 +36,7 @@ import { resolveTunnelProfilePath } from "../dist/tunnel/background-manager.js";
 import { validMessagingStore } from "../dist/tunnel/messaging-config.js";
 import { runTunnelManagerUi, type TunnelManagerUiProjection } from "../dist/tunnel/manager-ui.js";
 import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -1455,6 +1456,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   const SUBCOMMANDS: ReadonlyArray<{ value: string; description: string }> = [
     { value: "setup", description: "open the real profile Setup Wizard (masked API key; explicit Save only)" },
     { value: "authorize", description: "synthetic Keychain authorization in the explicit offline harness only" },
+    { value: "permission", description: "status/grant/revoke persistent OS-user background startup permission" },
     { value: "connect", description: "restore the registered current Pi session and explicitly connect existing transport" },
     { value: "disconnect", description: "release current Pi messaging and stop owned transport; preserve registration/history" },
     { value: "start", description: "start the real background tunnel client (or the offline simulator under CE_TUNNEL_OFFLINE_TEST=1)" },
@@ -2077,6 +2079,28 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   };
 
   /** Daily commands reuse current authority. They never publish policy or recover an Owner. */
+  let permissionPrompt = false;
+  const requestBackgroundPermission = async (manager: BackgroundTunnelManager, ctx: ExtensionContextView, signal: AbortSignal, force = false): Promise<boolean> => {
+    if (resolveTunnelProfilePath({ env: process.env }) !== manager.profilePath()) throw new TunnelRefusal("CE_TUNNEL_CONFIG_CONFLICT", "profile.selection");
+    const status = manager.authorizationStatus();
+    if (!force && (status === "granted" || status === "environment")) return true;
+    if (status === "invalid") throw new TunnelRefusal("CE_TUNNEL_BACKGROUND_UNAUTHORIZED", "authorization.invalid");
+    if (permissionPrompt || typeof ctx.ui.confirm !== "function" || signal.aborted) throw new TunnelRefusal("CE_TUNNEL_INPUT_UNAVAILABLE");
+    const scope = manager.authorizationScope();
+    const sessionId = ctx.sessionManager.getSessionId();
+    permissionPrompt = true;
+    try {
+      const confirmed = await ctx.ui.confirm("Allow persistent CE background Tunnel startup?",
+        `This OS user may manually start ${scope.clientPath} run for Profile ${manager.profilePath()}. The client reads the existing credential reference ${scope.credentialPath}; CE stores no credential body. Connection may incur costs and survives Pi exit. Stop with /ce-tunnel disconnect or stop; revoke future startup with /ce-tunnel permission revoke. Profile/client changes require fresh permission.`,
+        { signal, timeout: 120_000 });
+      if (!confirmed || signal.aborted) return false;
+      if (ctx.sessionManager.getSessionId() !== sessionId) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+      if (resolveTunnelProfilePath({ env: process.env }) !== manager.profilePath()) throw new TunnelRefusal("CE_TUNNEL_CONFIG_CONFLICT", "profile.selection");
+      manager.grantAuthorization(scope.digest);
+      return true;
+    } finally { permissionPrompt = false; }
+  };
+
   const runDailyConnection = async (connect: boolean, ctx: ExtensionContextView): Promise<void> => {
     const action = connect ? "connect" : "disconnect";
     if (dailyTask !== undefined || activationTask !== undefined || setupTask !== undefined || managerUiTask !== undefined || startCapture !== undefined) {
@@ -2084,9 +2108,6 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     }
     if (ctx.mode !== "tui" || !ctx.hasUI || !isRealBackground()) {
       notify(ctx, `ce-tunnel: ${action} refused CE_TUNNEL_INPUT_UNAVAILABLE`, "warning"); return;
-    }
-    if (connect && process.env.CE_TUNNEL_BACKGROUND_ALLOW !== "1") {
-      notify(ctx, "ce-tunnel: connect refused CE_TUNNEL_BACKGROUND_UNAUTHORIZED; start the parent Pi with CE_TUNNEL_BACKGROUND_ALLOW=1 and resume the registered session; /reload or a child-shell export cannot grant permission", "warning"); return;
     }
     const controller = new AbortController();
     dailyCapture = controller;
@@ -2133,8 +2154,12 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         }
         const configured = (): void => {
           current();
-          if (process.env.CE_TUNNEL_BACKGROUND_ALLOW !== "1" || readFileSync(profilePath, "utf8") !== profile) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+          if (readFileSync(profilePath, "utf8") !== profile) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+          const permission = manager.authorizationStatus();
+          if (permission !== "granted" && permission !== "environment") throw new TunnelRefusal("CE_TUNNEL_BACKGROUND_UNAUTHORIZED");
         };
+        if (!await requestBackgroundPermission(manager, ctx, controller.signal)) return;
+        current();
         configured();
         if (generation === undefined) {
           // Activation itself enforces STOPPED, explicit confirmation and requireUnowned.
@@ -2148,7 +2173,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         const status = withHost("status", () => getHost().status(endpointId));
         if (!status.registered || status.lease !== "ACTIVE") throw new CeHostRefusal("CE_HOST_AUTHORITY_ABSENT");
         configured();
-        const started = await manager.start();
+        const started = await manager.start(createHash("sha256").update(profile).digest("hex"));
         configured();
         // An existing run is returned without a health probe by Start; measure it now.
         const measured = await manager.refresh();
@@ -2173,6 +2198,37 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   /** Direct shortcuts and the Manager invoke this same operation path. */
   const runTunnelCommand = async (args: string, ctx: ExtensionContextView): Promise<void> => {
         const sub = args.trim().split(/\s+/)[0] ?? "";
+        if (sub === "permission") {
+          const action = args.trim().split(/\s+/)[1] ?? "status";
+          try {
+            if (!isRealBackground()) throw new TunnelRefusal("CE_TUNNEL_INPUT_UNAVAILABLE");
+            const manager = activeManager();
+            if (!("kind" in manager)) throw new TunnelRefusal("CE_TUNNEL_INPUT_UNAVAILABLE");
+            if (action === "status") { notify(ctx, `ce-tunnel: background permission=${manager.authorizationStatus()}; revoke blocks future starts, not an already running client`); return; }
+            if (ctx.mode !== "tui" || !ctx.hasUI || typeof ctx.ui.confirm !== "function" || permissionPrompt) throw new TunnelRefusal("CE_TUNNEL_INPUT_UNAVAILABLE");
+            if (action === "revoke") {
+              const target = manager.profilePath();
+              if (resolveTunnelProfilePath({ env: process.env }) !== target) throw new TunnelRefusal("CE_TUNNEL_CONFIG_CONFLICT", "profile.selection");
+              permissionPrompt = true;
+              try {
+                const confirmed = await ctx.ui.confirm("Revoke CE background startup permission?", `Deny future startup for Profile ${target}, including inherited CE_TUNNEL_BACKGROUND_ALLOW=1. An existing client keeps running until Stop/disconnect.`);
+                if (!confirmed) return;
+                if (resolveTunnelProfilePath({ env: process.env }) !== target) throw new TunnelRefusal("CE_TUNNEL_CONFIG_CONFLICT");
+                manager.revokeAuthorization();
+                notify(ctx, "ce-tunnel: background startup permission revoked; existing transport requires explicit Stop/disconnect");
+              } finally { permissionPrompt = false; }
+              return;
+            }
+            if (action === "grant") {
+              if (dailyTask !== undefined || activationTask !== undefined || startCapture !== undefined) throw new TunnelRefusal("CE_TUNNEL_MANAGER_BUSY");
+              const accepted = await requestBackgroundPermission(manager, ctx, new AbortController().signal, true);
+              if (accepted) notify(ctx, "ce-tunnel: background permission verified; connect/start remains explicit");
+              return;
+            }
+            notify(ctx, "ce-tunnel: usage: permission status|grant|revoke", "warning");
+          } catch (error) { notify(ctx, `ce-tunnel: permission refused ${refusalText(error)}; authorization unchanged or persistence uncertain; inspect permission status`, "warning"); }
+          return;
+        }
         if (dailyTask !== undefined && !["status", "help", "doctor"].includes(sub)) {
           if (sub === "stop") {
             dailyCapture?.abort();
@@ -2290,7 +2346,8 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
             `ce-tunnel subcommands: ${SUBCOMMANDS.map((s) => s.value).join(", ")}. ` +
               `setup = Kit TUI Wizard for a real YAML profile and separate 0600 credential; bare command = persistent Manager; ` +
               `authorize = synthetic Keychain fixture only with CE_TUNNEL_OFFLINE_TEST=1; ` +
-              `connect = restore only this registered Pi session, confirm activation if needed, then start or measure the selected tunnel; exact parent CE_TUNNEL_BACKGROUND_ALLOW=1 required. ` +
+              `connect = restore this registered Pi session, explicitly authorize persistent background startup if needed, then activate/start or measure selected transport; no shell variable required after grant. ` +
+              `permission status|grant|revoke = inspect/confirm/revoke profile-scoped background startup permission; revoke overrides inherited env1 and does not stop an already running client. ` +
               `disconnect = confirm release of this Pi binding and Stop of the selected shared tunnel (other sessions may lose transport); registration/history stay. ` +
               `start/stop = with CE_TUNNEL_OFFLINE_TEST=1 the bundled OFFLINE simulator; otherwise the REAL background client ` +
                 `(detached, survives this session; ownership record + process-identity verified; manual only — no autostart/reconnect); ` +
@@ -2352,8 +2409,13 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
               // background manager's readiness converges. The start promise is
               // joined by stop/dispose, never an unsupervised fire-and-forget.
               const controller = new AbortController();
-              const deferred = manager.startDeferred();
               startCapture = controller;
+              if (!await requestBackgroundPermission(manager, ctx, controller.signal)) {
+                if (startCapture === controller) startCapture = undefined;
+                return;
+              }
+              if (controller.signal.aborted) return;
+              const deferred = manager.startDeferred();
               publishTunnelStatus(ctx);
               notify(ctx, "ce-tunnel: real background start requested; awaiting spawn acknowledgement; transport readiness is not delivery evidence", "info");
               void deferred.ack.then(
@@ -2378,7 +2440,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
                   if (startCapture === controller) startCapture = undefined;
                   if (controller.signal.aborted) return;
                   publishTunnelStatus(ctx);
-                  notify(ctx, `ce-tunnel: start refused ${refusalText(error)}${error instanceof TunnelRefusal && error.code === "CE_TUNNEL_BACKGROUND_UNAUTHORIZED" ? "; start the parent Pi with CE_TUNNEL_BACKGROUND_ALLOW=1; /reload or a child-shell export cannot grant permission" : ""}`, "warning");
+                  notify(ctx, `ce-tunnel: start refused ${refusalText(error)}${error instanceof TunnelRefusal && error.code === "CE_TUNNEL_BACKGROUND_UNAUTHORIZED" ? "; use /ce-tunnel permission status or connect to explicitly authorize this Profile" : ""}`, "warning");
                 },
               );
             } else {
@@ -2391,12 +2453,18 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
               );
             }
           } catch (error) {
+            startCapture?.abort();
+            startCapture = undefined;
             publishTunnelStatus(ctx);
             notify(ctx, `ce-tunnel: start refused ${refusalText(error)}`, "warning");
           }
           return;
         }
         if (sub === "stop") {
+          // Stop cancels a Start that is still awaiting explicit permission.
+          // Its manager fence is not captured until after that prompt returns.
+          startCapture?.abort();
+          startCapture = undefined;
           // Same closed-refusal containment as start (R5 Lane B B2).
           try {
             const manager = activeManager();
