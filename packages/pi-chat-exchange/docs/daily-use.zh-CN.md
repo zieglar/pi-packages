@@ -2,7 +2,7 @@
 
 # 恢复已配置的 CE 会话
 
-本页描述日常 connect/disconnect 与持久启动授权（HANDOFF-CE-PERSISTENT-AUTH-01）。先加载包含这些修改的扩展；原先安装的 CE 0.3.0 不会因源码修改而自动升级。本仓库包元数据仍为历史 0.2.2 候选，本次没有改版本、发布或覆盖已安装包。
+本页面向 HANDOFF-CE-DAILY-INTEGRATION-01 的本地整合版 0.3.1-daily.1，保留已发布 CE 0.3.0 Hooks，并加入 Connect/Disconnect、持久启动许可和 TUI 改进。该本地构建制品与原 npm 0.3.0 发布不同；修改源码不会自动更新安装，须另行核对安装路径和制品身份。
 
 ## 首次设置
 

@@ -2,6 +2,18 @@
 
 # Changelog
 
+## 0.3.1-daily.1 (local integration)
+
+- Retain the published 0.3.0 Hooks runtime, configuration and packaging alongside the accepted Connect/Disconnect, persistent startup permission and TUI changes.
+- This local artifact has a separate identity; it is not the original published 0.3.0 package. No Registry publication is performed.
+
+## 0.3.0
+
+- Add opt-in `ce.message.committed.v1` Hooks after confirmed message creation. Static local commands receive metadata only; Payload, credentials and authority fields are excluded. Hook outcomes do not change message persistence, ACKs or task status.
+- Support registration-scoped Pi Hook rules in `ce-multi-session-v1` and binding-scoped MCP rules. Loaded/current policy intersection is checked before spawn; queued work can be refused after revocation. Running scripts are not canceled, and execution has no replay, retry or exactly-once guarantee.
+- Package the `ce-hook-script` Agent Skill and a Python file-notification example. See [Hooks](docs/hooks.md) for configuration and execution boundaries.
+- Version 0.3.0 requires fresh compatibility evidence for its own runtime digest. Historical 0.2.2 Cloud evidence does not qualify this candidate; publication remains subject to the existing release gate.
+
 ## 0.2.2
 
 ### Patch Changes

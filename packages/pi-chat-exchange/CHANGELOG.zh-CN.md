@@ -2,6 +2,18 @@
 
 # 更新日志
 
+## 0.3.1-daily.1（本地整合）
+
+- 保留已发布 0.3.0 的 Hooks 运行时、配置与打包能力，同时整合已验收的 Connect/Disconnect、持久启动许可及 TUI 改进。
+- 本地制品采用独立身份，与原发布 0.3.0 不同；本轮不向 Registry 发布。
+
+## 0.3.0
+
+- 新增自愿启用的 `ce.message.committed.v1` Hooks，仅在消息创建确认提交后触发。静态本地命令只接收元数据，不含 Payload、凭据或权限字段；Hook 结果不改变消息持久化、ACK 或任务状态。
+- `ce-multi-session-v1` 支持按注册配置 Pi Hook、按 binding 配置 MCP Hook。实际启动前检查已加载策略与当前策略的交集，撤销后可拒绝排队任务；不取消已运行脚本，不自动重放或重试，不承诺 exactly-once。
+- 包含 `ce-hook-script` Agent Skill 和 Python 文件通知示例。配置方式及执行边界见 [Hooks](docs/hooks.zh-CN.md)。
+- 0.3.0 需要匹配自身 runtime digest 的新兼容证据。历史 0.2.2 Cloud 证据不能用于认证此候选，发布仍受现有 Release Gate 约束。
+
 ## 0.2.2
 
 ### 修复

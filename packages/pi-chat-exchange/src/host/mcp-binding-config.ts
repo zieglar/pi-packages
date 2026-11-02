@@ -11,6 +11,7 @@
 import { isAbsolute, normalize } from "node:path";
 import { TUNNEL_ID_PATTERN as MANAGED_TUNNEL_ID } from "../tunnel/tunnel-id.js";
 import { LEASE_MAX_TTL_SECONDS, LEASE_MIN_TTL_SECONDS } from "../storage/ownership.js";
+import { CeHookConfigError, parseHookRules, type CeHookRule } from "../hooks/config.js";
 import type { CeRecipientRef } from "./endpoint-host.js";
 
 export const MCP_BINDING_CONFIG_VERSION = 1 as const;
@@ -38,6 +39,8 @@ export interface McpBindingConfig {
   readonly payloadRead: { readonly enabled: boolean };
   /** HANDOFF-CE-E2B-01 operator ACK opt-in; disabled unless explicitly set. */
   readonly ack: { readonly enabled: boolean };
+  /** Optional operator-controlled local Hooks. Absent preserves the legacy shape. */
+  readonly hooks?: readonly CeHookRule[];
   /** HANDOFF-CE-DIAG-06 development-only execution guard opt-in: when exactly
    * `true`, the MCP server blocks every `tools/call` at the unified dispatch
    * entry (before any business handler) and answers with a fixed JSON-RPC
@@ -200,7 +203,7 @@ export function parseMcpBindingConfig(raw: unknown): McpBindingConfig {
   const fields = plain(
     raw,
     "config",
-    ["version", "store", "exchange", "endpoint", "recipients", "lease", "payloadRead", "ack", "debugExecutionGuard", "managed", "admissionPolicy"],
+    ["version", "store", "exchange", "endpoint", "recipients", "lease", "payloadRead", "ack", "debugExecutionGuard", "managed", "admissionPolicy", "hooks"],
     ["version", "store", "exchange", "endpoint", "recipients"],
   );
   if (fields.version !== MCP_BINDING_CONFIG_VERSION) throw new McpBindingConfigError("config.version");
@@ -230,6 +233,15 @@ export function parseMcpBindingConfig(raw: unknown): McpBindingConfig {
     seen.add(ref.endpointId);
     recipients.push(ref);
   });
+  let hooks: readonly CeHookRule[] | undefined;
+  if (fields.hooks !== undefined) {
+    try {
+      hooks = parseHookRules(fields.hooks);
+    } catch (error) {
+      if (error instanceof CeHookConfigError) throw new McpBindingConfigError(error.field);
+      throw new McpBindingConfigError("hooks");
+    }
+  }
   return Object.freeze({
     store,
     exchange,
@@ -241,5 +253,6 @@ export function parseMcpBindingConfig(raw: unknown): McpBindingConfig {
     debugExecutionGuard: debugExecutionGuardPolicy(fields.debugExecutionGuard),
     ...(managed === undefined ? {} : { managed }),
     ...(admissionPolicy === undefined ? {} : { admissionPolicy }),
+    ...(hooks === undefined ? {} : { hooks }),
   });
 }

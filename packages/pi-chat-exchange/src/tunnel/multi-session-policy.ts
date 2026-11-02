@@ -3,6 +3,7 @@
  * Runtime composition MUST apply these deny-only intersections before every operation.
  */
 import fs from "node:fs";
+import { parseHookRules, type CeHookRule } from "../hooks/config.js";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join, normalize } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -23,6 +24,7 @@ export interface SessionRegistration {
   readonly status: "active" | "revoked";
   readonly payloadRead: boolean;
   readonly ack: boolean;
+  readonly hooks?: readonly CeHookRule[];
 }
 export interface MultiSessionManifest {
   readonly kind: typeof KIND;
@@ -41,12 +43,13 @@ export interface MultiSessionSnapshot {
   readonly config: McpBindingConfig;
   readonly manifest: MultiSessionManifest;
 }
-export type RegistrationInput = Pick<SessionRegistration, "endpointId" | "runtimeSessionId" | "payloadRead" | "ack">;
-function object(value: unknown, keys: readonly string[]): Record<string, unknown> {
+export type RegistrationInput = Pick<SessionRegistration, "endpointId" | "runtimeSessionId" | "payloadRead" | "ack" | "hooks">;
+function object(value: unknown, keys: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw invalid();
   if (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) throw invalid();
-  if (Reflect.ownKeys(value).length !== keys.length) throw invalid();
-  for (const key of keys) {
+  const present = Reflect.ownKeys(value);
+  if (present.some((key) => typeof key !== "string" || !keys.includes(key) && !optional.includes(key))) throw invalid();
+  for (const key of [...keys, ...optional.filter((key) => present.includes(key))]) {
     const d = Object.getOwnPropertyDescriptor(value, key);
     if (d === undefined || !("value" in d) || !d.enumerable) throw invalid();
   }
@@ -58,8 +61,13 @@ function label(value: unknown): string {
 }
 function bool(value: unknown): boolean { if (typeof value !== "boolean") throw invalid(); return value; }
 function inputRegistration(raw: unknown): RegistrationInput {
-  const r = object(raw, ["endpointId", "runtimeSessionId", "payloadRead", "ack"]);
-  return Object.freeze({ endpointId: label(r.endpointId), runtimeSessionId: label(r.runtimeSessionId), payloadRead: bool(r.payloadRead), ack: bool(r.ack) });
+  const r = object(raw, ["endpointId", "runtimeSessionId", "payloadRead", "ack"], ["hooks"]);
+  let hooks: readonly CeHookRule[] | undefined;
+  if (r.hooks !== undefined) {
+    try { hooks = parseHookRules(r.hooks); } catch { throw invalid(); }
+  }
+  return Object.freeze({ endpointId: label(r.endpointId), runtimeSessionId: label(r.runtimeSessionId), payloadRead: bool(r.payloadRead), ack: bool(r.ack),
+    ...(hooks === undefined ? {} : { hooks }) });
 }
 /** Closed schema, including tombstones. Runtime IDs and stable endpoints are globally unique. */
 export function parseMultiSessionManifest(raw: unknown): MultiSessionManifest {
@@ -79,8 +87,9 @@ export function parseMultiSessionManifest(raw: unknown): MultiSessionManifest {
   if (!Array.isArray(r.registrations) || r.registrations.length === 0 || r.registrations.length > 128) throw invalid();
   const endpoints = new Set<string>([endpointId]); const sessions = new Set<string>();
   const registrations = r.registrations.map((value: unknown) => {
-    const entry = object(value, ["endpointId", "runtimeSessionId", "epoch", "status", "payloadRead", "ack"]);
-    const registration = inputRegistration({ endpointId: entry.endpointId, runtimeSessionId: entry.runtimeSessionId, payloadRead: entry.payloadRead, ack: entry.ack });
+    const entry = object(value, ["endpointId", "runtimeSessionId", "epoch", "status", "payloadRead", "ack"], ["hooks"]);
+    const registration = inputRegistration({ endpointId: entry.endpointId, runtimeSessionId: entry.runtimeSessionId, payloadRead: entry.payloadRead, ack: entry.ack, ...(entry.hooks === undefined ? {} : { hooks: entry.hooks }) });
+    if (registration.hooks?.some((rule) => rule.recipient.adapter !== "chatgpt" || rule.recipient.endpointId !== endpointId)) throw invalid();
     if (typeof entry.epoch !== "number" || !Number.isSafeInteger(entry.epoch) || entry.epoch < 1 ||
         (entry.status !== "active" && entry.status !== "revoked") || endpoints.has(registration.endpointId) || sessions.has(registration.runtimeSessionId)) throw invalid();
     endpoints.add(registration.endpointId); sessions.add(registration.runtimeSessionId);
@@ -114,7 +123,8 @@ function checkPair(profilePath: string, pair: MessagingPair, manifest: MultiSess
   if (c.admissionPolicy?.kind !== KIND || c.admissionPolicy.profilePath !== profilePath ||
       !isDeepStrictEqual(c.store, manifest.store) || !isDeepStrictEqual(c.exchange, manifest.exchange) ||
       !isDeepStrictEqual(c.endpoint, manifest.chatgptEndpoint) || !isDeepStrictEqual(c.recipients, recipients) ||
-      c.payloadRead.enabled !== manifest.mcp.payloadRead || c.ack.enabled !== manifest.mcp.ack) throw invalid();
+      c.payloadRead.enabled !== manifest.mcp.payloadRead || c.ack.enabled !== manifest.mcp.ack ||
+      c.hooks?.some((rule) => rule.recipient.adapter !== "pi" || !recipients.some((ref) => ref.endpointId === rule.recipient.endpointId))) throw invalid();
 }
 /** READ is the linearization point, conditional on successful verification of
  * THIS selected generation. No second pointer read, cancellation or transaction-
@@ -166,6 +176,18 @@ export function intersectMcpRecipients(loaded: MultiSessionSnapshot, current: Mu
     try { intersectRegistration(loaded, current, registration.runtimeSessionId); return true; } catch { return false; }
   }));
 }
+/** Only unchanged, enabled loaded rules survive current policy. Rules confer no messaging grants. */
+export function effectivePiHookRules(loaded: MultiSessionSnapshot, current: MultiSessionSnapshot, runtimeSessionId: string): readonly CeHookRule[] {
+  const registration = intersectRegistration(loaded, current, runtimeSessionId);
+  const currentRules = current.manifest.registrations.find((r) => r.runtimeSessionId === runtimeSessionId)!.hooks ?? [];
+  return Object.freeze((registration.hooks ?? []).filter((rule) => rule.enabled && currentRules.some((candidate) => candidate.enabled && isDeepStrictEqual(rule, candidate))));
+}
+export function effectiveMcpHookRules(loaded: MultiSessionSnapshot, current: MultiSessionSnapshot): readonly CeHookRule[] {
+  const recipients = intersectMcpRecipients(loaded, current);
+  return Object.freeze((loaded.config.hooks ?? []).filter((rule) => rule.enabled &&
+    recipients.some((ref) => isDeepStrictEqual(ref, rule.recipient)) &&
+    (current.config.hooks ?? []).some((candidate) => candidate.enabled && isDeepStrictEqual(rule, candidate))));
+}
 /** Complete MCP global grant intersection, still not CE authority. */
 export function intersectMcpPolicy(loaded: MultiSessionSnapshot, current: MultiSessionSnapshot): {
   readonly recipients: readonly CeRecipientRef[]; readonly payloadRead: boolean; readonly ack: boolean;
@@ -177,9 +199,9 @@ export function intersectMcpPolicy(loaded: MultiSessionSnapshot, current: MultiS
 /** New-mode per-Pi projection: NEVER feed the complete registration set to one Host. */
 export function projectPiRegistration(snapshot: MultiSessionSnapshot, runtimeSessionId: string): Record<string, unknown> {
   const r = intersectRegistration(snapshot, snapshot, runtimeSessionId);
-  return buildPiAllowlistDocument({ chatgptEndpoint: snapshot.manifest.chatgptEndpoint, piEndpoint: { adapter: "pi", endpointId: r.endpointId },
+  return { ...buildPiAllowlistDocument({ chatgptEndpoint: snapshot.manifest.chatgptEndpoint, piEndpoint: { adapter: "pi", endpointId: r.endpointId },
     piSessionId: r.runtimeSessionId, exchangeNamespace: snapshot.manifest.exchange.namespace, exchangeIdempotencyKey: snapshot.manifest.exchange.idempotencyKey,
-    store: snapshot.manifest.store, payloadRead: r.payloadRead, ack: r.ack });
+    store: snapshot.manifest.store, payloadRead: r.payloadRead, ack: r.ack }), ...(r.hooks === undefined ? {} : { hooks: r.hooks }) };
 }
 export interface MultiSessionRegistrationOptions {
   readonly profilePath: string;
@@ -264,7 +286,8 @@ export function createMultiSessionRegistration(options: MultiSessionRegistration
       const r = inputRegistration(input.registration);
       const old = current.manifest.registrations.find((entry) => entry.endpointId === r.endpointId);
       if (current.manifest.registrations.some((entry) => entry.runtimeSessionId === r.runtimeSessionId && entry.endpointId !== r.endpointId) || (old !== undefined && old.runtimeSessionId !== r.runtimeSessionId)) throw invalid();
-      const registration: SessionRegistration = { ...r, epoch: old === undefined ? 1 : old.status === "revoked" ? old.epoch + 1 : old.epoch, status: "active" };
+      // Omission preserves operator rules; an explicit empty array clears them.
+      const registration: SessionRegistration = { ...r, ...(r.hooks === undefined && old?.hooks !== undefined ? { hooks: old.hooks } : {}), epoch: old === undefined ? 1 : old.status === "revoked" ? old.epoch + 1 : old.epoch, status: "active" };
       const registrations = old === undefined ? [...current.manifest.registrations, registration] : current.manifest.registrations.map((entry) => entry === old ? registration : entry);
       return { config: current.config, manifest: { ...current.manifest, registrations } };
     }),
@@ -272,7 +295,11 @@ export function createMultiSessionRegistration(options: MultiSessionRegistration
       const current = readSelectedMultiSessionPolicy(profilePath);
       const old = current.manifest.registrations.find((r) => r.endpointId === input.endpointId);
       if (old === undefined || old.status !== "active") throw invalid();
-      return { config: current.config, manifest: { ...current.manifest, registrations: current.manifest.registrations.map((r) => r === old ? { ...r, status: "revoked" } : r) } };
+      const registrations: readonly SessionRegistration[] = current.manifest.registrations.map((r) => r === old ? { ...r, status: "revoked" } : r);
+      // Revocation removes execution rules for its recipient in the same publication.
+      const config = current.config.hooks === undefined ? current.config : { ...current.config,
+        hooks: current.config.hooks.filter((rule) => registrations.some((r) => r.status === "active" && rule.recipient.adapter === "pi" && rule.recipient.endpointId === r.endpointId)) };
+      return { config, manifest: { ...current.manifest, registrations } };
     }),
   };
 }

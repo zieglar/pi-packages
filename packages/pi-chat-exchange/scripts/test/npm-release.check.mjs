@@ -69,6 +69,7 @@ function tempPackage(fields = {}) {
   cpSync(join(sourceRoot, "src"), join(directory, "src"), { recursive: true });
   cpSync(join(sourceRoot, "dist"), join(directory, "dist"), { recursive: true });
   cpSync(join(sourceRoot, "pi-extension"), join(directory, "pi-extension"), { recursive: true });
+  cpSync(join(sourceRoot, "skills"), join(directory, "skills"), { recursive: true });
   cpSync(join(sourceRoot, "README.md"), join(directory, "README.md"));
   cpSync(join(sourceRoot, "LICENSE"), join(directory, "LICENSE"));
   mkdirSync(join(directory, "native"), { recursive: true });

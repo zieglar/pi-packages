@@ -22,7 +22,7 @@ Pi Chat Exchange（CE）让 ChatGPT 和 Pi 通过显式工具交换持久化消�
 
 **0.2.1** 已发布到 npm。在 macOS arm64 上，从真实 Registry 安装的隔离 Pi 1.3.0 / Node 22.19.0 加载与持久化检查已通过。Linux x64 Native 检查在 Node 22.19.0、24.22.2 上各通过 227/227。**真实 Cloud transport 和完整 ChatGPT ↔ Pi 消息交换仍未验证。** 已测矩阵和限制见[运行时支持](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/runtime-support.zh-CN.md)，engine 范围不代表穷尽验证。
 
-本工作区准备 **0.2.2 本地候选**：显式 `CE_TUNNEL_CLIENT_PATH` 委托信任用户管理的 client 安装，允许 Homebrew 祖先目录 group-write；自动发现仍严格。安装路径写入者可能替换程序，程序可取得当前用户权限及 Tunnel 凭据。本地准入/Doctor 证据覆盖 **0.0.16**；官方 **0.0.18 尚未通过 CE 运行兼容性验证**。候选 tarball 用 npm 安装到专用 prefix，再将已安装包目录登记到 Pi，具体见快速开始；这不是 Registry 安装。下方 npm 命令仍选择正式版 0.2.1 及其旧准入规则。
+本工作区准备本地整合版 **0.3.1-daily.1**，保留已发布 CE 0.3.0 Hooks 并整合已验收的 Daily UX；它与原 Registry 0.3.0 制品不同。显式 `CE_TUNNEL_CLIENT_PATH` 委托信任用户管理的安装（包括 Homebrew 可组写祖先目录），自动发现仍严格。将已审查本地 tarball 安装到新专用 prefix，再向 Pi 登记物理包目录。历史版本的 Cloud 证据单独保留，不用于认证本次变更后的运行时。
 
 <a id="安装-pi-扩展"></a>
 <a id="选择连接方式"></a>
@@ -56,7 +56,7 @@ ACK 只记录接收回执，不证明送达、已读、处理或任务完成。C
 
 ## 可选桌面测试集成
 
-仓库另提供 [CE → Ovis](../../tools/ce-ovis-desktop/README.md) 和 [Pi → ChatGPT 唤醒](../../tools/ce-chatgpt-wake/README.md)。这些由操作者运行的 macOS 测试工具要求独立安装已发布的 **CE 0.3.0** 和 Pi 1.3.0，不使用本 checkout 的 CE 0.2.2 候选，也不使用上文历史安装命令中的 0.2.1。工具源码不包含在 CE npm 包中，不增加 CE 核心依赖。
+仓库另提供 [CE → Ovis](https://github.com/zieglar/pi-packages-dev/blob/main/tools/ce-ovis-desktop/README.md) 和 [Pi → ChatGPT 唤醒](https://github.com/zieglar/pi-packages-dev/blob/main/tools/ce-chatgpt-wake/README.md)。这些 macOS 操作工具不包含在 npm 制品中。本地整合版 0.3.1-daily.1 保留 CE 0.3.0 Hooks 并加入已验收的 Daily UX，身份与原发布 0.3.0 制品不同。
 
 唤醒通知只携带固定指令与消息标识，实际任务仍在 CE 中。每项集成都要求明确授权目标窗口及独立测试目录；已运行的 Tunnel Client 会使测试拒绝启动，请先按正常流程 Stop 并确认 STOPPED，再安排单独测试窗口。配置、停止与清理流程及既有 E2E 证据范围见各工具 README。
 
@@ -66,7 +66,7 @@ ACK 只记录接收回执，不证明送达、已读、处理或任务完成。C
 
 - [Native 管理](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/native-management.zh-CN.md)与 [Native SQLite](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/native-sqlite.zh-CN.md)。
 - [Tunnel 设置与排障](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/tunnel-setup.zh-CN.md)。
-- [多 Session](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/multi-session-usage.zh-CN.md)、[Pi 工具](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/pi-extension/README.zh-CN.md)、[ACK 契约](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/delivery-ack-contract.zh-CN.md)。
+- [多 Session](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/multi-session-usage.zh-CN.md)、[Pi 工具](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/pi-extension/README.zh-CN.md)、[本地 Hook](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/hooks.zh-CN.md)、[ACK 契约](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/delivery-ack-contract.zh-CN.md)。
 - [运维与源码开发](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/operations.zh-CN.md)。预构建 npm 安装无需仓库或编译器。
 - [独立 Host / tarball 安装](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/independent-install.zh-CN.md)，提供当前0.2.1 替代路线，单独保留历史0.2.0 记录。
 - [架构](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/architecture.zh-CN.md)、[存储安全](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/storage-security.zh-CN.md)、[双语文档索引](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/documentation.zh-CN.md)。

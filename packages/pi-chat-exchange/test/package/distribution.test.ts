@@ -14,7 +14,7 @@ afterEach(() => { for (const path of fixtures.splice(0)) rmSync(path, { recursiv
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "ce-distribution-"));
   fixtures.push(dir);
-  for (const path of ["package.json", ".gitignore", "README.md", "README.zh-CN.md", "CHANGELOG.md", "LICENSE", "pi-extension", "dist", "native", "scripts", "docs"])
+  for (const path of ["package.json", ".gitignore", "README.md", "README.zh-CN.md", "CHANGELOG.md", "LICENSE", "pi-extension", "dist", "native", "scripts", "docs", "skills"])
     if (existsSync(join(root, path))) cpSync(join(root, path), join(dir, path), { recursive: true, dereference: false });
   return dir;
 }
@@ -104,7 +104,7 @@ it("native pack carries the runtime closure and no author/private state", () => 
 });
 it("ships only the English basic README, LICENSE, runtime and metadata", () => {
   const files = pack(fixture());
-  expect(files.filter((p) => p.endsWith(".md"))).toEqual(["package/README.md"]);
+  expect(files.filter((p) => p.endsWith(".md"))).toEqual(["package/README.md", "package/skills/ce-hook-script/SKILL.md"]);
   expect(files.some((p) => p.startsWith("package/docs/"))).toBe(false);
   expect(files).toContain("package/package.json");
 });

@@ -9,7 +9,7 @@ Users install the official latest stable Tunnel Client. The pinned PR version is
 | 0.0.16 | Historical local lifecycle and manual bidirectional Cloud VERIFIED | Original RC source; macOS arm64; not proof for newer client or modified source |
 | 0.0.17 | NOT_VERIFIED | No inference from neighboring versions |
 | 0.0.18 | NOT_VERIFIED | No inference from neighboring versions |
-| 0.0.19 | COMPAT-03 lifecycle and manual bidirectional Cloud VERIFIED | COMPAT-02 source; macOS arm64; real namespaced Cloud NOT_VERIFIED |
+| 0.0.19 | Historical CE 0.2.2 COMPAT-03 and CE 0.3.0 A-group manual bidirectional Cloud VERIFIED; scoped local lifecycle qualification | Exact runtime records only; macOS arm64 legacy Cloud; B uses isolated loopback Client tests, C reuses actual Pi/MCP and policy tests; real namespaced Cloud NOT_VERIFIED |
 
 Statuses are `VERIFIED`, `FAILED`, `NOT_VERIFIED`, `BLOCKED`. A `VERIFIED` lane must include its correct evidence kind and a repository-relative sanitized evidence file. Imported evidence includes source-artifact hashes, message/receipt identifiers and cleanup outcomes. It excludes Tunnel/organization IDs, credentials, payloads, private configuration, machine-local paths and raw runtime logs. The original full evidence remains operator-managed; the repository summary is reviewed evidence, not a cryptographic proof that a human performed Cloud testing.
 

@@ -2,7 +2,7 @@
 
 # Restore a configured CE session
 
-This guide covers daily connect/disconnect and persistent startup authorization (HANDOFF-CE-PERSISTENT-AUTH-01). Load an extension containing these changes first: editing this checkout does not update installed CE 0.3.0. Repository metadata remains the historical 0.2.2 candidate; this change does not bump versions, publish, or replace the installed package.
+This guide covers the local 0.3.1-daily.1 integration for HANDOFF-CE-DAILY-INTEGRATION-01: published CE 0.3.0 Hooks plus Connect/Disconnect, persistent startup permission and TUI improvements. It is a locally built artifact, not the original npm 0.3.0 release. Editing source does not update an existing installation; verify the installed path and artifact identity separately.
 
 ## Configure once
 
