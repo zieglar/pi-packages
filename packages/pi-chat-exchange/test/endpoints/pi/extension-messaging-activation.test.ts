@@ -154,7 +154,7 @@ describe("explicit current-session messaging activation over real isolated Host/
     await h.activate();
     expect(seam.confirm).toHaveBeenCalledTimes(1); expect(h.mapping()?.endpointId).toBe("pi/main"); expect(counts()).toMatchObject({ sessions: 1, owners: 1 });
     expect(Object.keys(h.mapping()!).sort()).toEqual(["endpointId", "exchangeId", "participantId", "sessionId"]);
-    expect(h.notices()).toContain("Pi messaging bound"); expect(h.notices()).toContain("not real Gate evidence");
+    expect(h.notices()).toContain("Pi messaging bound"); expect(h.notices()).toContain("transport adoption remains unverified"); expect(h.notices()).toContain("not delivery evidence");
     const before = counts(); const mapping = h.mapping(); await h.activate();
     expect(counts()).toEqual(before); expect(h.mapping()).toEqual(mapping); // same live authority, no provisioning
     await h.shutdown(); expect(counts().owners).toBe(0);
@@ -347,13 +347,19 @@ describe("explicit current-session deactivation", () => {
   });
 });
 
-it.each(["absent-profile", "nonmessaging-profile", "explicit"] as const)("standalone %s source deactivates normally without requiring generated configuration", async source => {
+it.each(["nonmessaging-profile", "explicit"] as const)("standalone %s source deactivates normally without requiring generated configuration", async source => {
   const h = await fixture(source);
   if (source === "explicit") fs.writeFileSync(h.profilePath, "irrelevant malformed profile\n", { mode: 0o600 });
   await h.start("startup");
   expect(counts().owners).toBe(1); const end = vi.spyOn(seam.hosts[0]!, "end");
   await h.command("deactivate"); expect(end).toHaveBeenCalledTimes(1); expect(counts().owners).toBe(0);
   expect(h.notices()).toContain("Pi messaging deactivated");
+});
+it("an explicitly selected missing Profile never falls back to the packaged allowlist", async () => {
+  const h = await fixture("absent-profile");
+  await h.start("startup");
+  expect(seam.stores).toHaveLength(0); expect(seam.hosts).toHaveLength(0);
+  expect(h.mapping()).toBeUndefined();
 });
 it("standalone fallback allowlist drift during confirmation refuses before end", async () => {
   const h = await fixture("nonmessaging-profile"); await h.start("startup");

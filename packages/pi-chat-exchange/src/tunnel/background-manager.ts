@@ -173,7 +173,7 @@ import { resolveTunnelClient } from "../runtime/executables.js";
 import { resolveWrapperIdentityEvidence } from "../runtime/wrapper-identity.js";
 import { createBackgroundAuthorizationStore } from "./background-authorization.js";
 import { captureBackgroundAuthorizationScope, type BackgroundAuthorizationScope } from "./background-scope.js";
-import { createHealthCompletionRecorder, type HealthProbeInput } from "./health.js";
+import { createHealthCompletionRecorder, type HealthProbe, type HealthProbeInput } from "./health.js";
 import { checkKeyFileRequirements, childEnvironment } from "./profile.js";
 import {
   DEFAULT_TUNNEL_TIMING, initialTunnelState, nextTunnelState,
@@ -286,6 +286,10 @@ export interface ProfileConfigurationGuard {
   assertIntact(): void;
 }
 
+export type LiveTransportObservation =
+  | { readonly kind: "CONNECTED"; readonly runId: string; readonly managedPid: number; readonly identityConfirmed: true }
+  | { readonly kind: "UNAVAILABLE" };
+
 export interface BackgroundTunnelManager {
   readonly kind: "real-background";
   profilePath(): string;
@@ -303,6 +307,8 @@ export interface BackgroundTunnelManager {
   stop(options?: { readonly graceMs?: number }): Promise<void>;
   /** One real measurement cycle: fresh record read + identity + health probe. */
   refresh(): Promise<BackgroundManagerStatus>;
+  /** Fresh identity/remote-poll evidence only; never reconciles or writes ownership. */
+  observeLiveTransport(): Promise<LiveTransportObservation>;
   status(): BackgroundManagerStatus;
   /** Session teardown: NEVER stops the daemon; releases only this host's view. */
   dispose(): Promise<void>;
@@ -1211,7 +1217,7 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
     }
   };
 
-  const refresh = async (): Promise<BackgroundManagerStatus> => {
+  const refresh = async (observation?: { readonly onVerifiedProbe: (probe: HealthProbe) => void }): Promise<BackgroundManagerStatus> => {
     reloadRecord();
     if (recordCorrupt) {
       note = "ownership record unreadable; refusing to guess";
@@ -1219,6 +1225,9 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
     }
     let current = record;
     if (current === undefined || current.state === "stopped") return status();
+    // Observation must not enter refresh's ledger reconciliation paths.
+    if (observation !== undefined && (current.state !== "running" || current.identityPending === true ||
+      current.termRequestedAt !== undefined)) return status();
     // C-v2-5: establish the run baseline BEFORE any async measurement so a
     // health completion can never predate it.
     const baseline = machineStartedAt(current);
@@ -1230,6 +1239,7 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
     // must never be adopted or signalled).
     if (presence.kind === "absent" || (current.identityPending === true && exitedPendingRuns.has(current.runId))) {
       observeAbsence(current, runTiming, baseline);
+      if (observation !== undefined) return status();
       // R4/C-v2-3: persist ONLY under the lock, re-checking the run inside.
       let release: (() => void) | undefined;
       try {
@@ -1259,6 +1269,7 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
       note = "process inspection unavailable; ownership retained";
       return status();
     }
+    if (observation !== undefined && presence.identity.pid !== current.pid) return status();
     if (current.identityPending === true) {
       // Same re-acquisition rule as terminateOwned (S3-2 + F2: exact membership
       // in the evidence-derived spawn-identity set, never substring).
@@ -1311,12 +1322,32 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
     if (latest.kind !== "ok" || latest.record.runId !== current.runId || latest.record.state === "stopped") {
       return status();
     }
+    if (observation !== undefined && (latest.record.state !== "running" || latest.record.termRequestedAt !== undefined ||
+      latest.record.pid !== current.pid || latest.record.processStartedKey !== current.processStartedKey ||
+      latest.record.commandIdentity !== current.commandIdentity || latest.record.commandIdentityExec !== current.commandIdentityExec)) return status();
     state = nextTunnelState(state, {
       now: now(), runId: current.runId, managedPid: current.pid, processAlive: true,
       userStopped: current.termRequestedAt !== undefined, startedAt: baseline,
       exit: undefined, probe, startupLogSeen: false, externalInstance: false,
     }, runTiming);
+    observation?.onVerifiedProbe(probe);
     return status();
+  };
+
+  const observeLiveTransport = async (): Promise<LiveTransportObservation> => {
+    let health: HealthProbe | undefined;
+    try {
+      const current = await refresh({ onVerifiedProbe: (probe) => { health = probe; } });
+      // This manager supervises remote `run` only (never dev proxy). Require
+      // explicit current polling evidence; CONNECTED alone does not imply it.
+      if (!disposed && current.state === "CONNECTED" && current.running && health?.connectedEligible === true &&
+        health.controlPlanePollObserved === true && typeof current.runId === "string" && current.runId.trim().length > 0 &&
+        current.pid !== undefined && Number.isSafeInteger(current.pid) && current.pid > 0 &&
+        health.completion?.runId === current.runId && health.completion.managedPid === current.pid) {
+        return { kind: "CONNECTED", runId: current.runId, managedPid: current.pid, identityConfirmed: true };
+      }
+    } catch { /* Inspection/probe failure exposes no raw diagnostics or identity. */ }
+    return { kind: "UNAVAILABLE" };
   };
 
   const start = (expectedProfileSha256?: string): Promise<BackgroundStartResult> => {
@@ -1755,6 +1786,7 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
     }),
     stop,
     refresh,
+    observeLiveTransport,
     status,
     runId: () => (record !== undefined && record.state !== "stopped" ? record.runId : undefined),
     async dispose(): Promise<void> {

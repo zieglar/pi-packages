@@ -28,6 +28,11 @@
 import { runSessionConfiguration } from "./multi-session-commands.js";
 import { prepareSessionOnboarding, SessionOnboardingRefusal } from "./session-onboarding.js";
 import { PiMultiSessionRuntime, runtimeEnvironment } from "./multi-session-runtime.js";
+import { PiSessionPolicy, isLivePolicy, type SelectedSessionPolicy } from "./live-session-runtime.js";
+import { createLiveSessionMigration } from "../dist/tunnel/live-session-migration.js";
+import { createBackgroundAuthorizationStore } from "../dist/tunnel/background-authorization.js";
+import { readLivePolicy } from "../dist/tunnel/live-session-policy.js";
+import { readLiveSelectedSessionPolicy, projectLivePiRegistration } from "./live-session-profile.js";
 import { readSelectedMultiSessionPolicy, projectPiRegistration, effectivePiHookRules, type MultiSessionSnapshot } from "../dist/tunnel/multi-session-policy.js";
 import { runSetupWizard, presentTunnelStatus } from "../dist/tunnel/setup-ui.js";
 import { presentCeStatus } from "../dist/tunnel/status-ui.js";
@@ -36,6 +41,8 @@ import { piTunnelKeyProtocol } from "./tui-keys.js";
 import { createTunnelProfileSetup, readGeneratedPiAllowlist } from "../dist/tunnel/setup.js";
 import { resolveTunnelProfilePath } from "../dist/tunnel/background-manager.js";
 import { validMessagingStore } from "../dist/tunnel/messaging-config.js";
+import { observeLiveConnection } from "../dist/tunnel/live-connection-status.js";
+import { readEndpointOwnerObservation } from "../dist/storage/ownership.js";
 import { runTunnelManagerUi, type TunnelManagerUiProjection, type TunnelManagerUiOutcome } from "../dist/tunnel/manager-ui.js";
 import { isDeepStrictEqual } from "node:util";
 import { existsSync, readFileSync } from "node:fs";
@@ -636,11 +643,19 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   };
   // Factory captures grants once; later publications may only narrow them.
   // CE_ALLOWLIST keeps its explicit legacy precedence.
-  let multiPolicy: MultiSessionSnapshot | undefined;
+  let multiPolicy: SelectedSessionPolicy | undefined;
+  let selectedPolicyInvalid = false;
+  let explicitlySelectedProfile = Boolean(process.env.CE_TUNNEL_PROFILE);
   if (!process.env.CE_ALLOWLIST) {
-    try { multiPolicy = readSelectedMultiSessionPolicy(resolveTunnelProfilePath({ env: process.env })); } catch { /* legacy loader also refuses malformed selected pairs */ }
+    try {
+      explicitlySelectedProfile ||= createBackgroundAuthorizationStore().readSelection().kind === "valid";
+      const profilePath = resolveTunnelProfilePath({ env: process.env });
+      multiPolicy = readLiveSelectedSessionPolicy(profilePath, readFileSync(profilePath, "utf8"));
+      if (multiPolicy === undefined) { try { multiPolicy = readSelectedMultiSessionPolicy(profilePath); } catch { /* existing legacy loader validates its own selected pair */ } }
+    } catch (error) { selectedPolicyInvalid = (error as NodeJS.ErrnoException).code !== "ENOENT" || explicitlySelectedProfile; }
   }
-  let allowlist = multiPolicy === undefined ? loadAllowlist() : {} as AllowlistFile;
+  let multiRuntime: PiSessionPolicy | undefined;
+  let allowlist = !selectedPolicyInvalid && multiPolicy === undefined ? loadAllowlist() : {} as AllowlistFile;
   let notificationConfig = inboxNotificationConfig(allowlist);
   let hookConfig = loadedHookConfiguration(allowlist);
   let hookRunner: CeHookRunner | undefined;
@@ -660,7 +675,6 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     hookClose = task;
     return task;
   };
-  let multiRuntime: PiMultiSessionRuntime | undefined;
   let host: CeSessionHost | undefined;
   let currentEndpoint: string | undefined;
   let inboxBinding: { readonly piSessionId: string; readonly endpointId: string } | undefined;
@@ -722,7 +736,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           if (loaded === undefined || runtime === undefined || generation === undefined) return false;
           if (event !== undefined && (event.sender.adapter !== "pi" || event.sender.endpointId !== generation.endpointId)) return false;
           try {
-            return runtime.run("hook", () => effectivePiHookRules(loaded, readSelectedMultiSessionPolicy(loaded.profilePath), generation!.piSessionId).some(candidate => isDeepStrictEqual(candidate, rule)));
+            return runtime.run("hook", () => (isLivePolicy(loaded) ? (multiRuntime!.registration().hooks ?? []) : effectivePiHookRules(loaded, readSelectedMultiSessionPolicy(loaded.profilePath), generation!.piSessionId)).some(candidate => isDeepStrictEqual(candidate, rule)));
           } catch { return false; }
         } }),
       });
@@ -1090,7 +1104,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     const piSessionId = ctx.sessionManager.getSessionId();
     if (multiPolicy !== undefined) {
       // Project only this trusted runtime, never all manifest registrations.
-      try { allowlist = projectPiRegistration(multiPolicy, piSessionId) as AllowlistFile; }
+      try { allowlist = (isLivePolicy(multiPolicy) ? projectLivePiRegistration(multiPolicy, piSessionId) : projectPiRegistration(multiPolicy, piSessionId)) as AllowlistFile; }
       catch { allowlist = {}; }
       notificationConfig = inboxNotificationConfig(allowlist);
       host = undefined;
@@ -1099,14 +1113,16 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     const continueConnect = async (): Promise<void> => {
       if (event.reason !== "reload") return;
       const request = ctx.sessionManager.getBranch().findLast(entry => entry.type === "custom" && entry.customType === "ce-connect-reload")?.data as
-        { requestId?: unknown; piSessionId?: unknown; profilePath?: unknown; revision?: unknown; requestedAt?: unknown; environment?: unknown } | undefined;
+        { requestId?: unknown; piSessionId?: unknown; profilePath?: unknown; revision?: unknown; policyDigest?: unknown; requestedAt?: unknown; environment?: unknown } | undefined;
       if (request === undefined || request === null || typeof request !== "object" || typeof request.requestId !== "string" || request.piSessionId !== piSessionId) return;
       // Full append history is deny-only: branch rollback must not revive a consumed request.
       const history = ctx.sessionManager.getEntries?.();
       if (history === undefined || history.some(entry => entry.customType === "ce-connect-reload-consumed" &&
           (entry.data as { requestId?: unknown } | undefined)?.requestId === request.requestId)) return;
       pi.appendEntry("ce-connect-reload-consumed", { requestId: request.requestId });
-      if (request.profilePath !== multiPolicy?.profilePath || request.revision !== multiPolicy?.revision ||
+      const reloadIdentityMatches = multiPolicy !== undefined && (isLivePolicy(multiPolicy)
+        ? request.policyDigest === multiPolicy.digest : request.profilePath === multiPolicy.profilePath && request.revision === multiPolicy.revision);
+      if (!reloadIdentityMatches ||
           request.environment !== runtimeEnvironment() || typeof request.requestedAt !== "number" ||
           Date.now() < request.requestedAt || Date.now() - request.requestedAt > 120_000) {
         notify(ctx, "ce-tunnel: Endpoint policy changed during reload; run Connect again to review the current configuration.", "warning");
@@ -1140,7 +1156,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         const old = inherited as Record<string, unknown>;
         return proof.piSessionId === piSessionId && ["endpointId", "participantId", "sessionId", "exchangeId"].every(key => typeof old[key] === "string" && proof[key] === old[key]);
       })) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID"); // explicit activation after confirmed end
-      if (multiPolicy !== undefined) multiRuntime = new PiMultiSessionRuntime(multiPolicy, piSessionId, () => ctx.sessionManager.getSessionId(), event.reason === "reload", inherited);
+      if (multiPolicy !== undefined) multiRuntime = new PiSessionPolicy(multiPolicy, piSessionId, () => ctx.sessionManager.getSessionId(), event.reason === "reload", inherited);
       const mapping: CeMappingIdentifiers = withHost("begin", () =>
         inherited !== undefined
           ? startedHost.resume(endpointId, inherited)
@@ -1575,7 +1591,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     { value: "authorize", description: "synthetic Keychain authorization in the explicit offline harness only" },
     { value: "permission", description: "status/grant/revoke persistent OS-user background startup permission" },
     { value: "connect", description: "restore the registered current Pi session and explicitly connect existing transport" },
-    { value: "disconnect", description: "release current Pi messaging and stop owned transport; preserve registration/history" },
+    { value: "disconnect", description: "release current Pi messaging; live mode retains shared transport and registration/history" },
     { value: "start", description: "start the real background tunnel client (or the offline simulator under CE_TUNNEL_OFFLINE_TEST=1)" },
     { value: "stop", description: "stop the tunnel instance this manager provably owns (one SIGTERM, verified exit)" },
     { value: "migrate", description: "repair a saved real profile in place (drop rejected admin_ui keys + repoint the mcp node) without re-entering the credential" },
@@ -1585,7 +1601,10 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     { value: "status", description: "show CE segment plus measured tunnel state (STOPPED/STARTING/CONNECTED/DEGRADED/UNKNOWN)" },
     { value: "sessions", description: "list selected configured active Endpoint IDs; MCP loaded policy is unknown" },
     { value: "register", description: "register <endpoint> [--payload-read] [--ack] for this real Pi Session only, with confirmation" },
-    { value: "revoke", description: "revoke <exact-endpoint> with confirmation (STOPPED transport only)" },
+    { value: "reauthorize", description: "explicitly reauthorize this native Session's exact revoked live Endpoint with a new epoch" },
+    { value: "liveSessions", description: "show this live Session's own Endpoint and grants" },
+    { value: "migrate-live", description: "explicit offline STOPPED migration to live mode; no automatic conversion" },
+    { value: "revoke", description: "revoke <exact-endpoint> with confirmation; live chain or STOPPED legacy publication" },
     { value: "convert", description: "explicit legacy conversion after acknowledgement that old runtimes are stopped/updated" },
     { value: "help", description: "list the subcommands and their limits" },
   ];
@@ -1638,9 +1657,10 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         const setup = createTunnelProfileSetup({ env: process.env, manager });
         const selected = setup.inspect();
         const piSessionId = ctx.sessionManager.getSessionId();
-        let configuredMulti: MultiSessionSnapshot | undefined;
+        let configuredMulti: SelectedSessionPolicy | undefined;
         if (!process.env.CE_ALLOWLIST) {
-          try { configuredMulti = readSelectedMultiSessionPolicy(selected.profilePath); } catch { /* verified legacy path below */ }
+          try { configuredMulti = readLiveSelectedSessionPolicy(selected.profilePath, readFileSync(selected.profilePath, "utf8")); } catch { /* verified legacy path below */ }
+          try { configuredMulti ??= readSelectedMultiSessionPolicy(selected.profilePath); } catch { /* verified legacy path below */ }
         }
         const registration = configuredMulti?.manifest.registrations.find(r => r.runtimeSessionId === piSessionId && r.status === "active");
         const facts = configuredMulti === undefined ? selected.messaging : registration === undefined ? undefined : {
@@ -1658,7 +1678,8 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
             !facts.exchangeNamespace || !facts.exchangeIdempotencyKey) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
         const endpointId = facts.piEndpointId;
         const readDocument = () => configuredMulti === undefined ? readGeneratedPiAllowlist(selected.profilePath)
-          : projectPiRegistration(readSelectedMultiSessionPolicy(selected.profilePath), piSessionId);
+          : configuredMulti !== undefined && isLivePolicy(configuredMulti) ? projectLivePiRegistration(readLivePolicy(configuredMulti.ref), piSessionId)
+            : projectPiRegistration(readSelectedMultiSessionPolicy(selected.profilePath), piSessionId);
         const document = readDocument();
         if (document === undefined) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
         const policy = JSON.stringify(document);
@@ -1722,7 +1743,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           notify(ctx, "ce-tunnel: previous Pi binding released (if locally held); reload the extension to load the selected policy, then explicitly Activate current session; no target binding created", "warning");
           return;
         }
-        await manager.withProfileConfigurationLock(() => {
+        const activate = (): void => {
           assertCurrent(); // no await between final policy fence and Host writes
           if (generation !== undefined) {
             if (generation.stopping || generation.endpointId !== endpointId) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
@@ -1747,7 +1768,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           }
           targetState = { piSessionId, endpointId, ctx, timer: undefined, earlyTimer: undefined, renewal: undefined, stopping: false, failure: undefined };
           const targetHost = getHost(); // existing canonical Store before acquiring the local guard
-          if (multiPolicy !== undefined) multiRuntime = new PiMultiSessionRuntime(multiPolicy, piSessionId, () => ctx.sessionManager.getSessionId(), false, undefined);
+          if (multiPolicy !== undefined) multiRuntime = new PiSessionPolicy(multiPolicy, piSessionId, () => ctx.sessionManager.getSessionId(), false, undefined);
           const mapping = withHost("begin", () => targetHost.beginSession(endpointId, { requireUnowned: true }));
           generation = targetState;
           pi.appendEntry("ce-mapping", mapping); // identifiers only; history retained
@@ -1758,8 +1779,10 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           startHeartbeat(targetState);
           advisoryState = notificationConfig === undefined ? undefined :
             { generation: Object.freeze({}), watermark: 0, inFlight: false, failureLatched: false };
-          notify(ctx, "ce-tunnel: Pi messaging bound; restart the Tunnel separately (Stop then Start); not real Gate evidence; ACK is reception only");
-        });
+          notify(ctx, "ce-tunnel: Pi messaging bound; transport adoption remains unverified; not delivery evidence; ACK is reception only");
+        };
+        if (configuredMulti !== undefined && isLivePolicy(configuredMulti)) activate();
+        else await manager.withProfileConfigurationLock(activate);
       } catch (error) {
         if (targetState !== undefined) {
           failLifecycle(targetState, error); // uncertain provisioning/persistence is latched
@@ -2275,11 +2298,13 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         const profilePath = resolveTunnelProfilePath({ env: process.env });
         // A cached Manager and a factory-loaded policy may not silently change targets.
         if (environment !== loadedRuntimeEnvironment || tunnelManagerProfilePath !== profilePath ||
-            (multiPolicy !== undefined && multiPolicy.profilePath !== profilePath)) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+            (multiPolicy !== undefined && !isLivePolicy(multiPolicy) && multiPolicy.profilePath !== profilePath)) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
         const profile = readFileSync(profilePath, "utf8");
         if (!connect) {
           if (typeof ctx.ui.confirm !== "function") throw new TunnelRefusal("CE_TUNNEL_INPUT_UNAVAILABLE");
-          const confirmed = await ctx.ui.confirm("Disconnect current Pi and shared Tunnel?",
+          const liveDisconnect = multiPolicy !== undefined && isLivePolicy(multiPolicy);
+          const confirmed = await ctx.ui.confirm(liveDisconnect ? "Disconnect current Pi?" : "Disconnect current Pi and shared Tunnel?",
+            liveDisconnect ? "Release only this Pi session binding. The selected shared Tunnel keeps running; other registrations, Owners and history remain. Already admitted operations may finish." :
             "Release only this Pi session binding, and stop the selected profile’s shared Tunnel. This may interrupt transport for other sessions; their Owners, registrations and history remain. Already admitted operations may finish.",
             { signal: controller.signal, timeout: 120_000 });
           current();
@@ -2290,31 +2315,34 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           // Close admission before either independent cleanup phase awaits.
           const released = shutdownCe("daily-disconnect");
           let stopError: unknown;
-          try { await manager.stop(); } catch (error) { stopError = error; }
+          try { if (liveDisconnect) await manager.refresh(); else await manager.stop(); } catch (error) { stopError = error; }
           await released;
           current();
           publishTunnelStatus(ctx);
           const releaseFailure = previous?.failure ?? (startupFailure?.code === "CE_HOST_MAPPING_INVALID" ? undefined : startupFailure);
           if (releaseFailure !== undefined || stopError !== undefined) {
-            notify(ctx, `ce-tunnel: disconnect incomplete; Pi release=${releaseFailure?.code ?? "verified"}; shared tunnel stop=${stopError === undefined ? "verified" : refusalText(stopError)}; CE admission remains closed; inspect status, no automatic retry`, "warning"); return;
+            notify(ctx, `ce-tunnel: disconnect incomplete; Pi release=${releaseFailure?.code ?? "verified"}; ${liveDisconnect ? "shared tunnel observation" : "shared tunnel stop"}=${stopError === undefined ? "verified" : refusalText(stopError)}; CE admission remains closed; inspect status, no automatic retry`, "warning"); return;
           }
           const note = manager.status().note;
-          notify(ctx, `ce-tunnel: disconnected; current Pi binding released and selected shared tunnel stopped; registration/history retained${note === undefined ? "" : `; transport note=${note}`}; other Pi bindings and model/task authority are separate`);
+          notify(ctx, liveDisconnect
+            ? `ce-tunnel: current Pi binding released; shared Tunnel retained; registration/history retained${note === undefined ? "" : `; transport note=${note}`}`
+            : `ce-tunnel: disconnected; current Pi binding released and selected shared tunnel stopped; registration/history retained${note === undefined ? "" : `; transport note=${note}`}; other Pi bindings and model/task authority are separate`);
           return;
         }
         if (multiPolicy !== undefined) {
           const onboarding = await prepareSessionOnboarding(ctx, { profilePath, manager, signal: controller.signal });
           current();
           if (onboarding === "cancelled") return;
-          const selected = readSelectedMultiSessionPolicy(profilePath);
-          const projected = projectPiRegistration(selected, piSessionId);
+          const selected = multiPolicy !== undefined && isLivePolicy(multiPolicy) ? readLivePolicy(multiPolicy.ref) : readSelectedMultiSessionPolicy(profilePath);
+          const projected = isLivePolicy(selected) ? projectLivePiRegistration(selected, piSessionId) : projectPiRegistration(selected, piSessionId);
           if (onboarding === "registered" || !isDeepStrictEqual(projected, allowlist)) {
             if (typeof ctx.reload !== "function") {
               notify(ctx, "ce-tunnel: Endpoint policy is not loaded; this command context cannot reload extensions. Run Connect from an interactive Pi command context.", "warning");
               return;
             }
             // A continuation requests fresh checks; it never carries a grant or Owner.
-            pi.appendEntry("ce-connect-reload", { requestId: randomUUID(), piSessionId, profilePath, revision: selected.revision, requestedAt: Date.now(), environment });
+            pi.appendEntry("ce-connect-reload", { requestId: randomUUID(), piSessionId, profilePath,
+              ...(isLivePolicy(selected) ? { policyDigest: selected.digest } : { revision: selected.revision }), requestedAt: Date.now(), environment });
             reloadRequested = true;
             return;
           }
@@ -2325,7 +2353,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           const permission = manager.authorizationStatus();
           if (permission !== "granted" && permission !== "environment") throw new TunnelRefusal("CE_TUNNEL_BACKGROUND_UNAUTHORIZED");
         };
-        if (generation === undefined) {
+        if (generation === undefined && !(multiPolicy !== undefined && isLivePolicy(multiPolicy))) {
           const transport = await manager.refresh();
           current();
           if (transport.state !== "STOPPED") {
@@ -2354,7 +2382,17 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         configured();
         guardedEndpoint(ctx);
         publishTunnelStatus(ctx);
-        notify(ctx, `ce-tunnel: current Pi endpoint ${endpointId} bound; tunnel=${measured.state} evidence=${measured.evidence}${started.alreadyRunning ? "; existing run retained" : ""}; model availability and business task execution are not measured; not delivery/ACK/completion evidence`);
+        let adoption: "OBSERVED" | "BLOCKED" | "UNVERIFIED" = "UNVERIFIED";
+        let currentTransport: "CONNECTED" | "UNAVAILABLE" = "UNAVAILABLE";
+        if (multiPolicy !== undefined && isLivePolicy(multiPolicy)) {
+          const observed = await observeLiveConnection({ profilePath, manager, targetEndpointId: endpointId, readOwner: config => {
+            const store = openStore({ directory: config.store.directory, filename: config.store.file });
+            try { return readEndpointOwnerObservation(store, config.endpoint, status.exchangeId!); } finally { store.close(); }
+          } });
+          configured(); guardedEndpoint(ctx); adoption = observed.policy; currentTransport = observed.transport;
+        }
+        const readiness = adoption === "OBSERVED" && currentTransport === "CONNECTED" ? "OBSERVED" : adoption === "BLOCKED" ? "BLOCKED" : "UNVERIFIED";
+        notify(ctx, `ce-tunnel: current Pi endpoint ${endpointId} bound; tunnel=${measured.state} evidence=${measured.evidence}; current transport observation=${currentTransport}; MCP policy adoption=${adoption}; messaging readiness observation=${readiness}${adoption === "BLOCKED" ? "; MCP_OPERATION_BLOCKED" : ""}${started.alreadyRunning ? "; existing run retained" : ""}; model availability and business task execution are not measured; not delivery/ACK/completion evidence`);
       } catch (error) {
         if (controller.signal.aborted) return;
         if (error instanceof SessionOnboardingRefusal) {
@@ -2444,7 +2482,28 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           notify(ctx, installationDiagnosticMessage(diagnoseInstallation({ env: process.env }))); return;
         }
         if (sub === "deactivate") { await runMessagingDeactivation(ctx); return; }
-        if (["sessions", "register", "revoke", "convert"].includes(sub)) {
+        if (sub === "migrate-live") {
+          try {
+            assertNativeReadyForTunnel();
+            if (generation !== undefined || activationTask !== undefined || setupTask !== undefined || managerUiTask !== undefined || dailyTask !== undefined || process.env.CE_ALLOWLIST) throw new TunnelRefusal("CE_TUNNEL_MANAGER_BUSY");
+            const manager = activeManager();
+            if (!("kind" in manager) || typeof ctx.ui.confirm !== "function") throw new TunnelRefusal("CE_TUNNEL_INPUT_UNAVAILABLE");
+            const profilePath = resolveTunnelProfilePath({ env: process.env });
+            const migration = createLiveSessionMigration({ profilePath, manager });
+            const expectedRevision = migration.revision();
+            const runtime = ctx.sessionManager.getSessionId(); const environment = runtimeEnvironment();
+            if (!await ctx.ui.confirm("Migrate selected profile to live sessions?", "Offline migration requires verified STOPPED transport, both MCP global payload-read/ACK opt-ins already enabled, and no held local binding. All legacy writers must be stopped or updated. Grants and history are retained; no transport is started. Reload explicitly afterwards.")) return;
+            if (ctx.sessionManager.getSessionId() !== runtime || runtimeEnvironment() !== environment || generation !== undefined) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+            const result = await migration.migrate({ expectedRevision, confirm: true });
+            notify(ctx, `ce-tunnel: live migration ${result.durability}; reload explicitly. No transport or messaging readiness is claimed.`, "warning");
+          } catch (error) {
+            notify(ctx, error instanceof TunnelRefusal && error.field === "messaging.liveMigration.globalCeiling"
+              ? "ce-tunnel: MCP global opt-in unavailable; enable payload-read and ACK through explicit offline setup before migration. Nothing was published."
+              : `ce-tunnel: live migration refused ${refusalText(error)}; no automatic retry, rollback or transport action`, "warning");
+          }
+          return;
+        }
+        if (["sessions", "liveSessions", "register", "reauthorize", "revoke", "convert"].includes(sub)) {
           if (sub === "convert" && generation !== undefined) {
             notify(ctx, "ce-tunnel: conversion refused while this legacy binding is held; close it first and run Convert from an unbound Pi Session. All other legacy bindings/runtimes must also be stopped or updated.", "warning"); return;
           }
@@ -2488,7 +2547,9 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
                   } catch { /* Keep the original refusal if inspection fails. */ }
                 }
               }
-              if (legacy) {
+              if (error instanceof TunnelRefusal && error.field === "messaging.livePolicy.globalCeiling") {
+                notify(ctx, "ce-tunnel: MCP global opt-in unavailable; requested payload-read or ACK exceeds the configured ceiling. Enable the required opt-in through explicit offline setup. No transport action or Session grant change occurred.", "warning");
+              } else if (legacy) {
                 notify(ctx, "ce-tunnel: configuration refused CE_TUNNEL_PROFILE_INVALID; selected profile is a legacy single-session registration — run /ce-tunnel convert to create the multi-session generation first (explicit confirmation required); no automatic conversion is performed", "warning");
               } else if (alreadyMapped) {
                 notify(ctx, `ce-tunnel: configuration refused ${refusalText(error)}; this Pi Session is already registered to a different Endpoint in the selected configuration — one runtime Session maps to exactly one Endpoint and reassignment is rejected. Use /ce-tunnel sessions to see the configured Endpoints, then either explicitly Revoke that exact Endpoint first or register from a different Pi Session. Transport state is not the cause; nothing was stopped, started, or published.`, "warning");
@@ -2543,7 +2604,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
               `deactivate = confirm normal release of this current Pi binding only, preserving registration/history and transport; explicitly activate afterward. ` +
               `doctor = read-only independent host/MCP child qualification and client metadata admission; no client execution, configuration/Store writes or transport operations. ` +
               `status = separate CE segment plus the measured tunnel state (real background or offline simulator). ` +
-              `sessions = exact selected active Endpoints, not loaded MCP evidence; register <endpoint> [--payload-read] [--ack] = current real Session only; revoke <endpoint> = exact stable registration; convert = separate explicit legacy conversion with old-runtime acknowledgement. ` +
+              `sessions = exact selected active Endpoints, not loaded MCP evidence; liveSessions = own Endpoint only; register <endpoint> [--payload-read] [--ack] = current real Session only; revoke <endpoint> = exact stable registration; migrate-live = separate STOPPED confirmation, then explicit reload; convert = separate explicit legacy conversion with old-runtime acknowledgement. ` +
               `Registration requires verified STOPPED transport and confirmations; never stops/starts it. Reload Pi explicitly; Stop then Start separately loads MCP grants. Shared ChatGPT inbox is not conversation isolation. ` +
               `Transport only: never delivery, ACK, reconciliation or completion evidence. ` +
               `The client reads its key file via the profile's file: reference; lifecycle/status never read existing key contents. Configured != Connected.`,

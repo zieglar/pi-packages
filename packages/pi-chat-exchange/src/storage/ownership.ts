@@ -14,6 +14,8 @@ import {
   clock,
   hook,
   readParticipantRow,
+  readParticipantByEndpoint,
+  readMembershipRow,
   refuse,
   runOwned,
   type ClockSeam,
@@ -180,11 +182,14 @@ function leaseExpiry(now: string, ttlSeconds: number): string {
 // Durable rows (strict validation; inconsistency is refused, never repaired)
 // ---------------------------------------------------------------------------
 
+/** Unparsed SQL output: each row consumer below applies its domain parser. */
+type UnparsedOwnershipRow = Record<string, string | number | bigint | Uint8Array | null> | undefined;
+
 /** Satisfied by the owned-transaction handle and by a raw read connection. */
 interface QueryHandle {
   prepare(sql: string): {
-    get(...parameters: string[]): unknown;
-    all(...parameters: string[]): unknown[];
+    get(...parameters: string[]): UnparsedOwnershipRow;
+    all(...parameters: string[]): UnparsedOwnershipRow[];
   };
 }
 
@@ -860,10 +865,35 @@ function readSnapshot<T>(store: DurableStore, body: (handle: QueryHandle) => T):
   if (db.isTransaction) throw new Error("ownership reads cannot run inside an active transaction");
   db.exec("BEGIN");
   try {
+    // SAFETY: the SQLite connection supplies prepare/get/all; row consumers
+    // validate unparsed SQL values before constructing domain records.
     return body(db as unknown as QueryHandle);
   } finally {
     if (db.isTransaction) db.exec("ROLLBACK");
   }
+}
+
+/** Private advisory aggregate. Callers filter authorized labels before entry.
+ * All parsers share one deferred snapshot and one clock; no authority is issued. */
+export function readEndpointObservations(
+  store: DurableStore,
+  exchangeId: string,
+  endpoints: readonly { readonly adapter: string; readonly endpointId: string }[],
+  seams: ClockSeam = {},
+) {
+  return readSnapshot(store, (handle) => {
+    const observedAt = clock(seams);
+    const targets = endpoints.map((endpoint) => {
+      // This lookup uses the existing validated parser on the same connection.
+      const participant = readParticipantByEndpoint(store, endpoint.adapter, endpoint.endpointId);
+      const membership = participant === undefined ? undefined : readMembershipRow(handle, exchangeId, participant.participantId);
+      const ownership = participant === undefined ? undefined : loadOwnershipState(handle, participant.participantId).ownership;
+      const lease = ownership === undefined ? undefined : evaluateLease(ownership, observedAt);
+      const active = lease === "CLOCK_REGRESSION" ? "UNKNOWN" as const : lease === "ACTIVE" ? "TRUE" as const : "FALSE" as const;
+      return Object.freeze({ ...endpoint, joined: membership !== undefined, active });
+    });
+    return Object.freeze({ observedAt, targets: Object.freeze(targets) });
+  });
 }
 
 /** One Participant–Session binding, or undefined. Detached rows are not
@@ -907,6 +937,33 @@ export function readSessionBindings(store: DurableStore, participantId: unknown)
 export function readCurrentOwnership(store: DurableStore, participantId: unknown): OwnershipRecord | undefined {
   const pid = requireParticipantId(participantId, "participantId");
   return readSnapshot(store, (handle) => loadOwnershipState(handle, pid).ownership);
+}
+
+/** Private coherent Owner/lease observation; advisory only, never authorization. */
+export function readOwnershipObservation(store: DurableStore, participantId: unknown, seams: ClockSeam = {}): {
+  readonly ownership: OwnershipRecord | undefined; readonly lease: LeaseStatus;
+} {
+  const pid = requireParticipantId(participantId, "participantId");
+  return readSnapshot(store, handle => {
+    const now = clock(seams);
+    const { ownership } = loadOwnershipState(handle, pid);
+    return Object.freeze({ ownership, lease: ownership === undefined ? "UNOWNED" : evaluateLease(ownership, now) });
+  });
+}
+
+/** Private fixed-endpoint view for a live transport observation. The Exchange
+ * comes from the caller's existing mapping; this read creates no membership. */
+export function readEndpointOwnerObservation(store: DurableStore, endpoint: { readonly adapter: string; readonly endpointId: string }, exchangeId: string, seams: ClockSeam = {}) {
+  return readSnapshot(store, handle => {
+    const now = clock(seams);
+    const participant = readParticipantByEndpoint(store, endpoint.adapter, endpoint.endpointId);
+    if (participant === undefined || readMembershipRow(handle, exchangeId, participant.participantId) === undefined) return undefined;
+    const { ownership } = loadOwnershipState(handle, participant.participantId);
+    if (ownership === undefined) return undefined;
+    return Object.freeze({ endpointId: endpoint.endpointId, registered: true, participantId: participant.participantId,
+      sessionId: ownership.sessionId, exchangeId, fencingToken: ownership.fencingToken,
+      lease: evaluateLease(ownership, now), leaseExpiresAt: ownership.expiresAt });
+  });
 }
 
 /** Highest fencing token ever allocated for the Participant; 0 when none. */

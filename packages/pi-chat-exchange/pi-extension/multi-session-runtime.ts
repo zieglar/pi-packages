@@ -1,11 +1,15 @@
-/** Pi composition only. Deny-only policy + local process exclusion, never CE authority. */
 import { isDeepStrictEqual } from "node:util";
 import { CeHostRefusal, type CeMappingIdentifiers } from "../dist/endpoints/pi/session-host.js";
 import { intersectRegistration, readSelectedMultiSessionPolicy, type MultiSessionSnapshot } from "../dist/tunnel/multi-session-policy.js";
+import { type LiveSnapshot, type LiveReaderWatermark } from "../dist/tunnel/live-session-policy.js";
+
+import { readRuntimeLivePolicy } from "./live-session-profile.js";
 import { acquireSessionProcessMutex, type SessionProcessMutex } from "../dist/tunnel/session-process-mutex.js";
 
+export type RuntimePolicy = MultiSessionSnapshot | LiveSnapshot;
+const live = (policy: RuntimePolicy): policy is LiveSnapshot => "ref" in policy;
 interface Transfer {
-  readonly loaded: MultiSessionSnapshot;
+  readonly loaded: RuntimePolicy;
   readonly mapping: CeMappingIdentifiers;
   readonly mutex: SessionProcessMutex;
 }
@@ -21,23 +25,26 @@ export function runtimeEnvironment(): string {
     process.env.CE_LEASE_TTL_SECONDS, process.env.CE_TUNNEL_PROFILE]);
 }
 export class PiMultiSessionRuntime {
-  readonly #loaded: MultiSessionSnapshot;
+  readonly #loaded: RuntimePolicy;
   readonly #runtimeId: string;
   readonly #currentRuntime: () => string;
   readonly #environment: string;
   readonly #key: string;
   readonly #mutex: SessionProcessMutex;
-  constructor(loaded: MultiSessionSnapshot, runtimeId: string, currentRuntime: () => string, reload: boolean, mapping: unknown) {
+  readonly #currentPolicy: () => RuntimePolicy;
+  constructor(loaded: RuntimePolicy, runtimeId: string, currentRuntime: () => string, reload: boolean, mapping: unknown, currentPolicy?: () => RuntimePolicy) {
     this.#loaded = loaded; this.#runtimeId = runtimeId; this.#currentRuntime = currentRuntime; this.#environment = runtimeEnvironment();
-    const r = intersectRegistration(loaded, readSelectedMultiSessionPolicy(loaded.profilePath), runtimeId);
+    const watermark: LiveReaderWatermark = live(loaded) ? { sequence: loaded.sequence, digest: loaded.digest, policyId: loaded.ref.policyId } : {};
+    this.#currentPolicy = currentPolicy ?? (() => live(loaded) ? readRuntimeLivePolicy(loaded, watermark) : readSelectedMultiSessionPolicy(loaded.profilePath));
+    const r = liveRegistration(loaded, this.#currentPolicy(), runtimeId);
     this.#key = JSON.stringify([loaded.manifest.store, r.endpointId, runtimeId]);
     if (state.failed.has(this.#key)) throw policyDenied();
     const pending = state.transfers.get(this.#key);
     if (pending !== undefined) {
-      if (!reload || !isDeepStrictEqual(mapping, pending.mapping)) throw policyDenied();
-      // Exact Store/Exchange/Tunnel + registration epoch, not generation digest:
-      // adding an unrelated B cannot disable A's valid transfer.
-      intersectRegistration(pending.loaded, loaded, runtimeId);
+      if (!reload || !isDeepStrictEqual(mapping, pending.mapping) || live(pending.loaded) !== live(loaded)) throw policyDenied();
+      // Identity/epoch continuity; permission generations are checked again on each call.
+      if (live(pending.loaded) && live(loaded)) assertLiveRegistrationContinuity(pending.loaded, loaded, runtimeId);
+      else if (!live(pending.loaded) && !live(loaded)) intersectRegistration(pending.loaded, loaded, runtimeId);
       pending.mutex.assertOwnership();
       this.#mutex = pending.mutex;
       state.transfers.delete(this.#key); // one consumer, no second handle
@@ -49,7 +56,7 @@ export class PiMultiSessionRuntime {
     return this.#mutex.run(() => {
       try {
         if (runtimeEnvironment() !== this.#environment || this.#currentRuntime() !== this.#runtimeId) throw policyDenied();
-        const r = intersectRegistration(this.#loaded, readSelectedMultiSessionPolicy(this.#loaded.profilePath), this.#runtimeId);
+        const r = liveRegistration(this.#loaded, this.#currentPolicy(), this.#runtimeId);
         if ((kind === "payload" && !r.payloadRead) || (kind === "ack" && !r.ack)) throw policyDenied();
       } catch { throw policyDenied(); }
       return operation();
@@ -66,10 +73,40 @@ export class PiMultiSessionRuntime {
   }
   private runPolicyForTransfer(): void {
     if (this.#currentRuntime() !== this.#runtimeId || runtimeEnvironment() !== this.#environment) throw policyDenied();
-    intersectRegistration(this.#loaded, readSelectedMultiSessionPolicy(this.#loaded.profilePath), this.#runtimeId);
+    continuity(this.#loaded, this.#currentPolicy(), this.#runtimeId);
   }
   release(cleanup: { readonly released: boolean; readonly detached: boolean }): void {
     try { this.#mutex.release(cleanup); } catch (error) { this.fail(); throw error; }
   }
   fail(): void { state.failed.add(this.#key); }
+}
+
+/** Generic policy entry point used by callers without the PiSessionPolicy facade. */
+export function liveRegistration(loaded: RuntimePolicy, current: RuntimePolicy, runtimeId: string) {
+  if (live(loaded) && live(current)) return effectiveLiveRegistration(loaded, current, runtimeId);
+  if (!live(loaded) && !live(current)) return intersectRegistration(loaded, current, runtimeId);
+  throw policyDenied();
+}
+function continuity(loaded: RuntimePolicy, current: RuntimePolicy, runtimeId: string) {
+  if (live(loaded) && live(current)) return assertLiveRegistrationContinuity(loaded, current, runtimeId);
+  if (!live(loaded) && !live(current)) return intersectRegistration(loaded, current, runtimeId);
+  throw policyDenied();
+}
+
+/** Reload may capture newly true generations, but cannot change identity or Hooks. */
+export function assertLiveRegistrationContinuity(loaded: LiveSnapshot, current: LiveSnapshot, runtimeId: string) {
+  if (!isDeepStrictEqual(loaded.ref, current.ref) || !isDeepStrictEqual(loaded.manifest.identity, current.manifest.identity) ||
+    !isDeepStrictEqual(loaded.manifest.store, current.manifest.store) || !isDeepStrictEqual(loaded.manifest.exchange, current.manifest.exchange) ||
+    !isDeepStrictEqual(loaded.manifest.chatgptEndpoint, current.manifest.chatgptEndpoint)) throw policyDenied();
+  const a = loaded.manifest.registrations.find(r => r.runtimeSessionId === runtimeId);
+  const b = current.manifest.registrations.find(r => r.runtimeSessionId === runtimeId);
+  if (a === undefined || b === undefined || a.status !== "active" || b.status !== "active" || a.endpointId !== b.endpointId ||
+    a.epoch !== b.epoch || !isDeepStrictEqual(a.hooks, b.hooks) || b.payloadReadGeneration < a.payloadReadGeneration || b.ackGeneration < a.ackGeneration) throw policyDenied();
+  return b;
+}
+export function effectiveLiveRegistration(loaded: LiveSnapshot, current: LiveSnapshot, runtimeId: string) {
+  const b = assertLiveRegistrationContinuity(loaded, current, runtimeId);
+  const a = loaded.manifest.registrations.find(r => r.runtimeSessionId === runtimeId)!;
+  return Object.freeze({ ...b, payloadRead: b.payloadRead && a.payloadRead && b.payloadReadGeneration === a.payloadReadGeneration,
+    ack: b.ack && a.ack && b.ackGeneration === a.ackGeneration });
 }

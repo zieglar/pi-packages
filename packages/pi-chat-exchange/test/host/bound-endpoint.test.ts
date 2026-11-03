@@ -31,6 +31,7 @@ function expectThrows(run: () => unknown, shape: Record<string, unknown>): void 
 function fakeHost(script: Script = {}) {
   const calls: Record<string, unknown[][]> = {};
   const host = {
+    runWithRecipientSnapshot: <T>(admit: (snapshot: undefined) => void, operation: () => T): T => { admit(undefined); return operation(); },
     beginSession: (...args: unknown[]) => {
       (calls.beginSession ??= []).push(args);
       const fn = script.beginSession;

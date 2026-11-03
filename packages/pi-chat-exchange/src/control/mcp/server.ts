@@ -35,6 +35,8 @@ import {
   type ExchangeMessagingPort,
 } from "./messaging-tools.js";
 
+import { callEndpointDiscovery, CE_ENDPOINTS_TOOL, CE_ENDPOINTS_TOOL_NAME, type EndpointDiscoveryPort } from "./endpoint-discovery.js";
+
 export const SERVER_NAME = "pi-chat-exchange" as const;
 export const SERVER_VERSION = "0.3.1-daily.1" as const;
 
@@ -58,6 +60,8 @@ const PING_TOOL = {
  * carry sender/endpoint/session/capability fields. */
 export interface MessagingServerBinding {
   readonly port: ExchangeMessagingPort;
+  /** Explicit opt-in, caller-bound filtered discovery; no Host/Storage authority. */
+  readonly discovery?: EndpointDiscoveryPort;
   /** Optional trusted, synchronous deny-only composition check. Runs freshly
    * before discovery and every tool dispatch, including ping/unknown names.
    * No authority inputs come from model arguments. */
@@ -90,7 +94,8 @@ export function createExchangeMcpServer(
   const tools = messaging === undefined ? [PING_TOOL] : [PING_TOOL, ...MESSAGING_TOOLS];
   // HANDOFF-CE-E2B-01: `ce_ack` is advertised last, and only on the explicit
   // operator ack opt-in carried by the binding.
-  const advertised = messaging?.ackEnabled === true ? [...tools, CE_ACK_TOOL] : tools;
+  const withAck = messaging?.ackEnabled === true ? [...tools, CE_ACK_TOOL] : tools;
+  const advertised = messaging?.discovery === undefined ? withAck : [...withAck, CE_ENDPOINTS_TOOL];
   for (const tool of advertised) debugEvent("tool", "TOOL_REGISTERED", { tool: tool.name });
 
   const admit = (): void => {
@@ -129,6 +134,12 @@ export function createExchangeMcpServer(
     try {
     // HANDOFF-CE-E2B-01: `ce_ack` exists only behind the explicit opt-in; a
     // call without it fails closed exactly like an unadvertised tool.
+    if (name === CE_ENDPOINTS_TOOL_NAME) {
+      if (messaging?.discovery === undefined) {
+        throw new McpError(ErrorCode.MethodNotFound, `unknown tool: ${String(name)}`);
+      }
+      return callEndpointDiscovery(messaging.discovery, args ?? {});
+    }
     if (isAckToolName(name)) {
       if (messaging === undefined || messaging.ackEnabled !== true) {
         // Never advertised in this mode, but fail closed all the same.
