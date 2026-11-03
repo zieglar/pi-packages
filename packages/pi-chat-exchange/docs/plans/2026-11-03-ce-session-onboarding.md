@@ -1,0 +1,32 @@
+# CE Session Onboarding implementation plan
+
+Handoff: HANDOFF-CE-SESSION-ONBOARDING-01. Baseline f8611a0a900d58e6fa37c6dc6ccaea82358ba8c9; installed CE 0.3.1-daily.1 remains unchanged. Worktree /Users/zieglar/Code/pi-packages-ce-session-onboarding-01, branch feat/ce-session-onboarding-01.
+
+Goal: a new trusted native Pi Session enters onboarding through Connect, without entering identifiers or manually issuing register/reload/activate. Preserve Hooks, isolated Endpoints, minimal grants, explicit persistent startup permission, requireUnowned and uncertain-delivery semantics.
+
+## Evidence and design
+
+Current Connect calls activation and appends a generic error when no generation exists. Activation conflates missing registration with mapping invalid; unloaded policy prompts manual reload; provisioning is guarded by STOPPED-only configuration lock. Registration publication also requires that lock. MCP admission captures the launch recipient set and applies loaded/current intersection. A running child cannot acquire a new recipient by publication. Removing these guards would change the permission architecture, so this implementation retains them and reports the exact incompatibility. Full no-restart admission of an arbitrary new Session into an already running shared Tunnel is not achieved under this architecture; do not mark that criterion passed.
+
+Pi 1.3.0 supports command-only ctx.reload(), session_start(reason=reload), appendEntry and factory registration. Connect finishes its old operation, requests official reload, and does not use the old runtime afterward. The fresh runtime first resumes any existing mapping/mutex transfer, then checks the request against the same Session/profile/revision/environment and a two-minute deadline. Consumption is checked in the full same-Session append history, deny-only across branch rollback. The request carries no grant or Owner. Generated registrations without mapping stay inactive on startup/resume until explicit activation. Cancellation and failure require a later explicit Connect, never a retry loop.
+
+Pi official examples/extensions/dynamic-tools.ts demonstrates registerTool during session_start and commands. Dynamic registration is supported. In-place CE grant replacement would change deny-only admission; dynamic tool registration alone does not solve MCP launch grants. Official reload preserves the current factory policy snapshot. Optional read/ACK tools may already be registered because another Session has grants; the new Session still cannot execute them without its own loaded/current grant. Tool visibility is not permission.
+
+## Tasks
+
+1. Add regression cases to the real isolated factory/Host/Store fixture for the existing new-Session rejection and new onboarding behavior. Preserve failing output before production changes.
+2. Implement a small onboarding module owning stable generated Endpoint selection, exact preview, minimum grants, cancellation/session/revision fences, and reuse of existing registration publication. Existing registrations are reused; revoked registrations refuse without silently restoring them. Confirm only after verified STOPPED for a new publication.
+3. Integrate Connect: distinguish registration absent/revoked, selected policy not loaded, activation cancellation, Owner conflict, Profile/permission drift, and shared transport incompatibility. Add optional official command reload context and a once-consumed plain continuation entry. Keep all new policy loading in factory, all authority acquisition in existing activation.
+4. Refine activation outcomes so Connect receives a concrete result rather than inferring all causes from absent generation. Allow activation on a running shared transport only when no policy publication is needed and compatibility can be proven; otherwise retain existing safety gate with exact instruction.
+5. Add behavioral regression coverage for idempotent repeated Connect, cancellation without publication/Owner/spawn, stale confirmation, old Owner preservation, minimum read/ACK/Hooks grants, supported reload failure/recovery, and running transport refusal without Stop.
+6. Build/typecheck including extension, run affected Pi/Tunnel/Hooks/MCP/package integration tests. Keep original failures and fix ordinary regressions.
+7. Exercise a completely new real Pi 1.3.0 session using only the candidate extension and an isolated profile/store/credential/client environment. Verify actual dialogs and official reload. Do not switch the production installation or touch production Store/Profile/credentials. Real cloud delivery remains separate from onboarding acceptance.
+8. Freeze patch/tree and independently review security/ownership/lifecycle/final diff. Resolve blockers, rerun affected checks, create local commit only. No push/merge/release or user installation update.
+
+## Stop conditions and verification scope
+
+Stop writes on unexpected Git/install/Profile drift or concurrent changes to owned implementation files. Parent owns index.ts, existing fixture and docs; the bounded worker owns only session-onboarding.ts and its new test, then hands back ownership. Final review freezes exact HEAD, diff, file set and SHA-256; any change after freeze invalidates review and requires a new target. No success claim for real TUI until actual terminal evidence exists. No production install/Profile/Store change is authorized by this candidate verification.
+
+The first fixed-baseline behavioral test failed because new Connect never reached registration confirmation. A real new Pi 1.3.0 TUI reproduced the exact generic warning with verified STOPPED and a valid isolated startup opt-in. Candidate real TUI confirmed stable generated Endpoint, cancellation with unchanged registration count, successful registration, official reload, and the next startup-permission dialog without a manual command. A separate fresh Session with isolated environment permission reached explicit activation with read/ACK disabled and created its own local Owner; network-denied sandbox caused transport readiness timeout and verified cleanup. This is real onboarding/activation evidence, not cloud CONNECTED or bidirectional message evidence.
+
+Review regressions include cancellation followed by startup without mapping (no fresh Owner), stale continuation after a valid reload transfer (same Owner and continued admission), and branch rollback excluding the consumption child (no continuation replay).

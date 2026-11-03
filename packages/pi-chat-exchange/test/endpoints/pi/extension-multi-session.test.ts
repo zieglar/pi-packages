@@ -12,12 +12,23 @@ import { CeHostRefusal, CeEndpointHost } from "../../../dist/host/endpoint-host.
 import { initializeStore, openStore, type DurableStore } from "../../../dist/storage/store.js";
 import type { CeSessionHost } from "../../../dist/endpoints/pi/session-host.js";
 
+import { createHash } from "node:crypto";
 const seam = vi.hoisted(() => ({ hosts: [] as CeSessionHost[], stores: [] as DurableStore[], manager: undefined as unknown,
   defaultExec: vi.fn(() => { throw Error("FORBIDDEN default process inspection"); }),
   defaultSpawn: vi.fn(() => { throw Error("FORBIDDEN process spawn"); }),
   signal: vi.fn(() => { throw Error("FORBIDDEN process signal"); }),
 }));
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), execFile: seam.defaultExec, spawn: seam.defaultSpawn }));
+vi.mock("../../../dist/tunnel/background-scope.js", () => ({
+  captureBackgroundAuthorizationScope: (input: { profileText: string; credentialPath: string; clientPath: string }) => ({
+    digest: createHash("sha256").update(JSON.stringify(input)).digest("hex"), profileSha256: createHash("sha256").update(input.profileText).digest("hex"),
+    clientPath: input.clientPath, credentialPath: input.credentialPath,
+  }),
+}));
+vi.mock("../../../dist/runtime/native-readiness.js", async original => ({
+  ...await original<typeof import("../../../dist/runtime/native-readiness.js")>(),
+  assertNativeReadyForTunnel: () => ({ state: "READY", code: "CE_NATIVE_READY", driver: "rust-native" }),
+}));
 vi.mock("../../../dist/tunnel/messaging-activation-ui.js", () => ({ confirmMessagingActivation: (ctx: Context) => ctx.ui.confirm("activate", "synthetic operator confirmation") }));
 vi.mock("../../../dist/tunnel/background-manager.js", async (original) => {
   const actual = await original<typeof import("../../../dist/tunnel/background-manager.js")>();
@@ -30,7 +41,7 @@ vi.mock("../../../dist/endpoints/pi/session-host.js", async (original) => {
   } };
 });
 type Entry = { type: string; customType: string; data: unknown };
-type Context = { mode: string; hasUI: boolean; cwd: string; sessionManager: { getSessionId(): string; getSessionFile(): string; getBranch(): Entry[] }; ui: { notify: ReturnType<typeof vi.fn>; confirm: ReturnType<typeof vi.fn<(title: string, message: string) => Promise<boolean>>>; custom: ReturnType<typeof vi.fn> } };
+type Context = { mode: string; hasUI: boolean; cwd: string; reload?: () => Promise<void>; sessionManager: { getSessionId(): string; getSessionFile(): string; getBranch(): Entry[]; getEntries(): Entry[] }; ui: { notify: ReturnType<typeof vi.fn>; confirm: ReturnType<typeof vi.fn<(title: string, message: string) => Promise<boolean>>>; custom: ReturnType<typeof vi.fn> } };
 type Handler = (event: { reason: string }, ctx: Context) => Promise<void>;
 type Tool = { name: string; execute(id: string, input: unknown, signal: undefined, update: undefined, ctx: Context): Promise<{ isError?: boolean; details?: Record<string, unknown> }> };
 const dirs: string[] = []; const shutdowns: Array<() => Promise<void>> = [];
@@ -49,6 +60,7 @@ async function fixture(convert = true) {
     adapter: "chatgpt", endpointId: "chatgpt/main", recipients: [{ adapter: "pi", endpointId: "pi/A" }], capabilities: { payloadRead: true, ack: true } });
   const pair = publishMessagingPair(profilePath, binding.config, { chatgptEndpoint: binding.config.endpoint, piEndpoint: { adapter: "pi", endpointId: "pi/A" }, piSessionId: "real-A",
     store: binding.config.store, exchangeNamespace: binding.config.exchange.namespace, exchangeIdempotencyKey: binding.config.exchange.idempotencyKey, payloadRead: true, ack: true });
+  fs.writeFileSync(join(dir, "NEVER-READ-CREDENTIAL"), "synthetic-metadata-only", { mode: 0o600 });
   fs.writeFileSync(profilePath, serializeTunnelProfile(buildTunnelProfile({ tunnelId: "tunnel_abcdefgh123456", keyFile: join(dir, "NEVER-READ-CREDENTIAL"), healthUrlFile: join(dir, "health.url"),
     mcpCommand: buildTunnelMcpCommand({ nodePath: "/abs/node", scriptPath: "/abs/mcp-stdio.js", bindingPath: pair.bindingPath }) })), { mode: 0o600 });
   let processState: "ok" | "unknown" | "running" = "ok";
@@ -62,11 +74,13 @@ async function fixture(convert = true) {
   async function runtime(id: string, entries: Entry[] = []) {
     const events = new Map<string, Handler>(); const tools = new Map<string, Tool>(); const commands = new Map<string, { handler(args: string, ctx: Context): Promise<void> }>();
     let runtimeId = id;
-    const ctx: Context = { mode: "tui", hasUI: true, cwd: join(dir, id), sessionManager: { getSessionId: () => runtimeId, getSessionFile: () => "not-authority", getBranch: () => entries }, ui: { notify: vi.fn(), confirm: vi.fn(async () => true), custom: vi.fn() } };
+    const ctx: Context = { mode: "tui", hasUI: true, cwd: join(dir, id), sessionManager: { getSessionId: () => runtimeId, getSessionFile: () => "not-authority", getBranch: () => entries, getEntries: () => entries }, ui: { notify: vi.fn(), confirm: vi.fn(async () => true), custom: vi.fn() } };
     const { default: factory } = await import(new URL("../../../pi-extension/index.ts", import.meta.url).href);
-    factory({ on: (name: string, handler: Handler) => events.set(name, handler), registerTool: (tool: Tool) => tools.set(tool.name, tool), registerCommand: (name: string, command: { handler(args: string, ctx: Context): Promise<void> }) => commands.set(name, command), appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }) });
+    const reloadFactory = () => factory({ on: (name: string, handler: Handler) => events.set(name, handler), registerTool: (tool: Tool) => tools.set(tool.name, tool), registerCommand: (name: string, command: { handler(args: string, ctx: Context): Promise<void> }) => commands.set(name, command), appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }) });
+    reloadFactory();
     const stop = (reason = "quit") => events.get("session_shutdown")!({ reason }, ctx); shutdowns.push(stop);
     return { ctx, entries, events, tools, stop, start: (reason = "startup") => events.get("session_start")!({ reason }, ctx),
+      reloadFactory,
       call: (name: string, input: unknown = {}) => tools.get(name)!.execute("test", input, undefined, undefined, ctx),
       command: (args: string) => commands.get("ce-tunnel")!.handler(args, ctx),
       ceStatus: () => commands.get("ce-status")!.handler("", ctx),
@@ -74,6 +88,116 @@ async function fixture(convert = true) {
   }
   return { dir, profilePath, api, binding, runtime, setProcessState: (state: typeof processState) => { processState = state; } };
 }
+it("Connect offers a generated minimal Endpoint for a fresh trusted Session without manual identifiers", async () => {
+  const f = await fixture(); const c = await f.runtime("brand-new-session"); await c.start();
+  vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");
+  c.ctx.ui.confirm.mockResolvedValue(false);
+  await c.command("connect");
+  expect(c.ctx.ui.confirm).toHaveBeenCalled();
+  expect(c.ctx.ui.confirm.mock.calls[0]?.[1]).toContain("Payload read: disabled");
+  expect(c.ctx.ui.confirm.mock.calls[0]?.[1]).toContain("ACK: disabled");
+  expect(readSelectedMultiSessionPolicy(f.profilePath).manifest.registrations).toHaveLength(2);
+  expect(c.notices()).not.toContain("resume the registered Pi session");
+});
+
+it("Connect publishes once, uses official command reload, activates and keeps read/ACK off", async () => {
+  const f = await fixture(); const c = await f.runtime("fresh-connect-runtime"); await c.start();
+  const manager = seam.manager as ReturnType<typeof createBackgroundTunnelManager>;
+  const clientPath = join(f.dir, "trusted-client");
+  fs.writeFileSync(clientPath, "synthetic", { mode: 0o700 });
+  const start = vi.spyOn(manager, "start").mockResolvedValue({ runId: "test", pid: 123, tunnelId: "tunnel_abcdefgh123456", startedAt: "test", health: "connected", alreadyRunning: false });
+  const reload = vi.fn(async () => {
+    await c.stop("reload");
+    vi.stubEnv("CE_TUNNEL_CLIENT_PATH", clientPath);
+    // Reload recreates the real manager, as Pi replaces the extension runtime.
+    const actual = await vi.importActual<typeof import("../../../dist/tunnel/background-manager.js")>("../../../dist/tunnel/background-manager.js");
+    const freshManager = actual.createBackgroundTunnelManager({ env: process.env, profilePath: f.profilePath, clientPath, authorizationDirectory: join(f.dir, "authorization"),
+      listProcesses: async () => ({ kind: "ok", processes: [] }), inspectProcess: async () => ({ kind: "absent" }) });
+    vi.spyOn(freshManager, "start").mockImplementation(start);
+    seam.manager = freshManager;
+    c.reloadFactory(); await c.start("reload");
+  });
+  c.ctx.reload = reload;
+  await c.command("connect");
+  const registrations = readSelectedMultiSessionPolicy(f.profilePath).manifest.registrations;
+  const r = registrations.find(r => r.runtimeSessionId === "fresh-connect-runtime")!;
+  expect(r).toMatchObject({ payloadRead: false, ack: false, status: "active" });
+  expect(r.endpointId).toMatch(/^pi\/session-[a-f0-9]{32}$/); expect(r.hooks).toBeUndefined();
+  expect(reload).toHaveBeenCalledTimes(1);
+  expect(start).toHaveBeenCalledTimes(1);
+  expect(c.entries.findLast(e => e.customType === "ce-mapping")?.data).toMatchObject({ endpointId: r.endpointId });
+  expect((await c.call("ce_read_payload", { messageId: "msg_00000000000000000000000000" })).isError).toBe(true);
+  await c.command("connect");
+  expect(readSelectedMultiSessionPolicy(f.profilePath).manifest.registrations).toHaveLength(registrations.length);
+  expect(reload).toHaveBeenCalledTimes(1); expect(start).toHaveBeenCalledTimes(2);
+});
+
+it("generated registration stays inactive after cancelled activation and later startup", async () => {
+  const f = await fixture();
+  const id = "cancelled-onboard-runtime";
+  await f.api.register({ expectedRevision: f.api.revision(), registration: { endpointId: "pi/session-cancelled", runtimeSessionId: id, payloadRead: false, ack: false } });
+  const c = await f.runtime(id); await c.start("startup");
+  expect(c.entries.some(e => e.customType === "ce-mapping")).toBe(false);
+  c.ctx.ui.confirm.mockResolvedValue(false); await c.command("activate");
+  await c.stop(); const fresh = await f.runtime(id, c.entries); await fresh.start("startup");
+  expect(fresh.entries.some(e => e.customType === "ce-mapping")).toBe(false);
+  expect(seam.hosts.every(h => h.status("pi/session-cancelled").lease !== "ACTIVE")).toBe(true);
+});
+
+it("reload continuation resumes an existing mapping before rejecting a stale request", async () => {
+  const f = await fixture(); const a = await f.runtime("real-A"); await a.start();
+  const mapping = a.entries.findLast(e => e.customType === "ce-mapping")!.data;
+  a.entries.push({ type: "custom", customType: "ce-connect-reload", data: { requestId: "stale", piSessionId: "real-A", profilePath: f.profilePath, revision: "wrong", requestedAt: Date.now(), environment: "wrong" } });
+  await a.stop("reload"); const fresh = await f.runtime("real-A", a.entries); await fresh.start("reload");
+  expect(fresh.entries.findLast(e => e.customType === "ce-mapping")!.data).toEqual(mapping);
+  expect((await fresh.call("ce_inbox_list")).isError).not.toBe(true);
+  expect(fresh.notices()).toContain("policy changed during reload");
+});
+
+it("branch rollback cannot revive a consumed reload request", async () => {
+  const f = await fixture(); const id = "rollback-runtime";
+  await f.api.register({ expectedRevision: f.api.revision(), registration: { endpointId: "pi/session-rollback", runtimeSessionId: id, payloadRead: false, ack: false } });
+  const revision = readSelectedMultiSessionPolicy(f.profilePath).revision;
+  const request: Entry = { type: "custom", customType: "ce-connect-reload", data: { requestId: "consumed", piSessionId: id, profilePath: f.profilePath, revision, requestedAt: Date.now(), environment: "unused" } };
+  const consumed: Entry = { type: "custom", customType: "ce-connect-reload-consumed", data: { requestId: "consumed" } };
+  const c = await f.runtime(id, [request]);
+  c.ctx.sessionManager.getEntries = () => [request, consumed];
+  await c.start("reload");
+  expect(c.ctx.ui.confirm).not.toHaveBeenCalled();
+  expect(c.entries.filter(e => e.customType === "ce-connect-reload-consumed")).toHaveLength(0);
+  expect(c.entries.some(e => e.customType === "ce-mapping")).toBe(false);
+});
+
+it("Connect resumes after a failed official reload without a second registration", async () => {
+  const f = await fixture(); const c = await f.runtime("reload-failed-runtime"); await c.start();
+  c.ctx.reload = vi.fn(async () => { throw Error("reload unavailable"); });
+  await expect(c.command("connect")).rejects.toThrow("reload unavailable");
+  const registrations = readSelectedMultiSessionPolicy(f.profilePath).manifest.registrations;
+  expect(registrations.filter(r => r.runtimeSessionId === "reload-failed-runtime")).toHaveLength(1);
+  delete c.ctx.reload; c.ctx.ui.confirm.mockClear();
+  await c.command("connect");
+  expect(readSelectedMultiSessionPolicy(f.profilePath).manifest.registrations).toHaveLength(registrations.length);
+  expect(c.ctx.ui.confirm).not.toHaveBeenCalled();
+  expect(c.notices()).toContain("Endpoint policy is not loaded");
+});
+
+it("Connect reports running shared transport for a registered inactive Session without stopping it", async () => {
+  const f = await fixture(); const b = await f.runtime("real-B"); await b.start("reload");
+  vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");
+  vi.stubEnv("CE_TUNNEL_CLIENT_PATH", join(f.dir, "trusted-client"));
+  const manager = seam.manager as ReturnType<typeof createBackgroundTunnelManager>;
+  fs.writeFileSync(join(f.dir, "trusted-client"), "synthetic", { mode: 0o700 });
+  const stop = vi.spyOn(manager, "stop"); const start = vi.spyOn(manager, "start");
+  vi.spyOn(manager, "refresh").mockResolvedValue({ ...manager.status(), state: "CONNECTED", running: true });
+  await b.command("connect");
+  expect(b.notices()).toContain("registered but not active");
+  expect(b.notices()).not.toContain("resume the registered Pi session");
+  expect(stop).not.toHaveBeenCalled(); expect(start).not.toHaveBeenCalled();
+  expect(b.ctx.ui.confirm).not.toHaveBeenCalled();
+});
+
+
+
 
 it("actual factory events bind independent A/B Hosts; exact ChatGPT messages/replies and no Pi-Pi or cross-read/ACK", async () => {
   const f = await fixture(); const a = await f.runtime("real-A"); const b = await f.runtime("real-B"); await a.start(); await b.start();

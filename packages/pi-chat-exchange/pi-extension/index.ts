@@ -26,6 +26,7 @@
  * seam from packages/pi-chat-exchange/dist.
  */
 import { runSessionConfiguration } from "./multi-session-commands.js";
+import { prepareSessionOnboarding, SessionOnboardingRefusal } from "./session-onboarding.js";
 import { PiMultiSessionRuntime, runtimeEnvironment } from "./multi-session-runtime.js";
 import { readSelectedMultiSessionPolicy, projectPiRegistration, effectivePiHookRules, type MultiSessionSnapshot } from "../dist/tunnel/multi-session-policy.js";
 import { runSetupWizard, presentTunnelStatus } from "../dist/tunnel/setup-ui.js";
@@ -38,7 +39,7 @@ import { validMessagingStore } from "../dist/tunnel/messaging-config.js";
 import { runTunnelManagerUi, type TunnelManagerUiProjection, type TunnelManagerUiOutcome } from "../dist/tunnel/manager-ui.js";
 import { isDeepStrictEqual } from "node:util";
 import { existsSync, readFileSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -82,6 +83,7 @@ interface SessionManagerView {
   getSessionId(): string;
   getSessionFile(): string | undefined;
   getBranch(): ReadonlyArray<Record<string, unknown>>;
+  getEntries?(): ReadonlyArray<Record<string, unknown>>;
 }
 
 interface UiView {
@@ -105,6 +107,8 @@ interface ExtensionContextView {
   readonly cwd: string;
   readonly sessionManager: SessionManagerView;
   readonly ui: UiView;
+  /** Official Pi command-only lifecycle API; absent in tools and session events. */
+  readonly reload?: () => Promise<void>;
 }
 
 interface ToolResultView {
@@ -1092,6 +1096,24 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       host = undefined;
       hookConfig = loadedHookConfiguration(allowlist);
     }
+    const continueConnect = async (): Promise<void> => {
+      if (event.reason !== "reload") return;
+      const request = ctx.sessionManager.getBranch().findLast(entry => entry.type === "custom" && entry.customType === "ce-connect-reload")?.data as
+        { requestId?: unknown; piSessionId?: unknown; profilePath?: unknown; revision?: unknown; requestedAt?: unknown; environment?: unknown } | undefined;
+      if (request === undefined || request === null || typeof request !== "object" || typeof request.requestId !== "string" || request.piSessionId !== piSessionId) return;
+      // Full append history is deny-only: branch rollback must not revive a consumed request.
+      const history = ctx.sessionManager.getEntries?.();
+      if (history === undefined || history.some(entry => entry.customType === "ce-connect-reload-consumed" &&
+          (entry.data as { requestId?: unknown } | undefined)?.requestId === request.requestId)) return;
+      pi.appendEntry("ce-connect-reload-consumed", { requestId: request.requestId });
+      if (request.profilePath !== multiPolicy?.profilePath || request.revision !== multiPolicy?.revision ||
+          request.environment !== runtimeEnvironment() || typeof request.requestedAt !== "number" ||
+          Date.now() < request.requestedAt || Date.now() - request.requestedAt > 120_000) {
+        notify(ctx, "ce-tunnel: Endpoint policy changed during reload; run Connect again to review the current configuration.", "warning");
+        return;
+      }
+      await runDailyConnection(true, ctx);
+    };
     const endpointId = endpointForPiSession(allowlist, piSessionId);
     if (hookConfig.invalid || hookConfig.rules.length > 0) {
       const audit = hookSnapshot();
@@ -1111,7 +1133,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       sessionHost = startedHost;
       const adoptable = event.reason === "startup" || event.reason === "reload" || event.reason === "resume";
       const inherited = adoptable ? lastMappingEntry(ctx) : undefined;
-      if (event.reason === "reload" && inherited === undefined) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+      if ((event.reason === "reload" || endpointId.startsWith("pi/session-")) && inherited === undefined) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
       if (multiPolicy !== undefined && inherited !== undefined && ctx.sessionManager.getBranch().some(entry => {
         if (entry.customType !== "ce-messaging-released" || typeof entry.data !== "object" || entry.data === null) return false;
         const proof = entry.data as Record<string, unknown>;
@@ -1157,6 +1179,8 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       // secret-free strings only (the `toRefusal` contract).
       notify(ctx, `ce-chat-exchange: session start failed closed (${startupFailure.code}${startupFailure.reason ? ` / ${startupFailure.reason}` : ""})${startupRuntimeRepair === undefined ? "" : `; ${startupRuntimeRepair}`}${mutexRefusalHint(error)}${staleOwnershipHint(error)}`, "warning");
     }
+    // Preserve existing mapping/mutex transfer before any continuation UI or refusal.
+    await continueConnect();
   });
 
   pi.on("session_shutdown", (event) => shutdown(event.reason));
@@ -1625,6 +1649,10 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           exchangeNamespace: configuredMulti.manifest.exchange.namespace, exchangeIdempotencyKey: configuredMulti.manifest.exchange.idempotencyKey,
           payloadRead: registration.payloadRead, ack: registration.ack,
         };
+        if (configuredMulti !== undefined && registration === undefined) {
+          notify(ctx, "ce-tunnel: Current session is not registered; use Connect to review an independent Endpoint for this session.", "warning");
+          return;
+        }
         if (!piSessionId || !facts?.configured || facts.piSessionId !== piSessionId ||
             !facts.piEndpointId || !facts.chatgptEndpoint || !facts.storeDirectory || !facts.storeFile ||
             !facts.exchangeNamespace || !facts.exchangeIdempotencyKey) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
@@ -1679,7 +1707,10 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
             ...(priorEndpointId === undefined ? {} : { oldEndpointId: priorEndpointId }) },
           keys: piTunnelKeyProtocol, signal: controller.signal,
         });
-        if (!confirmed || controller.signal.aborted) return;
+        if (!confirmed || controller.signal.aborted) {
+          if (!controller.signal.aborted) notify(ctx, "ce-tunnel: Activation requires confirmation; cancelled without creating a binding or starting transport.", "info");
+          return;
+        }
         assertCurrent();
         if (!policyLoaded) {
           const old = generation;
@@ -1737,6 +1768,9 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           const code = error instanceof CeHostRefusal || error instanceof TunnelRefusal ? error.code : "CE_HOST_UNAVAILABLE";
           // C1: same sanitized domain reason as the MCP surface already reports.
           const reason = error instanceof CeHostRefusal ? error.reason : undefined;
+          if (reason === "OWNERSHIP_HELD" || reason === "OWNERSHIP_TAKEOVER_REQUIRED") {
+            notify(ctx, "ce-tunnel: Endpoint is owned by another session; no takeover was attempted. Close the owning session normally or inspect its ownership evidence.", "warning");
+          }
           notify(ctx, `ce-tunnel: activation refused ${code}${reason ? ` / ${reason}` : ""}; no automatic retry or takeover${mutexRefusalHint(error)}${staleOwnershipHint(error)}`, "warning");
         }
       }
@@ -2228,6 +2262,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     dailyCapture = controller;
     const piSessionId = ctx.sessionManager.getSessionId();
     const environment = runtimeEnvironment();
+    let reloadRequested = false;
     const task = Promise.resolve().then(async () => {
       try {
         if (connect) assertNativeReadyForTunnel();
@@ -2267,22 +2302,46 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           notify(ctx, `ce-tunnel: disconnected; current Pi binding released and selected shared tunnel stopped; registration/history retained${note === undefined ? "" : `; transport note=${note}`}; other Pi bindings and model/task authority are separate`);
           return;
         }
+        if (multiPolicy !== undefined) {
+          const onboarding = await prepareSessionOnboarding(ctx, { profilePath, manager, signal: controller.signal });
+          current();
+          if (onboarding === "cancelled") return;
+          const selected = readSelectedMultiSessionPolicy(profilePath);
+          const projected = projectPiRegistration(selected, piSessionId);
+          if (onboarding === "registered" || !isDeepStrictEqual(projected, allowlist)) {
+            if (typeof ctx.reload !== "function") {
+              notify(ctx, "ce-tunnel: Endpoint policy is not loaded; this command context cannot reload extensions. Run Connect from an interactive Pi command context.", "warning");
+              return;
+            }
+            // A continuation requests fresh checks; it never carries a grant or Owner.
+            pi.appendEntry("ce-connect-reload", { requestId: randomUUID(), piSessionId, profilePath, revision: selected.revision, requestedAt: Date.now(), environment });
+            reloadRequested = true;
+            return;
+          }
+        }
         const configured = (): void => {
           current();
           if (readFileSync(profilePath, "utf8") !== profile) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
           const permission = manager.authorizationStatus();
           if (permission !== "granted" && permission !== "environment") throw new TunnelRefusal("CE_TUNNEL_BACKGROUND_UNAUTHORIZED");
         };
+        if (generation === undefined) {
+          const transport = await manager.refresh();
+          current();
+          if (transport.state !== "STOPPED") {
+            notify(ctx, transport.running
+              ? "ce-tunnel: current Session is registered but not active. Activation requires the existing STOPPED configuration lock; coordinate Stop, then Connect. The shared Tunnel was not stopped."
+              : "ce-tunnel: shared Tunnel state is unknown; inspect Status before activation. No Owner or transport was changed.", "warning");
+            return;
+          }
+        }
         if (!await requestBackgroundPermission(manager, ctx, controller.signal)) return;
         current();
         configured();
         if (generation === undefined) {
-          // Activation itself enforces STOPPED, explicit confirmation and requireUnowned.
           await runMessagingActivation(ctx);
           configured();
-          if (generation === undefined) {
-            notify(ctx, "ce-tunnel: connect stopped before transport start; resume the registered Pi session, load its policy, and confirm activation; a running shared tunnel requires explicit Stop first", "warning"); return;
-          }
+          if (generation === undefined) return; // Activation reports refusal or cancellation.
         }
         const endpointId = guardedEndpoint(ctx);
         const status = withHost("status", () => getHost().status(endpointId));
@@ -2298,6 +2357,9 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         notify(ctx, `ce-tunnel: current Pi endpoint ${endpointId} bound; tunnel=${measured.state} evidence=${measured.evidence}${started.alreadyRunning ? "; existing run retained" : ""}; model availability and business task execution are not measured; not delivery/ACK/completion evidence`);
       } catch (error) {
         if (controller.signal.aborted) return;
+        if (error instanceof SessionOnboardingRefusal) {
+          notify(ctx, `ce-tunnel: ${error.message}`, "warning"); return;
+        }
         publishTunnelStatus(ctx);
         const code = error instanceof CeHostRefusal || error instanceof TunnelRefusal || error instanceof RuntimeEligibilityError ? error.code : "CE_HOST_UNAVAILABLE";
         notify(ctx, `ce-tunnel: ${action} refused ${code}${mutexRefusalHint(error)}${staleOwnershipHint(error)}; no automatic retry, takeover or configuration change; inspect status before another action`, "warning");
@@ -2307,6 +2369,13 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     try { await task; } finally {
       if (dailyTask === task) dailyTask = undefined;
       if (dailyCapture === controller) dailyCapture = undefined;
+    }
+    if (reloadRequested && !controller.signal.aborted && ctx.sessionManager.getSessionId() === piSessionId) {
+      // The old runtime has finished its operation before official replacement.
+      const reload = ctx.reload;
+      if (reload === undefined) return;
+      await reload();
+      return;
     }
   };
 
