@@ -19,9 +19,12 @@
  *   heartbeat, then `host.end` (release, then detach) exactly once. An unknown
  *   outcome is reported, never retried.
  */
+import { createHash } from "node:crypto";
 import {
   CeHostRefusal,
   type CeAckResult,
+  type CeEndpointDiscovery,
+  type CeLiveRecipientSnapshot,
   type CeEndpointHost,
   type CeInboxResult,
   type CeReadPayloadResult,
@@ -42,8 +45,8 @@ export type BoundEndpointEvent =
  * Cleanup intentionally never calls this hook. */
 export type BoundEndpointOperation =
   | { readonly kind: "send"; readonly to: string }
-  | { readonly kind: "begin" | "renew" | "inbox" | "readPayload" | "ack" };
-export type BoundEndpointAdmission = (operation: BoundEndpointOperation) => void;
+  | { readonly kind: "begin" | "renew" | "inbox" | "readPayload" | "ack" | "discover" };
+export type BoundEndpointAdmission = (operation: BoundEndpointOperation, snapshot?: CeLiveRecipientSnapshot) => void;
 
 export interface BoundEndpointOptions {
   readonly admission?: BoundEndpointAdmission;
@@ -99,8 +102,9 @@ export class CeBoundEndpoint {
     if (!Number.isSafeInteger(options.renewIntervalMs) || options.renewIntervalMs < 1) {
       throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
     }
-    options.admission?.({ kind: "begin" });
-    host.beginSession(endpointId, { requireUnowned: true });
+    host.runWithRecipientSnapshot(snapshot => options.admission?.({ kind: "begin" }, snapshot), () =>
+      host.beginSession(endpointId, { requireUnowned: true }),
+    );
     const bound = new CeBoundEndpoint(host, endpointId, options);
     bound.#heartbeat = bound.#timers.setInterval(() => bound.#renew(), options.renewIntervalMs);
     return bound;
@@ -108,6 +112,22 @@ export class CeBoundEndpoint {
 
   get state(): State {
     return this.#state;
+  }
+
+  operationalStatus(): { readonly state: State; readonly renewal: "RUNNING" | "STOPPED" } {
+    return Object.freeze({ state: this.#state, renewal: this.#heartbeat === undefined ? "STOPPED" : "RUNNING" });
+  }
+
+  discover(): CeEndpointDiscovery {
+    return this.#run(false, { kind: "discover" }, () => {
+      const discovery = this.#host.discover(this.#endpointId);
+      if (this.#state !== "WRITE_BLOCKED") return discovery;
+      const targets = Object.freeze(discovery.targets.map(target => target.reason === "PRESENCE_WITHHELD"
+        ? target
+        : Object.freeze({ ...target, reachable: "FALSE" as const, reason: "PORT_BLOCKED" as const })));
+      const projection = { self: { ...discovery.self, effective: { ...discovery.self.effective, send: false, ack: false } }, targets };
+      return Object.freeze({ ...discovery, ...projection, viewDigest: createHash("sha256").update(JSON.stringify(projection)).digest("hex") });
+    });
   }
 
   #emit(event: BoundEndpointEvent): void {
@@ -128,8 +148,9 @@ export class CeBoundEndpoint {
   #renew(): void {
     if (this.#state !== "ACTIVE") return;
     try {
-      this.#admission?.({ kind: "renew" });
-      this.#host.renew(this.#endpointId);
+      this.#host.runWithRecipientSnapshot(snapshot => this.#admission?.({ kind: "renew" }, snapshot), () =>
+        this.#host.renew(this.#endpointId),
+      );
       this.#emit({ kind: "renewed" });
     } catch (error) {
       const refusal = error instanceof CeHostRefusal ? error : new CeHostRefusal("CE_HOST_UNAVAILABLE");
@@ -161,10 +182,9 @@ export class CeBoundEndpoint {
 
   #run<T>(write: boolean, request: BoundEndpointOperation, operation: () => T): T {
     this.#admit(write);
-    this.#admission?.(request);
     this.#inFlight += 1;
     try {
-      return operation();
+      return this.#host.runWithRecipientSnapshot(snapshot => this.#admission?.(request, snapshot), operation);
     } finally {
       this.#inFlight -= 1;
     }

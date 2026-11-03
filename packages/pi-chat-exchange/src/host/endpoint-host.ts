@@ -33,6 +33,7 @@
  *   for CE-TAKEOVER-RECOVERY-CALLER-001 is not reachable through this adapter.
  *   Restart never implies ownership recovery.
  */
+import { createHash } from "node:crypto";
 import { EXCHANGE_ID_PATTERN, MESSAGE_ID_PATTERN } from "../protocol/identity.js";
 import { SHA256_HEX_PATTERN } from "../protocol/entities.js";
 import { createCommittedMessageEvent, type CeCommittedMessageEvent } from "../hooks/events.js";
@@ -73,6 +74,7 @@ import {
   LEASE_MAX_TTL_SECONDS,
   LEASE_MIN_TTL_SECONDS,
   readCurrentOwnership,
+  readEndpointObservations,
   readLeaseStatus,
   readSessionLifecycle,
   releaseOwnership,
@@ -95,7 +97,25 @@ export interface CeRecipientRef {
   readonly endpointId: string;
 }
 
+export interface CeLiveRecipientSnapshot {
+  readonly recipients: readonly CeRecipientRef[];
+  /** Private composition evidence; never included in discovery. */
+  readonly viewDigest: string;
+  readonly presence: readonly { readonly endpointId: string; readonly disclose: boolean }[];
+  /** Current own grants may only narrow construction-fixed capabilities. */
+  readonly ownPolicy?: { readonly payloadRead: boolean; readonly ack: boolean };
+}
+
+export interface CeEndpointDiscovery {
+  readonly self: { readonly adapter: string; readonly endpointId: string; readonly effective: { readonly send: boolean; readonly readPayload: boolean; readonly ack: boolean } };
+  readonly targets: readonly { readonly adapter: string; readonly endpointId: string; readonly registered: true; readonly authorized: { readonly send: true }; readonly active: "TRUE" | "FALSE" | "UNKNOWN"; readonly reachable: "TRUE" | "FALSE" | "UNKNOWN"; readonly reason: "OBSERVED" | "PRESENCE_WITHHELD" | "OBSERVATION_UNKNOWN" | "PORT_BLOCKED" }[];
+  readonly observedAt: string;
+  readonly viewDigest: string;
+}
+
 export interface CeEndpointHostPolicy {
+  /** Trusted composition validates source data once at its boundary. */
+  readonly liveRecipients?: { readonly snapshot: () => CeLiveRecipientSnapshot };
   /** Endpoint adapter kind of every allowlisted Endpoint this host operates. */
   readonly adapter: string;
   /** Exchange bootstrap identity: deterministic and replay-safe. */
@@ -450,9 +470,12 @@ export class CeEndpointHost {
   readonly #ackEnabled: boolean;
   /** Explicit cross-adapter recipients, validated and frozen at construction. */
   readonly #recipients: readonly CeRecipientRef[];
+  readonly #liveRecipients: CeEndpointHostPolicy["liveRecipients"];
   readonly #seams: ClockSeam;
   readonly #onMessageCommitted: ((event: CeCommittedMessageEvent) => void) | undefined;
   readonly #authorities = new Map<string, EndpointAuthority>();
+  #prepared: CeLiveRecipientSnapshot | undefined;
+  #preparing = false;
 
   constructor(store: DurableStore, policy: CeEndpointHostPolicy) {
     if (!isEndpointLabel(policy.adapter, ADAPTER_MAX_LENGTH)) throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
@@ -466,6 +489,10 @@ export class CeEndpointHost {
       seen.add(entry.endpointId);
     }
     this.#recipients = validatedRecipients(policy, seen);
+    if (policy.liveRecipients !== undefined && typeof policy.liveRecipients.snapshot !== "function") {
+      throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
+    }
+    this.#liveRecipients = policy.liveRecipients;
     this.#store = store;
     this.#policy = policy;
     this.#leaseTtlSeconds = clampLeaseTtl(policy);
@@ -497,11 +524,44 @@ export class CeEndpointHost {
   /** Resolve a recipient label: an allowlisted same-adapter Endpoint first,
    * otherwise an explicitly configured cross-adapter recipient. Any other
    * label is refused exactly like before (`CE_HOST_ENDPOINT_NOT_ALLOWED`). */
-  #recipient(label: string): CeRecipientRef {
+  /** One synchronous policy selection shared by outer admission and the Host
+   * operation. No async or reentrant operation may retain this authority. */
+  runWithRecipientSnapshot<T>(
+    admit: (snapshot: CeLiveRecipientSnapshot | undefined) => void,
+    operation: () => T,
+  ): T {
+    if (this.#preparing) throw new CeHostRefusal("CE_HOST_UNAVAILABLE", false, "RECIPIENT_SNAPSHOT_REENTRANT");
+    this.#preparing = true;
+    try {
+      this.#prepared = this.#readSnapshot();
+      admit(this.#prepared);
+      return operation();
+    } finally {
+      this.#prepared = undefined;
+      this.#preparing = false;
+    }
+  }
+
+  #snapshot(): CeLiveRecipientSnapshot | undefined {
+    if (this.#preparing) return this.#prepared;
+    return this.#readSnapshot();
+  }
+
+  #readSnapshot(): CeLiveRecipientSnapshot | undefined {
+    if (this.#liveRecipients === undefined) return undefined;
+    try {
+      const snapshot = this.#liveRecipients.snapshot();
+      const recipients = validatedRecipients({ ...this.#policy, recipients: snapshot.recipients }, new Set(this.#policy.allowlist.map(entry => entry.endpointId)));
+      if (recipients.length > 128) throw new CeHostRefusal("CE_HOST_UNAVAILABLE");
+      return { ...snapshot, recipients };
+    } catch (error) { throw toRefusal(error); }
+  }
+
+  #recipient(label: string, snapshot?: CeLiveRecipientSnapshot): CeRecipientRef {
     if (this.#policy.allowlist.some((candidate) => candidate.endpointId === label)) {
       return { adapter: this.#policy.adapter, endpointId: label };
     }
-    const external = this.#recipients.find((candidate) => candidate.endpointId === label);
+    const external = (snapshot?.recipients ?? this.#recipients).find((candidate) => candidate.endpointId === label);
     if (external === undefined) throw new CeHostRefusal("CE_HOST_ENDPOINT_NOT_ALLOWED");
     return external;
   }
@@ -817,7 +877,8 @@ export class CeEndpointHost {
     if (typeof to !== "string" || to.length === 0 || to.length > 256) {
       throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
     }
-    const recipient = this.#recipient(to);
+    const snapshot = this.#snapshot();
+    const recipient = this.#recipient(to, snapshot);
     if (typeof text !== "string" || text.length === 0) throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
     if (typeof idempotencyKey !== "string" || idempotencyKey.length === 0 || idempotencyKey.length > 256) {
       throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
@@ -828,6 +889,11 @@ export class CeEndpointHost {
     let creation: AuthorizedMessageCreation;
     try {
       const fencingToken = this.#currentFencing(authority);
+      if (snapshot !== undefined) {
+        // Check the caller before exposing a target's membership state.
+        const observation = readEndpointObservations(this.#store, authority.exchangeId, [recipient], this.#seams);
+        if (!observation.targets[0]?.joined) throw new CeHostRefusal("CE_HOST_UNAVAILABLE", false, "PARTICIPANT_NOT_MEMBER");
+      }
       creation = sendMessage(
         this.#store,
         {
@@ -1073,6 +1139,27 @@ export class CeEndpointHost {
     } catch (error) {
       throw toRefusal(error);
     }
+  }
+
+  /** Caller-bound advisory projection. Filter before any durable observation. */
+  discover(endpointId: string): CeEndpointDiscovery {
+    this.#allowlisted(endpointId);
+    const authority = this.#authority(endpointId);
+    this.#currentFencing(authority);
+    const snapshot = this.#snapshot();
+    if (snapshot === undefined) throw new CeHostRefusal("CE_HOST_UNAVAILABLE");
+    const visible = snapshot.recipients.filter(recipient => recipient.endpointId !== endpointId);
+    const disclosed = visible.filter(recipient => snapshot.presence.some(entry => entry.endpointId === recipient.endpointId && entry.disclose));
+    let observation: ReturnType<typeof readEndpointObservations> | undefined;
+    try { observation = readEndpointObservations(this.#store, authority.exchangeId, disclosed, this.#seams); } catch { /* Advisory uncertainty grants nothing. */ }
+    const targets = visible.map(recipient => {
+      const disclose = disclosed.some(entry => entry.endpointId === recipient.endpointId);
+      const observed = observation?.targets.find(entry => entry.adapter === recipient.adapter && entry.endpointId === recipient.endpointId);
+      return Object.freeze({ ...recipient, registered: true as const, authorized: Object.freeze({ send: true as const }), active: observed?.active ?? "UNKNOWN" as const, reachable: observed === undefined ? "UNKNOWN" as const : observed.joined ? "TRUE" as const : "FALSE" as const, reason: !disclose ? "PRESENCE_WITHHELD" as const : observed === undefined ? "OBSERVATION_UNKNOWN" as const : "OBSERVED" as const });
+    });
+    const self = Object.freeze({ adapter: this.#policy.adapter, endpointId, effective: Object.freeze({ send: true, readPayload: this.#payloadReadEnabled && (snapshot.ownPolicy?.payloadRead ?? true), ack: this.#ackEnabled && (snapshot.ownPolicy?.ack ?? true) }) });
+    const projection = { self, targets: Object.freeze(targets) };
+    return Object.freeze({ ...projection, observedAt: observation?.observedAt ?? "UNKNOWN", viewDigest: createHash("sha256").update(JSON.stringify(projection)).digest("hex") });
   }
 
   /** Advisory status for the operator command. Authorizes nothing. */

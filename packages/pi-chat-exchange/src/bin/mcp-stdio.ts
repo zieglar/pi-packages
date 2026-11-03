@@ -22,6 +22,9 @@
  */
 import { readFileSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { startLiveAdoptionProbe } from "../tunnel/live-adoption-probe.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { runStdioServer, createExchangeMcpServer } from "../control/mcp/server.js";
 import { CE_ACK_TOOL, MESSAGING_TOOL_NAMES } from "../control/mcp/messaging-tools.js";
@@ -41,6 +44,7 @@ import { createMcpPolicyAdmission } from "../tunnel/multi-session-admission.js";
 import { CeHookRunner } from "../hooks/runner.js";
 import { isDeepStrictEqual } from "node:util";
 import { effectiveMcpHookRules, readLoadedMultiSessionPolicy, readSelectedMultiSessionPolicy } from "../tunnel/multi-session-policy.js";
+import { createLiveMcpComposition, projectEndpointDiscovery, observeLiveMcpRuntime } from "../tunnel/live-mcp-composition.js";
 
 debugEvent("server", "SERVER_ENTRY", { version: process.version });
 // Monitor rather than handle exceptions: preserve Node's fatal exit behavior.
@@ -57,7 +61,7 @@ function fail(code: string, detail?: string): never {
 
 /** Read the binding configuration from an absolute path, refusing anything
  * oversized or unreadable before a single durable write can happen. */
-function loadBindingConfig(path: string): McpBindingConfig {
+function loadBindingConfig(path: string): { config: McpBindingConfig; launchDigest: string } {
   let size: number;
   try {
     size = statSync(path).size;
@@ -78,7 +82,7 @@ function loadBindingConfig(path: string): McpBindingConfig {
     return fail("CE_MCP_CONFIG_INVALID", "config.not_json");
   }
   try {
-    return parseMcpBindingConfig(parsed);
+    return { config: parseMcpBindingConfig(parsed), launchDigest: createHash("sha256").update(raw).digest("hex") };
   } catch (error) {
     if (error instanceof McpBindingConfigError) return fail(error.code, error.field);
     return fail("CE_MCP_CONFIG_INVALID", "config.unexpected");
@@ -104,25 +108,29 @@ async function main(): Promise<void> {
   if (argv.length !== 2 || flag !== "--config" || configPath === undefined || !configPath.startsWith("/")) {
     fail("CE_MCP_LAUNCH_INVALID", "usage: mcp-stdio.js [--config /absolute/path.json]");
   }
-  const config = loadBindingConfig(configPath);
+  const { config, launchDigest } = loadBindingConfig(configPath);
   // Verify actual launch bytes before Store creation; managed provenance grants nothing.
-  const admission = createMcpPolicyAdmission(config, configPath);
-  admission?.({ kind: "begin" });
+  const live = config.admissionPolicy?.kind === "ce-live-session-v1" ? createLiveMcpComposition(config) : undefined;
+  const admission = live?.admission ?? createMcpPolicyAdmission(config, configPath);
+  if (live === undefined) admission?.({ kind: "begin" });
 
-  const loadedHookPolicy = config.admissionPolicy === undefined ? undefined : readLoadedMultiSessionPolicy(config.admissionPolicy.profilePath, configPath);
+  const loadedHookPolicy = config.admissionPolicy?.kind !== "ce-multi-session-v1" ? undefined : readLoadedMultiSessionPolicy(config.admissionPolicy.profilePath, configPath);
   const hookRunner = new CeHookRunner({
     directory: config.store.directory, rules: config.hooks ?? [],
-    ...(loadedHookPolicy === undefined ? {} : { admit: (rule, event) => {
+    ...(loadedHookPolicy === undefined && live === undefined ? {} : { admit: (rule, event) => {
       if (event !== undefined && !isDeepStrictEqual(event.sender, config.endpoint)) return false;
-      return effectiveMcpHookRules(loadedHookPolicy, readSelectedMultiSessionPolicy(loadedHookPolicy.profilePath)).some(candidate => isDeepStrictEqual(candidate, rule));
+      if (live !== undefined) return live.hookAllowed(rule);
+      return loadedHookPolicy !== undefined && effectiveMcpHookRules(loadedHookPolicy, readSelectedMultiSessionPolicy(loadedHookPolicy.profilePath)).some(candidate => isDeepStrictEqual(candidate, rule));
     } }),
   });
   const hookAudit = hookRunner.snapshot();
   console.error(`CE_HOOKS_ACTIVE active=${hookAudit.active} configured=${hookAudit.configured} rules=${hookAudit.rules.filter(rule => rule.enabled).map(rule => rule.id).join(",") || "none"}`);
-  const host = new CeEndpointHost(openBindingStore(config), {
+  const store = openBindingStore(config);
+  const host = new CeEndpointHost(store, {
     adapter: config.endpoint.adapter,
     allowlist: [{ endpointId: config.endpoint.endpointId }],
     recipients: config.recipients,
+    ...(live === undefined ? {} : { liveRecipients: live.recipients }),
     exchangeNamespace: config.exchange.namespace,
     exchangeIdempotencyKey: config.exchange.idempotencyKey,
     leaseTtlSeconds: config.lease.ttlSeconds,
@@ -149,11 +157,32 @@ async function main(): Promise<void> {
   });
 
   debugEvent("authority", "OWNERSHIP_ACQUIRED", { owned: true });
+  let probe: Awaited<ReturnType<typeof startLiveAdoptionProbe>> | undefined;
+  try {
+  if (live !== undefined) {
+    try {
+      const output = execFileSync("/bin/ps", ["-p", String(process.pid), "-o", "lstart="], {
+        env: { PATH: "/usr/bin:/bin", LC_ALL: "C" }, timeout: 5000, maxBuffer: 4096, encoding: "utf8",
+      });
+      const match = /^\s*([A-Za-z]{3}\s+[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s*$/.exec(output);
+      if (match === null) throw new Error("process identity unavailable");
+      probe = await startLiveAdoptionProbe({ ref: live.ref, launchDigest,
+        identity: { pid: process.pid, startedKey: match[1]! },
+        observe: () => observeLiveMcpRuntime(live, host, bound, store, config.endpoint.endpointId),
+      });
+    } catch {
+      // Local observation is advisory. Unsupported socket paths/identity cannot
+      // attest readiness, but do not revoke an otherwise valid messaging port.
+      console.error("CE_MCP_ADOPTION_UNVERIFIED");
+    }
+  }
   // HANDOFF-CE-E2B-01: advertise `ce_ack` only when the validated binding
   // declares the ack opt-in; the default surface stays exactly four tools.
   const server = createExchangeMcpServer(undefined, {
     port: bound, ackEnabled: config.ack.enabled, executionGuard: config.debugExecutionGuard,
-    ...(admission === undefined ? {} : { admission: () => admission({ kind: "inbox" }) }),
+    ...(live === undefined
+      ? admission === undefined ? {} : { admission: () => admission({ kind: "inbox" }) }
+      : { discovery: { discover: () => projectEndpointDiscovery(bound.discover()) } }),
   });
   if (config.debugExecutionGuard.enabled) {
     debugEvent("server", "EXECUTION_GUARD_ARMED", { scope: "tools/call", stage: "unified-dispatch-entry" });
@@ -165,6 +194,7 @@ async function main(): Promise<void> {
   const initiateShutdown = async (): Promise<void> => {
     if (initiated) return;
     initiated = true;
+    await probe?.close();
     try {
       await server.close();
     } catch {
@@ -206,10 +236,19 @@ async function main(): Promise<void> {
     PING_TOOL_NAME,
     ...MESSAGING_TOOL_NAMES,
     ...(config.ack.enabled ? [CE_ACK_TOOL.name] : []),
+    ...(live === undefined ? [] : ["ce_endpoints"]),
   ];
   console.error(`CE_MCP_STARTED tools=${advertisedTools.join(",")}`);
   await shutdownRequested;
   await initiateShutdown();
+  } finally {
+    try { await probe?.close(); }
+    finally {
+      const hooks = hookRunner.close();
+      try { await bound.shutdown(); }
+      finally { await hooks; store.close(); }
+    }
+  }
 }
 
 main().catch((error: unknown) => {

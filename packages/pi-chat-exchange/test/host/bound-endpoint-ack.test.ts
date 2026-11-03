@@ -68,6 +68,7 @@ type Script = Partial<Record<"renew" | "acknowledge", (...args: never[]) => unkn
 function start(script: Script = {}) {
   const calls: Record<string, unknown[][]> = {};
   const host = {
+    runWithRecipientSnapshot: <T>(admit: (snapshot: undefined) => void, operation: () => T): T => { admit(undefined); return operation(); },
     beginSession: (...args: unknown[]) => {
       (calls.beginSession ??= []).push(args);
       return { endpointId: args[0], participantId: "p", sessionId: "s", exchangeId: "e" };

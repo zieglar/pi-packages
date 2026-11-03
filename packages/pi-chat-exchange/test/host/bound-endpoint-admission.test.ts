@@ -3,7 +3,7 @@ import { CeBoundEndpoint } from "../../src/host/bound-endpoint.js";
 import { CeHostRefusal, type CeEndpointHost } from "../../src/host/endpoint-host.js";
 
 it("injects fresh admission before begin, every tool and heartbeat, never cleanup", async () => {
-  const host = { beginSession: vi.fn(), send: vi.fn(), listInbox: vi.fn(), readPayload: vi.fn(), acknowledge: vi.fn(), renew: vi.fn(), end: vi.fn(() => ({ released: true, detached: true })) };
+  const host = { runWithRecipientSnapshot: <T>(admit: (snapshot: undefined) => void, operation: () => T): T => { admit(undefined); return operation(); }, beginSession: vi.fn(), send: vi.fn(), listInbox: vi.fn(), readPayload: vi.fn(), acknowledge: vi.fn(), renew: vi.fn(), end: vi.fn(() => ({ released: true, detached: true })) };
   let tick = () => {};
   let denied = false;
   const seen: unknown[] = [];
@@ -25,6 +25,6 @@ it("injects fresh admission before begin, every tool and heartbeat, never cleanu
 
 it("denies begin before host writes", () => {
   const beginSession = vi.fn();
-  expect(() => CeBoundEndpoint.start({ beginSession } as unknown as CeEndpointHost, "x", { renewIntervalMs: 1, admission: () => { throw new CeHostRefusal("CE_HOST_AUTHORITY_ABSENT"); } })).toThrow();
+  expect(() => CeBoundEndpoint.start({ beginSession, runWithRecipientSnapshot: <T>(admit: (snapshot: undefined) => void, operation: () => T): T => { admit(undefined); return operation(); } } as unknown as CeEndpointHost, "x", { renewIntervalMs: 1, admission: () => { throw new CeHostRefusal("CE_HOST_AUTHORITY_ABSENT"); } })).toThrow();
   expect(beginSession).not.toHaveBeenCalled();
 });

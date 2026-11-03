@@ -10,7 +10,7 @@ import { intersectMcpPolicy, readLoadedMultiSessionPolicy, readSelectedMultiSess
  * available while any loaded registration survives; it is not partitioned by
  * the sender whose registration was later revoked. */
 export function createMcpPolicyAdmission(config: McpBindingConfig, bindingPath: string): BoundEndpointAdmission | undefined {
-  if (config.admissionPolicy === undefined) return undefined;
+  if (config.admissionPolicy?.kind !== "ce-multi-session-v1") return undefined;
   const profilePath = config.admissionPolicy.profilePath;
   const deny = (): never => { throw new CeHostRefusal("CE_HOST_AUTHORITY_ABSENT", false, "ADMISSION_POLICY_DENIED"); };
   const loaded = readLoadedMultiSessionPolicy(profilePath, bindingPath);
