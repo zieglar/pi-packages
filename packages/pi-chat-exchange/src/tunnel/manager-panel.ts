@@ -131,7 +131,9 @@ export function tunnelPanelModel(
     { label: "Credential", value: read.credential, tone: configuredTone(read.credential) },
   ];
   const runtime: TunnelPanelField[] = [
-    { label: "State", value: read.state, tone: primaryState(read).tone },
+    { label: "Shared Tunnel", value: read.state, tone: primaryState(read).tone },
+    { label: "Current Session", value: projection.sessionBinding === "attached" ? "Attached" : projection.sessionBinding === "detached" ? "Detached" : "Unknown",
+      tone: projection.sessionBinding === "attached" ? "ok" : projection.sessionBinding === "detached" ? "neutral" : "warn" },
     ...(view === "details" ? [{ label: "Evidence", value: read.evidence, tone: "neutral" as const }] : []),
     ...(view === "details" && read.errorCode !== undefined
       ? [{ label: "Error", value: read.errorCode, tone: "bad" as const }] : []),
@@ -148,7 +150,7 @@ export function tunnelPanelModel(
       : [];
   return Object.freeze({
     title: view === "details" ? "Tunnel Details" : "Chat Exchange Tunnel",
-    primary: primaryState(read),
+    primary: { ...primaryState(read), text: primaryState(read).text.replace("● ", "● Shared Tunnel · ") },
     sections: Object.freeze([
       Object.freeze({ title: "Configuration", fields: Object.freeze(identity) }),
       ...(view === "details" && messaging.length > 0 ? [Object.freeze({ title: "Messaging (configuration)", fields: Object.freeze(messaging) })] : []),

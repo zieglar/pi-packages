@@ -2109,7 +2109,28 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       if (authorizeCleanup?.task === task) authorizeCleanup = undefined;
     }
   };
-  /** Fresh configuration projection; never reads credential contents. */
+  /** Read-only current-Session observation; a cached local endpoint is insufficient. */
+  const currentSessionBinding = (ctx: ExtensionContextView, profilePath: string): NonNullable<TunnelManagerUiProjection["sessionBinding"]> => {
+    try {
+      if (startupFailure !== undefined || runtimeEnvironment() !== loadedRuntimeEnvironment || tunnelManagerProfilePath !== profilePath) return "unknown";
+      if (generation === undefined && inboxBinding === undefined && currentEndpoint === undefined) return "detached";
+      if (generation === undefined || generation.stopping || generation.failure !== undefined ||
+          generation.piSessionId !== ctx.sessionManager.getSessionId()) return "unknown";
+      if (multiPolicy !== undefined && isLivePolicy(multiPolicy)) {
+        const selected = readLiveSelectedSessionPolicy(profilePath, readFileSync(profilePath, "utf8"));
+        if (selected === undefined || !isDeepStrictEqual(selected.ref, multiPolicy.ref)) return "unknown";
+      }
+      const endpointId = guardedEndpoint(ctx);
+      return withHost("status", () => {
+        // Use this factory's exact mapping and current policy/Owner, never shared transport health.
+        const status = host?.status(endpointId);
+        const mapping = lastMappingEntry(ctx);
+        return status?.registered && status.lease === "ACTIVE" && isDeepStrictEqual(mapping, {
+          endpointId, participantId: status.participantId, sessionId: status.sessionId, exchangeId: status.exchangeId,
+        }) ? "attached" : "unknown";
+      });
+    } catch { return "unknown"; }
+  };
   const readTunnelUi = async (ctx: ExtensionContextView): Promise<{ view: TunnelManagerUiProjection; runtimeState: string; evidence: string }> => {
     let profilePath = "Unavailable";
     try {
@@ -2122,6 +2143,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       let permission: TunnelManagerUiProjection["permission"];
       try { permission = manager.authorizationStatus(); } catch { permission = "invalid"; }
       const runtime = await manager.refresh();
+      const sessionBinding = currentSessionBinding(ctx, profilePath);
       publishTunnelStatus(ctx);
       try {
         const setup = createTunnelProfileSetup({ env: process.env, manager });
@@ -2147,19 +2169,19 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           ...(inspection.messaging.exchangeNamespace === undefined ? {} : { exchangeNamespace: inspection.messaging.exchangeNamespace }),
           ...(inspection.messaging.exchangeIdempotencyKey === undefined ? {} : { exchangeIdempotencyKey: inspection.messaging.exchangeIdempotencyKey }),
         };
-        return { view: { state, profilePath: inspection.profilePath, permission,
+        return { view: { state, sessionBinding, profilePath: inspection.profilePath, permission,
           ...(inspection.tunnelId ? { tunnelIdAlreadyMasked: `${inspection.tunnelId.slice(0, 13)}…` } : {}),
           organizationConfigured: Boolean(inspection.organizationId), binding, credentialConfigured: inspection.credentialConfigured,
           evidence: runtime.evidence === "health-probe" ? "health-probe" : "none",
           ...(messaging === undefined ? {} : { messaging }),
         }, runtimeState: runtime.state, evidence: runtime.evidence };
       } catch (error) {
-        return { view: { state: "UNKNOWN", profilePath, permission, organizationConfigured: false, binding: "invalid", credentialConfigured: false,
+        return { view: { state: "UNKNOWN", sessionBinding, profilePath, permission, organizationConfigured: false, binding: "invalid", credentialConfigured: false,
           evidence: "unavailable", errorCode: error instanceof TunnelRefusal ? error.code : "CE_TUNNEL_PROFILE_INVALID",
         }, runtimeState: runtime.state, evidence: runtime.evidence };
       }
     } catch (error) {
-      return { view: { state: "UNKNOWN", profilePath, organizationConfigured: false, binding: "invalid", credentialConfigured: false,
+      return { view: { state: "UNKNOWN", sessionBinding: "unknown", profilePath, organizationConfigured: false, binding: "invalid", credentialConfigured: false,
         evidence: "unavailable", errorCode: error instanceof TunnelRefusal ? error.code : "CE_TUNNEL_PROFILE_INVALID",
       }, runtimeState: "UNKNOWN", evidence: "unavailable" };
     }

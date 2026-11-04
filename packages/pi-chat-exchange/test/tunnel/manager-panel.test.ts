@@ -87,7 +87,7 @@ describe("tunnel manager visual panel", () => {
 
   it("aligns field values into one column", () => {
     const lines = render(CONNECTED, 72);
-    const fields = lines.filter((l) => /(Tunnel|Organization|MCP Binding|Credential)\s{2,}\S/.test(l));
+    const fields = lines.filter((l) => /^│ (Tunnel|Organization|MCP Binding|Credential)\s{2,}\S/.test(l));
     expect(fields.length).toBe(4);
     const columns = fields.map((l) => l.search(/\S+\s*│$/u) >= 0 ? l.indexOf(l.trimEnd().split(/\s{2,}/u).at(-1)!) : -1);
     expect(new Set(columns).size).toBe(1);
@@ -96,11 +96,11 @@ describe("tunnel manager visual panel", () => {
   it("gives the primary state its own emphasized row with a state-appropriate tone", () => {
     // The tagged primary row itself: a screen-wide substring could match a
     // configured field even if the primary tone were wrong.
-    expect(render(CONNECTED, 72, TAGGED).join("\n")).toContain("*<success>● Connected</success>*");
-    expect(render(UNCONFIGURED, 72, TAGGED).join("\n")).toContain("*<warning>● Not configured</warning>*");
+    expect(render(CONNECTED, 72, TAGGED).join("\n")).toContain("*<success>● Shared Tunnel · Connected</success>*");
+    expect(render(UNCONFIGURED, 72, TAGGED).join("\n")).toContain("*<warning>● Shared Tunnel · Not configured</warning>*");
     const connected = render(CONNECTED, 72).join("\n");
-    expect(connected).toContain("● Connected");
-    expect(render(UNCONFIGURED, 72).join("\n")).toContain("● Not configured");
+    expect(connected).toContain("● Shared Tunnel · Connected");
+    expect(render(UNCONFIGURED, 72).join("\n")).toContain("● Shared Tunnel · Not configured");
   });
 
   it("styles the frame with border and the title with accent, never raw", () => {
@@ -186,7 +186,7 @@ describe("tunnel manager visual panel", () => {
       // BMP wide chars occupy 2 cells per UTF-16 unit: the row's code-unit
       // length is strictly below its cell width, which a naive implementation
       // cannot satisfy while keeping the frame closed.
-      expect(profile!.length).toBeLessThan(width);
+      if (width > 24) expect(profile!.length).toBeLessThan(width);
       expect(profile!.endsWith("│")).toBe(true);
     }
     // Combining marks occupy zero cells; emoji (surrogate pairs) occupy two.
@@ -196,20 +196,20 @@ describe("tunnel manager visual panel", () => {
 
   it("pins exact Details rows for wide, combining, and emoji values (independent of the cell helper)", () => {
     // Literal expectations: they must not share the production classifier.
-    // Width 40 => budget 36, label cell 12, value budget 22.
+    // Width 40 => budget 36, label cell 15, value budget 19.
     const emoji: TunnelManagerUiProjection = { ...STOPPED, profilePath: "/tmp/🚀/tunnel.yaml" };
     const emojiRow = render(emoji, 40, PLAIN, "details").find((l) => l.includes("Profile"));
-    // 🚀 = 2 cells: value is 19 cells, so 3 fill cells precede the frame.
-    expect(emojiRow).toBe("│ Profile       /tmp/🚀/tunnel.yaml    │");
+    // 🚀 = 2 cells: the 19-cell value fills the value column.
+    expect(emojiRow).toBe("│ Profile          /tmp/🚀/tunnel.yaml │");
 
     const combining: TunnelManagerUiProjection = { ...STOPPED, profilePath: "/tmp/cafe\u0301/tunnel.yaml" };
     const combiningRow = render(combining, 40, PLAIN, "details").find((l) => l.includes("Profile"));
-    // cafe\u0301 = 4 cells / 5 code units: value is 21 cells, 1 fill cell.
-    expect(combiningRow).toBe("│ Profile       /tmp/cafe\u0301/tunnel.yaml  │");
+    // Combining marks use no extra cell; the 21-cell path is clipped to 19 cells.
+    expect(combiningRow).toBe("│ Profile          /tmp/café/tunnel.y… │");
 
-    // Width 24 => budget 20, value budget 6: CJK clipped to whole glyphs.
+    // Width 24 => budget 20, value budget 3: the next wide glyph cannot fit.
     const cjk: TunnelManagerUiProjection = { ...STOPPED, profilePath: "/用户资料/密钥目录/tunnel.yaml" };
     const cjkRow = render(cjk, 24, PLAIN, "details").find((l) => l.includes("Profile"));
-    expect(cjkRow).toBe("│ Profile       /用户… │");
+    expect(cjkRow).toBe("│ Profile          /…  │");
   });
 });

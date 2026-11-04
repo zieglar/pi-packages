@@ -19,12 +19,14 @@ import {
 export type TunnelManagerUiState =
   | "UNCONFIGURED" | "STOPPED" | "STARTING" | "CONNECTED" | "STOPPING"
   | "ERROR" | "UNKNOWN" | "DEGRADED";
-export type TunnelManagerUiAction = "setup" | "edit" | "start" | "stop" | "connect" | "disconnect" | "status" | "permission" | "refresh" | "details" | "close";
+export type TunnelManagerUiAction = "setup" | "edit" | "start" | "stop" | "connect" | "disconnect" | "status" | "permission" | "advanced" | "refresh" | "details" | "close";
 export type TunnelManagerUiEvidence = "none" | "process-identity" | "health-probe" | "offline-simulated" | "unavailable";
 
 /** Safe projection only: never pass a key value or credential reference here. */
 export interface TunnelManagerUiProjection {
   readonly state: TunnelManagerUiState;
+  /** Current native Session binding observation, independent of shared transport. */
+  readonly sessionBinding?: "attached" | "detached" | "unknown";
   readonly permission?: "absent" | "invalid" | "revoked" | "changed" | "granted" | "environment";
   readonly profilePath: string;
   readonly tunnelIdAlreadyMasked?: string;
@@ -87,10 +89,8 @@ export function tunnelManagerActions(projection: TunnelManagerUiProjection): rea
   const invalidOrIncomplete = projection.errorCode !== undefined || projection.binding === "invalid"
     || projection.binding === "missing" || !projection.credentialConfigured;
   const repair: TunnelManagerUiAction | undefined = unconfigured ? "setup" : invalidOrIncomplete ? "edit" : undefined;
-  // Start/Stop authority follows the measured runtime lifecycle only.
-  const lifecycle: readonly TunnelManagerUiAction[] = state === "STOPPED" ? ["start"]
-    : state === "CONNECTED" ? ["stop"] : [];
-  return [...(repair !== undefined ? [repair] : []), ...lifecycle, "connect", "disconnect", "status", "permission", "refresh", "details", "close"];
+  const sessionAction = projection.sessionBinding === "attached" ? "disconnect" : "connect";
+  return [...(repair !== undefined ? [repair] : []), sessionAction, "status", "permission", "advanced", "refresh", "details", "close"];
 }
 
 /** Navigation entries never authorize a domain operation. */
@@ -100,7 +100,7 @@ const LABELS: Readonly<Record<TunnelManagerUiItem, string>> = Object.freeze({
   setup: "Set Up Tunnel", edit: "Edit Configuration", start: "Start Tunnel", stop: "Stop Tunnel",
   connect: "Connect", disconnect: "Disconnect", status: "Status", permission: "Manage Permission",
   "permission-status": "View Status", "permission-grant": "Grant Permission", "permission-revoke": "Revoke Permission",
-  refresh: "Refresh", details: "Details", close: "Close", back: "Back",
+  advanced: "Advanced", refresh: "Refresh", details: "Details", close: "Close", back: "Back",
 });
 const DETAIL_ITEMS: readonly TunnelManagerUiItem[] = Object.freeze(["back", "close"]);
 const MANAGER_HINT = "↑↓ move · Enter select · Esc close";
@@ -205,13 +205,13 @@ function panelTheme(theme: unknown): TunnelPanelTheme {
 /** What the operator chose. `details`/`back` never leave the component: they are
  * internal views, so diagnostics never take a second component ownership. */
 type ManagerSelection =
-  | { readonly kind: "action"; readonly action: Exclude<TunnelManagerUiItem, "details" | "close" | "back" | "permission"> }
+  | { readonly kind: "action"; readonly action: Exclude<TunnelManagerUiItem, "details" | "close" | "back" | "permission" | "advanced"> }
   | { readonly kind: "close" };
 
 const CLOSE_SELECTION: ManagerSelection = Object.freeze({ kind: "close" });
 
 class TunnelManagerPanel implements ManagerComponentView {
-  private view: "manager" | "details" | "permission";
+  private view: "manager" | "details" | "permission" | "advanced";
   private cursor = 0;
   private finished = false;
   private readonly theme: TunnelPanelTheme;
@@ -233,6 +233,10 @@ class TunnelManagerPanel implements ManagerComponentView {
 
   private items(): readonly TunnelManagerUiItem[] {
     if (this.view === "details") return DETAIL_ITEMS;
+    if (this.view === "advanced") return [
+      ...(this.projection.state === "STOPPED" ? ["start" as const] : this.projection.state === "CONNECTED" ? ["stop" as const] : []),
+      "back",
+    ];
     if (this.view === "permission") {
       const permission = this.projection.permission;
       return ["permission-status",
@@ -246,10 +250,12 @@ class TunnelManagerPanel implements ManagerComponentView {
   render(width: number): string[] {
     const total = Math.max(1, Math.floor(width));
     const panelWidth = Math.min(total, PANEL_MAX_WIDTH);
-    const lines = this.view === "permission"
+    const lines = this.view === "advanced"
+      ? ["Advanced · shared Tunnel", "", "Start/Stop affects all sessions using this Tunnel."].map(line => clipTunnelPanelText(line, total))
+      : this.view === "permission"
       ? ["Manage Permission", "",
         `Background permission: ${this.projection.permission ?? "unavailable"}`,
-        "Revoke denies future starts. Running transport needs Stop/disconnect.",
+        "Revoke denies future starts. Running transport needs Advanced · Stop Tunnel.",
       ].map(line => clipTunnelPanelText(line, total))
       : [...renderTunnelPanel(tunnelPanelModel(this.projection, this.view), panelWidth, this.theme)];
     if (this.operationError !== undefined) {
@@ -320,13 +326,14 @@ class TunnelManagerPanel implements ManagerComponentView {
     const item = this.items()[this.cursor];
     if (item === undefined) return;
     if (item === "details") { this.show("details"); return; }
+    if (item === "advanced") { this.show("advanced"); return; }
     if (item === "permission") { this.show("permission"); return; }
     if (item === "back") { this.show("manager"); return; }
     if (item === "close") { this.finish(CLOSE_SELECTION); return; }
     this.finish({ kind: "action", action: item });
   }
 
-  private show(view: "manager" | "details" | "permission"): void {
+  private show(view: "manager" | "details" | "permission" | "advanced"): void {
     this.view = view;
     this.cursor = 0;
     this.requestRender();

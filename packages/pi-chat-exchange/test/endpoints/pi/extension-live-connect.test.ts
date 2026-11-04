@@ -87,6 +87,53 @@ async function fixture(convert = true) {
   return { dir, profilePath, api, binding, runtime, setProcessState: (state: typeof processState) => { processState = state; } };
 }
 
+it("Manager observes current binding independently of shared transport and refuses stale ownership/policy", async () => {
+  const f = await fixture();
+  const { createLiveSessionMigration } = await import("../../../dist/tunnel/live-session-migration.js");
+  const manager = seam.manager as ReturnType<typeof createBackgroundTunnelManager>;
+  const migration = createLiveSessionMigration({ profilePath: f.profilePath, manager });
+  const migrated = await migration.migrate({ expectedRevision: migration.revision(), confirm: true });
+  const a = await f.runtime("real-A"); await a.start();
+  const stopped = await manager.refresh();
+  const refresh = vi.spyOn(manager, "refresh").mockResolvedValue({ ...stopped, state: "CONNECTED", running: true });
+  const start = vi.spyOn(manager, "start"), stop = vi.spyOn(manager, "stop");
+  const frame = async (runtime: typeof a) => {
+    let lines: string[] = [];
+    runtime.ctx.ui.custom.mockImplementationOnce(async factory => {
+      const component = factory({ terminal: { rows: 80 } }, undefined, undefined, () => undefined);
+      lines = component.render(100); component.dispose?.();
+      return undefined;
+    });
+    await runtime.command(""); return lines.join("\n");
+  };
+  expect(a.notices()).toContain("bound (participant");
+  expect(seam.hosts[0]!.status("pi/A").lease).toBe("ACTIVE");
+  expect(await frame(a)).toMatch(/Current Session +Attached/);
+  expect(await frame(a)).toContain("❯ Disconnect");
+  const unbound = await f.runtime("new-unbound"); await unbound.start();
+  expect(await frame(unbound)).toMatch(/Current Session +Detached/);
+  expect(await frame(unbound)).toContain("❯ Connect");
+  refresh.mockResolvedValue({ ...stopped, state: "STOPPED", running: false });
+  expect(await frame(unbound)).toMatch(/Current Session +Detached/);
+  refresh.mockResolvedValue({ ...stopped, state: "CONNECTED", running: true });
+  const host = seam.hosts[0]!;
+  const actual = host.status("pi/A");
+  const status = vi.spyOn(host, "status").mockReturnValue({ ...actual, lease: "EXPIRED" });
+  expect(await frame(a)).toMatch(/Current Session +Unknown/);
+  status.mockReturnValue({ ...actual, lease: "ABSENT" });
+  expect(await frame(a)).toMatch(/Current Session +Unknown/);
+  status.mockRestore();
+  await host.end("pi/A");
+  expect(await frame(a)).toMatch(/Current Session +Unknown/);
+  const { createLivePolicyRegistration, readLivePolicy } = await import("../../../dist/tunnel/live-session-policy.js");
+  const snapshot = readLivePolicy(migrated.ref);
+  await createLivePolicyRegistration({ ref: migrated.ref }).revoke({ expectedDigest: snapshot.digest, endpointId: "pi/A" });
+  expect(await frame(a)).toMatch(/Current Session +Unknown/);
+  a.switchSession();
+  expect(await frame(a)).toMatch(/Current Session +Unknown/);
+  expect(start).not.toHaveBeenCalled(); expect(stop).not.toHaveBeenCalled();
+});
+
 it("live B Connect joins a running shared transport and Disconnect retains A", async () => {
   const f = await fixture();
   const { createLiveSessionMigration } = await import("../../../dist/tunnel/live-session-migration.js");
