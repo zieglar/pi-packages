@@ -16,12 +16,12 @@ async function api() {
   return loaded as ManagerApi;
 }
 
-const ITEMS = /(?:Set Up Tunnel|Start Tunnel|Edit Configuration|Stop Tunnel|Connect|Disconnect|Status|Refresh|Details|Back|Close|Manage Permission|View Status|Grant Permission|Revoke Permission)/;
+const ITEMS = /(?:Set Up Tunnel|Start Tunnel|Edit Configuration|Stop Tunnel|Connect|Disconnect|Status|Advanced|Refresh|Details|Back|Close|Manage Permission|View Status|Grant Permission|Revoke Permission)/;
 
 function projection(state = "STOPPED"): {
   state: string; profilePath: string; tunnelIdAlreadyMasked: string | undefined;
   organizationConfigured: boolean; binding: string; credentialConfigured: boolean;
-  evidence: string; errorCode?: string;
+  evidence: string; errorCode?: string; sessionBinding?: "attached" | "detached" | "unknown";
 } {
   // A STOPPED profile with one missing field is the repairable (Edit) case.
   const stoppedRepairable = state === "STOPPED";
@@ -55,6 +55,8 @@ async function flush(): Promise<void> {
 }
 /** Drive the real self-drawn item list, not a mocked action callback. */
 async function activate(f: Awaited<ReturnType<typeof open>>, label: string) {
+  if ((label === "Start" || label === "Start Tunnel" || label === "Stop Tunnel") &&
+      !f.tui.render().some(line => line.includes("Advanced · shared Tunnel"))) await activate(f, "Advanced");
   const rows = f.tui.render().filter((line) => ITEMS.test(line) && /^[❯ ] /.test(line));
   expect(rows.length).toBeGreaterThan(0);
   const index = rows.findIndex((line) => line.includes(label));
@@ -82,7 +84,7 @@ describe("Tunnel Manager custom panel interaction", () => {
     const f = await open();
     expect(f.ports.read).toHaveBeenCalledTimes(1);
     const frame = f.tui.render().join("\n");
-    for (const label of ["Configuration", "Tunnel", "Organization", "MCP Binding", "Credential", "Runtime", "State"]) expect(frame).toContain(label);
+    for (const label of ["Configuration", "Tunnel", "Organization", "MCP Binding", "Credential", "Runtime", "Current Session", "Shared Tunnel"]) expect(frame).toContain(label);
     expect(frame).toContain("STOPPED");
     expect(frame).toContain("tunnel_ABCDEF…");
     // Diagnostics moved behind Details: not on the landing page.
@@ -125,8 +127,8 @@ describe("Tunnel Manager custom panel interaction", () => {
     [projection("UNKNOWN"), ["refresh", "details", "close"]],
   ])("limits contextual actions to the projection", async (proj, expected) => {
     const mod = await api();
-    const navigation = ["connect", "disconnect", "status", "permission"];
-    expect(mod.tunnelManagerActions(proj)).toEqual([...expected.slice(0, -3), ...navigation, ...expected.slice(-3)]);
+    const repair = expected.filter(item => item === "setup" || item === "edit");
+    expect(mod.tunnelManagerActions(proj)).toEqual([...repair, "connect", "status", "permission", "advanced", "refresh", "details", "close"]);
     const f = await open((proj as ReturnType<typeof projection>).state);
     expect(f.tui.render().join("\n")).toContain((proj as ReturnType<typeof projection>).state);
     await close(f);
@@ -149,8 +151,8 @@ describe("Tunnel Manager custom panel interaction", () => {
     f.set(proj as ReturnType<typeof projection>);
     await activate(f, "Refresh");
     const frame = f.tui.render().join("\n");
-    expect(frame).toMatch(/State +UNKNOWN/);
-    expect(frame).not.toMatch(/State +STOPPED/);
+    expect(frame).toMatch(/Shared Tunnel +UNKNOWN/);
+    expect(frame).not.toMatch(/Shared Tunnel +STOPPED/);
     expect(frame).toContain(label);
     expect(frame).not.toContain("Start Tunnel");
     expect(frame).not.toContain("Stop Tunnel");
@@ -165,11 +167,11 @@ describe("Tunnel Manager custom panel interaction", () => {
     const frame = f.tui.render().join("\n");
     // Primary user-facing state comes from the same projection as the actions.
     expect(frame).toContain("Chat Exchange Tunnel");
-    expect(frame).toContain("● Not configured");
+    expect(frame).toContain("● Shared Tunnel · Not configured");
     expect(frame).toContain("Tunnel is not configured. Run setup to continue.");
     // Three zones, with Configuration before Runtime.
     expect(frame.indexOf("Configuration")).toBeLessThan(frame.indexOf("Runtime"));
-    for (const row of [/Tunnel +Not configured/, /Organization +Not configured/, /MCP Binding +Not configured/, /Credential +Not configured/, /State +UNCONFIGURED/]) {
+    for (const row of [/Tunnel +Not configured/, /Organization +Not configured/, /MCP Binding +Not configured/, /Credential +Not configured/, /Shared Tunnel +UNCONFIGURED/]) {
       expect(frame).toMatch(row);
     }
     // Diagnostics are not on the landing page.
@@ -196,7 +198,7 @@ describe("Tunnel Manager custom panel interaction", () => {
     expect(details).toContain("CE_TUNNEL_PROFILE_INVALID");
     expect(details).toContain("Configured ≠ Connected");
     expect(details).toContain("not delivery/ACK/completion evidence");
-    expect(details).toMatch(/State +UNKNOWN/);
+    expect(details).toMatch(/Shared Tunnel +UNKNOWN/);
     // Diagnostics view never offers or performs a lifecycle operation.
     for (const label of ["Start Tunnel", "Stop Tunnel", "Set Up Tunnel", "Edit Configuration"]) expect(details).not.toContain(label);
     for (const port of [f.ports.setup, f.ports.start, f.ports.stop]) expect(port).not.toHaveBeenCalled();
@@ -213,7 +215,7 @@ describe("Tunnel Manager custom panel interaction", () => {
   it("small Manager view keeps the selected Permission entry visible", async () => {
     const f = await open("CONNECTED");
     f.tui.resize({ width: 32, rows: 8 });
-    for (let i = 0; i < 4; i++) f.tui.press("tui.select.down");
+    for (let i = 0; i < 2; i++) f.tui.press("tui.select.down");
     const lines = f.tui.render();
     expect(lines.length).toBeLessThanOrEqual(6);
     expect(lines.join("\n")).toContain("❯ Manage Permission");
@@ -224,6 +226,7 @@ describe("Tunnel Manager custom panel interaction", () => {
 
   it.each(["Connect", "Disconnect", "Status"])("%s releases the panel before handing off to its existing command", async label => {
     const f = await open("CONNECTED");
+    if (label === "Disconnect") { f.set({ ...projection("CONNECTED"), sessionBinding: "attached" }); await activate(f, "Refresh"); }
     await activate(f, label);
     await expect(f.running).resolves.toEqual({ status: "command", command: label.toLowerCase() });
     expect(f.tui.isOpen).toBe(false);
@@ -275,10 +278,10 @@ describe("Tunnel Manager custom panel interaction", () => {
     const f = await open("UNKNOWN");
     f.set({ ...projection("UNKNOWN"), binding: "missing", credentialConfigured: false, organizationConfigured: false, tunnelIdAlreadyMasked: "" });
     await activate(f, "Refresh");
-    expect(f.tui.render().join("\n")).toMatch(/State +UNKNOWN/);
+    expect(f.tui.render().join("\n")).toMatch(/Shared Tunnel +UNKNOWN/);
     expect(f.tui.render().join("\n")).toMatch(/Credential +Not configured/);
     expect(f.tui.render().join("\n")).not.toContain("STOPPED");
-    expect((await api()).tunnelManagerActions(projection("UNKNOWN"))).toEqual(["connect", "disconnect", "status", "permission", "refresh", "details", "close"]);
+    expect((await api()).tunnelManagerActions(projection("UNKNOWN"))).toEqual(["connect", "status", "permission", "advanced", "refresh", "details", "close"]);
     await close(f);
   });
 
@@ -414,6 +417,7 @@ describe("Tunnel Manager custom panel interaction", () => {
     const f = await open("STOPPED", { signal: controller.signal });
     let finish!: () => void;
     f.ports.start.mockImplementation(() => new Promise<undefined>((resolve) => { finish = () => resolve(undefined); }));
+    await activate(f, "Advanced");
     const rows = f.tui.render().filter((line) => ITEMS.test(line) && /^[❯ ] /.test(line));
     const idx = rows.findIndex((line) => line.includes("Start Tunnel"));
     expect(idx).toBeGreaterThanOrEqual(0);
