@@ -84,7 +84,7 @@ describe("real tunnel manager extension routing", () => {
       expect(existsSync(join(f.directory, "profile.yaml"))).toBe(false);
       await activateUi(h); // Save -> fresh Manager
       await vi.waitFor(() => expect(existsSync(join(f.directory, "profile.yaml"))).toBe(true));
-      await vi.waitFor(() => expect(h.render().join("\n")).toMatch(/State +STOPPED/));
+      await vi.waitFor(() => expect(h.render().join("\n")).toMatch(/Shared Tunnel +STOPPED/));
       const text = readFileSync(join(f.directory, "profile.yaml"), "utf8");
       const { parseTunnelProfile } = await import("../../dist/tunnel/background-manager.js");
       const facts = parseTunnelProfile(text);
@@ -98,7 +98,17 @@ describe("real tunnel manager extension routing", () => {
       expect(managedDoc.recipients).toEqual([]);
       expect(existsSync(store)).toBe(false);
       expect(h.render().join("\n").includes("tunnel_12345678")).toBe(false);
-      await activateUi(h); // Start needs permission confirmation
+      const choose = async (label: string) => {
+        const rows = h.render().filter(line => /^[❯ ] /.test(line));
+        const target = rows.findIndex(line => line.trim().replace(/^❯ /, "") === label);
+        expect(target).toBeGreaterThanOrEqual(0);
+        const cursor = Math.max(0, rows.findIndex(line => line.startsWith("❯")));
+        for (let i = cursor; i < target; i++) h.press("tui.select.down");
+        for (let i = cursor; i > target; i--) h.press("tui.select.up");
+        await activateUi(h);
+      };
+      await choose("Advanced");
+      await choose("Start Tunnel"); // Existing permission gate still owns startup.
       await vi.waitFor(() => expect(h.render().join("\n")).toContain("Chat Exchange Tunnel"));
       await vi.waitFor(() => expect(f.notify.mock.calls.some(([text]) => String(text).includes("CE_TUNNEL_INPUT_UNAVAILABLE"))).toBe(true));
       expect(existsSync(join(f.directory, "background-state.json"))).toBe(false);
