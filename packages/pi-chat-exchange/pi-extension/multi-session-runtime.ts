@@ -93,7 +93,7 @@ function continuity(loaded: RuntimePolicy, current: RuntimePolicy, runtimeId: st
   throw policyDenied();
 }
 
-/** Reload may capture newly true generations, but cannot change identity or Hooks. */
+/** Reload may capture newer permission/Hook generations; identity and epoch stay fixed. */
 export function assertLiveRegistrationContinuity(loaded: LiveSnapshot, current: LiveSnapshot, runtimeId: string) {
   if (!isDeepStrictEqual(loaded.ref, current.ref) || !isDeepStrictEqual(loaded.manifest.identity, current.manifest.identity) ||
     !isDeepStrictEqual(loaded.manifest.store, current.manifest.store) || !isDeepStrictEqual(loaded.manifest.exchange, current.manifest.exchange) ||
@@ -101,7 +101,7 @@ export function assertLiveRegistrationContinuity(loaded: LiveSnapshot, current: 
   const a = loaded.manifest.registrations.find(r => r.runtimeSessionId === runtimeId);
   const b = current.manifest.registrations.find(r => r.runtimeSessionId === runtimeId);
   if (a === undefined || b === undefined || a.status !== "active" || b.status !== "active" || a.endpointId !== b.endpointId ||
-    a.epoch !== b.epoch || !isDeepStrictEqual(a.hooks, b.hooks) || b.payloadReadGeneration < a.payloadReadGeneration || b.ackGeneration < a.ackGeneration) throw policyDenied();
+    a.epoch !== b.epoch || (loaded.ref.kind !== "ce-live-session-v2" && !isDeepStrictEqual(a.hooks, b.hooks)) || b.payloadReadGeneration < a.payloadReadGeneration || b.ackGeneration < a.ackGeneration) throw policyDenied();
   return b;
 }
 export function effectiveLiveRegistration(loaded: LiveSnapshot, current: LiveSnapshot, runtimeId: string) {

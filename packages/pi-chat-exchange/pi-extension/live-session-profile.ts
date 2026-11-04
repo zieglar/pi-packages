@@ -22,11 +22,12 @@ export function readLiveSelectedSessionPolicy(profilePath: string, text: string)
   if (facts.mcpCommand === undefined) return undefined;
   const bindingPath = parseTunnelMcpCommand(facts.mcpCommand).bindingPath;
   const pair = readMessagingGeneration(profilePath, bindingPath, facts.keyFile);
-  if (pair?.config.admissionPolicy?.kind !== "ce-live-session-v1") return undefined;
+  if (pair?.config.admissionPolicy?.kind !== "ce-live-session-v1" && pair?.config.admissionPolicy?.kind !== "ce-live-session-v2") return undefined;
   const ref = pair.config.admissionPolicy;
+  if (ref.kind === "ce-live-session-v2" && ref.profilePath !== profilePath) return invalid();
   const doc = pair.document;
   if (Reflect.ownKeys(doc).length !== 3 || !Object.hasOwn(doc, "kind") || !Object.hasOwn(doc, "version") || !Object.hasOwn(doc, "ref") ||
-    doc.kind !== "ce-live-launch-v1" || doc.version !== 1 || !isDeepStrictEqual(doc.ref, ref)) return invalid();
+    doc.kind !== (ref.kind === "ce-live-session-v2" ? "ce-live-launch-v2" : "ce-live-launch-v1") || doc.version !== 1 || !isDeepStrictEqual(doc.ref, ref)) return invalid();
   const snapshot = readLivePolicy(ref, { credentialFile: facts.keyFile });
   const m = snapshot.manifest; const c = pair.config;
   if (m.identity.tunnelId !== facts.tunnelId || m.identity.organizationId !== (facts.organizationId ?? null) ||

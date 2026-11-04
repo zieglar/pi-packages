@@ -51,7 +51,8 @@ export interface McpBindingConfig {
   /** Explicit launch mode; live grants remain operator-owned configuration, not CE capabilities. */
   readonly admissionPolicy?:
     | { readonly kind: "ce-multi-session-v1"; readonly profilePath: string }
-    | { readonly kind: "ce-live-session-v1"; readonly root: string; readonly policyId: string; readonly genesisDigest: string };
+    | { readonly kind: "ce-live-session-v1"; readonly root: string; readonly policyId: string; readonly genesisDigest: string }
+    | { readonly kind: "ce-live-session-v2"; readonly root: string; readonly policyId: string; readonly genesisDigest: string; readonly profilePath: string; readonly upgradeSequence: number };
 }
 
 /** Sanitized configuration refusal: a fixed code plus a structural field path;
@@ -218,19 +219,25 @@ export function parseMcpBindingConfig(raw: unknown): McpBindingConfig {
   const managed = fields.managed === undefined ? undefined : managedMetadata(fields.managed);
   let admissionPolicy: McpBindingConfig["admissionPolicy"];
   if (fields.admissionPolicy !== undefined) {
-    const kind = plain(fields.admissionPolicy, "admissionPolicy", ["kind", "profilePath", "root", "policyId", "genesisDigest"], ["kind"]).kind;
+    const kind = plain(fields.admissionPolicy, "admissionPolicy", ["kind", "profilePath", "root", "policyId", "genesisDigest", "upgradeSequence"], ["kind"]).kind;
     if (kind === "ce-multi-session-v1") {
       const ref = plain(fields.admissionPolicy, "admissionPolicy", ["kind", "profilePath"], ["kind", "profilePath"]);
       const path = label(ref.profilePath, "admissionPolicy.profilePath", 4096);
       if (!isAbsolute(path) || normalize(path) !== path || /[\u0000-\u001f\u007f]/.test(path)) throw new McpBindingConfigError("admissionPolicy");
       admissionPolicy = Object.freeze({ kind, profilePath: path });
-    } else if (kind === "ce-live-session-v1") {
-      const ref = plain(fields.admissionPolicy, "admissionPolicy", ["kind", "root", "policyId", "genesisDigest"], ["kind", "root", "policyId", "genesisDigest"]);
+    } else if (kind === "ce-live-session-v1" || kind === "ce-live-session-v2") {
+      const keys = ["kind", "root", "policyId", "genesisDigest", ...(kind === "ce-live-session-v2" ? ["profilePath", "upgradeSequence"] : [])];
+      const ref = plain(fields.admissionPolicy, "admissionPolicy", keys, keys);
       const root = label(ref.root, "admissionPolicy.root", 4096);
       const policyId = label(ref.policyId, "admissionPolicy.policyId", 128);
       if (!isAbsolute(root) || normalize(root) !== root || root === "/" || /[\u0000-\u001f\u007f]/.test(root) ||
         typeof ref.genesisDigest !== "string" || !/^[a-f0-9]{64}$/.test(ref.genesisDigest) || !/^[A-Za-z0-9_-]{1,128}$/.test(policyId)) throw new McpBindingConfigError("admissionPolicy");
-      admissionPolicy = Object.freeze({ kind, root, policyId, genesisDigest: ref.genesisDigest });
+      if (kind === "ce-live-session-v2") {
+        const profilePath = label(ref.profilePath, "admissionPolicy.profilePath", 4096);
+        if (!isAbsolute(profilePath) || normalize(profilePath) !== profilePath || /[\u0000-\u001f\u007f]/.test(profilePath) ||
+          typeof ref.upgradeSequence !== "number" || !Number.isSafeInteger(ref.upgradeSequence) || ref.upgradeSequence < 1 || ref.upgradeSequence > 65536) throw new McpBindingConfigError("admissionPolicy");
+        admissionPolicy = Object.freeze({ kind, root, policyId, genesisDigest: ref.genesisDigest, profilePath, upgradeSequence: ref.upgradeSequence });
+      } else admissionPolicy = Object.freeze({ kind, root, policyId, genesisDigest: ref.genesisDigest });
     } else throw new McpBindingConfigError("admissionPolicy");
   }
   const endpoint = endpointRef(fields.endpoint, "endpoint");

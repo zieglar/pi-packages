@@ -16,9 +16,11 @@ import { createBackgroundTunnelManager, parseTunnelProfile } from "../../src/tun
 import { parseMcpBindingConfig } from "../../src/host/mcp-binding-config.js";
 import { TunnelRefusal } from "../../src/tunnel/codes.js";
 import { createLiveSessionMigration } from "../../src/tunnel/live-session-migration.js";
-import { readLivePolicy } from "../../src/tunnel/live-session-policy.js";
+import { createLivePolicyRegistration, readLivePolicy } from "../../src/tunnel/live-session-policy.js";
+import { createLiveMcpComposition } from "../../src/tunnel/live-mcp-composition.js";
+import { readLiveSelectedSessionPolicy } from "../../pi-extension/live-session-profile.js";
 import { publishMessagingGeneration, readMessagingGeneration } from "../../src/tunnel/messaging-config.js";
-import { buildTunnelMcpCommand, buildTunnelProfile, serializeTunnelProfile } from "../../src/tunnel/profile.js";
+import { buildTunnelMcpCommand, buildTunnelProfile, replaceTunnelMcpBindingPath, serializeTunnelProfile } from "../../src/tunnel/profile.js";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
@@ -80,6 +82,67 @@ function markRunning(legacy: Legacy): void {
 }
 
 describe("offline live-session migration", () => {
+  it("accepts a candidate MCP Hook generation with the same live reference without widening the loaded process", async () => {
+    const legacy = legacySetup();
+    const migration = createLiveSessionMigration({ profilePath: legacy.profilePath, manager: legacy.manager });
+    const selected = await migration.migrate({ expectedRevision: migration.revision(), confirm: true });
+    const original = readMessagingGeneration(legacy.profilePath, selected.bindingPath, legacy.keyFile)!;
+    const loaded = createLiveMcpComposition(original.config);
+    const before = readLivePolicy(selected.ref);
+    const chainFiles = fs.readdirSync(selected.ref.root);
+    const profileText = fs.readFileSync(legacy.profilePath, "utf8");
+    const command = parseTunnelProfile(profileText).mcpCommand!;
+    const hooks = parseHookRules([{ id: "notify-A", event: CE_MESSAGE_COMMITTED_EVENT,
+      recipient: { adapter: "pi", endpointId: "pi/A" }, command: join(legacy.dir, "NEVER-EXECUTE"), enabled: true }]);
+    const config = parseMcpBindingConfig({ version: 1, ...original.config, hooks });
+    // Characterize candidate format/reader compatibility only. This primitive
+    // stages immutable files; it is not a production Profile activation API.
+    const candidate = await legacy.manager.withProfileConfigurationLock(guard => {
+      guard.assertIntact();
+      return publishMessagingGeneration(legacy.profilePath, config, original.document, { credentialFile: legacy.keyFile });
+    });
+    const nextCommand = replaceTunnelMcpBindingPath(command, candidate.bindingPath);
+    const candidateText = profileText.replace(`"${command}"`, `"${nextCommand}"`);
+    expect(candidate.bindingPath).not.toBe(selected.bindingPath);
+    expect(candidate.durability).toBe("synced");
+    expect(readMessagingGeneration(legacy.profilePath, candidate.bindingPath, legacy.keyFile)!.document).toEqual(original.document);
+    expect(readLiveSelectedSessionPolicy(legacy.profilePath, candidateText)).toEqual(before);
+    expect(loaded.hookAllowed(hooks[0]!)).toBe(false);
+    expect(createLiveMcpComposition(candidate.config).hookAllowed(hooks[0]!)).toBe(true);
+    expect(readLivePolicy(selected.ref)).toEqual(before);
+    expect(fs.readdirSync(selected.ref.root)).toEqual(chainFiles);
+    expect(fs.readFileSync(legacy.profilePath, "utf8")).toBe(profileText);
+    expect(fs.existsSync(join(legacy.dir, "NEVER-EXECUTE"))).toBe(false);
+  });
+
+  it("refuses adding Pi Hooks through live registration without changing the chain", async () => {
+    const legacy = legacySetup();
+    const migration = createLiveSessionMigration({ profilePath: legacy.profilePath, manager: legacy.manager });
+    const selected = await migration.migrate({ expectedRevision: migration.revision(), confirm: true });
+    const before = readLivePolicy(selected.ref);
+    const entries = fs.readdirSync(selected.ref.root);
+    const registration = { endpointId: "pi/A", runtimeSessionId: "session-A", payloadRead: true, ack: true,
+      presenceDisclosure: false, hooks: [] };
+    expect(() => createLivePolicyRegistration({ ref: selected.ref }).register({
+      expectedDigest: before.digest, registration: registration as never,
+    })).toThrow(TunnelRefusal);
+    expect(readLivePolicy(selected.ref)).toEqual(before);
+    expect(fs.readdirSync(selected.ref.root)).toEqual(entries);
+  });
+
+  it("refuses treating an existing live policy as another legacy migration", async () => {
+    const legacy = legacySetup();
+    const migration = createLiveSessionMigration({ profilePath: legacy.profilePath, manager: legacy.manager });
+    const selected = await migration.migrate({ expectedRevision: migration.revision(), confirm: true });
+    const profile = fs.readFileSync(legacy.profilePath, "utf8");
+    const entries = fs.readdirSync(legacy.bindingsDir);
+    const before = readLivePolicy(selected.ref);
+    await expect(migration.migrate({ expectedRevision: migration.revision(), confirm: true })).rejects.toThrow(TunnelRefusal);
+    expect(fs.readFileSync(legacy.profilePath, "utf8")).toBe(profile);
+    expect(fs.readdirSync(legacy.bindingsDir)).toEqual(entries);
+    expect(readLivePolicy(selected.ref)).toEqual(before);
+  });
+
   it.each([[false, true], [true, false], [false, false]])("refuses global ceiling %s/%s before publishing", async (payloadRead, ack) => {
     const legacy = legacySetup(payloadRead, ack);
     const api = createLiveSessionMigration({ profilePath: legacy.profilePath, manager: legacy.manager });

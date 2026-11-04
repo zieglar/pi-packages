@@ -120,7 +120,7 @@ export async function queryLiveAdoptionProbe(o: Options & { readonly current: Li
       bytes = Buffer.concat([bytes, chunk]); if (bytes.length > 65536) return finish(unknown()); if (!bytes.includes(10)) return;
       try {
         const r = row(JSON.parse(bytes.toString("utf8")), ["nonce", "launchDigest", "identity", "ref", "policy", "owner", "bound", "observedAt"]);
-        const id = row(r.identity, ["pid", "startedKey"]); const ref = row(r.ref, ["kind", "root", "policyId", "genesisDigest"]);
+        const id = row(r.identity, ["pid", "startedKey"]); const ref = row(r.ref, ["kind", "root", "policyId", "genesisDigest", ...(o.ref.kind === "ce-live-session-v2" ? ["profilePath", "upgradeSequence"] : [])]);
         const p = row(r.policy, ["sequence", "digest", "targets"]); const owner = row(r.owner, ["endpointId", "registered", "participantId", "sessionId", "exchangeId", "fencingToken", "lease", "leaseExpiresAt"]); const bound = row(r.bound, ["state", "renewal"]);
         const now = Date.parse(o.now?.() ?? new Date().toISOString()); const observed = typeof r.observedAt === "string" ? Date.parse(r.observedAt) : NaN;
         if (r.nonce !== nonce || r.launchDigest !== o.launchDigest || !equal(id, o.identity) || !equal(ref, o.ref) || !equal(o.current.ref, o.ref) || !integer(p.sequence) || !hex(p.digest) || p.sequence > o.current.sequence || p.sequence === o.current.sequence && p.digest !== o.current.digest || !Number.isFinite(now) || !Number.isFinite(observed) || observed > now || now - observed > 5000 || !Array.isArray(p.targets) || p.targets.length > 128) return finish(unknown());

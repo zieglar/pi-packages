@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { basename } from "node:path";
+import { readMessagingGeneration, readPrivateMessagingFile } from "./messaging-config.js";
+import { parseTunnelProfile } from "./background-manager.js";
+import { parseTunnelMcpCommand } from "./profile.js";
 import { CeHostRefusal, type CeEndpointHost, type CeEndpointDiscovery, type CeLiveRecipientSnapshot } from "../host/endpoint-host.js";
 import type { CeBoundEndpoint, BoundEndpointAdmission } from "../host/bound-endpoint.js";
 import type { McpBindingConfig } from "../host/mcp-binding-config.js";
@@ -14,8 +18,8 @@ const denied = (): never => { throw new CeHostRefusal("CE_HOST_AUTHORITY_ABSENT"
 
 /** Launch bytes fix Store/Exchange/ChatGPT and the global ceilings. Every
  * operation consumes one typed snapshot, prepared by the Host/bound port. */
-export function createLiveMcpComposition(config: McpBindingConfig, reader?: (ref: LivePolicyRef) => LiveSnapshot) {
-  if (config.admissionPolicy?.kind !== "ce-live-session-v1") return denied();
+export function createLiveMcpComposition(config: McpBindingConfig, reader?: (ref: LivePolicyRef) => LiveSnapshot, options: { readonly bindingPath?: string } = {}) {
+  if (config.admissionPolicy?.kind !== "ce-live-session-v1" && config.admissionPolicy?.kind !== "ce-live-session-v2") return denied();
   const ref = config.admissionPolicy;
   const watermark: LiveReaderWatermark = {};
   const read = reader ?? (selected => readLivePolicy(selected, { watermark }));
@@ -30,6 +34,31 @@ export function createLiveMcpComposition(config: McpBindingConfig, reader?: (ref
     return current;
   };
   const loaded = snapshot();
+  // The actual immutable launch pair and current Profile selection must agree.
+  // Selection failures deny only Hooks; business messaging keeps its own gate.
+  const selectedBindingGeneration = (): string | undefined => {
+    if (ref.kind !== "ce-live-session-v2" || options.bindingPath === undefined) return undefined;
+    try {
+      const profile = readPrivateMessagingFile(ref.profilePath); if (profile === undefined) return undefined;
+      const facts = parseTunnelProfile(profile.bytes.toString("utf8"));
+      if (facts.mcpCommand === undefined || facts.tunnelId !== loaded.manifest.identity.tunnelId ||
+        (facts.organizationId ?? null) !== loaded.manifest.identity.organizationId) return undefined;
+      readPrivateMessagingFile(ref.profilePath, facts.keyFile);
+      const selectedPath = parseTunnelMcpCommand(facts.mcpCommand).bindingPath;
+      if (selectedPath !== options.bindingPath) return undefined;
+      const pair = readMessagingGeneration(ref.profilePath, options.bindingPath, facts.keyFile);
+      if (pair === undefined || !isDeepStrictEqual(pair.config, config) ||
+        !isDeepStrictEqual(pair.document, { kind: "ce-live-launch-v2", version: 1, ref })) return undefined;
+      return /^messaging-([a-f0-9]{64})\.yaml$/.exec(basename(pair.bindingPath))?.[1];
+    } catch { return undefined; }
+  };
+  const loadedBindingGeneration = selectedBindingGeneration();
+  const consent = loaded.manifest.mcpHookConsent;
+  const enabledRules = (config.hooks ?? []).filter(rule => rule.enabled);
+  const capturedHookGeneration = ref.kind === "ce-live-session-v2" && loadedBindingGeneration !== undefined &&
+    consent?.bindingGeneration === loadedBindingGeneration && consent.targets.length === enabledRules.length &&
+    enabledRules.every(rule => consent.targets.some(target => target.ruleId === rule.id && target.endpointId === rule.recipient.endpointId && rule.recipient.adapter === "pi"))
+      ? consent.generation : undefined;
   const recipients = Object.freeze({ snapshot: (): CeLiveRecipientSnapshot => {
     const current = snapshot();
     const active = current.manifest.registrations.filter(r => r.status === "active");
@@ -47,8 +76,18 @@ export function createLiveMcpComposition(config: McpBindingConfig, reader?: (ref
     if (operation.kind === "readPayload" && !config.payloadRead.enabled || operation.kind === "ack" && !config.ack.enabled) return denied();
   };
   const hookAllowed = (rule: NonNullable<McpBindingConfig["hooks"]>[number]): boolean => {
+    const selectedGeneration = ref.kind === "ce-live-session-v2" ? selectedBindingGeneration() : undefined;
+    // This final synchronous policy read is the actual-start admission point.
     const current = snapshot();
     const original = loaded.manifest.registrations.find(r => r.endpointId === rule.recipient.endpointId);
+    if (ref.kind === "ce-live-session-v2") {
+      const approved = current.manifest.mcpHookConsent;
+      if (capturedHookGeneration === undefined || approved?.generation !== capturedHookGeneration ||
+        selectedGeneration !== loadedBindingGeneration || approved.bindingGeneration !== loadedBindingGeneration) return false;
+      const target = approved.targets.find(target => target.ruleId === rule.id);
+      if (target === undefined || target.endpointId !== rule.recipient.endpointId || target.endpointId !== original?.endpointId ||
+        target.runtimeSessionId !== original.runtimeSessionId || target.epoch !== original.epoch) return false;
+    }
     return original !== undefined && original.status === "active" && current.manifest.registrations.some(r =>
       r.endpointId === original.endpointId && r.runtimeSessionId === original.runtimeSessionId && r.status === "active" && r.epoch === original.epoch) &&
       (config.hooks ?? []).some(candidate => candidate.enabled && isDeepStrictEqual(candidate, rule));

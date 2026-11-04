@@ -65,9 +65,10 @@ export async function observeLiveConnection(options: LiveConnectionObservationOp
     if (!facts.mcpCommand) return { policy: "UNVERIFIED", transport };
     const command = parseTunnelMcpCommand(facts.mcpCommand);
     const pair = readMessagingGeneration(options.profilePath, command.bindingPath, facts.keyFile);
-    if (!pair || pair.config.admissionPolicy?.kind !== "ce-live-session-v1") return { policy: "UNVERIFIED", transport };
+    if (!pair || (pair.config.admissionPolicy?.kind !== "ce-live-session-v1" && pair.config.admissionPolicy?.kind !== "ce-live-session-v2")) return { policy: "UNVERIFIED", transport };
     const ref: LivePolicyRef = pair.config.admissionPolicy;
-    if (!isDeepStrictEqual(pair.document, { kind: "ce-live-launch-v1", version: 1, ref })) return { policy: "UNVERIFIED", transport };
+    if (ref.kind === "ce-live-session-v2" && ref.profilePath !== options.profilePath) return { policy: "UNVERIFIED", transport };
+    if (!isDeepStrictEqual(pair.document, { kind: ref.kind === "ce-live-session-v2" ? "ce-live-launch-v2" : "ce-live-launch-v1", version: 1, ref })) return { policy: "UNVERIFIED", transport };
     const watermark: LiveReaderWatermark = options.watermark ?? {};
     const current = readLivePolicy(ref, { credentialFile: facts.keyFile, watermark });
     const m = current.manifest;

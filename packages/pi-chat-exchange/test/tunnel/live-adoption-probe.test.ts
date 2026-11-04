@@ -3,7 +3,7 @@ import net from "node:net";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
-import { initializeLivePolicy, readLivePolicy } from "../../src/tunnel/live-session-policy.js";
+import { initializeLivePolicy, readLivePolicy, prepareLivePolicyUpgrade, createLivePolicyRegistration } from "../../src/tunnel/live-session-policy.js";
 import { createLiveAdoptionRecorder } from "../../src/tunnel/live-adoption-observation.js";
 import { startLiveAdoptionProbe, queryLiveAdoptionProbe } from "../../src/tunnel/live-adoption-probe.js";
 const roots: string[] = [];
@@ -13,10 +13,12 @@ function probePath(options: ReturnType<typeof fixture>["options"]) {
   const { ref, identity, launchDigest } = options;
   return join(fs.realpathSync("/tmp"), `ce-probe-${process.geteuid!()}`, createHash("sha256").update(JSON.stringify([ref.root, ref.policyId, ref.genesisDigest, identity.pid, identity.startedKey, launchDigest])).digest("hex").slice(0, 40) + ".sock");
 }
-function fixture() {
+function fixture(v2 = false) {
   const base = fs.realpathSync(fs.mkdtempSync("/tmp/cep-")); roots.push(base); fs.chmodSync(base, 0o700);
   const root = join(base, "deep-profile-".repeat(12)); fs.mkdirSync(root, { mode: 0o700 });
-  const ref = initializeLivePolicy({ root, manifest: { kind: "ce-multi-session-v1", version: 1, identity: { tunnelId: "tunnel_abcdefgh123456", organizationId: null }, store: { directory: root, file: "ce.sqlite" }, exchange: { namespace: "ce", idempotencyKey: "exchange" }, chatgptEndpoint: { adapter: "chatgpt", endpointId: "chatgpt/main" }, mcp: { payloadRead: true, ack: true }, registrations: [{ endpointId: "pi/A", runtimeSessionId: "native-private", epoch: 1, status: "active", payloadRead: true, ack: true }] } });
+  const original = initializeLivePolicy({ root, manifest: { kind: "ce-multi-session-v1", version: 1, identity: { tunnelId: "tunnel_abcdefgh123456", organizationId: null }, store: { directory: root, file: "ce.sqlite" }, exchange: { namespace: "ce", idempotencyKey: "exchange" }, chatgptEndpoint: { adapter: "chatgpt", endpointId: "chatgpt/main" }, mcp: { payloadRead: true, ack: true }, registrations: [{ endpointId: "pi/A", runtimeSessionId: "native-private", epoch: 1, status: "active", payloadRead: true, ack: true }] } });
+  const ref = v2 ? prepareLivePolicyUpgrade(original, join(base, "tunnel.yaml")) : original;
+  if (v2) createLivePolicyRegistration({ ref }).upgrade({ expectedDigest: readLivePolicy(original).digest, actorRuntimeSessionId: "operator", profileRevision: "b".repeat(64), bindingGeneration: "c".repeat(64) });
   const current = readLivePolicy(ref);
   const owner = { endpointId: "chatgpt/main", registered: true, participantId: "participant", sessionId: "session", exchangeId: "exchange", fencingToken: 1, lease: "ACTIVE", leaseExpiresAt: new Date(Date.now() + 60000).toISOString() };
   const identity = { pid: process.pid, startedKey: "exact-start" };
@@ -41,8 +43,8 @@ it("query never creates its directory and refuses insecure or symlink directorie
     await expect(startLiveAdoptionProbe({ ...f.options, observe: () => { throw Error("unused"); } })).rejects.toThrow();
   } finally { spy.mockRestore(); }
 });
-it("queries current synchronous bound state even when an older diagnostic remains ACTIVE", async () => {
-  const f = fixture(); let blocked = false;
+it.each([false, true])("queries current synchronous bound state even when an older diagnostic remains ACTIVE (v2=%s)", async v2 => {
+  const f = fixture(v2); let blocked = false;
   expect(await f.query()).toEqual({ kind: "UNVERIFIED" });
   const server = await startLiveAdoptionProbe({ ...f.options, observe: () => ({ snapshot: f.current, owner: f.owner, bound: { state: blocked ? "WRITE_BLOCKED" : "ACTIVE", renewal: blocked ? "STOPPED" : "RUNNING" } }) }); servers.push(server);
   expect(await f.query()).toEqual({ kind: "OBSERVED" });

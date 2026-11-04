@@ -58,11 +58,13 @@ function object(raw: unknown, keys: readonly string[]): Record<string, unknown> 
 }
 function parse(raw: unknown): Observation {
   const r = object(raw, ["kind", "ref", "launchDigest", "identity", "writerSequence", "policySequence", "policyDigest", "owner", "bound", "observedAt", "targets"]);
-  const ref = object(r.ref, ["kind", "root", "policyId", "genesisDigest"]);
+  const refKind = (r.ref as { kind?: unknown } | null)?.kind;
+  const ref = object(r.ref, ["kind", "root", "policyId", "genesisDigest", ...(refKind === "ce-live-session-v2" ? ["profilePath", "upgradeSequence"] : [])]);
   const id = object(r.identity, ["pid", "startedKey"]);
   const owner = object(r.owner, ["endpointId", "registered", "participantId", "sessionId", "exchangeId", "fencingToken", "lease", "leaseExpiresAt"]);
   const bound = object(r.bound, ["state", "renewal"]);
-  if (r.kind !== "ce-live-observation-v1" || ref.kind !== "ce-live-session-v1" || !text(ref.root) || !text(ref.policyId) || !digest(ref.genesisDigest) ||
+  if (r.kind !== "ce-live-observation-v1" || (ref.kind !== "ce-live-session-v1" && ref.kind !== "ce-live-session-v2") || !text(ref.root) || !text(ref.policyId) || !digest(ref.genesisDigest) ||
+      ref.kind === "ce-live-session-v2" && (!text(ref.profilePath) || !integer(ref.upgradeSequence) || ref.upgradeSequence < 1 || ref.upgradeSequence > 65536) ||
       !digest(r.launchDigest) || !digest(r.policyDigest) || !integer(id.pid) || id.pid < 1 || !text(id.startedKey) || !integer(r.writerSequence) || r.writerSequence < 1 || !integer(r.policySequence) || !instant(r.observedAt) ||
       !text(owner.endpointId) || typeof owner.registered !== "boolean" || (owner.participantId !== null && !text(owner.participantId)) || (owner.sessionId !== null && !text(owner.sessionId)) || (owner.exchangeId !== null && !text(owner.exchangeId)) || (owner.fencingToken !== null && (!integer(owner.fencingToken) || owner.fencingToken < 1)) || !text(owner.lease) || (owner.leaseExpiresAt !== null && !instant(owner.leaseExpiresAt)) ||
       !["ACTIVE", "WRITE_BLOCKED", "CLOSING", "CLOSED"].includes(String(bound.state)) || !["RUNNING", "STOPPED"].includes(String(bound.renewal)) || !Array.isArray(r.targets) || r.targets.length > 128) return fail();

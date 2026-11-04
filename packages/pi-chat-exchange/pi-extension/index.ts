@@ -30,6 +30,8 @@ import { prepareSessionOnboarding, SessionOnboardingRefusal } from "./session-on
 import { PiMultiSessionRuntime, runtimeEnvironment } from "./multi-session-runtime.js";
 import { PiSessionPolicy, isLivePolicy, type SelectedSessionPolicy } from "./live-session-runtime.js";
 import { createLiveSessionMigration } from "../dist/tunnel/live-session-migration.js";
+import { createHooksManagement, runSafeHookFixture } from "../dist/tunnel/hooks-management.js";
+import { runHooksManagementUi } from "../dist/tunnel/hooks-management-ui.js";
 import { createBackgroundAuthorizationStore } from "../dist/tunnel/background-authorization.js";
 import { readLivePolicy } from "../dist/tunnel/live-session-policy.js";
 import { readLiveSelectedSessionPolicy, projectLivePiRegistration } from "./live-session-profile.js";
@@ -444,6 +446,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   let activationCapture: AbortController | undefined;
   let dailyTask: Promise<void> | undefined;
   let dailyCapture: AbortController | undefined;
+  let hooksCapture: AbortController | undefined;
   let managerUiCapture: AbortController | undefined;
   let managerUiTask: Promise<void> | undefined;
   /** REAL-START-FIX-01: guard for a non-blocking background start's deferred
@@ -557,6 +560,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   const clearTunnelStatus = (): Promise<void> => {
     activationCapture?.abort();
     dailyCapture?.abort();
+    hooksCapture?.abort();
     managerUiCapture?.abort();
     managerUiCapture = undefined;
     startCapture?.abort();
@@ -736,7 +740,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           if (loaded === undefined || runtime === undefined || generation === undefined) return false;
           if (event !== undefined && (event.sender.adapter !== "pi" || event.sender.endpointId !== generation.endpointId)) return false;
           try {
-            return runtime.run("hook", () => (isLivePolicy(loaded) ? (multiRuntime!.registration().hooks ?? []) : effectivePiHookRules(loaded, readSelectedMultiSessionPolicy(loaded.profilePath), generation!.piSessionId)).some(candidate => isDeepStrictEqual(candidate, rule)));
+            return runtime.run("hook", () => isLivePolicy(loaded) ? runtime.hookAllowed(rule) : effectivePiHookRules(loaded, readSelectedMultiSessionPolicy(loaded.profilePath), generation!.piSessionId).some(candidate => isDeepStrictEqual(candidate, rule)));
           } catch { return false; }
         } }),
       });
@@ -1531,8 +1535,9 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     });
   }
   pi.registerCommand("ce-hooks", {
-    description: "Show the local Hook rules actually loaded by this Pi extension process",
-    handler(_args, ctx) {
+    description: "Manage Hooks with explicit native consent; headless sessions inspect loaded rules only",
+    async handler(_args, ctx) {
+      if (ctx.mode === "tui" && ctx.hasUI && typeof ctx.ui.custom === "function") { await runHooksCommand(ctx); return; }
       const audit = hookSnapshot();
       const lines = [`ce-hooks: active=${audit.active} configured=${audit.configured} source=${hookSource}${hookConfig.invalid ? " configuration=invalid" : ""}`];
       if (audit.rules.length === 0) lines.push("ce-hooks: no active local Hook configuration");
@@ -1604,6 +1609,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     { value: "reauthorize", description: "explicitly reauthorize this native Session's exact revoked live Endpoint with a new epoch" },
     { value: "liveSessions", description: "show this live Session's own Endpoint and grants" },
     { value: "migrate-live", description: "explicit offline STOPPED migration to live mode; no automatic conversion" },
+    { value: "hooks", description: "manage sender-scoped Hooks with native consent, explicit upgrade and pending-deployment reconciliation" },
     { value: "revoke", description: "revoke <exact-endpoint> with confirmation; live chain or STOPPED legacy publication" },
     { value: "convert", description: "explicit legacy conversion after acknowledgement that old runtimes are stopped/updated" },
     { value: "help", description: "list the subcommands and their limits" },
@@ -2439,9 +2445,62 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     }
   };
 
+  let hooksDialogOpen = false;
+  const runHooksCommand = async (ctx: ExtensionContextView, signal?: AbortSignal): Promise<void> => {
+    if (ctx.mode !== "tui" || !ctx.hasUI) {
+      const audit = hookSnapshot();
+      notify(ctx, `ce-hooks: configured=${audit.configured} eligible=${audit.active} adopted=loaded-process; headless inspect-only; executed=unverified`);
+      return;
+    }
+    if (hooksDialogOpen || permissionPrompt || dailyTask !== undefined) { notify(ctx, "ce-hooks: another native operation is active", "warning"); return; }
+    hooksDialogOpen = true;
+    const controller = new AbortController();
+    hooksCapture = controller;
+    const abort = (): void => controller.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) controller.abort();
+    const sessionId = ctx.sessionManager.getSessionId();
+    const environment = runtimeEnvironment();
+    try {
+      const assertNativeCurrent = (): void => {
+        if (controller.signal.aborted || ctx.sessionManager.getSessionId() !== sessionId || runtimeEnvironment() !== environment) throw new TunnelRefusal("CE_TUNNEL_CONFIG_CONFLICT", "hooks.nativeSession");
+      };
+      // Loaded audit remains available for CE_ALLOWLIST, legacy and unavailable
+      // Profiles. Only the live configuration surface needs a real manager.
+      let management: ReturnType<typeof createHooksManagement> | undefined;
+      if (isRealBackground() && !process.env.CE_ALLOWLIST) {
+        try {
+          const manager = activeManager();
+          if ("kind" in manager) {
+            const profilePath = resolveTunnelProfilePath({ env: process.env });
+            const assertCurrent = (): void => {
+              assertNativeCurrent();
+              if (resolveTunnelProfilePath({ env: process.env }) !== profilePath || manager.profilePath() !== profilePath) throw new TunnelRefusal("CE_TUNNEL_CONFIG_CONFLICT", "hooks.profile");
+            };
+            management = createHooksManagement({ profilePath, manager, runtimeSessionId: sessionId, assertCurrent });
+          }
+        } catch { /* Audit is independent of configuration/edit eligibility. */ }
+      }
+      const outcome = await runHooksManagementUi({ ...ctx, mode: "tui" }, { ...(management === undefined ? {} : { management }), keys: piTunnelKeyProtocol,
+        loadedAudit: { snapshot: hookSnapshot(), source: hookSource, invalid: hookConfig.invalid },
+        safeTest: () => { assertNativeCurrent(); return runSafeHookFixture(); }, signal: controller.signal });
+      if (outcome.status === "saved") {
+        notify(ctx, `ce-hooks: configured=${outcome.configured} adopted=${outcome.adopted} eligible=${outcome.eligible} executed=${outcome.executed}; selection=${outcome.selection}; policy durability=${outcome.policyDurability}; Profile durability=${outcome.profileDurability}; operation=${outcome.operationId}${outcome.bindingPath === undefined ? "" : `; candidate=${outcome.bindingPath}`}${outcome.detail === undefined ? "" : `; ${outcome.detail}`}. Reload/load explicitly to adopt; transport controls remain separate.`, outcome.selection === "pending" ? "warning" : "info");
+      } else if (outcome.status === "tested") notify(ctx, `ce-hooks: fixed fixture executed=${outcome.executed}; configured commands executed=${outcome.configuredCommandsExecuted}; configured/adopted/eligible unchanged`);
+      else if (outcome.status === "refused") notify(ctx, `ce-hooks: ${outcome.detail}`, "warning");
+    } catch (error) { notify(ctx, `ce-hooks: refused (${error instanceof TunnelRefusal ? error.code : "configuration invalid"}); no automatic retry, reload or transport operation`, "warning"); }
+    finally {
+      signal?.removeEventListener("abort", abort);
+      if (hooksCapture === controller) hooksCapture = undefined;
+      controller.abort();
+      hooksDialogOpen = false;
+    }
+  };
+
   /** Direct shortcuts and the Manager invoke this same operation path. */
   const runTunnelCommand = async (args: string, ctx: ExtensionContextView, options: { signal?: AbortSignal } = {}): Promise<void> => {
         const sub = args.trim().split(/\s+/)[0] ?? "";
+        if (sub === "hooks") { await runHooksCommand(ctx, options.signal); return; }
         if (sub === "permission") {
           const action = args.trim().split(/\s+/)[1] ?? "status";
           try {

@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { CeMappingIdentifiers } from "../dist/endpoints/pi/session-host.js";
 import type { LiveSnapshot, LiveReaderWatermark } from "../dist/tunnel/live-session-policy.js";
 import { readSelectedMultiSessionPolicy, type MultiSessionSnapshot } from "../dist/tunnel/multi-session-policy.js";
+import type { CeHookRule } from "../dist/hooks/config.js";
 import { PiMultiSessionRuntime, liveRegistration, policyDenied, runtimeEnvironment } from "./multi-session-runtime.js";
 import { readRuntimeLivePolicy } from "./live-session-profile.js";
 
@@ -30,10 +31,22 @@ export class PiSessionPolicy {
   }
   registration() {
     const r = liveRegistration(this.loaded, this.current(), this.#runtimeId);
-    if (!isDeepStrictEqual(r.hooks, this.hooks(this.loaded))) throw policyDenied();
+    if ((!isLivePolicy(this.loaded) || this.loaded.ref.kind !== "ce-live-session-v2") && !isDeepStrictEqual(r.hooks, this.hooks(this.loaded))) throw policyDenied();
     return r;
   }
   hooks(policy: SelectedSessionPolicy) { return policy.manifest.registrations.find(r => r.runtimeSessionId === this.#runtimeId)?.hooks; }
+  hookAllowed(rule: CeHookRule): boolean {
+    const current = this.current();
+    const registration = liveRegistration(this.loaded, current, this.#runtimeId);
+    const original = this.loaded.manifest.registrations.find(r => r.runtimeSessionId === this.#runtimeId);
+    if (isLivePolicy(this.loaded) && this.loaded.ref.kind === "ce-live-session-v2") {
+      const captured = this.loaded.manifest.registrations.find(r => r.runtimeSessionId === this.#runtimeId);
+      const latest = isLivePolicy(current) ? current.manifest.registrations.find(r => r.runtimeSessionId === this.#runtimeId) : undefined;
+      if (captured?.hookGeneration === undefined || captured.hookGeneration !== latest?.hookGeneration) return false;
+    }
+    return (original?.hooks ?? []).some(candidate => candidate.enabled && isDeepStrictEqual(candidate, rule)) &&
+      (registration.hooks ?? []).some(candidate => candidate.enabled && isDeepStrictEqual(candidate, rule));
+  }
   run<T>(kind: string, operation: () => T): T { return this.#runtime.run(kind, operation); }
   closeAdmission(): void { this.#runtime.closeAdmission(); }
   drain(): Promise<void> { return this.#runtime.drain(); }

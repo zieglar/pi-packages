@@ -110,7 +110,8 @@ async function main(): Promise<void> {
   }
   const { config, launchDigest } = loadBindingConfig(configPath);
   // Verify actual launch bytes before Store creation; managed provenance grants nothing.
-  const live = config.admissionPolicy?.kind === "ce-live-session-v1" ? createLiveMcpComposition(config) : undefined;
+  const live = config.admissionPolicy?.kind === "ce-live-session-v1" || config.admissionPolicy?.kind === "ce-live-session-v2"
+    ? createLiveMcpComposition(config, undefined, { bindingPath: configPath }) : undefined;
   const admission = live?.admission ?? createMcpPolicyAdmission(config, configPath);
   if (live === undefined) admission?.({ kind: "begin" });
 
@@ -118,7 +119,7 @@ async function main(): Promise<void> {
   const hookRunner = new CeHookRunner({
     directory: config.store.directory, rules: config.hooks ?? [],
     ...(loadedHookPolicy === undefined && live === undefined ? {} : { admit: (rule, event) => {
-      if (event !== undefined && !isDeepStrictEqual(event.sender, config.endpoint)) return false;
+      if (event !== undefined && (!isDeepStrictEqual(event.sender, config.endpoint) || !isDeepStrictEqual(event.recipient, rule.recipient))) return false;
       if (live !== undefined) return live.hookAllowed(rule);
       return loadedHookPolicy !== undefined && effectiveMcpHookRules(loadedHookPolicy, readSelectedMultiSessionPolicy(loadedHookPolicy.profilePath)).some(candidate => isDeepStrictEqual(candidate, rule));
     } }),
