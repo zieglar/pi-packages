@@ -47,6 +47,10 @@ Keep configuration, task and runtime state outside Git in an owned0700directory.
 ```
 
 Obtain process/window identity with `agent-desktop list-windows --app Ovis`. Select a separate empty Ovis test Agent; never bridge the coordinating Pi session into itself. The script refuses another conversation, nonempty draft, active turn or incomplete snapshot. Reconfigure only after observing a relaunched app/window. Never retain refs across UI mutations.
+
+The target pane must be an **Agent chat**, not a shell pane. In a shell workspace the field named `消息` runs the typed line on Enter, so the first prompt line is executed by the shell instead of a chat Agent. The bridge cannot distinguish pane types from the accessibility tree; the operator must confirm the pane type before the run. A Shell pane attempt stops at `CHUNK_READBACK_MISMATCH` because Enter clears the draft, and the single send click is never reached.
+
+Physical input is asynchronous and lossy: one `agent-desktop` call that carries a newline followed by more text can drop its tail. The driver therefore types each newline as its own piece and then requires the cumulative draft to equal the expected text exactly. A readback that is a strict prefix is waited for and, once stable, only the missing suffix is retyped; any other content is refused with `CHUNK_READBACK_MISMATCH` and no send click follows. `inputSettleSeconds` (default 3) and `inputRetries` (default 3) tune this behavior.
 At task start, optional `agentButtonPrefix` may select one uniquely matching test Agent from a fresh Ovis snapshot and reopen its Chat panel. A new snapshot must then match the exact configured conversation before any text input. Ambiguous targets are refused. This selection is not repeated after text entry or submission; later target drift stops execution. Results expose only fixed uppercase failure codes, never raw desktop diagnostics.
 
 Task schema is closed:

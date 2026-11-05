@@ -261,6 +261,55 @@ class BridgeTests(unittest.TestCase):
             cli.call(['snapshot'])
         self.assertEqual(run.call_args.kwargs['timeout'], 2.0)
 
+    def test_input_readback_retries_a_lost_chunk_after_a_newline(self):
+        cli = object.__new__(bridge.DesktopCli)
+        cli.config = dict(self.config, headedAuthorized=True)
+        landed = []
+        drop_next = [False]
+        types = []
+        def call(args):
+            if args[0] == '--headed':
+                piece = args[-1]
+                types.append(piece)
+                if drop_next and drop_next[0]:
+                    drop_next[0] = False
+                elif piece == '\n':
+                    landed.append(piece)
+                    drop_next[0] = True
+                else:
+                    landed.append(piece)
+            return {'ok': True}
+        cli.call = call
+        cli.snapshot = lambda: view(''.join(landed))
+        cli.action('type', '@fresh:e1', 'first\nsecond')
+        self.assertEqual(''.join(landed), 'first\nsecond')
+        self.assertEqual(types.count('second'), 2)
+        self.assertNotIn('\nsecond', types)
+
+    def test_input_readback_refuses_unexpected_draft_content(self):
+        cli = object.__new__(bridge.DesktopCli)
+        cli.config = dict(self.config, headedAuthorized=True)
+        typed = []
+        cli.call = lambda args: typed.append(args[-1]) or {'ok': True}
+        cli.snapshot = lambda: view('unexpected')
+        with self.assertRaisesRegex(ValueError, 'CHUNK_READBACK_MISMATCH'):
+            cli.action('type', '@fresh:e1', 'first')
+        self.assertEqual(typed, ['first'])
+
+    def test_input_readback_waits_for_a_late_arriving_draft(self):
+        cli = object.__new__(bridge.DesktopCli)
+        cli.config = dict(self.config, headedAuthorized=True)
+        reads = []
+        typed = []
+        cli.call = lambda args: typed.append(args[-1]) or {'ok': True}
+        def snapshot():
+            reads.append(1)
+            return view('' if len(reads) < 3 else 'first')
+        cli.snapshot = snapshot
+        cli.action('type', '@fresh:e1', 'first')
+        self.assertEqual(typed, ['first'])
+        self.assertGreaterEqual(len(reads), 3)
+
     def test_closed_task_schema(self):
         self.task['command'] = 'rm'
         with self.assertRaises(ValueError):

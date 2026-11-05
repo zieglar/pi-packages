@@ -269,18 +269,59 @@ class DesktopCli:
             expected = ''
             current_ref = ref
             result = None
-            for start in range(0, len(text), 8):
-                chunk = text[start:start + 8]
+            for piece in self.type_pieces(text):
                 if self.config.get('taskDeadline') is not None and time.time() >= self.config['taskDeadline']:
                     raise ValueError('TASK_EXPIRED_DURING_INPUT')
                 remaining(self.config)
-                result = self.call(['--headed', 'type', current_ref, chunk])
-                expected += chunk
-                view = observe(self.snapshot(), self.config)
-                if view['input'].get('value') != expected:
-                    raise ValueError('CHUNK_READBACK_MISMATCH')
-                current_ref = view['input']['ref_id']
+                result = self.call(['--headed', 'type', current_ref, piece])
+                expected += piece
+                current_ref = self.settle_input(expected)
             return result
+    def type_pieces(self, text):
+        # Physical input can lose the tail of a call that carries a newline followed by
+        # more text, so every newline is typed as its own piece.
+        for index, segment in enumerate(text.split('\n')):
+            if index:
+                yield '\n'
+            for start in range(0, len(segment), 8):
+                yield segment[start:start + 8]
+
+    def settle_input(self, expected):
+        # Physical input arrives asynchronously. Require the exact cumulative draft and
+        # re-type only a stable missing suffix; any other content is a refusal.
+        settle = float(self.config.get('inputSettleSeconds', 3))
+        limit = int(self.config.get('inputRetries', 3))
+        deadline = time.monotonic() + settle
+        stable = None
+        stable_since = time.monotonic()
+        attempts = 0
+        while True:
+            remaining(self.config)
+            view = observe(self.snapshot(), self.config)
+            value = view['input'].get('value')
+            if value == expected:
+                return view['input']['ref_id']
+            if not isinstance(value, str) or not expected.startswith(value):
+                raise ValueError('CHUNK_READBACK_MISMATCH')
+            now = time.monotonic()
+            if value != stable:
+                stable = value
+                stable_since = now
+            elif now - stable_since >= 1.0:
+                if attempts >= limit:
+                    raise ValueError('CHUNK_READBACK_MISMATCH')
+                attempts += 1
+                missing = expected[len(value):]
+                for piece in self.type_pieces(missing):
+                    self.call(['--headed', 'type', view['input']['ref_id'], piece])
+                stable = None
+                stable_since = now
+                deadline = now + settle
+                continue
+            if now >= deadline:
+                raise ValueError('CHUNK_READBACK_MISMATCH')
+            time.sleep(0.05)
+
         remaining(self.config)
         return self.call(['click', ref])
 

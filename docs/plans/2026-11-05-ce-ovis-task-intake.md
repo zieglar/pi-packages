@@ -112,3 +112,11 @@ The sender must compare its actual `ce_send` recipient/Exchange metadata with th
 - Profile, selected binding, live policy 000020, installed wake/bridge/lifecycle hashes and shared Tunnel PID/runId matched baseline at the final comparison. The installed Hook config was not reread after ctx_execute_file rejected its outside-workspace access; no alternate read of that denied file was attempted. No production configuration was written.
 
 Acceptance remains BLOCKED on identification of the isolated Ovis test Agent. The authorized payload and structured partial evidence are preserved in the private per-message acceptance directory outside Git. No resend of audits 103 or 104 is needed.
+
+### Controlled submission attempts against the Ovis desktop
+
+- Target selection used the workspace list and `cmd+shift+j` (verified to toggle Terminal/Chat). The chosen `pi-magpie-test` 对话 pane turned out to be a **shell** pane: typing the first prompt line executed it in zsh and produced `zsh: command not found: [CE-OVIS-TASK:CE-OVIS-TASK-acceptance-105b]`. The bridge refused to continue because Enter cleared the draft, so the send button was never clicked. No Agent was addressed and the executed line had no side effect.
+- First attempt `CE-OVIS-TASK-acceptance-105` stopped at `CHUNK_READBACK_MISMATCH` with `submission=NOT_ATTEMPTED`: a physical type call carrying a newline dropped its tail, and the old single strict readback aborted before any click.
+- Root cause of the loss was reproduced with read-only probes on the same draft field: `"ABC"` and `"测试中文"` landed completely, while `"\nXYZ"` and `"\nABC"` landed only the newline.
+- Driver fix: `type_pieces` types every newline as its own piece; `settle_input` waits for the exact cumulative draft and retypes only a stable missing suffix. New tests cover the retry, the refusal and the late-arrival path. Python 25 + 4 tests and Node 52 tests pass. A bounded read-only security review of this fix was requested.
+- Both attempt journals remain as `STOPPED_NO_REPLAY` with `submission=NOT_ATTEMPTED`. No Agent task was submitted, no Agent response was observed and business completion stays `UNVERIFIED`. The only idle pi Agent pane in Ovis is `aliyun-ecs`; the coordinator pane is this running session and must never be bridged into itself.
