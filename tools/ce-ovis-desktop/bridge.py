@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded Ovis test driver. Journals never authorize replay of desktop input."""
+"""Bounded Ovis driver; real tasks require local opt-in. Journals never allow replay."""
 import argparse
 import datetime
 import fcntl
@@ -22,6 +22,11 @@ def end_marker(task):
 
 
 def prompt_for(task):
+    if task['testOnly'] is False:
+        return (f"[CE-OVIS-TASK:{task['taskId']}]\n执行以下本地已授权任务，遵守当前 Agent 的权限与审批要求：\n"
+                f"{task['text']}\n处理结束后说明结果及未完成事项。"
+                "结束标记只表示你已报告处理结果，不表示业务结果已验证。\n"
+                f"最后独占一行输出 {end_marker(task)}")
     return (f"[CE-OVIS-TEST:{task['taskId']}]\n仅回显以下测试文本，不使用工具：\n"
             f"{task['text']}\n最后独占一行输出 {end_marker(task)}")
 
@@ -72,7 +77,7 @@ def classify(view, task):
     if lines and lines[-1] == marker and '发送消息' in buttons:
         response = '\n'.join(lines[:-1]).strip()
         response = re.sub(r'^\d{1,2}:\d{2}\n', '', response)
-        return {'ovisState': 'COMPLETED', 'response': response}
+        return {'ovisState': 'REPORTED' if task['testOnly'] is False else 'COMPLETED', 'response': response}
     return {'ovisState': 'UNKNOWN'}
 
 
@@ -91,11 +96,13 @@ def remaining(config):
 
 def validate(task, config):
     keys = {'schemaVersion', 'taskId', 'target', 'testOnly', 'text', 'deadline'}
-    if set(task) != keys or task['schemaVersion'] != 1 or task['testOnly'] is not True:
+    execute = task.get('testOnly') is False and config.get('taskMode') == 'execute'
+    if set(task) != keys or type(task['schemaVersion']) is not int or task['schemaVersion'] != 1 or not (task['testOnly'] is True or execute):
         raise ValueError('TEST_TASK_SCHEMA_DENIED')
-    if not isinstance(task['taskId'], str) or not re.fullmatch(r'CE-OVIS-TEST-[A-Za-z0-9-]{1,64}', task['taskId']):
+    prefix = 'TASK' if execute else 'TEST'
+    if not isinstance(task['taskId'], str) or not re.fullmatch(r'CE-OVIS-' + prefix + r'-[A-Za-z0-9-]{1,64}', task['taskId']):
         raise ValueError('TEST_TASK_ID_DENIED')
-    if task['taskId'] != config['allowedTaskId'] or task['target'] + ' 的对话' != config['conversation']:
+    if task['taskId'] != config['allowedTaskId'] or not isinstance(task['target'], str) or task['target'] + ' 的对话' != config['conversation']:
         raise ValueError('TASK_TARGET_DENIED')
     if not isinstance(task['text'], str) or not 1 <= len(task['text'].encode()) <= 4096 or digest(task['text']) != config['allowedTextSha256']:
         raise ValueError('TASK_TEXT_DENIED')
@@ -138,9 +145,14 @@ def run_task(task, config, desktop):
                 raise ValueError('TASK_ID_CONTENT_CONFLICT')
             return state['result']
         state = {'taskSha256': task_hash, 'stage': 'OBSERVING', 'result': {'taskId': task['taskId'], 'scriptState': 'STOPPED', 'ovisState': 'UNKNOWN', 'submission': 'NOT_ATTEMPTED'}}
+        if task['testOnly'] is False:
+            state['result'].update(desktopSubmission='NOT_ATTEMPTED', agentProcessingObserved=False,
+                                   completionReport='UNKNOWN', taskCompletion='UNVERIFIED')
         write_state(path, state)
         result = state['result']
         def checkpoint(stage):
+            if task['testOnly'] is False:
+                result['desktopSubmission'] = result['submission']
             state['stage'] = stage
             write_state(path, state)
         try:
@@ -172,7 +184,13 @@ def run_task(task, config, desktop):
                 if prompt_for(task) in text and not view['input'].get('value'):
                     result['submission'] = 'OBSERVED'
                     result.update(classify(view, task))
-                    if result['ovisState'] in ('COMPLETED', 'FAILED'):
+                    if task['testOnly'] is False:
+                        if result['ovisState'] == 'PROCESSING' and not result['agentProcessingObserved']:
+                            result['agentProcessingObserved'] = True
+                            checkpoint('PROCESSING_OBSERVED')
+                        if result['ovisState'] == 'REPORTED':
+                            result['completionReport'] = 'REPORTED'
+                    if result['ovisState'] in ('COMPLETED', 'REPORTED', 'FAILED'):
                         result['scriptState'] = 'FINISHED'
                         checkpoint('FINISHED')
                         return result

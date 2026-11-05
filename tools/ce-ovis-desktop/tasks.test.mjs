@@ -29,3 +29,11 @@ test('legacy one-task configuration preserves original evidence paths', () => {
   const tasks=loadTasks({runDirectory:'/private/operator-state',testId:'CE-OVIS-TEST-one',taskFile:'/task.json',desktopConfig:'/desktop.json',taskPayloadSha256:'a'.repeat(64)});
   assert.equal(tasks[0].recordRoot,'/private/operator-state');
 });
+
+test('real task IDs require explicit local execution mode', t => {
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'ovis-task-mode-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const entry={taskId:'CE-OVIS-TASK-one',taskFile:path.join(root,'task.json'),desktopConfig:path.join(root,'desktop.json'),taskPayloadSha256:'a'.repeat(64)};
+  assert.throws(()=>loadTasks({runDirectory:root,tasks:[entry]}),/INVALID_TASK_CONFIG/);
+  assert.equal(loadTasks({runDirectory:root,taskMode:'execute',tasks:[entry]})[0].taskId,entry.taskId);
+});
