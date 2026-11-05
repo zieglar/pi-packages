@@ -105,6 +105,20 @@ function replay(tx: TransactionHandle, request: NormalizedExchangeRequest): Exch
   });
 }
 
+/** Private advisory lookup for identity preflight. Reuse creation replay checks
+ * without entering the create path; this read never establishes authority. */
+export function readExistingExchange(store: DurableStore, input: unknown): ExchangeCreation | undefined {
+  const request = normalizeCreateExchangeRequest(input);
+  const db = store.database;
+  if (db.isTransaction) throw new Error("Exchange reads cannot run inside an active transaction");
+  db.exec("BEGIN");
+  try {
+    return replay(db, request);
+  } finally {
+    if (db.isTransaction) db.exec("ROLLBACK");
+  }
+}
+
 function hook(action: (() => void) | undefined): void {
   if (action === undefined) return;
   try {

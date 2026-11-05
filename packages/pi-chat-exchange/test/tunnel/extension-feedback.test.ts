@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const seam = vi.hoisted(() => ({
   refresh: vi.fn(), stop: vi.fn(), hooks: vi.fn(), configure: vi.fn(),
-  native: vi.fn(), onboarding: vi.fn(), live: false,
+  native: vi.fn(), onboarding: vi.fn(), live: false, projected: false,
   manager: vi.fn(),
 }));
 vi.mock("../../dist/runtime/native-readiness.js", async original => ({
@@ -33,14 +33,14 @@ vi.mock("../../pi-extension/live-session-profile.js", async original => ({
     ref: { kind: "ce-live-session-v2" }, digest: "test-digest",
     manifest: { registrations: [], mcp: {}, chatgptEndpoint: { adapter: "chatgpt", endpointId: "chatgpt/main" } },
   } : undefined,
-  projectLivePiRegistration: () => ({}),
+  projectLivePiRegistration: () => seam.projected ? { sessions: { "test-session": { endpointId: "pi/test" } } } : {},
 }));
 vi.mock("../../dist/tunnel/live-session-policy.js", async original => ({
   ...await original<object>(), readLivePolicy: () => ({ ref: {}, digest: "new-digest", manifest: { registrations: [] } }),
 }));
 const dirs: string[] = [];
 beforeEach(() => {
-  seam.live = false; seam.refresh.mockReset().mockResolvedValue({ state: "STOPPED", evidence: "none" });
+  seam.live = false; seam.projected = false; seam.refresh.mockReset().mockResolvedValue({ state: "STOPPED", evidence: "none" });
   seam.stop.mockReset().mockResolvedValue(undefined); seam.hooks.mockReset(); seam.configure.mockReset();
   seam.native.mockReset().mockResolvedValue({ kind: "failed", message: "Native command failed (CE_NATIVE_DISCOVERY_FAILED). Current selection was not changed." });
   seam.onboarding.mockReset().mockResolvedValue("registered");
@@ -59,7 +59,7 @@ async function fixture(live = false) {
   let session = "test-session";
   const ui = { notify: vi.fn(), setStatus: vi.fn(), custom: vi.fn(async () => undefined), confirm: vi.fn(async () => false) };
   const ctx = { mode: "tui", hasUI: true, cwd: dir, ui, reload: vi.fn(async () => undefined),
-    sessionManager: { getSessionId: () => session, getSessionFile: () => undefined, getBranch: () => [], getEntries: () => [] } };
+    sessionManager: { getSessionId: () => session, getSessionFile: () => undefined, getBranch: (): Record<string, unknown>[] => [], getEntries: (): Record<string, unknown>[] => [] } };
   return { ui, ctx, events, appendEntry, commands, changeSession: () => { session = "replacement"; }, command: commands.get("ce-tunnel") };
 }
 const active = (ui: any) => ui.setStatus.mock.calls.filter(([key, text]: [string, unknown]) => key.startsWith("ce-operation") && typeof text === "string");
@@ -151,4 +151,21 @@ it("suppresses Status state writes and notifications after teardown while Manage
   const notices = f.ui.notify.mock.calls.length; const writes = f.ui.setStatus.mock.calls.length;
   wait.resolve({ state: "STOPPED", evidence: "none" }); await statusTask;
   expect(f.ui.notify).toHaveBeenCalledTimes(notices); expect(f.ui.setStatus).toHaveBeenCalledTimes(writes);
+});
+
+it.each(["next command", "teardown"])("retains a reload continuation terminal result until %s", async cleanup => {
+  const f = await fixture(true); seam.projected = true; seam.onboarding.mockResolvedValue("cancelled");
+  const { runtimeEnvironment } = await import("../../pi-extension/multi-session-runtime.js");
+  const entries: any[] = [{ id: "pending", type: "custom", customType: "ce-connect-reload", data: {
+    requestId: "reload-terminal", piSessionId: "test-session", policyDigest: "test-digest", requestedAt: Date.now(), environment: runtimeEnvironment(),
+  } }];
+  f.ctx.sessionManager.getBranch = () => entries; f.ctx.sessionManager.getEntries = () => entries;
+  f.appendEntry.mockImplementation((customType, data) => entries.push({ id: `entry-${entries.length}`, type: "custom", customType, data }));
+  await f.events.get("session_start")({ reason: "reload" }, f.ctx);
+  expect(f.ui.notify).toHaveBeenCalledWith(expect.stringContaining("connect cancelled"), "warning");
+  expect(f.ui.setStatus).toHaveBeenCalledWith("ce-command-result", expect.stringMatching(/Last CE connect.*cancelled/));
+  const before = f.ui.setStatus.mock.calls.length;
+  if (cleanup === "next command") await f.commands.get("ce-native").handler("status", f.ctx);
+  else await f.events.get("session_shutdown")({ reason: "exit" }, f.ctx);
+  expect(f.ui.setStatus.mock.calls.slice(before)).toContainEqual(["ce-command-result", undefined]);
 });

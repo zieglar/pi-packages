@@ -19,6 +19,21 @@ const KEY = Symbol.for("ce-chat-exchange.pi-multi-session-handoff-v1");
 const state = ((globalThis as typeof globalThis & { [KEY]?: { transfers: Map<string, Transfer>; failed: Set<string> } })[KEY] ??= {
   transfers: new Map(), failed: new Set(),
 });
+/** Read-only refusal probe; recovery must never clear or bypass this cache. */
+export function runtimeHasFailed(loaded: RuntimePolicy, runtimeId: string, allScopes = false): boolean {
+  if (allScopes) {
+    for (const key of state.failed) {
+      try {
+        const scope: unknown = JSON.parse(key);
+        if (!Array.isArray(scope) || scope.length !== 3 || typeof scope[2] !== "string") return true;
+        if (scope[2] === runtimeId) return true;
+      } catch { return true; }
+    }
+    return false;
+  }
+  const registration = loaded.manifest.registrations.find(r => r.runtimeSessionId === runtimeId);
+  return registration !== undefined && state.failed.has(JSON.stringify([loaded.manifest.store, registration.endpointId, runtimeId]));
+}
 export const policyDenied = (): CeHostRefusal => new CeHostRefusal("CE_HOST_AUTHORITY_ABSENT", false, "ADMISSION_POLICY_DENIED");
 export function runtimeEnvironment(): string {
   return JSON.stringify([process.env.CE_ALLOWLIST, process.env.CE_STORE_DIR, process.env.CE_STORE_FILE,

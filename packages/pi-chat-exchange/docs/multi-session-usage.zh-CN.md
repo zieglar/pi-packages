@@ -76,4 +76,12 @@ Pi grants 在 factory 加载时捕获，Save/register 不自动扩大旧运行�
 
 process guard 只做本地 exclusion，不是 CE authority 或 crash recovery。旧 registration epoch 不能复用 reload handoff；不确定清理保留 marker 与 failure latch。append-only records 可累积，没有自动回收，即使进程已死也不自动接管。需要恢复时另行授权、核实精确 durable evidence。
 
+### 恢复原 Pi 会话
+
+startup、resume 和 reload 会根据完整持久历史，自动核验已注册 native Session 的绑定。分支或上下文压缩不会选回旧 CE 绑定。同一有效 Owner 走普通 resume；正常退出后可建立新的普通绑定，主动停用和没有意图字段的旧 release 则保持 Detached，直到 Activate/Connect。
+
+首次修复历史失败要求当前 live-session v2 注册有效、原 mapping 唯一、匹配失败记录完整、完整历史已落盘，且没有旧 recovery journal。尚存的 active/expired Owner 和未 reconciliation 的 mutex 会在写入 repair attempt 前拒绝。完成已授权的离线维护，退出锁存失败的进程后恢复同一 native Session；无需 recover 命令或再次确认。
+
+未完成 attempt、其他 Endpoint 的失败、后续失败和当前进程失败锁存仍会阻塞。完整 journal 不授予权限，当前 policy、普通 mutex 和 Host 检查仍然必需。保留原历史和 marker，共享 transport 独立管理。详见[原会话恢复操作说明](original-session-recovery.zh-CN.md)。
+
 本页不启用自动 Inbox polling、payload execution、ACK、重试或 Wake Bridge。真实消息与 ACK 每次仍需授权；本地配置/隔离测试不替代真实用户验收。更多见 [Pi 工具指南](../pi-extension/README.zh-CN.md)与[排障](tunnel-setup.zh-CN.md#故障排查先定位层再进行最小修复)。

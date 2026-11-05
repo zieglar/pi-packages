@@ -12,7 +12,7 @@ import { ExchangeSchema, EventSchema } from "../../src/protocol/entities.js";
 import { canonicalDigest } from "../../src/protocol/idempotency.js";
 import { EXCHANGE_ID_PATTERN, EVENT_ID_PATTERN } from "../../src/protocol/identity.js";
 import { initializeStore, type DurableStore } from "../../src/storage/store.js";
-import { createExchange, type ExchangeCreation } from "../../src/storage/creation.js";
+import { createExchange, readExistingExchange, type ExchangeCreation } from "../../src/storage/creation.js";
 import { ConditionalMutationError } from "../../src/storage/transaction.js";
 
 const timestamp = "2026-10-08T20:00:00.000Z";
@@ -79,6 +79,32 @@ it("replays original identity and timestamp with zero writes or hooks", () => {
   expect(snapshot(reader)).toEqual(before);
   expect(changes(store.database)).toBe(count);
 });
+it("read-only Exchange preflight never creates missing policy identity and reuses validated replay", () => {
+  const { store, reader } = fixture();
+  const empty = snapshot(reader), initialChanges = changes(store.database);
+  expect(readExistingExchange(store, request())).toBeUndefined();
+  expect(snapshot(reader)).toEqual(empty);
+  expect(changes(store.database)).toBe(initialChanges);
+  const original = createExchange(store, request(), { now: () => timestamp });
+  const before = snapshot(reader), count = changes(store.database);
+  expect(readExistingExchange(store, request())).toEqual({ ...original, disposition: "REPLAYED" });
+  expect(readExistingExchange(store, { namespace: "different", idempotencyKey: "key" })).toBeUndefined();
+  expect(snapshot(reader)).toEqual(before);
+  expect(changes(store.database)).toBe(count);
+  expect(store.database.isTransaction).toBe(false);
+});
+
+it("read-only Exchange preflight rejects corrupt replay evidence and always closes its snapshot", () => {
+  const { store, reader } = fixture();
+  createExchange(store, request());
+  store.database.prepare("UPDATE idempotency_record SET request_digest=?").run("0".repeat(64));
+  const before = snapshot(reader), count = changes(store.database);
+  expect(() => readExistingExchange(store, request())).toThrowError(expect.objectContaining({ code: "STORAGE_IDEMPOTENCY_CORRUPT" }));
+  expect(snapshot(reader)).toEqual(before);
+  expect(changes(store.database)).toBe(count);
+  expect(store.database.isTransaction).toBe(false);
+});
+
 
 it("separates logical namespaces without altering their spelling", () => {
   const { store, reader } = fixture();

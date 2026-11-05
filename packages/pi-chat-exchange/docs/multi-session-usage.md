@@ -90,4 +90,12 @@ Revocation blocks only newly admitted operations, including reads/renew. Already
 
 The process guard provides local exclusion only, not CE authority or crash recovery. An old registration epoch cannot reuse a reload handoff. Uncertain cleanup retains the marker and failure latch. Append-only records can accumulate without automatic collection; a dead process does not trigger automatic takeover. Recovery requires separate authorization and verification of exact durable evidence.
 
+### Restore the original Pi session
+
+Startup, resume and reload automatically revalidate a registered native Session's binding from its complete persistent history. Branching or compaction does not select an older CE binding. A valid same Owner uses ordinary resume; normal shutdown permits a fresh ordinary binding, while explicit deactivation and legacy releases remain Detached until Activate/Connect.
+
+A first historical repair requires the current live-session v2 registration, a unique original mapping, all matching persisted failures, complete history and no previous recovery journal. Existing active/expired Owners and unreconciled mutex slots refuse before a repair attempt is written. Complete the separately authorized offline maintenance, exit the latched process and resume the same native Session; no recover command or repeated confirmation is required.
+
+Incomplete attempts, foreign Endpoint failures, later failures and current process failure latches continue to block. Complete journal evidence does not grant authority; current policy, ordinary mutex and Host checks remain mandatory. Keep all original history and markers. Shared transport is managed separately. See the [original-session restoration procedure](original-session-recovery.md).
+
 This page enables no automatic Inbox polling, payload execution, ACK, retry or Wake Bridge. Real messages and ACKs still require authorization each time. Local configuration/isolated tests do not replace real user acceptance. See the [Pi tool guide](../pi-extension/README.md) and [troubleshooting](tunnel-setup.md#故障排查先定位层再进行最小修复).

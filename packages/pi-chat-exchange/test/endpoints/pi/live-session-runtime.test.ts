@@ -10,6 +10,7 @@ import { parseMcpBindingConfig } from "../../../dist/host/mcp-binding-config.js"
 import type { CeMappingIdentifiers } from "../../../dist/endpoints/pi/session-host.js";
 import { PiSessionPolicy, isLivePolicy } from "../../../pi-extension/live-session-runtime.js";
 import { readLiveSelectedSessionPolicy } from "../../../pi-extension/live-session-profile.js";
+import { runtimeHasFailed } from "../../../pi-extension/multi-session-runtime.js";
 
 const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true }); });
@@ -108,4 +109,22 @@ it("uses one credential-aware reader watermark and refuses an observed suffix re
   fs.unlinkSync(join(f.root, "000001.json"));
   expect(() => original.current()).toThrow(); expect(() => original.run("metadata", () => undefined)).toThrow();
   original.closeAdmission(); await original.drain(); original.release({ released: true, detached: true });
+});
+
+it("reads a native Session failure across Store and Endpoint scopes without clearing it", async () => {
+  const first = fixture(), second = fixture();
+  const failed = runtime(first.loaded);
+  failed.fail();
+  const otherEndpoint = { ...second.loaded, manifest: { ...second.loaded.manifest,
+    registrations: second.loaded.manifest.registrations.map(r => ({ ...r, endpointId: "pi/B" })) } };
+  try {
+    expect(runtimeHasFailed(first.loaded, "native-A")).toBe(true);
+    expect(runtimeHasFailed(second.loaded, "native-A")).toBe(false);
+    expect(runtimeHasFailed(second.loaded, "native-A", true)).toBe(true);
+    expect(runtimeHasFailed(otherEndpoint, "native-A", true)).toBe(true);
+    expect(runtimeHasFailed(second.loaded, "unrelated-native", true)).toBe(false);
+    expect(runtimeHasFailed(first.loaded, "native-A")).toBe(true);
+  } finally {
+    failed.closeAdmission(); await failed.drain(); failed.release({ released: true, detached: true });
+  }
 });

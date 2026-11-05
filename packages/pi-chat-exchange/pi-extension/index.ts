@@ -27,7 +27,8 @@
  */
 import { runSessionConfiguration } from "./multi-session-commands.js";
 import { prepareSessionOnboarding, SessionOnboardingRefusal } from "./session-onboarding.js";
-import { PiMultiSessionRuntime, runtimeEnvironment } from "./multi-session-runtime.js";
+import { recoveryDiagnostics, nativeSessionLifecycle, mappingIdentifiers, openRecoveryJournal, type AutomaticRecoveryAttempt } from "./session-recovery.js";
+import { runtimeEnvironment, runtimeHasFailed } from "./multi-session-runtime.js";
 import { PiSessionPolicy, isLivePolicy, type SelectedSessionPolicy } from "./live-session-runtime.js";
 import { createLiveSessionMigration } from "../dist/tunnel/live-session-migration.js";
 import { createHooksManagement, runSafeHookFixture } from "../dist/tunnel/hooks-management.js";
@@ -35,7 +36,7 @@ import { runHooksManagementUi } from "../dist/tunnel/hooks-management-ui.js";
 import { createBackgroundAuthorizationStore } from "../dist/tunnel/background-authorization.js";
 import { readLivePolicy } from "../dist/tunnel/live-session-policy.js";
 import { readLiveSelectedSessionPolicy, projectLivePiRegistration } from "./live-session-profile.js";
-import { readSelectedMultiSessionPolicy, projectPiRegistration, effectivePiHookRules, type MultiSessionSnapshot } from "../dist/tunnel/multi-session-policy.js";
+import { readSelectedMultiSessionPolicy, projectPiRegistration, effectivePiHookRules } from "../dist/tunnel/multi-session-policy.js";
 import { runSetupWizard, presentTunnelStatus } from "../dist/tunnel/setup-ui.js";
 import { presentCeStatus } from "../dist/tunnel/status-ui.js";
 import { confirmMessagingActivation } from "../dist/tunnel/messaging-activation-ui.js";
@@ -44,7 +45,9 @@ import { createTunnelProfileSetup, readGeneratedPiAllowlist } from "../dist/tunn
 import { resolveTunnelProfilePath } from "../dist/tunnel/background-manager.js";
 import { validMessagingStore } from "../dist/tunnel/messaging-config.js";
 import { observeLiveConnection } from "../dist/tunnel/live-connection-status.js";
-import { readEndpointOwnerObservation } from "../dist/storage/ownership.js";
+import { readEndpointOwnerObservation, readOwnershipObservation } from "../dist/storage/ownership.js";
+import { readExistingExchange } from "../dist/storage/creation.js";
+import { readParticipantByEndpoint, readExchangeMembership } from "../dist/storage/participant.js";
 import { runTunnelManagerUi, type TunnelManagerUiProjection, type TunnelManagerUiOutcome } from "../dist/tunnel/manager-ui.js";
 import { isDeepStrictEqual } from "node:util";
 import { existsSync, readFileSync } from "node:fs";
@@ -427,8 +430,11 @@ const TUNNEL_STATUS_KEYS = ["ce", "ce-tunnel", "ce-client"] as const;
 export default function ceChatExchange(pi: ExtensionApiView): void {
   let operationSequence = 0;
   const operationFeedback = new Map<string, () => void>();
+  let clearCommandResult = (): void => {};
   // Feedback has its own lifetime and never controls transport or admission.
   const beginOperation = (ctx: ExtensionContextView, label: string, signal?: AbortSignal) => {
+    clearCommandResult();
+    clearCommandResult = () => {};
     const key = `ce-operation-${++operationSequence}`;
     // Feedback must not consume a domain refusal from the runtime identity API.
     const readSessionId = (): string | undefined => { try { return ctx.sessionManager.getSessionId(); } catch { return undefined; } };
@@ -449,7 +455,14 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     if (signal?.aborted) finish();
     const stage = (text: string): void => { if (current()) write(`${label} · ${text}`); };
     stage("Checking prerequisites");
-    return { current, stage, finish };
+    const result = (text: string): void => {
+      if (!current() || ctx.mode !== "tui" || !ctx.hasUI) return;
+      // Pi 1.3.0 replaces consecutive info notices with its final Reloaded line.
+      // Keep a labelled last result until the next CE operation or session cleanup.
+      try { ctx.ui.setStatus?.("ce-command-result", `Last ${label} · ${text}`); } catch { /* advisory only */ }
+      clearCommandResult = () => { try { ctx.ui.setStatus?.("ce-command-result", undefined); } catch { /* advisory only */ } };
+    };
+    return { current, stage, result, finish };
   };
   // Management is registered independently of subsequent Store/session activation.
   let nativeStartupWarned = false;
@@ -592,6 +605,8 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
    */
   const clearTunnelStatus = (): Promise<void> => {
     for (const finish of [...operationFeedback.values()]) finish();
+    clearCommandResult();
+    clearCommandResult = () => {};
     activationCapture?.abort();
     dailyCapture?.abort();
     hooksCapture?.abort();
@@ -819,6 +834,13 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   /** The last persisted mapping entry, if any. Only inspected for reasons
    * where adoption is safe; fork/new reasons must never inherit it. */
   const lastMappingEntry = (ctx: ExtensionContextView) => {
+    if (multiPolicy !== undefined && isLivePolicy(multiPolicy) && multiPolicy.ref.kind === "ce-live-session-v2") {
+      const history = ctx.sessionManager.getEntries?.();
+      if (history === undefined) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+      const lifecycle = nativeSessionLifecycle(history, ctx.sessionManager.getSessionId(), multiPolicy.manifest.store);
+      if (lifecycle.invalid) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+      return lifecycle.mapping;
+    }
     let found: unknown;
     for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type === "custom" && entry.customType === "ce-mapping") found = entry.data;
@@ -937,20 +959,40 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     state.earlyTimer = undefined;
   };
 
-  // Diagnostics contain lookup labels and fixed codes only, never authority.
-  // Any matching marker blocks adoption; a later mapping cannot clear it.
-  const persistedFailure = (ctx: ExtensionContextView, piSessionId: string, endpointId: string): CeHostRefusal | undefined => {
-    const cached = processFailureCodes.get(failureKey(piSessionId, endpointId));
-    if (cached !== undefined) return new CeHostRefusal(cached);
-    for (const entry of ctx.sessionManager.getBranch()) {
-      if (entry.type !== "custom" || entry.customType !== "ce-lifecycle-blocked") continue;
-      const data = entry.data as Record<string, unknown> | undefined;
-      if (data?.piSessionId !== piSessionId || data.endpointId !== endpointId) continue;
-      const code = data.code === "CE_HOST_AUTHORITY_ABSENT" || data.code === "CE_HOST_UNCERTAIN"
-        ? data.code : "CE_HOST_UNAVAILABLE";
-      return new CeHostRefusal(code);
+  // Cache evidence is process-wide and deny-only, across every Endpoint of
+  // this native session. A new mapping alone never clears diagnostics.
+  const processFailure = (piSessionId: string, allStores = false): CeHostRefusal | undefined => {
+    for (const [key, code] of processFailureCodes) {
+      try {
+        const scope = JSON.parse(failureKey(piSessionId, "")) as unknown[];
+        const fields = JSON.parse(key) as unknown[];
+        if (fields[2] === piSessionId && (allStores || (fields[0] === scope[0] && fields[1] === scope[1]))) return new CeHostRefusal(code);
+      } catch { return new CeHostRefusal("CE_HOST_UNAVAILABLE"); }
     }
     return undefined;
+  };
+  const diagnosticState = (ctx: ExtensionContextView, piSessionId: string) => {
+    const branch = ctx.sessionManager.getBranch(), history = ctx.sessionManager.getEntries?.();
+    const nativeLifecycle = multiPolicy !== undefined && isLivePolicy(multiPolicy) && multiPolicy.ref.kind === "ce-live-session-v2";
+    // Legacy bindings never required native entry IDs. Keep their deny-only
+    // markers unless a recovery journal requires strict compatibility replay.
+    if (!nativeLifecycle && !(history ?? branch).some(entry => entry.type === "custom" &&
+        (entry.customType === "ce-recovery-attempt" || entry.customType === "ce-recovery-resolved"))) {
+      return { invalid: false, failures: branch.filter(entry => entry.type === "custom" && entry.customType === "ce-lifecycle-blocked" &&
+        (entry.data as { piSessionId?: unknown } | undefined)?.piSessionId === piSessionId) };
+    }
+    return recoveryDiagnostics(branch, history, piSessionId,
+      multiPolicy?.manifest.store ?? { directory: envOr("CE_STORE_DIR", allowlistStore(allowlist)?.directory ?? join(EXTENSION_DIR, "store")),
+        file: envOr("CE_STORE_FILE", allowlistStore(allowlist)?.file ?? "ce-store.sqlite") });
+  };
+  const persistedFailure = (ctx: ExtensionContextView, piSessionId: string, _endpointId: string): CeHostRefusal | undefined => {
+    const cached = processFailure(piSessionId);
+    if (cached !== undefined) return cached;
+    const diagnostics = diagnosticState(ctx, piSessionId);
+    if (diagnostics.invalid) return new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+    const data = diagnostics.failures[0]?.data as Record<string, unknown> | undefined;
+    if (data === undefined) return undefined;
+    return new CeHostRefusal(data.code === "CE_HOST_AUTHORITY_ABSENT" || data.code === "CE_HOST_UNCERTAIN" ? data.code : "CE_HOST_UNAVAILABLE");
   };
 
   const failLifecycle = (state: Generation, error: unknown): void => {
@@ -1070,7 +1112,8 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           // a stale-mapping denial, never grant target capabilities/ownership.
           pi.appendEntry("ce-messaging-released", { piSessionId: state.piSessionId,
             endpointId: state.endpointId, participantId: previous.participantId,
-            sessionId: previous.sessionId, exchangeId: previous.exchangeId });
+            sessionId: previous.sessionId, exchangeId: previous.exchangeId,
+            intent: reason === "messaging-deactivation" || reason === "daily-disconnect" ? "deactivate" : "shutdown" });
           multiRuntime?.release(result);
         }
       } catch (error) {
@@ -1170,7 +1213,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         notify(ctx, "ce-tunnel: Endpoint policy changed during reload; run Connect again to review the current configuration.", "warning");
         return;
       }
-      await runDailyConnection(true, ctx);
+      await runDailyConnection(true, ctx, true);
     };
     const endpointId = endpointForPiSession(allowlist, piSessionId);
     if (hookConfig.invalid || hookConfig.rules.length > 0) {
@@ -1185,6 +1228,32 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
 
     let sessionHost: CeSessionHost | undefined;
     try {
+      const adoptableNative = event.reason === "startup" || event.reason === "resume" || event.reason === "reload";
+      if (adoptableNative && multiPolicy !== undefined && isLivePolicy(multiPolicy) && multiPolicy.ref.kind === "ce-live-session-v2") {
+        const history = ctx.sessionManager.getEntries?.();
+        if (history === undefined) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+        const lifecycle = nativeSessionLifecycle(history, piSessionId, multiPolicy.manifest.store);
+        const cached = processFailure(piSessionId, true);
+        if (cached !== undefined) throw cached;
+        if (runtimeHasFailed(multiPolicy, piSessionId, true)) throw new CeHostRefusal("CE_HOST_AUTHORITY_ABSENT");
+        if (lifecycle.invalid) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+        if (lifecycle.initialRepairEligible || (lifecycle.releaseIntent === "shutdown" && lifecycle.failures.length === 0)) {
+          restoreNativeSession(ctx, lifecycle.initialRepairEligible ? "repair" : "shutdown", event.reason === "reload");
+          await continueConnect();
+          return;
+        }
+        if (lifecycle.releaseIntent !== undefined && lifecycle.failures.length === 0) {
+          currentEndpoint = undefined;
+          notify(ctx, "ce-chat-exchange: messaging remains detached after intentional or legacy release; use Activate or Connect to bind this Session");
+          await continueConnect();
+          return;
+        }
+        if (lifecycle.mapping !== undefined && lifecycle.failures.length === 0) {
+          restoreNativeSession(ctx, "resume", event.reason === "reload");
+          await continueConnect();
+          return;
+        }
+      }
       const blocked = persistedFailure(ctx, piSessionId, endpointId);
       if (blocked !== undefined) throw blocked;
       const startedHost = getHost();
@@ -1732,26 +1801,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         const policyLoaded = policy === JSON.stringify(allowlist);
         const environment = runtimeEnvironment;
         const capturedEnvironment = environment();
-        const priorActivationFailure = (): CeHostRefusal | undefined => {
-          // A new endpoint/config cannot launder this runtime session's unknown
-          // old release or failed mapping persistence. Diagnostics only deny.
-          for (const entry of ctx.sessionManager.getBranch()) {
-            if (entry.type !== "custom" || entry.customType !== "ce-lifecycle-blocked") continue;
-            const data = entry.data as Record<string, unknown> | undefined;
-            if (data?.piSessionId === piSessionId && typeof data.endpointId === "string") {
-              const failure = persistedFailure(ctx, piSessionId, data.endpointId);
-              if (failure !== undefined) return failure;
-            }
-          }
-          for (const [key, code] of processFailureCodes) {
-            try {
-              const fields = JSON.parse(key) as unknown[];
-              const current = JSON.parse(failureKey(piSessionId, endpointId)) as unknown[];
-              if (fields[0] === current[0] && fields[1] === current[1] && fields[2] === piSessionId) return new CeHostRefusal(code);
-            } catch { /* cache is deny-only */ }
-          }
-          return undefined;
-        };
+        const priorActivationFailure = (): CeHostRefusal | undefined => persistedFailure(ctx, piSessionId, endpointId);
         const assertCurrent = (): void => {
           if (controller.signal.aborted || ctx.sessionManager.getSessionId() !== piSessionId ||
               environment() !== capturedEnvironment || setup.inspect().revision !== selected.revision ||
@@ -1806,7 +1856,8 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
             const old = inherited as Record<string, unknown>;
             const identifiers = ["endpointId", "participantId", "sessionId", "exchangeId"] as const;
             const releaseProven = identifiers.every((key) => typeof old[key] === "string" && old[key] !== "") &&
-              ctx.sessionManager.getBranch().some((entry) => {
+              (multiPolicy !== undefined && isLivePolicy(multiPolicy) && multiPolicy.ref.kind === "ce-live-session-v2"
+                ? ctx.sessionManager.getEntries?.() ?? [] : ctx.sessionManager.getBranch()).some((entry) => {
                 if (entry.type !== "custom" || entry.customType !== "ce-messaging-released") return false;
                 const proof = entry.data as Record<string, unknown> | undefined;
                 return proof?.piSessionId === piSessionId && identifiers.every((key) => proof[key] === old[key]);
@@ -1854,6 +1905,131 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     }
   };
 
+  /** Restore only this native Session's verified identity through ordinary
+   * resume or UNOWNED admission. No await may split the final write fences. */
+  const restoreNativeSession = (ctx: ExtensionContextView, mode: "repair" | "shutdown" | "resume", reload: boolean): void => {
+      let targetState: Generation | undefined;
+      let journal: ReturnType<typeof openRecoveryJournal> | undefined;
+      try {
+        const loaded = multiPolicy;
+        const piSessionId = ctx.sessionManager.getSessionId();
+        if (loaded === undefined || !isLivePolicy(loaded) || loaded.ref.kind !== "ce-live-session-v2" || !piSessionId || multiRuntime !== undefined) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+        const registration = loaded.manifest.registrations.find(r => r.runtimeSessionId === piSessionId && r.status === "active");
+        if (registration === undefined) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+        const endpointId = registration.endpointId;
+        const assertFresh = (): void => {
+          const cached = processFailure(piSessionId, true);
+          if (cached !== undefined) throw cached;
+          if (runtimeHasFailed(loaded, piSessionId, true)) throw new CeHostRefusal("CE_HOST_AUTHORITY_ABSENT");
+        };
+        assertFresh();
+        const branch = structuredClone(ctx.sessionManager.getBranch());
+        const history = structuredClone(ctx.sessionManager.getEntries?.());
+        if (history === undefined) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+        const ids = new Set<string>();
+        for (const entry of history) {
+          if (typeof entry.id !== "string" || entry.id === "" || entry.id.length > 4096 || ids.has(entry.id)) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+          ids.add(entry.id);
+        }
+        if (branch.some(e => !history.some(h => h.id === e.id && isDeepStrictEqual(e, h)))) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+        const diagnostics = nativeSessionLifecycle(history, piSessionId, loaded.manifest.store);
+        const oldMapping = diagnostics.mapping;
+        if (diagnostics.invalid || !mappingIdentifiers(oldMapping) || oldMapping.endpointId !== endpointId ||
+            (mode === "repair" ? !diagnostics.initialRepairEligible : diagnostics.failures.length !== 0 ||
+              (mode === "shutdown" ? diagnostics.releaseIntent !== "shutdown" : diagnostics.releaseIntent !== undefined))) {
+          throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+        }
+        const nativeFile = ctx.sessionManager.getSessionFile();
+        journal = openRecoveryJournal(nativeFile);
+        journal.verifyHistory(history, piSessionId);
+        const environment = runtimeEnvironment();
+        const profilePath = resolveTunnelProfilePath({ env: process.env });
+        const profile = readFileSync(profilePath, "utf8");
+        const selected = readLiveSelectedSessionPolicy(profilePath, profile);
+        if (!isDeepStrictEqual(selected, loaded)) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+        const policyIdentity = createHash("sha256").update(JSON.stringify(selected)).digest("hex");
+        let expectedBranch = branch, expectedHistory = history;
+        const assertCurrent = (): void => {
+          assertFresh();
+          if (ctx.sessionManager.getSessionId() !== piSessionId ||
+              ctx.sessionManager.getSessionFile() !== nativeFile || runtimeEnvironment() !== environment ||
+              resolveTunnelProfilePath({ env: process.env }) !== profilePath || readFileSync(profilePath, "utf8") !== profile ||
+              !isDeepStrictEqual(readLivePolicy(loaded.ref), loaded) ||
+              !isDeepStrictEqual(ctx.sessionManager.getBranch(), expectedBranch) ||
+              !isDeepStrictEqual(ctx.sessionManager.getEntries?.(), expectedHistory)) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+          journal!.verifyHistory(expectedHistory, piSessionId);
+        };
+        const assertExistingIdentity = (): void => {
+          const store = openStore({ directory: loaded.manifest.store.directory, filename: loaded.manifest.store.file });
+          try {
+            const participant = readParticipantByEndpoint(store, PI_ADAPTER_KIND, endpointId);
+            const exchange = readExistingExchange(store, { namespace: loaded.manifest.exchange.namespace,
+              idempotencyKey: loaded.manifest.exchange.idempotencyKey });
+            if (participant?.participantId !== oldMapping.participantId || exchange?.exchange.exchangeId !== oldMapping.exchangeId ||
+                readExchangeMembership(store, oldMapping.exchangeId, oldMapping.participantId) === undefined) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+            const observation = readOwnershipObservation(store, oldMapping.participantId);
+            if (mode === "resume" ? observation.lease !== "ACTIVE" || observation.ownership?.sessionId !== oldMapping.sessionId : observation.lease !== "UNOWNED") {
+              throw new CeHostRefusal("CE_HOST_AUTHORITY_ABSENT", false, observation.lease === "EXPIRED" ? "EXPIRED" : "OWNERSHIP_HELD");
+            }
+          } finally { store.close(); }
+        };
+        assertCurrent();
+        assertExistingIdentity(); // Missing identity is never evidence of UNOWNED.
+        const appendVerified = (customType: string, data: unknown): Record<string, unknown> => {
+          pi.appendEntry(customType, data);
+          const nowBranch = ctx.sessionManager.getBranch(), nowHistory = ctx.sessionManager.getEntries?.();
+          const entry = nowBranch.at(-1);
+          if (entry === undefined || typeof entry.id !== "string" || entry.id === "" || entry.id.length > 4096 || ids.has(entry.id) || entry.type !== "custom" ||
+              entry.customType !== customType || !isDeepStrictEqual(entry.data, data) ||
+              !isDeepStrictEqual(nowBranch, [...expectedBranch, entry]) || !isDeepStrictEqual(nowHistory, [...expectedHistory, entry])) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+          journal!.verify(entry);
+          ids.add(entry.id);
+          expectedBranch = structuredClone(nowBranch); expectedHistory = structuredClone(nowHistory!);
+          return entry;
+        };
+        const attempt: AutomaticRecoveryAttempt = { version: 2, mode: "automatic", sourceMappingEntryId: diagnostics.sourceMappingEntryId!,
+          attemptId: randomUUID(), piSessionId, endpointId, store: loaded.manifest.store,
+          oldMapping, failureIds: diagnostics.failures.map(e => e.id as string), policyIdentity };
+        const targetHost = getHost();
+        // A held mutex refuses before any attempt or process failure latch.
+        multiRuntime = new PiSessionPolicy(loaded, piSessionId, () => ctx.sessionManager.getSessionId(), mode === "resume" && reload, mode === "resume" ? oldMapping : undefined);
+        targetState = { piSessionId, endpointId, ctx, timer: undefined, earlyTimer: undefined, renewal: undefined, stopping: false, failure: undefined };
+        const attemptEntry = mode === "repair" ? appendVerified("ce-recovery-attempt", attempt) : undefined;
+        assertCurrent();
+        assertExistingIdentity();
+        assertCurrent();
+        const mapping = withHost(mode === "resume" ? "resume" : "begin", () => mode === "resume"
+          ? targetHost.resume(endpointId, oldMapping)
+          : targetHost.beginSession(endpointId, { requireUnowned: true }));
+        const status = withHost("status", () => targetHost.status(endpointId));
+        if (!mappingIdentifiers(mapping) || mapping.endpointId !== endpointId || mapping.participantId !== oldMapping.participantId ||
+            mapping.exchangeId !== oldMapping.exchangeId || (mode === "resume" ? mapping.sessionId !== oldMapping.sessionId : mapping.sessionId === oldMapping.sessionId) || !status.registered || status.lease !== "ACTIVE" ||
+            !(["endpointId", "participantId", "exchangeId", "sessionId"] as const).every(key => status[key] === mapping[key])) throw new CeHostRefusal("CE_HOST_UNCERTAIN");
+        assertCurrent();
+        const mappingEntry = appendVerified("ce-mapping", mapping);
+        assertCurrent();
+        if (attemptEntry !== undefined) appendVerified("ce-recovery-resolved", { ...attempt, attemptEntryId: attemptEntry.id, mappingEntryId: mappingEntry.id, newMapping: mapping });
+        assertCurrent();
+        // The complete resolved record is the journal commit point. Only after
+        // verified persistence may this writer publish a generation/capability.
+        generation = targetState;
+        currentEndpoint = endpointId;
+        inboxBinding = Object.freeze({ piSessionId, endpointId });
+        startupFailure = undefined; startupRuntimeRepair = undefined;
+        startHeartbeat(targetState, mode === "resume" ? adoptedLeaseRemainingMs(endpointId) : undefined);
+        advisoryState = notificationConfig === undefined ? undefined :
+          { generation: Object.freeze({}), watermark: 0, inFlight: false, failureLatched: false };
+        notify(ctx, "ce-chat-exchange: native Session binding restored; transport unchanged; ACK is reception only");
+      } catch (error) {
+        if (targetState !== undefined) {
+          failLifecycle(targetState, error);
+          multiRuntime?.closeAdmission();
+          host?.drop(targetState.endpointId);
+        }
+        throw error;
+      } finally { journal?.close(); }
+  };
+
   /** Normal cleanup uses the locally held handle, not deny-only policy admission:
    * revocation must not prevent end/release. Configuration is only a dialog fence. */
   const runMessagingDeactivation = async (ctx: ExtensionContextView): Promise<void> => {
@@ -1882,7 +2058,9 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           // Match loadAllowlist precedence: validate any selected generated
           // pair before considering the extension-local fallback. Missing or
           // nonmessaging profiles may select fallback; malformed pairs may not.
-          const selected = multiPolicy === undefined ? readGeneratedPiAllowlist(profilePath) : readSelectedMultiSessionPolicy(profilePath);
+          const selected = multiPolicy === undefined ? readGeneratedPiAllowlist(profilePath)
+            : isLivePolicy(multiPolicy) ? readLiveSelectedSessionPolicy(profilePath, readFileSync(profilePath, "utf8"))
+              : readSelectedMultiSessionPolicy(profilePath);
           return JSON.stringify([profilePath, existsSync(profilePath) ? readFileSync(profilePath, "utf8") : null,
             selected === undefined ? ["fallback", allowlistPath(), readFileSync(allowlistPath(), "utf8")] : ["generated", selected]]);
         };
@@ -2363,7 +2541,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     } finally { permissionPrompt = false; }
   };
 
-  const runDailyConnection = async (connect: boolean, ctx: ExtensionContextView): Promise<void> => {
+  const runDailyConnection = async (connect: boolean, ctx: ExtensionContextView, retainTerminal = false): Promise<void> => {
     const action = connect ? "connect" : "disconnect";
     if (dailyTask !== undefined || activationTask !== undefined || setupTask !== undefined || managerUiTask !== undefined || startCapture !== undefined) {
       notify(ctx, `ce-tunnel: ${action} refused CE_TUNNEL_MANAGER_BUSY`, "warning"); return;
@@ -2425,7 +2603,10 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           feedback.stage("Reviewing and saving session registration");
           const onboarding = await prepareSessionOnboarding(ctx, { profilePath, manager, signal: controller.signal, onProgress: feedback.stage });
           current();
-          if (onboarding === "cancelled") { notify(ctx, "ce-tunnel: connect cancelled; registration was not published"); return; }
+          if (onboarding === "cancelled") {
+            if (retainTerminal) feedback.result("cancelled; registration was not published");
+            notify(ctx, "ce-tunnel: connect cancelled; registration was not published", retainTerminal ? "warning" : "info"); return;
+          }
           const selected = multiPolicy !== undefined && isLivePolicy(multiPolicy) ? readLivePolicy(multiPolicy.ref) : readSelectedMultiSessionPolicy(profilePath);
           const projected = isLivePolicy(selected) ? projectLivePiRegistration(selected, piSessionId) : projectPiRegistration(selected, piSessionId);
           if (onboarding === "registered" || !isDeepStrictEqual(projected, allowlist)) {
@@ -2459,7 +2640,10 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         }
         feedback.stage("Waiting for background startup permission");
         if (!await requestBackgroundPermission(manager, ctx, controller.signal)) {
-          if (feedback.current()) notify(ctx, "ce-tunnel: connect cancelled; background startup permission was not granted; earlier configuration changes remain");
+          if (feedback.current()) {
+            if (retainTerminal) feedback.result("cancelled; startup permission not granted; saved policy retained");
+            notify(ctx, "ce-tunnel: connect cancelled; background startup permission was not granted; earlier configuration changes remain", retainTerminal ? "warning" : "info");
+          }
           return;
         }
         current();
@@ -2494,6 +2678,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         }
         const readiness = adoption === "OBSERVED" && currentTransport === "CONNECTED" ? "OBSERVED" : adoption === "BLOCKED" ? "BLOCKED" : "UNVERIFIED";
         notify(ctx, `ce-tunnel: current Pi endpoint ${endpointId} bound; tunnel=${measured.state} evidence=${measured.evidence}; current transport observation=${currentTransport}; MCP policy adoption=${adoption}; messaging readiness observation=${readiness}${adoption === "BLOCKED" ? "; MCP_OPERATION_BLOCKED" : ""}${started.alreadyRunning ? "; existing run retained" : ""}; model availability and business task execution are not measured; not delivery/ACK/completion evidence`);
+        if (retainTerminal) feedback.result(`finished; tunnel=${measured.state}; MCP policy=${adoption}; readiness=${readiness}`);
       } catch (error) {
         if (!feedback.current()) return;
         if (error instanceof SessionOnboardingRefusal) {
