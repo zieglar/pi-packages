@@ -114,7 +114,7 @@ describe("B1.1 /ce-tunnel — subcommand surface", () => {
   it("offers existing operations and explicit daily connect/disconnect completions", async () => {
     const command = await tunnel();
     const values = (command.getArgumentCompletions?.("") ?? []).map((item) => item.value);
-    expect([...values].sort()).toEqual(["activate", "authorize", "connect", "convert", "deactivate", "disconnect", "doctor", "help", "liveSessions", "migrate", "migrate-live", "permission", "reauthorize", "register", "revoke", "sessions", "setup", "start", "status", "stop"]);
+    expect([...values].sort()).toEqual(["activate", "authorize", "connect", "convert", "deactivate", "disconnect", "doctor", "help", "hooks", "liveSessions", "migrate", "migrate-live", "permission", "reauthorize", "register", "revoke", "sessions", "setup", "start", "status", "stop"]);
     expect((command.getArgumentCompletions?.("sta") ?? []).map((i) => i.value).sort()).toEqual(["start", "status"]);
     for (const item of command.getArgumentCompletions?.("") ?? []) expect(typeof item.value).toBe("string");
   });

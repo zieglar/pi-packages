@@ -98,11 +98,21 @@ export function assertNativeReadyForTunnel(): NativeReadiness {
 }
 
 
+export type NativeCommandOutcomeKind = "ok" | "usage" | "failed";
+export interface NativeCommandOutcome {
+  readonly kind: NativeCommandOutcomeKind;
+  readonly message: string;
+}
+
 export async function runNativeCommand(args: string, options: NativeReadinessOptions = {}): Promise<string> {
+  return (await runNativeCommandOutcome(args, options)).message;
+}
+
+export async function runNativeCommandOutcome(args: string, options: NativeReadinessOptions = {}): Promise<NativeCommandOutcome> {
   const command = args.trim();
-  if (command === "" || command === "status" || command === "verify") return JSON.stringify(inspectNativeReadiness(options), null, 2);
+  if (command === "" || command === "status" || command === "verify") return { kind: "ok", message: JSON.stringify(inspectNativeReadiness(options), null, 2) };
   if (command !== "install" && command !== "repair confirm" && command !== "check-updates") {
-    return "Usage: /ce-native [status|install|verify|repair confirm|check-updates]. Repair requires explicit repair confirm.";
+    return { kind: "usage", message: "Usage: /ce-native [status|install|verify|repair confirm|check-updates]. Repair requires explicit repair confirm." };
   }
   const manifest = options.manifest ?? NATIVE_COMPAT;
   try {
@@ -117,7 +127,7 @@ export async function runNativeCommand(args: string, options: NativeReadinessOpt
         throw Object.assign(new Error(), { code: "CE_NATIVE_DISCOVERY_FAILED" });
       }
       const differs = metadata.tag_name !== `ce-sqlite-v${manifest.defaultVersion}`;
-      return `Current trusted Native version: ${manifest.defaultVersion}. Release discovery ${differs ? "differs; wait for a CE compatibility update" : "matches the trusted version"}. No driver was installed or selected.`;
+      return { kind: "ok", message: `Current trusted Native version: ${manifest.defaultVersion}. Release discovery ${differs ? "differs; wait for a CE compatibility update" : "matches the trusted version"}. No driver was installed or selected.` };
     }
     if (!supported(options) || (options.platform !== undefined && options.platform !== process.platform)
       || (options.arch !== undefined && options.arch !== process.arch)) throw Object.assign(new Error(), { code: "CE_NATIVE_TARGET_UNSUPPORTED" });
@@ -126,8 +136,8 @@ export async function runNativeCommand(args: string, options: NativeReadinessOpt
       ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }) });
     // Selection changes only after the fixed default artifact has been verified.
     writeDriverSelection({ driver: "rust-native", nativeVersion: manifest.defaultVersion }, options.selectionFile);
-    return `Trusted Native ${manifest.defaultVersion} installed and selected. Restart Pi to initialize messaging with the installed driver.`;
+    return { kind: "ok", message: `Trusted Native ${manifest.defaultVersion} installed and selected. Restart Pi to initialize messaging with the installed driver.` };
   } catch (error) {
-    return `Native command failed (${errorCode(error)}). Current selection was not changed.`;
+    return { kind: "failed", message: `Native command failed (${errorCode(error)}). Current selection was not changed.` };
   }
 }

@@ -12,22 +12,32 @@ export interface HooksManagementUiOptions {
   readonly keys: TunnelKeyProtocol;
   readonly safeTest: () => Promise<{ readonly executed: boolean; readonly configuredCommandsExecuted: boolean; readonly exitCode: number }>;
   readonly signal?: AbortSignal;
+  readonly onProgress?: (text: string) => void;
 }
 export type HooksManagementUiOutcome =
   | { readonly status: "closed" | "inspect-only" }
+  | { readonly status: "cancelled"; readonly reason: "user" | "timeout" | "superseded" }
   | ({ readonly status: "saved" } & HooksSaveResult)
   | { readonly status: "tested"; readonly executed: boolean; readonly configuredCommandsExecuted: boolean }
+  | { readonly status: "test-failed"; readonly detail: string }
   | { readonly status: "refused"; readonly detail: string };
 type Screen = "main" | "rules" | "rule" | "input" | "review" | "safeTest" | "recovery" | "loaded";
-type Action = "pi" | "mcp" | "choose" | "add" | "edit" | "input" | "toggle" | "remove" | "review" | "upgrade" | "confirm" | "test" | "openTest" | "recovery" | "recoveryInput" | "loaded";
+type Action = "pi" | "mcp" | "choose" | "add" | "edit" | "input" | "toggle" | "remove" | "review" | "upgrade" | "confirm" | "test" | "openTest" | "recovery" | "recoveryInput" | "loaded" | "cancel";
 const safe = (value: string): string => sanitizeTerminalText(value).replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
 
 export async function runHooksManagementUi(ctx: SetupUiContext, options: HooksManagementUiOptions): Promise<HooksManagementUiOutcome> {
-  if (ctx.mode !== "tui" || !ctx.hasUI || typeof ctx.ui.custom !== "function" || options.signal?.aborted) return { status: "inspect-only" };
+  if (options.signal?.aborted) return { status: "cancelled", reason: "superseded" };
+  if (ctx.mode !== "tui" || !ctx.hasUI || typeof ctx.ui.custom !== "function") return { status: "inspect-only" };
   const controller = new AbortController();
-  const abort = (): void => controller.abort();
-  options.signal?.addEventListener("abort", abort, { once: true });
-  const timer = setTimeout(abort, 120_000); timer.unref?.();
+  let cancellationReason: "user" | "timeout" | "superseded" = "superseded";
+  // Preserve the first cancellation source, including disposal after an abort.
+  const abort = (reason: typeof cancellationReason): void => {
+    if (!controller.signal.aborted) { cancellationReason = reason; controller.abort(); }
+  };
+  const supersede = (): void => abort("superseded");
+  const cancelled = (): HooksManagementUiOutcome => ({ status: "cancelled", reason: cancellationReason });
+  options.signal?.addEventListener("abort", supersede, { once: true });
+  const timer = setTimeout(() => abort("timeout"), 120_000); timer.unref?.();
   // Follow the existing native dialogs' disposal/cancellation convention.
   const open = ctx.ui.custom.bind(ctx.ui);
   const menuCtx: SetupUiContext = { ...ctx, ui: { ...ctx.ui, custom: (factory, customOptions) => open((tui, theme, keybindings, done) => {
@@ -39,10 +49,10 @@ export async function runHooksManagementUi(ctx: SetupUiContext, options: HooksMa
     const handleInput = component.handleInput?.bind(component); const dispose = component.dispose?.bind(component);
     component.handleInput = data => {
       const configured = keybindings as { matches?(data: string, binding: string): boolean };
-      if (options.keys.matches(data, options.keys.escape) || options.keys.matches(data, options.keys.ctrlC) || configured.matches?.(data, "tui.select.cancel")) abort();
+      if (options.keys.matches(data, options.keys.escape) || options.keys.matches(data, options.keys.ctrlC) || configured.matches?.(data, "tui.select.cancel")) abort("user");
       handleInput?.(data);
     };
-    component.dispose = () => { if (!disposed) { disposed = true; dispose?.(); } if (!completed) { abort(); complete(undefined); } };
+    component.dispose = () => { if (!disposed) { disposed = true; dispose?.(); } if (!completed) { supersede(); complete(undefined); } };
     return component;
   }, customOptions) } };
   let direction: "pi" | "mcp" = "pi";
@@ -58,7 +68,7 @@ export async function runHooksManagementUi(ctx: SetupUiContext, options: HooksMa
     let selected: ReturnType<ReturnType<typeof createHooksManagement>["inspect"]> | undefined;
     try { selected = options.management?.inspect(); } catch { /* A committed upgrade may intentionally invalidate the old v1 selection. */ }
     const v2 = selected?.snapshot.ref.kind === "ce-live-session-v2";
-    const cancel = { id: "cancel", label: "Cancel", close: true as const };
+    const cancel = { id: "cancel", label: "Cancel", action: "cancel" as const };
     const screens: Record<Screen, () => MenuScreen<Screen, Action>> = {
       main: () => ({ kind: "actions", title: "Hooks · native configuration", hint: "close", lines: [
         "Configured != adopted != eligible != executed.",
@@ -145,15 +155,30 @@ export async function runHooksManagementUi(ctx: SetupUiContext, options: HooksMa
       },
       upgrade: () => { try { candidate = options.management!.previewUpgrade(); return to("review"); } catch { error = "Upgrade preview refused; reconcile the selected policy first."; return to("main"); } },
       confirm: () => { if (!controller.signal.aborted && candidate) confirmed = true; return close; },
+      cancel: () => { abort("user"); return close; },
       openTest: () => to("safeTest"), test: () => { if (!controller.signal.aborted) testConfirmed = true; return close; },
     } });
-    const result = await runMenu(menuCtx, menu, { getState: () => null, signal: controller.signal, onError: abort });
-    if (controller.signal.aborted || result.kind === "error") return { status: "closed" };
+    let menuFailed = false;
+    const result = await runMenu(menuCtx, menu, { getState: () => null, signal: controller.signal, onError: () => { menuFailed = true; supersede(); } });
+    if (menuFailed || result.kind === "error") return { status: "refused", detail: "Hooks configuration publication refused; check configuration and pending publication evidence." };
+    if (controller.signal.aborted) return cancelled();
     // The native component has released the terminal. Never run a save or test
     // from a preview renderer, navigation action or a disposed/aborted dialog.
-    if (confirmed && candidate) return { status: "saved", ...await options.management!.save(candidate, true, controller.signal) };
-    if (testConfirmed) { const test = await options.safeTest(); return { status: "tested", executed: test.executed, configuredCommandsExecuted: test.configuredCommandsExecuted }; }
+    if (confirmed && candidate) {
+      options.onProgress?.("Saving and publishing the Hook candidate");
+      return { status: "saved", ...await options.management!.save(candidate, true, controller.signal) };
+    }
+    if (testConfirmed) {
+      options.onProgress?.("Running the fixed benign fixture");
+      try {
+        const test = await options.safeTest();
+        if (controller.signal.aborted) return cancelled();
+        return { status: "tested", executed: test.executed, configuredCommandsExecuted: test.configuredCommandsExecuted };
+      } catch {
+        return { status: "test-failed", detail: "The fixed benign fixture test did not successfully complete; configured commands and personal scripts were not executed." };
+      }
+    }
     return { status: "closed" };
-  } catch { return { status: "refused", detail: "Hooks operation refused; inspect configuration and pending publication evidence." }; }
-  finally { clearTimeout(timer); options.signal?.removeEventListener("abort", abort); abort(); }
+  } catch { return { status: "refused", detail: "Hooks configuration publication refused; check configuration and pending publication evidence." }; }
+  finally { clearTimeout(timer); options.signal?.removeEventListener("abort", supersede); supersede(); }
 }

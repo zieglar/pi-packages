@@ -79,7 +79,7 @@ function makeCtx(mode: string): { ctx: Context; notifications: Array<{ message: 
     mode,
     hasUI: true,
     cwd: "/tmp",
-    sessionManager: {},
+    sessionManager: { getSessionId: () => "unbound-command-test" },
     ui: {
       notify: vi.fn((message: string, level: string) => notifications.push({ message, level })),
       setStatus: vi.fn((key: string, text: string | undefined) => status.set(key, text)),

@@ -30,6 +30,7 @@ export async function prepareSessionOnboarding(ctx: OnboardingContext, options: 
   readonly profilePath: string;
   readonly manager: Pick<BackgroundTunnelManager, "refresh" | "withProfileConfigurationLock">;
   readonly signal: AbortSignal;
+  readonly onProgress?: (text: string) => void;
 }): Promise<"ready" | "registered" | "cancelled"> {
   if (options.signal.aborted) return "cancelled";
   if (process.env.CE_ALLOWLIST) throw new SessionOnboardingRefusal("legacy-override", "CE_ALLOWLIST selects legacy policy. Remove the override and explicitly select a multi-session profile before Connect.");
@@ -69,6 +70,7 @@ export async function prepareSessionOnboarding(ctx: OnboardingContext, options: 
       throw new SessionOnboardingRefusal("context-changed", "Session, profile, environment or cancellation changed during onboarding. Connect again to review the current configuration.");
     }
   };
+  options.onProgress?.("Measuring transport before session registration");
   const status = await options.manager.refresh();
   if (options.signal.aborted) return "cancelled";
   current();
@@ -77,6 +79,7 @@ export async function prepareSessionOnboarding(ctx: OnboardingContext, options: 
   }
   if (status.state !== "STOPPED") throw new SessionOnboardingRefusal("transport-running", "This current Pi Session is absent from the loaded recipient policy of the running transport. Coordinate Stop then Connect to register and load its Endpoint.");
   // A never-started profile has STOPPED/none; the existing lock verifies process absence.
+  options.onProgress?.("Verifying the Profile configuration lock");
   try { await options.manager.withProfileConfigurationLock(() => current()); }
   catch (error) {
     if (error instanceof SessionOnboardingRefusal) throw error;
@@ -84,6 +87,7 @@ export async function prepareSessionOnboarding(ctx: OnboardingContext, options: 
   }
   if (options.signal.aborted) return "cancelled";
   current();
+  options.onProgress?.("Waiting for session registration consent");
   const accepted = await ctx.ui.confirm("Chat Exchange · register current Session", `Register this current native Pi Session as Endpoint ${safe(endpointId)}?\n` +
     `Store: ${safe(selected.manifest.store.directory)}/${safe(selected.manifest.store.file)}\n` +
     `Exchange: ${safe(selected.manifest.exchange.namespace)} / ${safe(selected.manifest.exchange.idempotencyKey)}\n` +
@@ -93,6 +97,7 @@ export async function prepareSessionOnboarding(ctx: OnboardingContext, options: 
   if (options.signal.aborted) return "cancelled";
   current();
   if (accepted !== true) return "cancelled";
+  options.onProgress?.("Saving the session registration");
   const result = await api.register({ expectedRevision, registration: { endpointId, runtimeSessionId, payloadRead: false, ack: false } });
   // Publication changes revision itself. Never retry or claim rollback after its commit point.
   if (result.durability !== "synced") throw new SessionOnboardingRefusal("durability-uncertain", "Registration durability is uncertain. Inspect the selected profile before another Connect; do not retry registration automatically.");
@@ -127,6 +132,7 @@ async function prepareLiveSession(ctx: OnboardingContext, options: Parameters<ty
   };
   current();
   // The live chain owns publication serialization. No transport-STOPPED lock or lifecycle action.
+  options.onProgress?.("Waiting for live session messaging consent");
   const accepted = await ctx.ui.confirm("Chat Exchange · current Session messaging", `Endpoint: ${safe(endpointId)}\n` +
     `Store: ${safe(selected.manifest.store.directory)}/${safe(selected.manifest.store.file)}\n` +
     `Exchange: ${safe(selected.manifest.exchange.namespace)} / ${safe(selected.manifest.exchange.idempotencyKey)}\nPeer: ${safe(selected.manifest.chatgptEndpoint.endpointId)}\n` +
@@ -135,9 +141,11 @@ async function prepareLiveSession(ctx: OnboardingContext, options: Parameters<ty
     "Shared ChatGPT inbox; no conversation isolation. Configuration only: explicit reload/Start or transport reuse follows. This is not delivery or task completion evidence.", { signal: options.signal, timeout: 120_000 });
   if (options.signal.aborted) return "cancelled";
   current(); if (accepted !== true) return "cancelled";
+  options.onProgress?.("Waiting for optional presence consent");
   const presenceDisclosure = old?.presenceDisclosure === true || await ctx.ui.confirm("Chat Exchange · optional presence disclosure", "Also disclose this Endpoint's Exchange membership/first join and current Owner/lease liveness to authorized peers? Decline keeps Active and membership-dependent Reachable unknown; messaging consent remains separate.", { signal: options.signal, timeout: 120_000 });
   if (options.signal.aborted) return "cancelled";
   current();
+  options.onProgress?.("Publishing the live session registration");
   const result = api.register({ expectedDigest: selected.digest,
     registration: { endpointId, runtimeSessionId, payloadRead: true, ack: true, presenceDisclosure } });
   if (result.durability !== "synced") throw new SessionOnboardingRefusal("durability-uncertain", "Live registration publication is uncertain. Reconcile the operation explicitly; do not retry automatically.");

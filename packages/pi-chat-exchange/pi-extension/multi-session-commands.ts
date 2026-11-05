@@ -17,10 +17,14 @@ interface CommandPort {
 }
 const safe = (s: string): string => sanitizeTerminalText(s).replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
 function refuse(): never { throw new TunnelRefusal("CE_TUNNEL_CONFIG_CONFLICT"); }
+function cancelled(ctx: CommandPort, signal: AbortSignal, action: string): void {
+  if (!signal.aborted) ctx.ui.notify(`ce-tunnel: ${action} cancelled; no configuration was published`, "info");
+}
 export async function runSessionConfiguration(args: string, ctx: CommandPort, options: {
   readonly profilePath: string;
   readonly manager: BackgroundTunnelManager;
   readonly signal: AbortSignal;
+  readonly onProgress?: (text: string) => void;
   /** Trusted runtime composition keeps enumeration AND publication admitted. */
   readonly withTargetAdmission: <T>(operation: () => T) => T;
 }): Promise<void> {
@@ -43,7 +47,15 @@ export async function runSessionConfiguration(args: string, ctx: CommandPort, op
   if (command === "register" || command === "revoke" || command === "reauthorize") {
     const text = readFileSync(options.profilePath, "utf8");
     const selected = readLiveSelectedSessionPolicy(options.profilePath, text);
-    if (selected !== undefined) return liveConfiguration(command, endpointId, flags, ctx, options, selected, text);
+    if (selected !== undefined) {
+      try {
+        return await liveConfiguration(command, endpointId, flags, ctx, options, selected, text);
+      } catch (error) {
+        // Live policy publication does not require the shared STOPPED transport lock.
+        if (error instanceof TunnelRefusal && error.field === "messaging.livePolicy.globalCeiling") throw error;
+        throw new TunnelRefusal(error instanceof TunnelRefusal ? error.code : "CE_TUNNEL_CONFIG_CONFLICT", "messaging.livePolicy");
+      }
+    }
     if (command === "reauthorize") refuse();
   }
   const api = createMultiSessionRegistration({ profilePath: options.profilePath, env: process.env, manager: {
@@ -59,10 +71,15 @@ export async function runSessionConfiguration(args: string, ctx: CommandPort, op
     if (options.signal.aborted || runtimeEnvironment() !== environment || ctx.sessionManager.getSessionId() !== runtimeSessionId || api.revision() !== expectedRevision) refuse();
   };
   const confirm = async (message: string): Promise<boolean> => {
+    if (options.signal.aborted) return false;
     current();
     if (typeof ctx.ui.confirm !== "function") throw new TunnelRefusal("CE_TUNNEL_INPUT_UNAVAILABLE");
+    options.onProgress?.("Waiting for configuration consent");
     const accepted = await ctx.ui.confirm("Chat Exchange · configuration only", message, { signal: options.signal, timeout: 120_000 });
-    current(); return accepted === true;
+    if (options.signal.aborted) return false;
+    current();
+    if (accepted !== true) cancelled(ctx, options.signal, command!);
+    return accepted === true;
   };
   if (command === "sessions") {
     if (words.length !== 1) refuse();
@@ -85,6 +102,7 @@ export async function runSessionConfiguration(args: string, ctx: CommandPort, op
     if (!await confirm("Explicitly convert the existing single-session registration to multi-session mode, preserving its Endpoint, real Session mapping, Store, Exchange and read/ACK grants? Existing registration: " + safe(JSON.stringify(legacy.sessions)) +
       ". Other sessions will require distinct Endpoints and separate confirmation. Shared ChatGPT inbox is not conversation isolation.")) return;
     current();
+    options.onProgress?.("Saving session policy under the Profile configuration lock");
     const result = await api.convert({ expectedRevision, confirm: true });
     ctx.ui.notify(`ce-tunnel: multi-session configuration selected (${result.durability}); reload Pi explicitly; explicit Stop then Start loads MCP grants. Configured only, not delivery evidence.`, "warning");
     return;
@@ -111,6 +129,7 @@ export async function runSessionConfiguration(args: string, ctx: CommandPort, op
   }
   if (!await confirm(message)) return;
   current();
+  options.onProgress?.("Saving session policy under the Profile configuration lock");
   const result = command === "register"
     ? await api.register({ expectedRevision, registration: { endpointId, runtimeSessionId, payloadRead: flags.includes("--payload-read"), ack: flags.includes("--ack") } })
     : await api.revoke({ expectedRevision, endpointId });
@@ -119,6 +138,7 @@ export async function runSessionConfiguration(args: string, ctx: CommandPort, op
 
 async function liveConfiguration(command: "register" | "revoke" | "reauthorize", endpointId: string | undefined, flags: readonly string[], ctx: CommandPort,
   options: Parameters<typeof runSessionConfiguration>[2], selected: LiveSnapshot, profileText: string): Promise<void> {
+  if (options.signal.aborted) return;
   if (process.env.CE_ALLOWLIST || typeof endpointId !== "string" || endpointId.length > 256 || /[\x00-\x20\x7f-\x9f]/.test(endpointId) || /cap_[0-9a-f]{16,}/i.test(endpointId)) refuse();
   const runtimeSessionId = ctx.sessionManager.getSessionId(); const environment = runtimeEnvironment();
   const api = createLivePolicyRegistration({ ref: selected.ref });
@@ -138,28 +158,46 @@ async function liveConfiguration(command: "register" | "revoke" | "reauthorize",
     if (!runtimeSessionId || own?.status !== "revoked" || own.endpointId !== endpointId ||
       new Set(flags).size !== flags.length || flags.some(f => f !== "--payload-read" && f !== "--ack")) refuse();
     const payloadRead = flags.includes("--payload-read"); const ack = flags.includes("--ack");
+    options.onProgress?.("Waiting for configuration consent");
     if (!await ctx.ui.confirm("Chat Exchange · reauthorize current Session", `Reauthorize exact Endpoint ${safe(endpointId)} for ONLY this current native Session? Epoch ${own.epoch} -> ${own.epoch + 1}; payload read=${payloadRead}; ACK=${ack} (reception only). ` +
       "Hooks are preserved unchanged. Exact labels are visible to the peer; real send outcomes may reveal first join/addressability. Old factories remain denied until official reload. " +
-      "No Owner, capability or takeover changes. A held/expired old Owner requires normal release or separate operator recovery. No delivery or task execution is implied.", { signal: options.signal, timeout: 120_000 })) return;
+      "No Owner, capability or takeover changes. A held/expired old Owner requires normal release or separate operator recovery. No delivery or task execution is implied.", { signal: options.signal, timeout: 120_000 })) {
+      cancelled(ctx, options.signal, "live reauthorize"); return;
+    }
+    if (options.signal.aborted) return;
     current();
+    options.onProgress?.("Waiting for configuration consent");
     const presenceDisclosure = await ctx.ui.confirm("Chat Exchange · optional presence disclosure", "Also disclose Exchange membership/first join and current Owner/lease liveness to authorized peers? Decline keeps presence-dependent Active/Reachable unknown.", { signal: options.signal, timeout: 120_000 });
+    if (options.signal.aborted) return;
     current();
+    options.onProgress?.("Publishing live session policy");
     const result = await api.reauthorize({ expectedDigest: selected.digest, registration: { endpointId, runtimeSessionId, payloadRead, ack, presenceDisclosure: presenceDisclosure === true } });
     ctx.ui.notify(`ce-tunnel: reauthorization saved (${result.durability}); official reload required; old factories remain denied. No Owner recovery or transport action.`, "warning");
   } else if (command === "register") {
     if (!runtimeSessionId || own?.status === "revoked" || selected.manifest.registrations.some(r => r.endpointId === endpointId && r !== own) ||
       new Set(flags).size !== flags.length || flags.some(f => f !== "--payload-read" && f !== "--ack")) refuse();
     const payloadRead = flags.includes("--payload-read"); const ack = flags.includes("--ack");
+    options.onProgress?.("Waiting for configuration consent");
     if (!await ctx.ui.confirm("Chat Exchange · live configuration only", `Register current Session as ${safe(endpointId)}; payload read=${payloadRead}; ACK=${ack}. ` +
-      "Presence disclosure remains disabled unless separately consented. Hooks are preserved, never enabled. Publication is not delivery or task completion evidence.", { signal: options.signal, timeout: 120_000 })) return;
+      "Presence disclosure remains disabled unless separately consented. Hooks are preserved, never enabled. Publication is not delivery or task completion evidence.", { signal: options.signal, timeout: 120_000 })) {
+      cancelled(ctx, options.signal, "live register"); return;
+    }
+    if (options.signal.aborted) return;
     current();
+    options.onProgress?.("Publishing live session policy");
     const result = await api.register({ expectedDigest: selected.digest, registration: { endpointId, runtimeSessionId, payloadRead, ack, presenceDisclosure: false } });
     ctx.ui.notify(`ce-tunnel: live registration saved (${result.durability}); explicit reload is required. No transport action or delivery claim.`, "warning");
   } else {
     if (flags.length !== 0) refuse();
     const r = selected.manifest.registrations.find(r => r.endpointId === endpointId && r.status === "active");
-    if (r === undefined || !await ctx.ui.confirm("Chat Exchange · live configuration only", `Revoke exact Endpoint ${safe(endpointId)}? Already admitted operations may finish; reauthorization requires a fresh explicit confirmation. Revoking the last registration can permanently stop MCP renewal for this incarnation. An expired Owner requires separate operator recovery; no automatic takeover or heartbeat restart.`, { signal: options.signal, timeout: 120_000 })) return;
+    if (r === undefined) return;
+    options.onProgress?.("Waiting for configuration consent");
+    if (!await ctx.ui.confirm("Chat Exchange · live configuration only", `Revoke exact Endpoint ${safe(endpointId)}? Already admitted operations may finish; reauthorization requires a fresh explicit confirmation. Revoking the last registration can permanently stop MCP renewal for this incarnation. An expired Owner requires separate operator recovery; no automatic takeover or heartbeat restart.`, { signal: options.signal, timeout: 120_000 })) {
+      cancelled(ctx, options.signal, "live revoke"); return;
+    }
+    if (options.signal.aborted) return;
     current();
+    options.onProgress?.("Publishing live session policy");
     const result = await api.revoke({ expectedDigest: selected.digest, endpointId });
     ctx.ui.notify(`ce-tunnel: live registration revoked (${result.durability}); explicit reload is required. No transport action.`, "warning");
   }

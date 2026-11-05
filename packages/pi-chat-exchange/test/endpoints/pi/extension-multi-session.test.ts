@@ -171,7 +171,9 @@ it("branch rollback cannot revive a consumed reload request", async () => {
 it("Connect resumes after a failed official reload without a second registration", async () => {
   const f = await fixture(); const c = await f.runtime("reload-failed-runtime"); await c.start();
   c.ctx.reload = vi.fn(async () => { throw Error("reload unavailable"); });
-  await expect(c.command("connect")).rejects.toThrow("reload unavailable");
+  await expect(c.command("connect")).resolves.toBeUndefined();
+  expect(c.notices()).toContain("configuration was saved, but Pi reload failed");
+  expect(c.notices()).not.toContain("reload unavailable");
   const registrations = readSelectedMultiSessionPolicy(f.profilePath).manifest.registrations;
   expect(registrations.filter(r => r.runtimeSessionId === "reload-failed-runtime")).toHaveLength(1);
   delete c.ctx.reload; c.ctx.ui.confirm.mockClear();
@@ -296,7 +298,9 @@ it.each(["session", "revision", "environment", "shutdown"])("registration refuse
   const f = await fixture(); const c = await f.runtime("real-C"); const before = f.api.revision();
   c.ctx.ui.confirm.mockImplementation(async () => { if (change === "session") c.switchSession(); else if (change === "revision") fs.appendFileSync(f.profilePath, "\n# changed\n"); else if (change === "environment") vi.stubEnv("CE_STORE_FILE", "changed.sqlite"); else void c.stop(); return true; });
   await c.command("register pi/C"); expect(readSelectedMultiSessionPolicy(f.profilePath).manifest.registrations).toHaveLength(2);
-  expect(c.notices()).toContain("refused"); if (change !== "revision") expect(f.api.revision()).toBe(before);
+  if (change === "revision") expect(c.notices()).toContain("refused");
+  else expect(c.notices()).toBe(""); // Replaced contexts must not receive a late refusal.
+  if (change !== "revision") expect(f.api.revision()).toBe(before);
 });
 // HANDOFF-CE-RELEASE-READINESS-01 C4: reassignment of an already mapped runtime
 // Session is a configuration fact, not transport state.
