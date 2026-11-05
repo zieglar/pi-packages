@@ -82,6 +82,8 @@ def classify(view, task):
 
 
 def remaining(config):
+    if config.get('taskDeadline') is not None and time.time() >= config['taskDeadline']:
+        raise ValueError('TASK_EXPIRED')
     if config.get('executionEnd') is None:
         return 15
     parent = os.environ.get('CE_BRIDGE_PARENT_PID')
@@ -104,6 +106,10 @@ def validate(task, config):
         raise ValueError('TEST_TASK_ID_DENIED')
     if task['taskId'] != config['allowedTaskId'] or not isinstance(task['target'], str) or task['target'] + ' 的对话' != config['conversation']:
         raise ValueError('TASK_TARGET_DENIED')
+    if execute:
+        agent_prefix = config.get('agentButtonPrefix')
+        if not isinstance(agent_prefix, str) or not agent_prefix.startswith('pi: ' + task['target'] + ' '):
+            raise ValueError('TARGET_AGENT_SELECTION_REQUIRED')
     if not isinstance(task['text'], str) or not 1 <= len(task['text'].encode()) <= 4096 or digest(task['text']) != config['allowedTextSha256']:
         raise ValueError('TASK_TEXT_DENIED')
     deadline = datetime.datetime.fromisoformat(task['deadline'].replace('Z', '+00:00'))
@@ -270,16 +276,22 @@ class DesktopCli:
             current_ref = ref
             result = None
             for piece in self.type_pieces(text):
-                if self.config.get('taskDeadline') is not None and time.time() >= self.config['taskDeadline']:
-                    raise ValueError('TASK_EXPIRED_DURING_INPUT')
                 remaining(self.config)
-                result = self.call(['--headed', 'type', current_ref, piece])
+                if piece == '\n':
+                    # A bare Return can submit a chat or execute a shell line.
+                    # Target the current input, then insert a newline without submitting.
+                    self.call(['focus', current_ref])
+                    result = self.call(['--headed', 'press', 'shift+return', '--app', 'Ovis',
+                                        '--window-id', self.config['windowId']])
+                else:
+                    result = self.call(['--headed', 'type', current_ref, piece])
                 expected += piece
                 current_ref = self.settle_input(expected)
             return result
+        remaining(self.config)
+        return self.call(['click', ref])
+
     def type_pieces(self, text):
-        # Physical input can lose the tail of a call that carries a newline followed by
-        # more text, so every newline is typed as its own piece.
         for index, segment in enumerate(text.split('\n')):
             if index:
                 yield '\n'
@@ -287,43 +299,25 @@ class DesktopCli:
                 yield segment[start:start + 8]
 
     def settle_input(self, expected):
-        # Physical input arrives asynchronously. Require the exact cumulative draft and
-        # re-type only a stable missing suffix; any other content is a refusal.
-        settle = float(self.config.get('inputSettleSeconds', 3))
-        limit = int(self.config.get('inputRetries', 3))
-        deadline = time.monotonic() + settle
-        stable = None
-        stable_since = time.monotonic()
-        attempts = 0
+        # Observe delayed input without retyping: a stable prefix does not prove loss.
+        deadline = time.monotonic() + min(3, max(0, float(self.config.get('inputSettleSeconds', 3))))
         while True:
             remaining(self.config)
+            if time.monotonic() >= deadline:
+                raise ValueError('CHUNK_READBACK_MISMATCH')
             view = observe(self.snapshot(), self.config)
+            remaining(self.config)
+            now = time.monotonic()
+            if now >= deadline:
+                raise ValueError('CHUNK_READBACK_MISMATCH')
             value = view['input'].get('value')
             if value == expected:
                 return view['input']['ref_id']
+            if value is None:
+                value = ''
             if not isinstance(value, str) or not expected.startswith(value):
                 raise ValueError('CHUNK_READBACK_MISMATCH')
-            now = time.monotonic()
-            if value != stable:
-                stable = value
-                stable_since = now
-            elif now - stable_since >= 1.0:
-                if attempts >= limit:
-                    raise ValueError('CHUNK_READBACK_MISMATCH')
-                attempts += 1
-                missing = expected[len(value):]
-                for piece in self.type_pieces(missing):
-                    self.call(['--headed', 'type', view['input']['ref_id'], piece])
-                stable = None
-                stable_since = now
-                deadline = now + settle
-                continue
-            if now >= deadline:
-                raise ValueError('CHUNK_READBACK_MISMATCH')
-            time.sleep(0.05)
-
-        remaining(self.config)
-        return self.call(['click', ref])
+            time.sleep(min(0.05, deadline - now))
 
 
 def main():

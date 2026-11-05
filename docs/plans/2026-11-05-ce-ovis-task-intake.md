@@ -115,8 +115,19 @@ Acceptance remains BLOCKED on identification of the isolated Ovis test Agent. Th
 
 ### Controlled submission attempts against the Ovis desktop
 
-- Target selection used the workspace list and `cmd+shift+j` (verified to toggle Terminal/Chat). The chosen `pi-magpie-test` 对话 pane turned out to be a **shell** pane: typing the first prompt line executed it in zsh and produced `zsh: command not found: [CE-OVIS-TASK:CE-OVIS-TASK-acceptance-105b]`. The bridge refused to continue because Enter cleared the draft, so the send button was never clicked. No Agent was addressed and the executed line had no side effect.
-- First attempt `CE-OVIS-TASK-acceptance-105` stopped at `CHUNK_READBACK_MISMATCH` with `submission=NOT_ATTEMPTED`: a physical type call carrying a newline dropped its tail, and the old single strict readback aborted before any click.
-- Root cause of the loss was reproduced with read-only probes on the same draft field: `"ABC"` and `"测试中文"` landed completely, while `"\nXYZ"` and `"\nABC"` landed only the newline.
-- Driver fix: `type_pieces` types every newline as its own piece; `settle_input` waits for the exact cumulative draft and retypes only a stable missing suffix. New tests cover the retry, the refusal and the late-arrival path. Python 25 + 4 tests and Node 52 tests pass. A bounded read-only security review of this fix was requested.
+- Target selection used the workspace list and `cmd+shift+j` (verified to toggle Terminal/Chat). The parent incorrectly treated `pi-magpie-test` 对话 as Agent chat; its workspace label actually said Shell. A bare newline executed one prompt-tag line in zsh, which reported `command not found`. No Agent response was observed and no send button was clicked; other side effects were not independently verified.
+- First attempt `CE-OVIS-TASK-acceptance-105` stopped at `CHUNK_READBACK_MISMATCH` with `submission=NOT_ATTEMPTED`: only a prefix was observed after a newline-containing input call, so strict readback stopped before a send click. The underlying native-driver cause was not established.
+- Draft-mutating probes produced complete `ABC` / `测试中文` but only a newline for `\nXYZ` / `\nABC`. These were physical input probes, not read-only observations; Shell Enter behavior is an alternative explanation, so they do not establish a native driver defect.
+- The initial input fix in commit `9a5dce0f` passed its then-existing tests but was rejected in security review: the click branch was misplaced, stable-prefix automatic retyping could duplicate delayed input, and deadline checks were incomplete. That implementation is superseded by the remediation below.
 - Both attempt journals remain as `STOPPED_NO_REPLAY` with `submission=NOT_ATTEMPTED`. No Agent task was submitted, no Agent response was observed and business completion stays `UNVERIFIED`. The only idle pi Agent pane in Ovis is `aliyun-ecs`; the coordinator pane is this running session and must never be bridged into itself.
+
+### Safety remediation before the newly authorized Agent test
+
+The user explicitly selected the idle `aliyun-ecs` pi Agent after being informed of the Shell-pane mistake. No further desktop input is allowed until the remediation review passes.
+
+- Restored `DesktopCli.action('click')` dispatch and added a real-method test proving exactly one delegated click.
+- Removed automatic retyping. Delayed prefixes are only observed within a bounded wait; an incomplete/different draft or expired wait stops without another input attempt.
+- Check task wall-clock and monotonic execution deadlines for every command and before/after settling observations. A late exact readback after the local wait deadline is refused.
+- Real tasks require an exact local `pi: <target> ` Agent-button prefix and live unique selection before any task input. Shell-only matching conversation/field labels are insufficient.
+- Never type literal newlines: focus the latest input ref and send Shift+Return to the configured Ovis window; require exact cumulative readback after each piece.
+- RED tests exposed the old misplaced click, unsafe retyping, deadline gaps and bare Return path. Current focused regressions pass: Python 29 legacy/driver + 6 real-mode tests; Node 52 tests. Follow-up bounded security review PASS: all three prior findings corrected, new Agent/Shell selection and Shift+Return behavior accepted for controlled validation. Physical input can still arrive after timeout; stopping never implies rollback.

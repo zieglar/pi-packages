@@ -14,7 +14,7 @@ function fixture(t, options={}) {
   const task={schemaVersion:1,taskId:'CE-OVIS-TASK-unit',target:'test',testOnly:false,text:'执行本地已批准任务 🚀',deadline:new Date(now+60_000).toISOString(),...options.task};
   const body=JSON.stringify(task), taskFile=path.join(root,'task.json'), desktopConfig=path.join(root,'desktop.json');
   fs.writeFileSync(taskFile,body,{mode:0o600});
-  fs.writeFileSync(desktopConfig,JSON.stringify({taskMode:'execute',allowedTaskId:task.taskId,allowedTextSha256:sha(task.text),conversation:'test 的对话',stateDir:path.join(root,'bridge-state')}),{mode:0o600});
+  fs.writeFileSync(desktopConfig,JSON.stringify({taskMode:'execute',allowedTaskId:task.taskId,allowedTextSha256:sha(task.text),conversation:'test 的对话',agentButtonPrefix:'pi: test ',stateDir:path.join(root,'bridge-state')}),{mode:0o600});
   const config={enabled:true,taskMode:'execute',runtimeSessionId:'current-session',exchangeId:'exchange',from:'chatgpt/main',to:'pi/current',activatedAt:new Date(now-5_000).toISOString(),afterAuditSequence:100,maxAgeSeconds:60,runDirectory:root,python:'/trusted/python',bridge:'/trusted/bridge.py',tasks:[{taskId:task.taskId,taskFile,desktopConfig,taskPayloadSha256:sha(body)}],...options.config};
   let session='current-session';
   const calls=[],runs=[];

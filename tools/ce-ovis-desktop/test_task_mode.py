@@ -14,12 +14,30 @@ class TaskModeTests(unittest.TestCase):
                      'testOnly': False, 'text': '中文 English 🚀\n第二行', 'deadline': '2099-01-01T00:00:00Z'}
         self.config = {'windowId': 'w-1', 'conversation': 'test 的对话', 'allowedTaskId': self.task['taskId'],
                        'allowedTextSha256': bridge.digest(self.task['text']), 'stateDir': self.tmp.name,
-                       'maxWaitSeconds': 1, 'pollSeconds': 0.001, 'taskMode': 'execute'}
+                       'maxWaitSeconds': 1, 'pollSeconds': 0.001, 'taskMode': 'execute',
+                       'agentButtonPrefix': 'pi: test '}
 
     def test_default_denies_real_task(self):
         del self.config['taskMode']
         with self.assertRaises(ValueError):
             bridge.run_task(self.task, self.config, None)
+
+    def test_real_task_requires_exact_pi_agent_selection(self):
+        for prefix in [None, 'test', 'pi: other ']:
+            with self.subTest(prefix=prefix):
+                self.config['agentButtonPrefix'] = prefix
+                with self.assertRaisesRegex(ValueError, 'TARGET_AGENT_SELECTION_REQUIRED'):
+                    bridge.run_task(self.task, self.config, None)
+
+    def test_shell_pane_refused_before_any_input(self):
+        cli = object.__new__(bridge.DesktopCli)
+        cli.config = dict(self.config, agentButtonPrefix='pi: test ')
+        cli.snapshot = lambda: view()
+        calls = []
+        cli.call = lambda args: calls.append(args)
+        with self.assertRaisesRegex(ValueError, 'TARGET_AGENT_NOT_UNIQUE'):
+            cli.prepare()
+        self.assertEqual(calls, [])
 
     def test_real_prompt_and_completion_report(self):
         prompt = bridge.prompt_for(self.task)
