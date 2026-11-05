@@ -100,3 +100,15 @@ The user subsequently authorized a local implementation commit, a fresh authoriz
 - Current published Pi registration remains active at endpoint `pi/session-79558ef5d11cdecbb248cbe4d32f68f2` for runtime Session `01a1aa1f-df2f-70c2-8bf9-97d7da6bc0d2`. This does not reveal audit 103's actual recipient.
 
 The sender must compare its actual `ce_send` recipient/Exchange metadata with the current published Pi registration. Existing opaque refusals do not authorize changing CE permissions, impersonating another recipient or replaying historical messages.
+
+## Authorized acceptance attempt — CE audit 105
+
+- Current Session successfully called `ce_read` and then `ce_read_payload` for `msg_01M6PBZB3RCVY5A3XNGJ9MRBKV` (audit 105). Actual sender was `chatgpt/main`; actual recipient was the published Pi endpoint above. No reception ACK or result send occurred.
+- Saved authorized payload was verified against actual read metadata: 692 bytes, SHA-256 `614dd68281c29d1db0286eabf2bbab994d8a278a5ee7b7ac7df4ccf67274d966`. It asks only for `CE-OVIS-SMOKE-01 OK`. Protected reads are scoped to the current registration; selected binding and live-policy hashes remained unchanged. The rendered tool text does not expose a separate exchangeId field.
+- Payload is plain-text instructions rather than the closed JSON task schema. A user-authorized, manually reviewed local conversion and existing bridge were planned for this controlled test; the automated intake API was not exercised or enabled.
+- Desktop host startup failed under the long private TMPDIR; a separate owned short TMPDIR started it successfully. Permissions probes were inconsistent (denied versus native guide granted), while complete Ovis AX snapshots and a semantic local workspace-list expansion succeeded. No physical task input was attempted.
+- Visible Agents were the running `pi-packages-dev` coordinator and `aliyun-ecs`. The user chose to prepare an isolated test Agent; subsequent snapshots showed the coordinator's terminal and then its running chat. A dedicated isolated test target remains unconfirmed.
+- Desktop task submission: NOT_ATTEMPTED; task text input count 0; send click count 0; Agent response to this smoke task unverified; task completion UNVERIFIED. Do not submit into the coordinating Session or the unrelated Agent to complete this test.
+- Profile, selected binding, live policy 000020, installed wake/bridge/lifecycle hashes and shared Tunnel PID/runId matched baseline at the final comparison. The installed Hook config was not reread after ctx_execute_file rejected its outside-workspace access; no alternate read of that denied file was attempted. No production configuration was written.
+
+Acceptance remains BLOCKED on identification of the isolated Ovis test Agent. The authorized payload and structured partial evidence are preserved in the private per-message acceptance directory outside Git. No resend of audits 103 or 104 is needed.
