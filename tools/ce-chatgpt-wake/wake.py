@@ -9,11 +9,169 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import stat
 import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'ce-ovis-desktop'))
 from bridge import DesktopCli, nodes, remaining, write_state
+
+
+HOOK_MAX_INPUT = 16384
+HOOK_ID = r'[0-9A-HJKMNP-TV-Z]{26}'
+HOOK_FIELDS = {'schemaVersion', 'event', 'eventId', 'eventKey', 'messageId',
+               'exchangeId', 'sender', 'recipient', 'createdAt', 'payloadDigest', 'payloadLength'}
+HOOK_CONFIG_FIELDS = {'hookSenderAdapter', 'hookSenderEndpointId', 'hookRecipientAdapter',
+                      'hookRecipientEndpointId', 'hookExchangeId', 'stateDir'}
+
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('HOOK_INPUT_DUPLICATE_FIELD')
+        result[key] = value
+    return result
+
+
+def hook_text(value, maximum):
+    return (isinstance(value, str) and 0 < len(value) <= maximum
+            and not any(ord(char) < 32 or ord(char) == 127 or 0xD800 <= ord(char) <= 0xDFFF
+                        for char in value))
+
+
+def hook_match(pattern, value):
+    return isinstance(value, str) and re.fullmatch(pattern, value) is not None
+
+
+def validate_hook(raw, config):
+    if (not isinstance(config, dict) or set(config) != HOOK_CONFIG_FIELDS
+            or config['hookSenderAdapter'] != 'pi' or config['hookRecipientAdapter'] != 'chatgpt'
+            or not hook_text(config['hookSenderEndpointId'], 256)
+            or not hook_text(config['hookRecipientEndpointId'], 256)
+            or not hook_match('ho_' + HOOK_ID, config['hookExchangeId'])
+            or not hook_text(config['stateDir'], 4096) or not os.path.isabs(config['stateDir'])
+            or os.path.normpath(config['stateDir']) != config['stateDir']):
+        raise ValueError('HOOK_CONFIG_INVALID')
+    if len(raw) > HOOK_MAX_INPUT:
+        raise ValueError('HOOK_INPUT_TOO_LARGE')
+    try:
+        decoded = raw.decode('utf-8')
+    except UnicodeError as error:
+        raise ValueError('HOOK_INPUT_INVALID_ENCODING') from error
+    try:
+        event = json.loads(decoded, object_pairs_hook=unique_object)
+    except (json.JSONDecodeError, RecursionError) as error:
+        raise ValueError('HOOK_INPUT_INVALID_JSON') from error
+    if not isinstance(event, dict) or set(event) != HOOK_FIELDS:
+        raise ValueError('HOOK_EVENT_FIELDS_INVALID')
+    if type(event['schemaVersion']) is not int or event['schemaVersion'] != 1:
+        raise ValueError('HOOK_SCHEMA_VERSION_INVALID')
+    if event['event'] != 'ce.message.committed.v1':
+        raise ValueError('HOOK_EVENT_NAME_INVALID')
+    for field, prefix, code in (('eventId', 'evt_', 'EVENT_ID'), ('messageId', 'msg_', 'MESSAGE_ID'),
+                                ('exchangeId', 'ho_', 'EXCHANGE_ID')):
+        if not hook_match(prefix + HOOK_ID, event[field]):
+            raise ValueError('HOOK_' + code + '_INVALID')
+    if not hook_match('ho_' + HOOK_ID + r'/[1-9][0-9]{0,15}', event['eventKey']):
+        raise ValueError('HOOK_EVENT_KEY_INVALID')
+    if int(event['eventKey'].rsplit('/', 1)[1]) > 9007199254740991:
+        raise ValueError('HOOK_EVENT_KEY_INVALID')
+    for field in ('sender', 'recipient'):
+        endpoint = event[field]
+        if (not isinstance(endpoint, dict) or set(endpoint) != {'adapter', 'endpointId'}
+                or not hook_text(endpoint['adapter'], 64) or not hook_text(endpoint['endpointId'], 256)):
+            raise ValueError('HOOK_ENDPOINT_INVALID')
+    if event['sender']['adapter'] != 'pi' or event['recipient']['adapter'] != 'chatgpt':
+        raise ValueError('HOOK_DIRECTION_DENIED')
+    if event['sender']['endpointId'] != config['hookSenderEndpointId']:
+        raise ValueError('HOOK_SENDER_DENIED')
+    if event['recipient']['endpointId'] != config['hookRecipientEndpointId']:
+        raise ValueError('HOOK_RECIPIENT_DENIED')
+    if event['exchangeId'] != config['hookExchangeId']:
+        raise ValueError('HOOK_EXCHANGE_DENIED')
+    if event['eventKey'].rsplit('/', 1)[0] != event['exchangeId']:
+        raise ValueError('HOOK_EVENT_KEY_INVALID')
+    if not hook_match(r'[0-9a-f]{64}', event['payloadDigest']):
+        raise ValueError('HOOK_PAYLOAD_DIGEST_INVALID')
+    if type(event['payloadLength']) is not int or not 0 <= event['payloadLength'] <= 9007199254740991:
+        raise ValueError('HOOK_PAYLOAD_LENGTH_INVALID')
+    if not hook_match(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)', event['createdAt']):
+        raise ValueError('HOOK_CREATED_AT_INVALID')
+    try:
+        created = datetime.datetime.fromisoformat(event['createdAt'].replace('Z', '+00:00'))
+    except ValueError as error:
+        raise ValueError('HOOK_CREATED_AT_INVALID') from error
+    age = (datetime.datetime.now(datetime.UTC) - created).total_seconds()
+    if age > 120:
+        raise ValueError('HOOK_EVENT_STALE')
+    if age < -5:
+        raise ValueError('HOOK_EVENT_FROM_FUTURE')
+    return event
+
+
+def private_hook_file(fd):
+    info = os.fstat(fd)
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_mode & 0o077 or info.st_nlink != 1):
+        raise ValueError('HOOK_STATE_FILE_UNSAFE')
+
+
+def osascript_notifier(text):
+    # The script is constant; notice text is argv data, never AppleScript source.
+    script = ('on run argv\n'
+              'display notification (item 1 of argv) with title "CE message"\n'
+              'end run')
+    subprocess.run(['/usr/bin/osascript', '-e', script, '--', text], shell=False,
+                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                   timeout=5, check=True)
+
+
+def notify_hook(raw, config, notifier=None):
+    event = validate_hook(raw, config)
+    directory = Path(config['stateDir'])
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError('PRIVATE_STATE_REQUIRED')
+    flags = os.O_NOFOLLOW | os.O_NONBLOCK
+    fd = os.open(directory / '.lock', os.O_CREAT | os.O_RDWR | flags, 0o600)
+    with os.fdopen(fd, 'r+') as lock:
+        private_hook_file(lock.fileno())
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # Any legacy attempt, even corrupt or uncertain, prevents a new effect.
+        if os.path.lexists(directory / (event['messageId'] + '.json')):
+            raise ValueError('HOOK_HISTORICAL_ATTEMPT')
+        file = directory / ('hook-' + event['messageId'] + '.json')
+        fingerprint = hashlib.sha256(json.dumps(event, sort_keys=True).encode()).hexdigest()
+        if os.path.lexists(file):
+            fd = os.open(file, os.O_RDONLY | flags)
+            with os.fdopen(fd, 'rb') as saved_file:
+                private_hook_file(saved_file.fileno())
+                saved = json.loads(saved_file.read(HOOK_MAX_INPUT + 1), object_pairs_hook=unique_object)
+            if not isinstance(saved, dict) or saved.get('recordSha256') != fingerprint:
+                raise ValueError('HOOK_MESSAGE_CONFLICT')
+            if (saved.get('stage') not in ('NOTIFICATION_ATTEMPTED', 'NOTIFICATION_UNKNOWN', 'NOTIFICATION_REQUESTED')
+                    or saved.get('result') not in (
+                        {'messageId': event['messageId'], 'notificationRequest': 'UNKNOWN'},
+                        {'messageId': event['messageId'], 'notificationRequest': 'REQUESTED'})):
+                raise ValueError('HOOK_JOURNAL_INVALID')
+            return saved['result']
+        # Never overwrite recovery debris left before an interrupted atomic write.
+        if os.path.lexists(file.with_suffix('.tmp')):
+            raise ValueError('HOOK_HISTORICAL_ATTEMPT')
+        result = {'messageId': event['messageId'], 'notificationRequest': 'UNKNOWN'}
+        state = {'recordSha256': fingerprint, 'stage': 'NOTIFICATION_ATTEMPTED', 'result': result}
+        write_state(file, state)
+        try:
+            text = f"CE 有新消息 {event['messageId']}（{event['exchangeId']}）。本通知仅含标识符。"
+            (osascript_notifier if notifier is None else notifier)(text)
+            result['notificationRequest'] = 'REQUESTED'
+            state['stage'] = 'NOTIFICATION_REQUESTED'
+        except (ValueError, OSError, subprocess.SubprocessError):
+            state['stage'] = 'NOTIFICATION_UNKNOWN'
+        write_state(file, state)
+        return result
 
 
 def notice(record, config):
@@ -137,12 +295,34 @@ class ChatGptCli(DesktopCli):
         self.call(['click', ref])
 
 
-if __name__ == '__main__':
+def main(argv=None):
     os.umask(0o077)
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', required=True)
-    parser.add_argument('--record', '--task', dest='record', required=True)
-    args = parser.parse_args()
+    modes = parser.add_mutually_exclusive_group(required=True)
+    modes.add_argument('--hook', action='store_true')
+    modes.add_argument('--record', '--task', dest='record')
+    args = parser.parse_args(argv)
+    if args.hook:
+        try:
+            with Path(args.config).open('rb') as file:
+                raw_config = file.read(HOOK_MAX_INPUT + 1)
+            if len(raw_config) > HOOK_MAX_INPUT:
+                raise ValueError('HOOK_CONFIG_INVALID')
+            config = json.loads(raw_config.decode('utf-8'), object_pairs_hook=unique_object)
+            result = notify_hook(sys.stdin.buffer.read(HOOK_MAX_INPUT + 1), config)
+            print(json.dumps(result, ensure_ascii=False))
+            return 0 if result['notificationRequest'] == 'REQUESTED' else 1
+        except (ValueError, OSError, UnicodeError, RecursionError) as error:
+            code = str(error)
+            sys.stderr.write((code if isinstance(error, ValueError) and re.fullmatch(r'[A-Z][A-Z0-9_]{1,79}', code)
+                              else 'HOOK_REJECTED') + '\n')
+            return 1
     config = json.loads(Path(args.config).read_text())
     record = json.loads(Path(args.record).read_text())
     print(json.dumps(run(record, config, ChatGptCli(config)), ensure_ascii=False))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

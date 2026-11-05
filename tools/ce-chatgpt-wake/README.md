@@ -1,8 +1,61 @@
 # CE ChatGPT wake
 
-A test-only macOS CLI integration: Pi creates a CE message, then sends one fixed desktop notice to one explicitly selected ChatGPT conversation. ChatGPT must read the actual CE Payload and reply through CE. Pi reads, verifies and ACKs the reply before the next round. CE ACKs remain reception evidence, never proof of task completion.
+`wake.py` provides two explicit modes: a metadata-only CE Hook system notification (`--hook`), and the legacy test-only ChatGPT conversation driver (`--record` / `--task`). The modes use separate configuration and cannot be combined.
 
-Requires the installed Pi1.3.0/CE0.3.0 modules, Node24.21.0, Python3.11+, agent-desktop1.0.2/JSON2.5, existing Tunnel/ChatGPT connection and production Native cache. Reuses `../ce-ovis-desktop` transport, journals and bounded cleanup; no CE core/configuration change. Semantic Accessibility set-value/click only; no headed fallback, clipboard or permission bypass.
+## Hook system notification (disabled example)
+
+The Hook mode accepts one bounded UTF-8 JSON event on stdin, requests a macOS system notification, and exits. It does not use the ChatGPT input or accessibility driver. No CE body is accepted or read, no ACK or reply is sent, and metadata grants no CE permission. The banner contains fixed text plus Message and Exchange identifiers; treat these identifiers as information exposed on the local notification surface.
+
+This implementation is locally tested with the native notification boundary replaced. Production Hooks remain disabled; actual macOS banner visibility, notification permissions and user attention have not been tested.
+
+Use a separate trusted local JSON config with exactly these six fields (replace the fixture identifiers and paths):
+
+```json
+{
+  "hookSenderAdapter": "pi",
+  "hookSenderEndpointId": "pi/session-selected",
+  "hookRecipientAdapter": "chatgpt",
+  "hookRecipientEndpointId": "chatgpt/selected",
+  "hookExchangeId": "ho_01M6D7BPKRDG38PE854761T7MN",
+  "stateDir": "/absolute/private/wake-journal"
+}
+```
+
+`stateDir` must be an absolute normalized path to an operator-controlled private directory owned by the current user (0700). Keep its parent directories under operator control. Select the existing wake journal directory if earlier legacy attempts must be recognized: history in other directories is not discovered. Preserve all journal, lock and temporary recovery files across restarts; deleting them or choosing a new directory removes deduplication history. Config and script paths are static local authority and must not be derived from event metadata.
+
+A static CE rule example follows. It is **disabled**, is documentation only, and has not been published to any Session or Profile:
+
+```json
+{
+  "id": "chatgpt-system-notice",
+  "event": "ce.message.committed.v1",
+  "recipient": {"adapter": "chatgpt", "endpointId": "chatgpt/selected"},
+  "command": "/absolute/runtime/bin/python3",
+  "args": ["-B", "/absolute/checkout/tools/ce-chatgpt-wake/wake.py",
+           "--config", "/absolute/private/hook.json", "--hook"],
+  "timeoutMs": 10000,
+  "enabled": false
+}
+```
+
+The stdin limit is 16384 bytes. The event must have exactly the eleven documented CE fields: `schemaVersion`, `event`, `eventId`, `eventKey`, `messageId`, `exchangeId`, `sender`, `recipient`, `createdAt`, `payloadDigest`, `payloadLength`. Duplicate fields and extra data are rejected. This receiver supports endpoints with exactly `adapter` and `endpointId`; endpoint extensions such as `instanceId` are conservatively refused. Schema version 1, the exact event name, CE ULID patterns, matching Exchange/audit event key, lowercase SHA-256 and a nonnegative safe-integer payload length are required. Only the exact configured Pi sender → ChatGPT recipient and Exchange pass. `createdAt` must be a valid UTC ISO timestamp (`Z` or `+00:00`), at most 120 seconds old and at most 5 seconds ahead. Freshness filters delayed events; it does not authenticate them or establish delivery.
+
+The nonblocking lock serializes attempts in the selected directory. `hook-<MessageID>.json` records an attempt durably before the native call. Matching repeats return the saved result without another call. Conflicting metadata, any legacy `<MessageID>.json` attempt, unsafe/corrupt state or leftover temporary recovery file refuses a new notification. Interrupted attempts and timeouts remain `UNKNOWN` and are never retried automatically. The fixed `/usr/bin/osascript` command uses a constant script, passes text as argv data, suppresses subprocess output and has a five-second timeout.
+
+A result of `notificationRequest: REQUESTED` / journal stage `NOTIFICATION_REQUESTED` means only that the native request returned successfully. It does not prove a banner was visible, the user saw it, ChatGPT read anything, or a task completed. `UNKNOWN` exits with failure and retains the attempt. Existing Hooks consent and CE body/ACK authorization still apply separately.
+
+Isolated tests (the native notification command is mocked):
+
+```sh
+python3 -B -m unittest discover -s tools/ce-chatgpt-wake -p test_hook.py -v
+python3 -B -m unittest discover -s tools/ce-chatgpt-wake -p test_wake.py -v
+```
+
+## Legacy conversation test integration
+
+The remaining instructions describe the separate legacy mode. Pi creates a CE message, then sends one fixed desktop notice to one explicitly selected ChatGPT conversation. ChatGPT must read the actual CE Payload and reply through CE. Pi reads, verifies and ACKs the reply before the next round. CE ACKs remain reception evidence, never proof of task completion.
+
+The legacy mode requires the installed Pi1.3.0/CE0.3.0 modules, Node24.21.0, Python3.11+, agent-desktop1.0.2/JSON2.5, existing Tunnel/ChatGPT connection and production Native cache. It reuses `../ce-ovis-desktop` transport, journals and bounded cleanup; no CE core/configuration change. Semantic Accessibility set-value/click only; no headed fallback, clipboard or permission bypass.
 
 ## Runtime installation and coexistence
 
