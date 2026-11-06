@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
@@ -13,8 +14,44 @@ test('fixed PR lane is required, pinned and does not depend on latest', () => {
   assert(ci.on.pull_request !== undefined); assert.match(commands(job), /result\.json" 0\.0\.19/);
   assert.doesNotMatch(commands(job), /result\.json" latest/); assert(!job['continue-on-error']);
   assert.match(commands(job), /tunnel-compat\.check\.mjs/);
-  // Existing validate job already owns full TS tests/build/typecheck.
-  assert.match(commands(ci.jobs.validate), /pnpm typecheck/); assert.match(commands(ci.jobs.validate), /pnpm test/);
+  // Shards preserve full default tests; the stable validate context owns their outcome.
+  for (const [id, stepName, command] of [
+    ['validate-storage', 'Test storage', 'pnpm --dir packages/pi-chat-exchange run test:storage'],
+    ['validate-other', 'Test outside storage', "pnpm --dir packages/pi-chat-exchange test --exclude 'test/storage/**'"],
+  ]) {
+    const shard = ci.jobs[id];
+    assert(shard, `missing ${id}`);
+    assert.equal(shard.env.CE_DEFAULT_CLIENT_GUARD, '1');
+    assert.equal(shard['continue-on-error'], undefined);
+    for (const required of ['pnpm build', 'pnpm typecheck', 'pnpm check', 'tooling/check-workspace.mjs']) {
+      assert.match(commands(shard), new RegExp(required.replaceAll('.', '\\.').replaceAll('/', '\\/')));
+    }
+    const testStep = shard.steps.find(step => step.name === stepName);
+    assert(testStep, `missing ${id}/${stepName}`);
+    assert.equal(testStep.run, command);
+    assert.doesNotMatch(commands(shard), /inbox-ack-volume.*exclude|exclude.*inbox-ack-volume|--maxWorkers|test -- --exclude/);
+  }
+  assert.deepEqual(ci.jobs.validate.needs, ['validate-storage', 'validate-other']);
+  assert.equal(ci.jobs.validate.if, 'always()');
+  assert.deepEqual(ci.jobs.validate.steps[0].env, {
+    STORAGE_RESULT: '${{ needs.validate-storage.result }}',
+    OTHER_RESULT: '${{ needs.validate-other.result }}',
+  });
+  const aggregate = ci.jobs.validate.steps.find(step => step.name === 'Validate all test shards');
+  assert(aggregate);
+  for (const storage of ['success', 'failure', 'cancelled', 'skipped', '']) {
+    for (const other of ['success', 'failure', 'cancelled', 'skipped', '']) {
+      const result = spawnSync('bash', ['-e', '-c', aggregate.run], {
+        env: { PATH: process.env.PATH, STORAGE_RESULT: storage, OTHER_RESULT: other },
+        encoding: 'utf8',
+      });
+      assert.ifError(result.error);
+      assert.equal(result.status, storage === 'success' && other === 'success' ? 0 : 1,
+        `storage=${storage} other=${other}: ${result.stderr}`);
+    }
+  }
+  assert.equal(ci.concurrency.group, 'ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}');
+  assert.equal(ci.concurrency['cancel-in-progress'], "${{ github.ref != 'refs/heads/main' }}");
   const steps = job.steps;
   const buildIndex = steps.findIndex(step => step.run === 'pnpm --dir packages/pi-chat-exchange run build');
   const npmIndex = steps.findIndex(step => step.run === 'node --test scripts/test/npm-release.check.mjs');
