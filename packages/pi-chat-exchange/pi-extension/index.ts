@@ -1322,7 +1322,9 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         content: [
           {
             type: "text",
-            text: `chat-exchange refused: ${error.code}${error.reason === undefined ? "" : ` (${error.reason})`}${error.retryable ? "; rolled back, safe to retry whole request" : ""}`,
+            text: error.reason === "MESSAGE_READ_REJECTED"
+              ? "chat-exchange message read rejected (MESSAGE_READ_REJECTED): this endpoint is not eligible for the message"
+              : `chat-exchange refused: ${error.code}${error.reason === undefined ? "" : ` (${error.reason})`}${error.retryable ? "; rolled back, safe to retry whole request" : ""}`,
           },
         ],
         details: { code: error.code, reason: error.reason ?? null, retryable: error.retryable },

@@ -144,6 +144,8 @@ macOS 官方安装入口为 `brew install openai/tools/tunnel-client`；其他�
 
 多 Session 时将 `to` 换为确切的 active Endpoint（如 `pi/project-B`），不是 native/CE Session ID，也不额外拼 adapter。发送者不能由参数指定。
 
+live 模式下，在选择接收者前立即以 `{}` 调用 `ce_endpoints`，使用本次结果中当前获准发送的精确目标。不要复用此前对话中的 Endpoint，也不要推断“最新 Session”。如果有多个目标可能符合用户意图，必须请用户明确选择。每次发送都会重新检查寻址权限，但服务端无法证明用户意图。
+
 Pi 独立执行 `ce_inbox_list`：
 
 ```json

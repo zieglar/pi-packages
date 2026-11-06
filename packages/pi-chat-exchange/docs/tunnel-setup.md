@@ -162,6 +162,8 @@ Fictional `ce_send` arguments:
 
 For multiple Sessions, use the exact active Endpoint, such as `pi/project-B`, not a native/CE Session ID or extra adapter prefix. Arguments cannot select the sender.
 
+In live mode, call `ce_endpoints` with `{}` immediately before choosing a recipient and use an exact currently authorized target from that fresh result. Do not reuse an Endpoint label from an earlier conversation or infer the latest Session. If more than one target could match the user's intent, ask the user to select explicitly. Every send rechecks addressing authority, but the server cannot prove user intent.
+
 Pi independently calls `ce_inbox_list`:
 
 ```json

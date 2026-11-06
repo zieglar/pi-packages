@@ -32,7 +32,7 @@ const closed = { additionalProperties: false } as const;
 
 export const SendArgsSchema = Type.Object(
   {
-    to: Type.String({ minLength: 1, maxLength: 256, description: "Recipient label authorized by the local operator configuration" }),
+    to: Type.String({ minLength: 1, maxLength: 256, description: "Exact recipient label selected from a fresh ce_endpoints result in live mode; do not infer the latest Session" }),
     text: Type.String({ minLength: 1, description: "Text to deliver; stored as the private payload" }),
     idempotencyKey: Type.String({ minLength: 1, maxLength: 256, description: "Stable key; a replay returns the original record" }),
   },
@@ -133,7 +133,10 @@ export const MESSAGING_TOOLS: readonly MessagingToolDescriptor[] = [
     description:
       "Send one durable chat-exchange item from this server's fixed, operator-configured endpoint to an " +
       "operator-authorized recipient label. Idempotent by idempotencyKey. The sender is never a parameter. " +
-      "If the result is CE_HOST_UNCERTAIN the outcome is unknown: do not retry; ask the operator to inspect.",
+      "In live mode, call ce_endpoints before choosing a recipient. Do not reuse a recipient label from an " +
+      "earlier conversation; ambiguous targets require explicit user selection. CREATED/REPLAYED does not prove " +
+      "receiver reading or task completion. If the result is CE_HOST_UNCERTAIN the outcome is unknown: do not " +
+      "retry; ask the operator to inspect.",
     inputSchema: { ...SendArgsSchema },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
@@ -203,6 +206,13 @@ function refusalOf(error: unknown): { code: string; reason: string | null; retry
 
 function refusalResult(error: unknown): ToolCallResult {
   const refusal = refusalOf(error);
+  if (refusal.reason === "MESSAGE_READ_REJECTED") {
+    return {
+      content: [{ type: "text", text: "chat-exchange message read rejected (MESSAGE_READ_REJECTED): this endpoint is not eligible for the message" }],
+      structuredContent: { code: refusal.code, reason: refusal.reason, retryable: refusal.retryable },
+      isError: true,
+    };
+  }
   const guidance = refusal.code === "CE_HOST_UNCERTAIN"
     ? "; outcome unknown \u2014 do not retry, the operator must inspect durable state"
     : refusal.retryable ? "; rolled back, safe to retry the whole request" : "";
