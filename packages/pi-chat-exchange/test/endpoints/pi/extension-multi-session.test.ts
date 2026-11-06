@@ -43,7 +43,7 @@ vi.mock("../../../dist/endpoints/pi/session-host.js", async (original) => {
 type Entry = { type: string; customType: string; data: unknown };
 type Context = { mode: string; hasUI: boolean; cwd: string; reload?: () => Promise<void>; sessionManager: { getSessionId(): string; getSessionFile(): string; getBranch(): Entry[]; getEntries(): Entry[] }; ui: { notify: ReturnType<typeof vi.fn>; confirm: ReturnType<typeof vi.fn<(title: string, message: string) => Promise<boolean>>>; custom: ReturnType<typeof vi.fn> } };
 type Handler = (event: { reason: string }, ctx: Context) => Promise<void>;
-type Tool = { name: string; execute(id: string, input: unknown, signal: undefined, update: undefined, ctx: Context): Promise<{ isError?: boolean; details?: Record<string, unknown> }> };
+type Tool = { name: string; execute(id: string, input: unknown, signal: undefined, update: undefined, ctx: Context): Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean; details?: Record<string, unknown> }> };
 const dirs: string[] = []; const shutdowns: Array<() => Promise<void>> = [];
 beforeEach(() => { for (const key of Object.keys(process.env)) if (key.startsWith("CE_")) vi.stubEnv(key, undefined); vi.spyOn(process, "kill").mockImplementation(seam.signal); vi.useFakeTimers(); seam.hosts.length = 0; seam.stores.length = 0; seam.manager = undefined; });
 afterEach(async () => {
@@ -214,8 +214,14 @@ it("actual factory events bind independent A/B Hosts; exact ChatGPT messages/rep
   const chat = { send: (input: unknown) => chatHost.send("chatgpt/main", input), readPayload: (input: unknown) => chatHost.readPayload("chatgpt/main", input), end: () => chatHost.end("chatgpt/main") };
   const sentA = chat.send({ to: "pi/A", text: "only A", idempotencyKey: "to-a" }); const sentB = chat.send({ to: "pi/B", text: "only B", idempotencyKey: "to-b" });
   const payloadA = await a.call("ce_read_payload", { messageId: sentA.messageId }); expect(payloadA.isError).not.toBe(true);
-  expect((await b.call("ce_read", { messageId: sentA.messageId })).isError).toBe(true);
-  expect((await b.call("ce_read_payload", { messageId: sentA.messageId })).isError).toBe(true);
+  const deniedRead = await b.call("ce_read", { messageId: sentA.messageId });
+  const deniedPayload = await b.call("ce_read_payload", { messageId: sentA.messageId });
+  for (const denied of [deniedRead, deniedPayload]) {
+    expect(denied.isError).toBe(true);
+    expect(denied.details).toMatchObject({ code: "CE_HOST_UNAVAILABLE", reason: "MESSAGE_READ_REJECTED", retryable: false });
+    expect(denied.content[0]?.text).toBe("chat-exchange message read rejected (MESSAGE_READ_REJECTED): this endpoint is not eligible for the message");
+    expect(JSON.stringify(denied)).not.toContain("only A");
+  }
   expect((await b.call("ce_ack", { messageId: sentA.messageId, payloadDigest: payloadA.details!.payloadDigest, payloadLength: payloadA.details!.payloadLength, messageCreatedAuditSequence: payloadA.details!.auditSequence })).isError).toBe(true);
   expect((await b.call("ce_read_payload", { messageId: sentB.messageId })).isError).not.toBe(true);
   for (const [runtime, text] of [[a, "reply A"], [b, "reply B"]] as const) {

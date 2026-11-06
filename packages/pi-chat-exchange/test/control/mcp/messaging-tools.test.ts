@@ -12,7 +12,9 @@ import {
   callMessagingTool,
   isMessagingToolName,
   MESSAGING_TOOL_NAMES,
+  MESSAGING_TOOLS,
   MessagingArgsError,
+  SendArgsSchema,
   type ExchangeMessagingPort,
 } from "../../../src/control/mcp/messaging-tools.js";
 
@@ -68,6 +70,15 @@ describe("messaging tool names", () => {
 });
 
 describe("ce_send", () => {
+  it("directs live callers to refresh and explicitly select the exact recipient", () => {
+    const send = MESSAGING_TOOLS.find(tool => tool.name === "ce_send");
+    const guidance = `${send?.description} ${SendArgsSchema.properties.to.description}`;
+    expect(guidance).toContain("ce_endpoints");
+    expect(guidance).toContain("Do not reuse");
+    expect(guidance).toContain("explicit user selection");
+    expect(guidance).toContain("does not prove receiver reading or task completion");
+  });
+
   it("returns durable delivery evidence for a valid call", () => {
     const result = callMessagingTool(port(), "ce_send", { to: "pi/main", text: "hi", idempotencyKey: "k1" });
     expect(result.isError).toBe(false);
@@ -199,6 +210,18 @@ describe("ce_read_payload", () => {
     expect(() => callMessagingTool(port(), "ce_read_payload", {})).toThrow(MessagingArgsError);
     expect(() => callMessagingTool(port(), "ce_read_payload", { messageId: "" })).toThrow(MessagingArgsError);
     expect(() => callMessagingTool(port(), "ce_read_payload", { messageId: "m", digest: "d47" })).toThrow(MessagingArgsError);
+  });
+
+  it("presents message-read rejection as an eligibility refusal without changing sanitized details", () => {
+    const result = callMessagingTool(port({ readPayload: () => {
+      throw refusal("CE_HOST_UNAVAILABLE", false, "MESSAGE_READ_REJECTED");
+    } }), "ce_read_payload", { messageId: "msg_9" });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toEqual({ code: "CE_HOST_UNAVAILABLE", reason: "MESSAGE_READ_REJECTED", retryable: false });
+    expect(result.content[0]!.text).toBe("chat-exchange message read rejected (MESSAGE_READ_REJECTED): this endpoint is not eligible for the message");
+    expect(result.content[0]!.text).not.toContain("CE_HOST_UNAVAILABLE");
+    expect(JSON.stringify(result)).not.toContain("hello from pi");
+    expect(JSON.stringify(result)).not.toContain("/var/secret");
   });
 
   it("surfaces the operator payload-read refusal without payload text", () => {
