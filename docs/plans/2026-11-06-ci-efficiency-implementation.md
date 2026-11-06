@@ -37,3 +37,13 @@ Use the exact two job commands with Node 24.21.0, after a successful build, and 
 Review the frozen delta with `security-reviewer` using `magpie/group/expert` and `high` thinking. Parent evaluates findings and reruns affected tests. Commit only scoped files, push `perf/ci-efficiency-01` to `https://github.com/zieglar/pi-packages.git`, and create the authorized Draft PR. Do not push `main`, merge, release or change external settings.
 
 Compare hosted durations and full test coverage against baseline. Use subsequent actual runs for second-pass optimization only; do not add unmeasured changes.
+
+### Task 5: Hosted measurement and stop decision
+
+Draft PR [#5](https://github.com/zieglar/pi-packages/pull/5), run [42157813962](https://github.com/zieglar/pi-packages/actions/runs/42157813962), passed all jobs at implementation commit `9dd99d861534c99f2015abe9e363d030081b5a13`.
+
+- Coverage matched main run 41335972248 exactly: 186 passed + 2 skipped files and 2958 passed + 26 skipped tests. The storage lane ran all four `inbox-ack-volume` cases.
+- The test critical step decreased from 208s to 136s (34.6%). The complete job span decreased from 236s to 168s (28.8%); queue to the first job was 3s versus 2s.
+- `validate-storage` took 99s, `validate-other` 162s and the successful stable `validate` aggregator 4s. Native and pinned Tunnel compatibility lanes passed.
+- Summed runner time increased from 467s to 499s (6.9%) because setup/build/typecheck intentionally run in both shards and the aggregator uses a runner.
+- One hosted sample is not a new P50/P90. A documentation-only follow-up commit repeats the same workflow and test code to check stability; no further partitioning, caching or worker tuning is justified by the current evidence.
