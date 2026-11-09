@@ -2,6 +2,13 @@
 
 # Changelog
 
+## 0.3.1 (candidate; not released)
+
+- Reconcile session onboarding/recovery, scoped background permissions and Hook management with optional native intake and structured ownership feedback.
+- Refuse unreadable composer values before desktop input; keep once-only attempts, full-text validation and immutable UNKNOWN history.
+- Include reproducible local Hook sources separately from the npm artifact. No automatic activation or authority expansion.
+- Publication still requires matching latest Tunnel and exact-candidate evidence. See [0.3.1 scope and limitations](docs/releases/0.3.1.md).
+
 ## 0.3.1-daily.1 (local integration)
 
 - Retain the published 0.3.0 Hooks runtime, configuration and packaging alongside the accepted Connect/Disconnect, persistent startup permission and TUI changes.

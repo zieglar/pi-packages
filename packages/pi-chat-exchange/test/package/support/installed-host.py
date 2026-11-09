@@ -27,7 +27,7 @@ from supervised_pty import SupervisedPty
 if len(sys.argv) not in (4, 5) or (len(sys.argv) == 5 and sys.argv[4] not in ('tarball', 'managed-npm')):
     raise RuntimeError('Expected Node, npm CLI, archive and optional tarball/managed-npm mode')
 managed = len(sys.argv) == 5 and sys.argv[4] == 'managed-npm'
-source = 'npm:@zieglar/pi-chat-exchange@0.3.0'
+source = 'npm:@zieglar/pi-chat-exchange@0.3.1'
 node_source, npm_source, archive = (pathlib.Path(s).resolve(strict=True) for s in sys.argv[1:4])
 base = pathlib.Path('/private/tmp/ce-distribution-fix')
 base.mkdir(mode=448, exist_ok=True)
@@ -59,11 +59,11 @@ if driver_home:
     source_home = pathlib.Path(driver_home) / '.config' / 'pi-chat-exchange'
     destination_home = r / 'home' / '.config' / 'pi-chat-exchange'
     if source_home.is_dir():
-        for source in source_home.rglob('*'):
-            if source.is_file():
-                target = destination_home / source.relative_to(source_home)
+        for driver_source in source_home.rglob('*'):
+            if driver_source.is_file():
+                target = destination_home / driver_source.relative_to(source_home)
                 target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                shutil.copyfile(source, target)
+                shutil.copyfile(driver_source, target)
                 target.chmod(0o600)
         selection_path = destination_home / 'sqlite-driver.json'
         if selection_path.is_file():
@@ -248,7 +248,7 @@ def audit_installed_trees(label):
 
 audit_installed_trees('initial')
 package = r / consumer_tree / 'node_modules/@zieglar/pi-chat-exchange'
-if json.loads((package / 'package.json').read_text())['version'] != '0.3.0':
+if json.loads((package / 'package.json').read_text())['version'] != '0.3.1':
     raise RuntimeError('Installed candidate identity mismatch')
 def verify_installed_payload(label):
     if managed and (r / 'agent/npm/node_modules/@earendil-works/pi-coding-agent').exists():
@@ -442,7 +442,7 @@ def verify_native_lifecycle():
     native_install('pi-managed-reinstall')
     audit_installed_trees('reinstalled')
     verify_installed_payload('reinstalled')
-    if json.loads((package / 'package.json').read_text())['version'] != '0.3.0' or before != snapshot():
+    if json.loads((package / 'package.json').read_text())['version'] != '0.3.1' or before != snapshot():
         raise RuntimeError('Reinstall identity or retention mismatch')
     # A fresh real Host rehydrates retained configuration; it does not reuse an
     # ended native Session or silently activate/take over its released binding.

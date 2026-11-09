@@ -66,6 +66,7 @@ Every tool revalidates the current Pi context, allowlisted Endpoint and successf
 | Tool | Input | Result/limits |
 |---|---|---|
 | `ce_send` | `to`, `text`, `idempotencyKey` | Sends to an allowlisted label; the idempotency key identifies one logical send, not a resend with a new key after an unknown outcome |
+| `ce_prepare_desktop_reply` | `messageId`, `taskId` | Pi-only metadata helper; returns a generated idempotency key after confirming the exact receipt target. Use that returned key for `ce_send` and its retries; failure leaves desktop effects suppressed |
 | `ce_read` | `messageId` | Metadata only, without body, ACK or consumption |
 | `ce_inbox_list` | Optional `afterAuditSequence`, `pageSize`, `rawScanLimit` | Bounded, authorized, Audit-first Message ID discovery; does not consume or ACK |
 | `ce_read_payload` | `messageId` | Separate opt-in; successful body enters model context and potentially persisted Pi history |
@@ -136,13 +137,15 @@ With `inboxNotification.enabled`, successful binding and `agent_settled` may eac
 - Current Session/Endpoint/binding are checked before inspection and before publication. Failure latches automatic checks for that generation; explicit Inbox tools remain independent.
 - Without available UI there is no automatic discovery. Display/persistence in TUI/RPC/PI WEB is client behavior. Dismiss does not ACK, and an old notification does not prove current permissions.
 
+Separate opt-in [native inbound task intake](../docs/native-inbound.md) adds bounded metadata polling and a native turn trigger. Its private per-Session policy is independent of `inboxNotification` and CE read/ACK grants. Missing policy keeps task intake disabled.
+
 <a id="信任边界与不提供的能力"></a>
 
 ## Trust boundaries and unavailable capabilities
 
 The allowlist is registration authority; the current runtime still requires CE Host/Storage authorization. A label or available tool does not grant access. Only Storage reads the Host trust-root secret within controlled transactions. Capability never enters session entries, logs, details or model context.
 
-The extension does not execute payloads or consume messages automatically, provide remote exactly-once, approve costs for users or declare external-workflow or manual completion. `DELIVERY_UNKNOWN` must not become `CANCELLED`. Crash recovery, semantic message completion and release retain separate authority.
+The extension does not execute task text as code, provide remote exactly-once, approve costs for users or declare external-workflow completion. Optional [native inbound task intake](../docs/native-inbound.md) can wake the current Agent under a separate operator delegation policy; it performs no implicit ACK or result send. `DELIVERY_UNKNOWN` must not become `CANCELLED`. Crash recovery, semantic completion and release retain separate authority.
 
 <a id="验证与现场限制"></a>
 

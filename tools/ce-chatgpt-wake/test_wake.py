@@ -1,7 +1,11 @@
 import importlib.util
+import json
+import subprocess
+import time
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 spec=importlib.util.spec_from_file_location('wake',Path(__file__).with_name('wake.py'))
 assert spec and spec.loader
@@ -28,6 +32,13 @@ class Desktop:
 
 
 class WakeTests(unittest.TestCase):
+    def test_nonzero_desktop_exit_with_success_json_is_refused(self):
+        cli = object.__new__(wake.ChatGptCli)
+        cli.config = {'desktopTmpDir': self.tmp.name, 'executionEnd': time.monotonic() + 10}
+        cli.prefix, cli.env = ['synthetic-desktop'], {}
+        result = subprocess.CompletedProcess([], 1, stdout=json.dumps({'version': '2.5', 'ok': True}), stderr='')
+        with mock.patch.object(wake.subprocess, 'run', return_value=result), self.assertRaisesRegex(ValueError, 'DESKTOP_COMMAND_FAILED'):
+            cli.call(['list-windows', '--app', 'ChatGPT'])
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.config={'windowId':'w-1','windowTitle':'test-chat','conversationMarker':'HANDOFF-CE-CHATGPT-WAKE-01','stateDir':self.tmp.name,'maxWaitSeconds':1,'pollSeconds':.001,'targetEndpoint':'chatgpt/main','replyEndpoint':'pi/wake-test'}
@@ -52,7 +63,8 @@ class WakeTests(unittest.TestCase):
         self.assertIn(self.record['messageId'],text);self.assertIn('ce_read_payload',text)
         with self.assertRaises(ValueError):wake.notice({**self.record,'payload':'secret'},self.config)
     def test_wrong_window_or_conversation_refused(self):
-        with self.assertRaises(ValueError):wake.observe(snapshot(title='other'),self.config)
+        other=snapshot();other['data']['window']['id']='w-other'
+        with self.assertRaises(ValueError):wake.observe(other,self.config)
         v=snapshot();v['data']['tree']['children'][0]['children'][0]['name']='unrelated'
         with self.assertRaises(ValueError):wake.observe(v,self.config)
     def test_marker_suffix_or_draft_cannot_authorize_conversation(self):
@@ -105,6 +117,26 @@ class WakeTests(unittest.TestCase):
         self.assertTrue(cli.snapshot()['data']['complete'])
         self.assertEqual(observed[0],2)
         self.assertTrue(all(a[0]in['snapshot','list-windows']for a in calls))
+    def test_title_drift_keeps_exact_window_marker_and_process_identity(self):
+        self.assertEqual(wake.observe(snapshot(title='renamed'), self.config)['draft'], '')
+        cli=object.__new__(wake.ChatGptCli)
+        cli.config=dict(self.config,pid=1,processInstance='instance')
+        cli.call=lambda args: {'data':[{'id':'w-1','pid':1,'process_instance':'instance','title':'renamed'}]} if args[0]=='list-windows' else snapshot(title='renamed')
+        self.assertTrue(cli.snapshot()['ok'])
+    def test_production_mode_refuses_busy_without_waiting_for_idle(self):
+        d=Desktop();original=d.snapshot;seen=[0]
+        def settling():
+            v=original();seen[0]+=1
+            if seen[0]==1:v['data']['tree']['children'][0]['children'][-1]['name']='停止'
+            return v
+        d.snapshot=settling
+        result=wake.run(self.record,dict(self.config,refuseBusy=True),d)
+        self.assertEqual(result['noticeSubmission'],'NOT_ATTEMPTED')
+        self.assertEqual(d.sends,0)
+    def test_auto_notice_uses_generic_message_and_retains_ce_read_boundary(self):
+        text=wake.notice(dict(self.record,testId='CE-WAKE-AUTO-01M6D7BPKRDG38PE854761T7MN'),self.config)
+        self.assertNotIn('测试消息',text)
+        self.assertIn('ce_read_payload',text)
     def test_same_message_changed_correlation_denied(self):
         wake.run(self.record,self.config,Desktop());self.record['testId']='CE-WAKE-TEST-other'
         with self.assertRaises(ValueError):wake.run(self.record,self.config,None)

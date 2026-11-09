@@ -18,9 +18,9 @@ Pi Chat Exchange (CE) lets ChatGPT and Pi exchange durable messages through expl
 
 Use **Pi 1.3.0**, **Node >=22.19.0** and a Store-supported platform: **macOS arm64 or Linux x64 GNU**. Filesystem, ownership and runtime admission checks still apply. Other Native artifacts do not establish Store support; Windows Native is unsupported and WSL2 integration remains unverified.
 
-Version **0.2.1** is published on npm. An actual Registry installation passed isolated Pi 1.3.0 / Node 22.19.0 loading and persistence checks on macOS arm64. Linux x64 Native checks passed 227/227 on Node 22.19.0 and 24.22.2. **Real Cloud transport and the complete ChatGPT ↔ Pi exchange remain unverified.** See [runtime support](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/runtime-support.md) for the tested matrix and limits; the engine range is not exhaustive qualification.
+The published stable package is **0.3.0**. Historical 0.2.1 Registry installation checks passed isolated Pi 1.3.0 / Node 22.19.0 loading and persistence on macOS arm64; Linux x64 Native checks passed 227/227 on Node 22.19.0 and 24.22.2. Those version-specific results do not certify the current candidate. See [runtime support](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/runtime-support.md) for the tested matrix and limits; the engine range is not exhaustive qualification.
 
-This working tree prepares local integration **0.3.1-daily.1**, retaining published CE 0.3.0 Hooks and the accepted Daily UX changes. It is not the original Registry 0.3.0 artifact. Explicit `CE_TUNNEL_CLIENT_PATH` delegates trust to a user-managed client installation, including group-writable Homebrew ancestors; automatic discovery stays strict. Install the reviewed local tarball into a new dedicated prefix, then register its physical package directory with Pi. Historical version-specific Cloud evidence is retained separately and does not qualify this changed runtime.
+This working tree prepares formal **0.3.1** as a candidate, retaining published CE 0.3.0 Hooks and integrating the reviewed local changes. It is not yet a Registry release. See [0.3.1 scope and validation limits](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/releases/0.3.1.md). Explicit `CE_TUNNEL_CLIENT_PATH` delegates trust to a user-managed client installation, including group-writable Homebrew ancestors; automatic discovery stays strict. Test a reviewed local tarball in a new dedicated prefix before registering its physical package directory with Pi. Historical Cloud evidence does not qualify this changed runtime.
 
 <a id="安装-pi-扩展"></a>
 <a id="选择连接方式"></a>
@@ -30,7 +30,7 @@ This working tree prepares local integration **0.3.1-daily.1**, retaining publis
 With Pi already installed, run in your **system terminal**:
 
 ```sh
-pi install npm:@zieglar/pi-chat-exchange@0.2.1
+pi install npm:@zieglar/pi-chat-exchange@0.3.0
 pi list
 pi
 ```
@@ -46,7 +46,7 @@ Before upgrading an existing installation, stop the owned Tunnel and verify `STO
 
 ## Limits and safe operation
 
-CE does not automatically schedule tasks or drain inboxes. A shared ChatGPT endpoint does not isolate conversations. Payload reads and ACKs require their own grants; payload text is untrusted data and may enter model history.
+CE does not schedule tasks or drain inboxes by default. Optional native intake requires an explicitly enabled, Session-bound policy. A shared ChatGPT endpoint does not isolate conversations. Payload reads and ACKs require their own grants; payload text is untrusted data and may enter model history.
 
 ACK records reception only, not delivery, reading, processing or task completion. CE provides no exactly-once delivery/execution guarantee. `DELIVERY_UNKNOWN != CANCELLED`; missing ACK or timeout does not authorize blind retry or a new-key resend. Keep the original Message ID/key and inspect evidence first.
 
@@ -54,7 +54,7 @@ Closing Manager or exiting Pi does not stop the detached Tunnel client. Use `/ce
 
 ## Optional desktop test integrations
 
-The repository also contains [CE → Ovis](https://github.com/zieglar/pi-packages-dev/blob/main/tools/ce-ovis-desktop/README.md) and [Pi → ChatGPT wake](https://github.com/zieglar/pi-packages-dev/blob/main/tools/ce-chatgpt-wake/README.md). These operator-run macOS tools are outside the npm payload. The local 0.3.1-daily.1 integration retains CE 0.3.0 Hooks and adds the accepted Daily UX changes; this identity is distinct from the published 0.3.0 artifact.
+The repository also contains [CE → Ovis](https://github.com/zieglar/pi-packages-dev/blob/main/tools/ce-ovis-desktop/README.md) and [Pi → ChatGPT wake](https://github.com/zieglar/pi-packages-dev/blob/main/tools/ce-chatgpt-wake/README.md). These operator-run macOS tools are outside the npm payload. The local 0.3.1 candidate integration retains CE 0.3.0 Hooks and adds the accepted Daily UX changes; this identity is distinct from the published 0.3.0 artifact.
 
 The wake notice carries fixed instructions and message identifiers only; the actual task stays in CE. Each integration requires explicit window authorization and its own isolated run. They refuse an already running Tunnel Client, so plan a separate test window after a normal Stop and confirmed STOPPED. See the tools' READMEs for setup, stop/cleanup and the limits of the recorded E2E evidence.
 
