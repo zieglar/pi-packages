@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "ce": {
+    "version": "0.3.1",
+    "baselineCommit": "73224c9c323c24cf9a58bdd6817340db706d9c67",
+    "runtimeSha256": "210825a4f02e07018be8e017dc866e8834a7376ab485d622108fe5a37e5201a9",
+    "worktree": "clean"
+  },
+  "client": {
+    "version": "0.0.20",
+    "sourceCommit": "c2144b0904980bcbae2636cdca4f4167e9818e0b",
+    "publishedAt": "2026-11-06T22:05:17Z",
+    "url": "https://github.com/openai/tunnel-client/releases/tag/v0.0.20"
+  },
+  "testedAt": "2026-11-10T04:19:12.898228Z",
+  "environment": {
+    "os": "darwin",
+    "arch": "arm64",
+    "node": "24.21.0",
+    "pi": "1.3.0",
+    "native": "0.1.0"
+  },
+  "offline": {
+    "status": "VERIFIED",
+    "kind": "automated-offline",
+    "testedAt": "2026-11-09T16:50:51.128Z",
+    "hostedRun": 42658798737,
+    "checkoutCommit": "73224c9c323c24cf9a58bdd6817340db706d9c67",
+    "resultSha256": "523cda89bc5611bed743969f23903aa3cb65b60cd29a03275de135ec83047165",
+    "scope": "Official 0.0.20 Linux x64 loopback lifecycle, health, normal/failure stop, cleanup and synthetic namespace checks; not manual Cloud. Publication still requires its own fresh same-run result."
+  },
+  "lifecycle": {
+    "status": "VERIFIED",
+    "kind": "real-client-local",
+    "start": true,
+    "health": true,
+    "normalStop": true,
+    "cleanup": true,
+    "testedAt": "2026-11-10T04:19:12.898228Z",
+    "scope": "Actual local processes during the bounded manual Cloud window: official client, candidate MCP, real Pi SDK tools and metadata-only Hooks, isolated HOME and Native Store. Both owned process groups exited normally; no forced termination. No separate slow-Hook or timeout isolation scenario is claimed.",
+    "clientExitCode": 0,
+    "piPeerExitCode": 0,
+    "forced": false,
+    "ownershipRowsAfterStop": 0,
+    "attachedSessionsAfterStop": 0,
+    "healthRemoved": true,
+    "independentOwnedProcessAbsence": true
+  },
+  "cloud": {
+    "status": "VERIFIED",
+    "kind": "manual-cloud",
+    "resourceKind": "operator-authorized-bounded-existing-tunnel-private-store",
+    "durableMatch": true,
+    "normalOwnershipRelease": true,
+    "hardStopCleanup": true,
+    "receptionOnly": true,
+    "verifiedAt": "2026-11-10T04:19:12.898228Z",
+    "windowSeconds": 369.2798828749801,
+    "scope": "Real ChatGPT peer and operator-driven real Pi SDK tools exchanged two fresh Unicode/Emoji/newline messages, acknowledged both receptions, deliberately replayed each known idempotency key and observed one durable message per key. Two metadata-only Hook notifications matched the sample audits. Original production connection was restored with the same primary participant, a new attached session and old-session detachment; controls were unchanged.",
+    "requestCorrelation": "User-relayed actual ChatGPT tool results matched private Store messages, payload digests/lengths, audits, receipts and metadata Hooks. No globally unique wire request-ID join or raw remote tool transcript capture.",
+    "cleanupMeaning": "Bounded-window normal cleanup of owned processes, ownership, attached sessions and health state; not a forced-kill or destructive Cloud recovery claim.",
+    "versionIdentity": "Ping reported protocolVersion 1, not software version. Software identity comes from the clean pinned source/runtime digest, byte-for-byte comparison of all 115 installed tarball payload files, sealed candidate command/bindings, and the unique private sample served during exclusive same-Tunnel candidate ownership.",
+    "forward": {
+      "messageId": "msg_01M71TJPAAC5HVDRDHVNG49785",
+      "receiptId": "rcpt_01M71TSWJBTZR9D4QQWEH16S13",
+      "createdAudit": 4,
+      "receiptAudit": 5,
+      "payloadDigest": "ce8bccbbd4fa659823dd702540a2b3edf94d1341e11a0e897f4a299d297e2f11",
+      "payloadLength": 72,
+      "deliberateReplay": "REPLAYED"
+    },
+    "reverse": {
+      "messageId": "msg_01M71TT3QC4CSYD7BS2DW491AM",
+      "receiptId": "rcpt_01M71TT45G50FJMMRN6JEKW2QN",
+      "createdAudit": 6,
+      "receiptAudit": 7,
+      "payloadDigest": "c4e1789490d6f9d1dc0110530331a54234fac4bd909620a5890b7cad95a5cade",
+      "payloadLength": 73,
+      "deliberateReplay": "REPLAYED"
+    }
+  },
+  "provenance": {
+    "method": "parent-verified-actual-window-and-peer-report",
+    "operatorManifestSha256": "351af6a3c4e09772da48339e89e481bf229a08f07915fd616fb303995eb37f44",
+    "darwinClientSha256": "ea217729ecb82987c599b4eb7192ed0ec011a528dbbde33a8c94d9d6d59cf975",
+    "testedTarballSha256": "1babacdc2e0fab2c6f5656c19ff016b1e47e15bcce4b2a458c5c42b2dbf6f1d5",
+    "digestPolicy": "Existing runtimeDigest and release gates unchanged",
+    "operatorRepair": "An earlier authorized attempt ended before candidate startup due to unreferenced manager polling timers in the standalone operator controller. Original production was restored. A minimal operator-only keepalive correction passed isolated real-manager reproduction and scoped review before this separately authorized successful window. No product runtime change."
+  },
+  "limitations": [
+    "Manual Cloud limited to macOS arm64 / Node24.21.0 / Pi1.3.0 / Native0.1.0 / official Client0.0.20 on one existing Tunnel; real namespaced Cloud identity NOT_VERIFIED",
+    "Pi side used real registered SDK tools driven by the operator; no model business-task execution or desktop submission qualification",
+    "ACK proves reception only; no business completion, exactly-once effect, automatic retry or forced-kill recovery claim",
+    "No new remote slow-Hook, timeout, revocation or epoch scenarios; running Hook effects are not canceled by revocation",
+    "Remote call results were relayed by the user and corroborated with durable sample data; no raw remote transcript or wire request-ID correlation",
+    "Same-run publication latest offline result remains required; earlier hosted evidence does not substitute for the publication run"
+  ]
+}
