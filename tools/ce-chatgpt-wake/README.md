@@ -1,12 +1,12 @@
 # CE ChatGPT wake
 
-`wake.py` provides two explicit modes: a metadata-only CE Hook system notification (`--hook`), and the legacy test-only ChatGPT conversation driver (`--record` / `--task`). The modes use separate configuration and cannot be combined.
+`wake.py --hook` accepts a CE metadata event. Its six-field configuration requests a system notification; an explicit private `autoWakeConfig` opts the same existing Hook into guarded desktop wake with an interactive fallback. `--record` / `--task` remains a separate direct conversation-driver mode.
 
 ## Hook system notification (disabled example)
 
 The Hook mode accepts one bounded UTF-8 JSON event on stdin, requests a macOS system notification, and exits. It does not use the ChatGPT input or accessibility driver. No CE body is accepted or read, no ACK or reply is sent, and metadata grants no CE permission. The banner contains fixed text plus Message and Exchange identifiers; treat these identifiers as information exposed on the local notification surface.
 
-This implementation is locally tested with the native notification boundary replaced. Production Hooks remain disabled; actual macOS banner visibility, notification permissions and user attention have not been tested.
+The six-field path is tested with the native notification boundary replaced. The disabled rule below is an example; its enabled state says nothing about a particular installed profile. A successful native request does not prove banner visibility or user attention.
 
 Use a separate trusted local JSON config with exactly these six fields (replace the fixture identifiers and paths):
 
@@ -50,6 +50,68 @@ Isolated tests (the native notification command is mocked):
 python3 -B -m unittest discover -s tools/ce-chatgpt-wake -p test_hook.py -v
 python3 -B -m unittest discover -s tools/ce-chatgpt-wake -p test_wake.py -v
 ```
+
+## Guarded Hook configuration and explicit-only source default
+
+This source revision defaults to `conversationGuard.mode: explicit-only`. Production state is recorded in the dated implementation/cutover reports; configuration examples do not establish activation. Deploy only within an explicit cutover authorization.
+
+The private `auto-wake.json` retains its existing required fields. `conversationGuard` accepts either `mode` alone, or `mode`, `targetSelection: desktop-at-intake`, and `captureAfterAuditSequence` together:
+
+```json
+{
+  "stateDir": "/absolute/private/owner/state",
+  "profilePath": "/absolute/selected/tunnel.yaml",
+  "packageRoot": "/absolute/installed/node_modules/@zieglar/pi-chat-exchange",
+  "nativeSessionFile": "/absolute/current/native-session.jsonl",
+  "python": "/absolute/bin/python3",
+  "node": "/absolute/bin/node",
+  "agentDesktop": "/absolute/bin/agent-desktop",
+  "terminalNotifier": "/absolute/bin/terminal-notifier",
+  "ownerDirectory": "/absolute/private/owner",
+  "conversationMarker": "EXACT-AUTHORIZED-CONVERSATION-MARKER",
+  "maxWaitSeconds": 60,
+  "notificationTimeoutSeconds": 120,
+  "afterAuditSequence": 123,
+  "conversationGuard": {"mode": "explicit-only"}
+}
+```
+
+Use private 0600 files and 0700 owner/state directories. `ownerDirectory` contains `config.json`, `auto-wake.json`, `tools/ce-chatgpt-wake/{wake.py,auto_wake.py,notification.py,conversation_guard.py,resolve-runtime.mjs}` and the existing `tools/ce-ovis-desktop/{bridge.py,lifecycle.py}`. The receipt-target installation also adds `receipt_target.py`. Preserve the existing audit boundary and attempt journals. No configuration contains default task titles or endpoint/session/window identities.
+
+Endpoints, Exchange, CE Session, process/window IDs and titles are never defaults in this configuration. Each admission and mutating desktop command resolves the selected CE policy, current native lifecycle mapping, active registration, sole enabled matching Hook and existing live process marker. The native UUID and the mapped CE `ses_…` are different identities. The read-only store check matches committed metadata/audit, OPEN Exchange membership, attached unexpired leases and the sender's exact mapped CE Session/Participant. Confirmed release, process changes or ownership transfer refuse input.
+
+Missing mode defaults to `explicit-only` and the worker records `SUPPRESSED / EXPLICIT_ONLY` before any desktop attempt or notification fallback. With the explicitly selected desktop-at-intake policy, `title-match` can use an immutable captured target and a prepared reply association; absent or invalid association remains `SUPPRESSED / SOURCE_BINDING_UNAVAILABLE`. The captured desktop is the user-selected target, not proof of the initiating conversation. The current production state and activation evidence must be verified separately.
+
+`conversation_guard.check_title` checks the unique live conversation webarea title; duplicate/missing title, multiple windows, wrong window or incomplete snapshot refuse a match. A matching title alone grants no automation authority. The title-mode flow also checks the receipt association, live authority and the existing window, marker, idle and draft constraints. A title can be duplicated or renamed, and immediate checks cannot eliminate switching during an action.
+
+Existing lower-level desktop and notification routines are retained for their prior state-machine tests. Their window/PID/process-generation, marker, idle/empty draft, preaction authority/snapshot checks, global desktop lock, possible-input stop and exact-button one-use checks are unchanged. The new worker gate runs before both automatic and button fallback paths. A button cannot override a title mismatch, unavailable source binding or explicit-only mode. New integration tests use the real gate; dormant desktop-path regression tests explicitly substitute a test-only gate result and do not establish a real source binding.
+
+`conversation_guard.explicit_fetch(selection, state_dir, execute_tool)` is a synchronous library boundary for a future trusted manual-selection adapter. It is not a registered tool, UI, CLI or CE authority grant. The host must verify an actual user gesture, supply its current authorized synchronous tool executor and preserve existing approvals. A selection requires exactly `kind: HUMAN_SELECTED_REPLY`, `selectionId`, reply `messageId`, immutable `originalRequestMessageId`, `exchangeId` and `taskId`. These human-selected correlation fields are recorded as `HUMAN_SELECTION_NOT_SOURCE_ATTESTATION`; they are not proof of send-time origin.
+
+The helper durably records `READ_MAY_HAVE_OCCURRED`, calls only `ce_read_payload` for the selected reply ID and returns its result to the authorized caller. It does not scan Inbox, ACK, act on the desktop or store payloads. Refusal is distinct from `READ_RETURNED`; that state means only the executor returned and does not prove task completion. Duplicate selection returns recorded state without another read; changed correlation, corrupt state or uncertain outcome fail closed. This adapter is not a registered UI; see `EXPLICIT_RETRIEVAL.md` for the existing per-message manual path. A receipt-selected desktop target is not a trustworthy actual-origin binding.
+
+The earlier claim/dispatch journals still prevent duplicate worker effects. The worker keeps CE send `CREATED`, suppression, explicit-read and task-completion evidence separate. Retain all state; do not delete it to retry. Optional neutral notifications were not added, so explicit-only never enters the old notification-to-desktop route.
+
+The earlier auto-wake acceptance is recorded in its dated report. The explicit-only cutover below preserves the existing audit boundary and journals, requires no CE test messages or GUI submissions, and defaults to a closed-entry rollback. It does not alter Tunnel or Hook policy.
+
+## Operator retrieval and authorized explicit-only cutover
+
+[Explicit retrieval](EXPLICIT_RETRIEVAL.md) gives copyable requests usable now in the existing recipient's authorized Pi/ChatGPT session. The user selects one exact Message ID; discovery is a separate bounded metadata-only request and stops before payload reading. No extra tool registration, authority, controller, auto-ACK or desktop input is added. Unknown relations stay UNVERIFIED. Existing tool output may enter host transcript; no additional payload files/logs are created.
+
+`activate_explicit_only.py` performs one authorized local cutover using a private frozen source directory, an exact baseline manifest and a new private backup directory. The manifest has exactly `files` (the eight existing runtime/config paths listed by `BASELINE_FILES`) and `source` (`auto_wake.py` and `conversation_guard.py`) SHA-256 maps. Source/installed files must be private regular files. Existing owner, actual leases, terminal claims and free admission/desktop locks are checked before changes.
+
+The installer briefly closes the existing Hook entry with an empty configuration, drains old entry processes while holding the existing locks, installs the guard module before the driver, explicitly sets the mode, saves rollback evidence and restores the original entry pointer last. During maintenance, local Hook execution can refuse; CE messages and normal send results remain durable. It preserves watermark and journals. Any failure after closure keeps the entry closed; it never automatically restores old auto-input code.
+Owner identity and both attached CE leases are rechecked again immediately before reopening. A changed owner or expired lease leaves the maintenance gate closed; a prepared evidence file never overrides this final check.
+
+```sh
+python3 -B /private/reviewed/tools/ce-chatgpt-wake/activate_explicit_only.py \
+  --root /absolute/private/hook --source /private/reviewed/tools/ce-chatgpt-wake \
+  --baseline /private/baseline.json --backup /absolute/private/new-backup
+```
+
+Safe rollback uses the same reviewed script with `--root /absolute/private/hook --close-entry /absolute/private/new-backup/activation.json`. After verifying the selected private owner directory and recognized entry shape, it closes ingress first, then reports installed drift, unsettled claims and active/unknown process diagnostics. Held locks, drift or unsettled claims cannot prevent closure. It does not cancel already-admitted work; reconcile any reported activity separately. No messages/journals are deleted and old automatic input is never restored. Confirm actual installed hashes/config after cutover; `activation.json` is prepared before reopening and alone is not proof of successful activation.
+
+Focused checks: `python3 -B -m unittest test_conversation_guard test_auto_wake test_integration test_hook test_wake test_notification test_explicit_cutover -q` from this directory. Cutover tests substitute only OS/runtime probes, perform real private file/lock operations, and exercise installed modules in temporary fixtures with desktop and notification boundaries forbidden.
 
 ## Legacy conversation test integration
 

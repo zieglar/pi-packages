@@ -125,7 +125,10 @@ class BridgeTests(unittest.TestCase):
         def call(args):
             nonlocal value
             seen.append(args)
-            value += args[-1]
+            if args[:2] == ['--headed', 'type']:
+                value += args[-1]
+            elif args[:2] == ['--headed', 'press']:
+                value += '\n'
             return {'ok': True}
         def snapshot():
             v = view(value)
@@ -138,7 +141,7 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(value, text)
         self.assertEqual(seen[0][2], '@initial:e1')
         self.assertNotEqual(seen[1][2], '@initial:e1')
-        self.assertTrue(all(len(a[-1]) <= 8 for a in seen))
+        self.assertTrue(all(len(a[-1]) <= 8 for a in seen if a[:2] == ['--headed', 'type']))
 
     def test_failed_ui_is_distinct_from_unknown(self):
         v = view()
@@ -260,6 +263,103 @@ class BridgeTests(unittest.TestCase):
         with patch.object(bridge.time, 'monotonic', return_value=10.0), patch.object(bridge.subprocess, 'run', return_value=response) as run:
             cli.call(['snapshot'])
         self.assertEqual(run.call_args.kwargs['timeout'], 2.0)
+
+    def test_input_readback_never_retypes_a_missing_piece(self):
+        from unittest.mock import patch
+        cli = object.__new__(bridge.DesktopCli)
+        cli.config = dict(self.config, headedAuthorized=True, inputSettleSeconds=1.5)
+        clock = [0.0]
+        typed = []
+        cli.call = lambda args: typed.append(args[-1]) or {'ok': True}
+        cli.snapshot = lambda: view('fi')
+        with patch.object(bridge.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(bridge.time, 'sleep', side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)):
+            with self.assertRaisesRegex(ValueError, 'CHUNK_READBACK_MISMATCH'):
+                cli.action('type', '@fresh:e1', 'first')
+        self.assertEqual(typed, ['first'])
+
+    def test_real_desktop_click_dispatches_exactly_once(self):
+        cli = object.__new__(bridge.DesktopCli)
+        cli.config = dict(self.config)
+        calls = []
+        cli.call = lambda args: calls.append(args) or {'ok': True}
+        self.assertEqual(cli.action('click', '@fresh:e2'), {'ok': True})
+        self.assertEqual(calls, [['click', '@fresh:e2']])
+
+    def test_newlines_use_shift_return_and_fresh_focus(self):
+        cli = object.__new__(bridge.DesktopCli)
+        cli.config = dict(self.config, headedAuthorized=True)
+        calls = []
+        value = ['']
+        def call(args):
+            calls.append(args)
+            if args[:2] == ['--headed', 'type']:
+                self.assertNotIn('\n', args[-1])
+                value[0] += args[-1]
+            elif args[:2] == ['--headed', 'press']:
+                self.assertEqual(args[2], 'shift+return')
+                self.assertEqual(args[-2:], ['--window-id', 'w-1'])
+                value[0] += '\n'
+            return {'ok': True}
+        cli.call = call
+        cli.snapshot = lambda: view(value[0])
+        cli.action('type', '@fresh:e1', '\nfirst\n\nsecond\n')
+        self.assertEqual(value[0], '\nfirst\n\nsecond\n')
+        presses = [i for i, args in enumerate(calls) if args[:2] == ['--headed', 'press']]
+        self.assertEqual(len(presses), 4)
+        self.assertTrue(all(calls[i - 1][0] == 'focus' for i in presses))
+
+    def test_input_wait_rechecks_wall_clock_deadline(self):
+        from unittest.mock import patch
+        cli = object.__new__(bridge.DesktopCli)
+        cli.config = dict(self.config, headedAuthorized=True, taskDeadline=1.0)
+        calls = []
+        cli.call = lambda args: calls.append(args) or {'ok': True}
+        cli.snapshot = lambda: view('fi')
+        with patch.object(bridge.time, 'time', side_effect=[0.0, 0.0, 2.0]):
+            with self.assertRaisesRegex(ValueError, 'TASK_EXPIRED'):
+                cli.action('type', '@fresh:e1', 'first')
+        self.assertEqual(len(calls), 1)
+
+    def test_input_wait_refuses_exact_text_arriving_after_settle_deadline(self):
+        from unittest.mock import patch
+        cli = object.__new__(bridge.DesktopCli)
+        cli.config = dict(self.config, headedAuthorized=True, inputSettleSeconds=0.5)
+        clock = [0.0]
+        calls = []
+        cli.call = lambda args: calls.append(args) or {'ok': True}
+        def snapshot():
+            clock[0] = 1.0
+            return view('first')
+        cli.snapshot = snapshot
+        with patch.object(bridge.time, 'monotonic', side_effect=lambda: clock[0]):
+            with self.assertRaisesRegex(ValueError, 'CHUNK_READBACK_MISMATCH'):
+                cli.action('type', '@fresh:e1', 'first')
+        self.assertEqual(len(calls), 1)
+
+    def test_input_readback_refuses_unexpected_draft_content(self):
+        cli = object.__new__(bridge.DesktopCli)
+        cli.config = dict(self.config, headedAuthorized=True)
+        typed = []
+        cli.call = lambda args: typed.append(args[-1]) or {'ok': True}
+        cli.snapshot = lambda: view('unexpected')
+        with self.assertRaisesRegex(ValueError, 'CHUNK_READBACK_MISMATCH'):
+            cli.action('type', '@fresh:e1', 'first')
+        self.assertEqual(typed, ['first'])
+
+    def test_input_readback_waits_for_a_late_arriving_draft(self):
+        cli = object.__new__(bridge.DesktopCli)
+        cli.config = dict(self.config, headedAuthorized=True)
+        reads = []
+        typed = []
+        cli.call = lambda args: typed.append(args[-1]) or {'ok': True}
+        def snapshot():
+            reads.append(1)
+            return view('' if len(reads) < 3 else 'first')
+        cli.snapshot = snapshot
+        cli.action('type', '@fresh:e1', 'first')
+        self.assertEqual(typed, ['first'])
+        self.assertGreaterEqual(len(reads), 3)
 
     def test_closed_task_schema(self):
         self.task['command'] = 'rm'

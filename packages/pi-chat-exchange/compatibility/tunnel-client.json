@@ -196,6 +196,51 @@
         "Historical unattributed dispatcher failure remains nonblocking follow-up; A zero failures does not diagnose it",
         "Same-run publication latest offline result remains required; PR evidence is not publication-run evidence"
       ]
+    },
+    {
+      "ce": {
+        "version": "0.3.1",
+        "baselineCommit": "73224c9c323c24cf9a58bdd6817340db706d9c67",
+        "runtimeSha256": "210825a4f02e07018be8e017dc866e8834a7376ab485d622108fe5a37e5201a9",
+        "worktree": "clean"
+      },
+      "client": {
+        "version": "0.0.20",
+        "sourceCommit": "c2144b0904980bcbae2636cdca4f4167e9818e0b",
+        "publishedAt": "2026-11-06T22:05:17Z",
+        "url": "https://github.com/openai/tunnel-client/releases/tag/v0.0.20"
+      },
+      "testedAt": "2026-11-10T04:19:12.898228Z",
+      "environment": {
+        "os": "darwin",
+        "arch": "arm64",
+        "node": "24.21.0",
+        "pi": "1.3.0",
+        "native": "0.1.0"
+      },
+      "offline": {
+        "status": "VERIFIED",
+        "kind": "automated-offline",
+        "evidence": "evidence/compat-ce-0.3.1-client-0.0.20.json"
+      },
+      "lifecycle": {
+        "status": "VERIFIED",
+        "kind": "real-client-local",
+        "evidence": "evidence/compat-ce-0.3.1-client-0.0.20.json"
+      },
+      "cloud": {
+        "status": "VERIFIED",
+        "kind": "manual-cloud",
+        "evidence": "evidence/compat-ce-0.3.1-client-0.0.20.json"
+      },
+      "limitations": [
+        "Manual Cloud limited to macOS arm64 / Node24.21.0 / Pi1.3.0 / Native0.1.0 / official Client0.0.20 on one existing Tunnel; real namespaced Cloud identity NOT_VERIFIED",
+        "Pi side used real registered SDK tools driven by the operator; no model business-task execution or desktop submission qualification",
+        "ACK proves reception only; no business completion, exactly-once effect, automatic retry or forced-kill recovery claim",
+        "No new remote slow-Hook, timeout, revocation or epoch scenarios; running Hook effects are not canceled by revocation",
+        "Remote call results were relayed by the user and corroborated with durable sample data; no raw remote transcript or wire request-ID correlation",
+        "Same-run publication latest offline result remains required; earlier hosted evidence does not substitute for the publication run"
+      ]
     }
   ]
 }

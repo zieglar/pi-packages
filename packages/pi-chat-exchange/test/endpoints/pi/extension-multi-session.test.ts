@@ -41,9 +41,9 @@ vi.mock("../../../dist/endpoints/pi/session-host.js", async (original) => {
   } };
 });
 type Entry = { type: string; customType: string; data: unknown };
-type Context = { mode: string; hasUI: boolean; cwd: string; reload?: () => Promise<void>; sessionManager: { getSessionId(): string; getSessionFile(): string; getBranch(): Entry[]; getEntries(): Entry[] }; ui: { notify: ReturnType<typeof vi.fn>; confirm: ReturnType<typeof vi.fn<(title: string, message: string) => Promise<boolean>>>; custom: ReturnType<typeof vi.fn> } };
+type Context = { mode: string; hasUI: boolean; cwd: string; executeTool?: import("../../../pi-extension/native-inbound.js").NativeInboundToolContext["executeTool"]; reload?: () => Promise<void>; sessionManager: { getSessionId(): string; getSessionFile(): string; getBranch(): Entry[]; getEntries(): Entry[] }; ui: { notify: ReturnType<typeof vi.fn>; confirm: ReturnType<typeof vi.fn<(title: string, message: string) => Promise<boolean>>>; custom: ReturnType<typeof vi.fn> } };
 type Handler = (event: { reason: string }, ctx: Context) => Promise<void>;
-type Tool = { name: string; execute(id: string, input: unknown, signal: undefined, update: undefined, ctx: Context): Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean; details?: Record<string, unknown> }> };
+type Tool = { name: string; execute(id: string, input: unknown, signal: undefined, update: undefined, ctx: Context): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean; details: Record<string, unknown> }> };
 const dirs: string[] = []; const shutdowns: Array<() => Promise<void>> = [];
 beforeEach(() => { for (const key of Object.keys(process.env)) if (key.startsWith("CE_")) vi.stubEnv(key, undefined); vi.spyOn(process, "kill").mockImplementation(seam.signal); vi.useFakeTimers(); seam.hosts.length = 0; seam.stores.length = 0; seam.manager = undefined; });
 afterEach(async () => {
@@ -73,15 +73,16 @@ async function fixture(convert = true) {
   for (const [key, value] of Object.entries({ CE_ALLOWLIST: "", CE_STORE_DIR: "", CE_STORE_FILE: "", CE_TUNNEL_PROFILE: profilePath, CE_LEASE_TTL_SECONDS: "", CE_TUNNEL_OFFLINE_TEST: "" })) vi.stubEnv(key, value);
   async function runtime(id: string, entries: Entry[] = []) {
     const events = new Map<string, Handler>(); const tools = new Map<string, Tool>(); const commands = new Map<string, { handler(args: string, ctx: Context): Promise<void> }>();
-    let runtimeId = id;
+    let runtimeId = id; const messages: unknown[] = [];
     const ctx: Context = { mode: "tui", hasUI: true, cwd: join(dir, id), sessionManager: { getSessionId: () => runtimeId, getSessionFile: () => "not-authority", getBranch: () => entries, getEntries: () => entries }, ui: { notify: vi.fn(), confirm: vi.fn(async () => true), custom: vi.fn() } };
     const { default: factory } = await import(new URL("../../../pi-extension/index.ts", import.meta.url).href);
-    const reloadFactory = () => factory({ on: (name: string, handler: Handler) => events.set(name, handler), registerTool: (tool: Tool) => tools.set(tool.name, tool), registerCommand: (name: string, command: { handler(args: string, ctx: Context): Promise<void> }) => commands.set(name, command), appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }) });
+    const reloadFactory = () => factory({ on: (name: string, handler: Handler) => events.set(name, handler), registerTool: (tool: Tool) => tools.set(tool.name, tool), registerCommand: (name: string, command: { handler(args: string, ctx: Context): Promise<void> }) => commands.set(name, command), appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
+      sendMessage: (message: unknown) => { messages.push(message); } });
     reloadFactory();
     const stop = (reason = "quit") => events.get("session_shutdown")!({ reason }, ctx); shutdowns.push(stop);
-    return { ctx, entries, events, tools, stop, start: (reason = "startup") => events.get("session_start")!({ reason }, ctx),
+    return { ctx, entries, events, tools, messages, stop, start: (reason = "startup") => events.get("session_start")!({ reason }, ctx),
       reloadFactory,
-      call: (name: string, input: unknown = {}) => tools.get(name)!.execute("test", input, undefined, undefined, ctx),
+      call: (name: string, input: unknown = {}, toolContext = ctx) => tools.get(name)!.execute("test", input, undefined, undefined, toolContext),
       command: (args: string) => commands.get("ce-tunnel")!.handler(args, ctx),
       ceStatus: () => commands.get("ce-status")!.handler("", ctx),
       switchSession: () => { runtimeId = "changed-runtime"; }, notices: () => ctx.ui.notify.mock.calls.map(([s]) => String(s)).join("\n") };
@@ -124,7 +125,7 @@ it("Connect publishes once, uses official command reload, activates and keeps re
   expect(r).toMatchObject({ payloadRead: false, ack: false, status: "active" });
   expect(r.endpointId).toMatch(/^pi\/session-[a-f0-9]{32}$/); expect(r.hooks).toBeUndefined();
   expect(reload).toHaveBeenCalledTimes(1);
-  expect(start).toHaveBeenCalledTimes(1);
+  expect(start, c.notices()).toHaveBeenCalledTimes(1);
   expect(c.entries.findLast(e => e.customType === "ce-mapping")?.data).toMatchObject({ endpointId: r.endpointId });
   expect((await c.call("ce_read_payload", { messageId: "msg_00000000000000000000000000" })).isError).toBe(true);
   await c.command("connect");
@@ -230,6 +231,40 @@ it("actual factory events bind independent A/B Hosts; exact ChatGPT messages/rep
   }
   expect((await a.call("ce_send", { to: "pi/B", text: "no", idempotencyKey: "no-pi-pi" })).isError).toBe(true);
   await a.stop(); expect((await b.call("ce_inbox_list")).isError).not.toBe(true); chat.end();
+});
+it("opt-in native intake discovers and receives only a fresh message through the registered current-Session tools", async () => {
+  const f = await fixture();
+  const policyPath = join(f.dir, "native-inbound.json");
+  vi.stubEnv("CE_NATIVE_INBOUND_POLICY", policyPath);
+  const a = await f.runtime("real-A"); const b = await f.runtime("real-B");
+  await a.start(); await b.start();
+  expect((await a.call("ce_prepare_desktop_reply", { messageId: "msg_00000000000000000000000000", taskId: "not-bound", idempotencyKey: "not-sent" })).details).toMatchObject({ status: "DISABLED" });
+  const store = openStore({ directory: f.binding.config.store.directory, filename: f.binding.config.store.file }); seam.stores.push(store);
+  const config = readSelectedMultiSessionPolicy(f.profilePath).config;
+  const chatHost = new CeEndpointHost(store, { adapter: "chatgpt", exchangeNamespace: config.exchange.namespace, exchangeIdempotencyKey: config.exchange.idempotencyKey,
+    allowlist: [{ endpointId: "chatgpt/main" }], recipients: config.recipients, payloadRead: { enabled: true }, ack: { enabled: true } });
+  const identity = chatHost.beginSession("chatgpt/main");
+  fs.writeFileSync(policyPath, JSON.stringify({ version: 1, enabled: true, runtimeSessionId: "real-A", endpointId: "pi/A",
+    exchangeId: identity.exchangeId, from: "chatgpt/main", activatedAt: "2000-01-01T00:00:00Z", afterAuditSequence: 0, maxAgeSeconds: 300 }), { mode: 0o600 });
+  const sent = chatHost.send("chatgpt/main", { to: "pi/A", text: "fresh task", idempotencyKey: "fresh-task" });
+  const read = await a.call("ce_read", { messageId: sent.messageId });
+  vi.setSystemTime(Date.parse(read.details!.createdAt as string) + 1000);
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(a.messages).toHaveLength(1);
+  expect(a.entries.filter(e => e.customType === "ce-inbound-wake")).toHaveLength(1);
+  const executeTool = async (name: string, args: unknown) => {
+    if (name !== "ce_read" && name !== "ce_read_payload") throw Error("unexpected nested tool");
+    const result = await a.call(name, args);
+    return { toolCall: { type: "toolCall" as const, id: "nested-call", name, arguments: args as { messageId: string } }, result, isError: result.isError === true };
+  };
+  const received = await a.call("ce_receive_task", { messageId: sent.messageId }, { ...a.ctx, executeTool });
+  expect(received.isError).not.toBe(true); expect(received.content[0]?.text).toContain("fresh task");
+  expect(a.entries.filter(e => e.customType === "ce-inbound-receive" && (e.data as { status?: string }).status === "STARTED")).toHaveLength(1);
+  expect((await b.call("ce_receive_task", { messageId: sent.messageId }, { ...b.ctx, executeTool })).isError).toBe(true);
+  await vi.advanceTimersByTimeAsync(10000); expect(a.messages).toHaveLength(1);
+  fs.unlinkSync(policyPath);
+  expect((await a.call("ce_receive_task", { messageId: sent.messageId }, { ...a.ctx, executeTool })).details).toMatchObject({ code: "INBOUND_DISABLED" });
+  chatHost.end("chatgpt/main");
 });
 
 it("abandoned local mutex fails closed with operator hint; clean scope is unaffected", async () => {

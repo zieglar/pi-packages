@@ -20,9 +20,9 @@ Pi Chat Exchange（CE）让 ChatGPT 和 Pi 通过显式工具交换持久化消�
 
 使用 **Pi 1.3.0**、**Node >=22.19.0**，以及 Store 支持的平台：**macOS arm64 或 Linux x64 GNU**。仍须通过文件系统、所有权和运行时准入检查。其他 Native 制品不代表 Store 支持相应平台；Windows Native 不受支持，WSL2 集成尚未验证。
 
-**0.2.1** 已发布到 npm。在 macOS arm64 上，从真实 Registry 安装的隔离 Pi 1.3.0 / Node 22.19.0 加载与持久化检查已通过。Linux x64 Native 检查在 Node 22.19.0、24.22.2 上各通过 227/227。**真实 Cloud transport 和完整 ChatGPT ↔ Pi 消息交换仍未验证。** 已测矩阵和限制见[运行时支持](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/runtime-support.zh-CN.md)，engine 范围不代表穷尽验证。
+当前已发布的稳定包为 **0.3.0**。历史 0.2.1 Registry 安装检查在 macOS arm64 上通过隔离 Pi 1.3.0 / Node 22.19.0 加载与持久化验证；Linux x64 Native 在 Node 22.19.0、24.22.2 上各通过 227/227。这些特定版本的结果不认证当前候选。已测矩阵和限制见[运行时支持](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/runtime-support.zh-CN.md)，engine 范围不代表穷尽验证。
 
-本工作区准备本地整合版 **0.3.1-daily.1**，保留已发布 CE 0.3.0 Hooks 并整合已验收的 Daily UX；它与原 Registry 0.3.0 制品不同。显式 `CE_TUNNEL_CLIENT_PATH` 委托信任用户管理的安装（包括 Homebrew 可组写祖先目录），自动发现仍严格。将已审查本地 tarball 安装到新专用 prefix，再向 Pi 登记物理包目录。历史版本的 Cloud 证据单独保留，不用于认证本次变更后的运行时。
+本工作区准备正式 **0.3.1** 候选，保留已发布 CE 0.3.0 Hooks 并整合已审查的本地变更，目前尚未发布到 Registry。详见[0.3.1范围与验证限制](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/releases/0.3.1.zh-CN.md)。显式 `CE_TUNNEL_CLIENT_PATH` 委托信任用户管理的安装（包括 Homebrew 可组写祖先目录），自动发现仍严格。先在新专用 prefix 验证已审查本地 tarball，再向 Pi 登记物理包目录。历史 Cloud 证据不认证本次变更后的运行时。
 
 <a id="安装-pi-扩展"></a>
 <a id="选择连接方式"></a>
@@ -32,7 +32,7 @@ Pi Chat Exchange（CE）让 ChatGPT 和 Pi 通过显式工具交换持久化消�
 已安装 Pi 后，在**系统终端**执行：
 
 ```sh
-pi install npm:@zieglar/pi-chat-exchange@0.2.1
+pi install npm:@zieglar/pi-chat-exchange@0.3.0
 pi list
 pi
 ```
@@ -48,7 +48,7 @@ pi
 
 ## 限制与安全操作
 
-CE 不自动调度任务或排空收件箱，共享 ChatGPT Endpoint 不隔离对话。正文读取和 ACK 各自需要授权；正文是不可信数据，可能进入模型历史。
+CE 默认不自动调度任务或排空收件箱；可选原生接入须有显式启用、绑定当前 Session 的策略。共享 ChatGPT Endpoint 不隔离对话。正文读取和 ACK 各自需要授权；正文是不可信数据，可能进入模型历史。
 
 ACK 只记录接收回执，不证明送达、已读、处理或任务完成。CE 不承诺 exactly-once delivery/execution。`DELIVERY_UNKNOWN != CANCELLED`；缺 ACK 或超时不授权盲重试或换 key 重发。保留原 Message ID/key，先查证据。
 
@@ -56,7 +56,7 @@ ACK 只记录接收回执，不证明送达、已读、处理或任务完成。C
 
 ## 可选桌面测试集成
 
-仓库另提供 [CE → Ovis](https://github.com/zieglar/pi-packages-dev/blob/main/tools/ce-ovis-desktop/README.md) 和 [Pi → ChatGPT 唤醒](https://github.com/zieglar/pi-packages-dev/blob/main/tools/ce-chatgpt-wake/README.md)。这些 macOS 操作工具不包含在 npm 制品中。本地整合版 0.3.1-daily.1 保留 CE 0.3.0 Hooks 并加入已验收的 Daily UX，身份与原发布 0.3.0 制品不同。
+仓库另提供 [CE → Ovis](https://github.com/zieglar/pi-packages-dev/blob/main/tools/ce-ovis-desktop/README.md) 和 [Pi → ChatGPT 唤醒](https://github.com/zieglar/pi-packages-dev/blob/main/tools/ce-chatgpt-wake/README.md)。这些 macOS 操作工具不包含在 npm 制品中。本地 0.3.1 候选整合版保留 CE 0.3.0 Hooks 并加入已验收的 Daily UX，身份与原发布 0.3.0 制品不同。
 
 唤醒通知只携带固定指令与消息标识，实际任务仍在 CE 中。每项集成都要求明确授权目标窗口及独立测试目录；已运行的 Tunnel Client 会使测试拒绝启动，请先按正常流程 Stop 并确认 STOPPED，再安排单独测试窗口。配置、停止与清理流程及既有 E2E 证据范围见各工具 README。
 

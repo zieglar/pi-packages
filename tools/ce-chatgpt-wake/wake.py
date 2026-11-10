@@ -177,31 +177,79 @@ def notify_hook(raw, config, notifier=None):
 def notice(record, config):
     if set(record) != {'testId', 'messageId', 'to', 'replyTo', 'disposition'} or record['disposition'] != 'CREATED':
         raise ValueError('CE_CREATED_REQUIRED')
-    if not re.fullmatch(r'CE-WAKE-TEST-[A-Za-z0-9-]{1,64}', record['testId']) or not re.fullmatch(r'msg_[A-Z0-9]{26}', record['messageId']):
+    if not re.fullmatch(r'CE-WAKE-(?:TEST|AUTO)-[A-Za-z0-9-]{1,64}', record['testId']) or not re.fullmatch(r'msg_[A-Z0-9]{26}', record['messageId']):
         raise ValueError('CORRELATION_DENIED')
     if (not isinstance(config.get('targetEndpoint'), str) or not re.fullmatch(r'chatgpt/[A-Za-z0-9-]{1,64}', config['targetEndpoint'])
             or not isinstance(config.get('replyEndpoint'), str) or not re.fullmatch(r'pi/[A-Za-z0-9-]{1,64}', config['replyEndpoint'])
             or record['to'] != config['targetEndpoint'] or record['replyTo'] != config['replyEndpoint']):
         raise ValueError('ENDPOINT_DENIED')
-    return (f"[CE-WAKE:{record['testId']}] CE 中有待处理测试消息 {record['messageId']}。"
+    return (f"[CE-WAKE:{record['testId']}] CE 中有待处理消息 {record['messageId']}。"
             f"请用 ce_inbox_list 定位并用 ce_read_payload 实际读取该 Message ID，按真实 Payload 处理，"
             f"再用 ce_send 回复 {record['replyTo']}，保持关联 ID；如需接收 ACK，只使用实际读取的元数据。"
             "本通知不含任务内容，不得从通知推测 Payload。")
 
 
-def observe(envelope, config, allow_busy=False):
+def marker_present(tree, marker):
+    return any(marker in str(n.get(field, '')).splitlines()
+               for n in tree if n.get('role') in ('text', 'statictext')
+               for field in ('name', 'value'))
+
+
+# agent-desktop v1.0.2 macOS snapshot states and advertised action capabilities.
+DIAGNOSTIC_STATES = frozenset({'focused', 'disabled', 'secure', 'expanded', 'checked', 'indeterminate',
+                               'selected', 'hidden', 'busy', 'modal', 'required', 'pressed', 'readonly', 'offscreen'})
+DIAGNOSTIC_ACTIONS = frozenset({'Click', 'Toggle', 'RightClick', 'ScrollTo', 'Scroll', 'SetValue',
+                                'Select', 'SetFocus', 'TypeText', 'Expand', 'Collapse'})
+
+
+def control_diagnostics(envelope):
+    # Diagnostics keep only fixed control metadata, never drafts or conversation text.
+    data = envelope.get('data', {})
+    areas = [n for n in nodes(data.get('tree', {})) if n.get('role') == 'webarea']
+    tree = list(nodes(areas[0])) if len(areas) == 1 else []
+    inputs = [n for n in tree if n.get('role') == 'textfield' and n.get('name') == '询问 ChatGPT']
+    sends = [n for n in tree if n.get('role') == 'button' and n.get('name') == '发送']
+    stops = [n for n in tree if n.get('role') == 'button' and n.get('name') in ('停止', '停止生成', 'Stop generating')]
+    def describe(node):
+        # Unknown metadata is not persisted or used to infer whether a control is enabled.
+        metadata = {}
+        for field, allowed in (('states', DIAGNOSTIC_STATES), ('available_actions', DIAGNOSTIC_ACTIONS)):
+            value = node.get(field)
+            metadata[field] = sorted(value) if isinstance(value, list) and all(
+                isinstance(item, str) and item in allowed for item in value) else None
+        states = metadata['states']
+        return {'role': node.get('role'), 'name': node.get('name'), 'states': states,
+                'enabled': 'disabled' not in states if states is not None else None,
+                'availableActions': metadata['available_actions']}
+    webarea = {'role': 'webarea', 'name': areas[0].get('name')} if len(areas) == 1 else None
+    window = {key: data.get('window', {}).get(key) for key in ('id', 'title')}
+    draft = inputs[0].get('value') if len(inputs) == 1 else None
+    normalized = '' if draft == '询问 ChatGPT\n' else draft
+    return {'webareaCount': len(areas), 'composerCandidates': [describe(n) for n in inputs],
+            'sendCandidates': [describe(n) for n in sends], 'stopCandidates': [describe(n) for n in stops],
+            'webarea': webarea, 'window': window,
+            'draftState': ('EMPTY' if normalized == '' else 'NONEMPTY' if isinstance(normalized, str)
+                           else 'UNKNOWN'), 'draftLength': len(normalized) if isinstance(normalized, str) else None}
+
+
+def selector_counts(envelope):
+    """Counts are observable controls, independent of whether draft text is known."""
+    controls = control_diagnostics(envelope)
+    return {'composer': len(controls['composerCandidates']), 'send': len(controls['sendCandidates'])}
+
+
+def observe(envelope, config, allow_busy=False, *, require_marker=True):
     data = envelope.get('data', {})
     if envelope.get('version') != '2.5' or envelope.get('ok') is not True or data.get('complete') is not True:
         raise ValueError('SNAPSHOT_DENIED')
-    if data.get('app') != 'ChatGPT' or data.get('window') != {'id': config['windowId'], 'title': config['windowTitle']}:
+    if data.get('app') != 'ChatGPT' or data.get('window', {}).get('id') != config['windowId']:
         raise ValueError('WINDOW_DENIED')
-    areas = [n for n in nodes(data['tree']) if n.get('role') == 'webarea' and n.get('name') == config['windowTitle']]
+    # Observation may omit this auxiliary signal; action callers always require it.
+    areas = [n for n in nodes(data['tree']) if n.get('role') == 'webarea']
     if len(areas) != 1:
         raise ValueError('CONVERSATION_DENIED')
     tree = list(nodes(areas[0]))
-    if not any(config['conversationMarker'] in str(n.get(field, '')).splitlines()
-               for n in tree if n.get('role') in ('text', 'statictext')
-               for field in ('name', 'value')):
+    if require_marker and not marker_present(tree, config['conversationMarker']):
         raise ValueError('CONVERSATION_MARKER_MISSING')
     inputs = [n for n in tree if n.get('role') == 'textfield' and n.get('name') == '询问 ChatGPT']
     sends = [n for n in tree if n.get('role') == 'button' and n.get('name') == '发送']
@@ -209,7 +257,9 @@ def observe(envelope, config, allow_busy=False):
         raise ValueError('INPUT_OR_SEND_AMBIGUOUS')
     if not allow_busy and any(n.get('role') == 'button' and n.get('name') in ('停止', '停止生成', 'Stop generating') for n in tree):
         raise ValueError('CHATGPT_BUSY')
-    draft = inputs[0].get('value') or ''
+    draft = inputs[0].get('value')
+    if not isinstance(draft, str):
+        raise ValueError('DRAFT_STATE_UNKNOWN')
     if draft == '询问 ChatGPT\n':
         draft = ''
     texts = [n.get('value', n.get('name', '')) for n in tree if n is not inputs[0] and n.get('role') in ('text', 'statictext', 'textfield')]
@@ -240,7 +290,7 @@ def run(record, config, desktop):
             while True:
                 remaining(config)
                 envelope = desktop.snapshot()
-                view = observe(envelope, config, allow_busy=True)
+                view = observe(envelope, config, allow_busy=not config.get('refuseBusy', False))
                 busy = any(n.get('role') == 'button' and n.get('name') in ('停止', '停止生成', 'Stop generating') for n in nodes(envelope['data']['tree']))
                 if not busy:
                     view = observe(envelope, config)
@@ -274,12 +324,30 @@ def run(record, config, desktop):
 
 
 class ChatGptCli(DesktopCli):
+    def call(self, args):
+        # A success-shaped response from a failed process is not an observation.
+        marker = Path(self.config['desktopTmpDir']) / 'command-in-flight'
+        with marker.open('w') as stream:
+            stream.write(str(os.getpid()))
+            stream.flush()
+            os.fsync(stream.fileno())
+        result = subprocess.run(self.prefix + args, env=self.env, capture_output=True, text=True,
+                                timeout=min(15, remaining(self.config)))
+        if result.returncode != 0:
+            raise ValueError('DESKTOP_COMMAND_FAILED')
+        envelope = json.loads(result.stdout)
+        if not isinstance(envelope, dict) or envelope.get('version') != '2.5' or envelope.get('ok') is not True:
+            raise ValueError('DESKTOP_COMMAND_FAILED')
+        marker.unlink()
+        return envelope
+
+
     def snapshot(self):
         for attempt in range(3):
             remaining(self.config)
             windows = self.call(['list-windows', '--app', 'ChatGPT'])['data']
             target = [w for w in windows if w['id'] == self.config['windowId']]
-            if len(target) != 1 or target[0]['pid'] != self.config['pid'] or target[0]['process_instance'] != self.config['processInstance'] or target[0]['title'] != self.config['windowTitle']:
+            if len(target) != 1 or target[0]['pid'] != self.config['pid'] or target[0]['process_instance'] != self.config['processInstance']:
                 raise ValueError('CHATGPT_PROCESS_OR_WINDOW_CHANGED')
             envelope = self.call(['snapshot', '--app', 'ChatGPT', '--window-id', self.config['windowId'], '--compact', '--max-depth', '30', '--timeout-ms', '8000'])
             if envelope['data'].get('complete') is True:
@@ -310,10 +378,23 @@ def main(argv=None):
             if len(raw_config) > HOOK_MAX_INPUT:
                 raise ValueError('HOOK_CONFIG_INVALID')
             config = json.loads(raw_config.decode('utf-8'), object_pairs_hook=unique_object)
-            result = notify_hook(sys.stdin.buffer.read(HOOK_MAX_INPUT + 1), config)
+            raw = sys.stdin.buffer.read(HOOK_MAX_INPUT + 1)
+            if isinstance(config, dict) and set(config) == {'autoWakeConfig'}:
+                sys.path.insert(0, str(Path(__file__).resolve().parent))
+                import auto_wake
+                # Opt-in config is private and belongs to this existing Hook command.
+                auto_wake.read_private(args.config)
+                automatic = auto_wake.load_config(config['autoWakeConfig'])
+                if Path(args.config) != Path(automatic['ownerDirectory']) / 'config.json':
+                    raise ValueError('AUTO_CONFIG_OWNER_INVALID')
+                result = auto_wake.enqueue(raw, automatic)
+                code = 0 if result['dispatch'] == 'QUEUED' else 1
+            else:
+                result = notify_hook(raw, config)
+                code = 0 if result['notificationRequest'] == 'REQUESTED' else 1
             print(json.dumps(result, ensure_ascii=False))
-            return 0 if result['notificationRequest'] == 'REQUESTED' else 1
-        except (ValueError, OSError, UnicodeError, RecursionError) as error:
+            return code
+        except (ValueError, OSError, UnicodeError, RecursionError, subprocess.SubprocessError) as error:
             code = str(error)
             sys.stderr.write((code if isinstance(error, ValueError) and re.fullmatch(r'[A-Z][A-Z0-9_]{1,79}', code)
                               else 'HOOK_REJECTED') + '\n')

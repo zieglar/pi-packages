@@ -2,6 +2,8 @@
 
 A bounded macOS CLI integration for Pi Host1.3.0 and the published Pi Chat Exchange0.3.0. It does not modify CE. `bridge.py` operates only the selected Ovis test conversation; `ce-peer.mjs` receives and returns messages through a real Pi Session's registered CE tools. `supervise.py` owns one deadline-limited existing-Tunnel window.
 
+An additional **disabled-by-default** `intake.mjs` API supports explicit real tasks through the invoking Pi Session's registered CE tools. It reuses the same `bridge.py` and `execution.mjs`. It is not connected to a production Hook, command or background poller. The isolated test supervisor described below is a separate workflow.
+
 Prerequisites: Ovis0.4.19, agent-desktop1.0.2/JSON2.5, Python3.11+, Node24.21.0, Pi1.3.0 and CE0.3.0 installed into a common node_modules directory. Accessibility permission is required. Physical input needs explicit operator authorization (`headedAuthorized:true`). The integration never silently enables it. Read `agent-desktop skills get desktop`, `skills get platform`, and the official [JSON contract](https://github.com/vercel-labs/agent-desktop/blob/main/docs/json-output.md).
 
 Use the dedicated common-prefix installation described in [the wake runtime guide](../ce-chatgpt-wake/README.md#runtime-installation-and-coexistence): published CE 0.3.0 and Pi 1.3.0, not this checkout's historical core candidate. `modules` is that prefix's `node_modules`. The tools are repository utilities, not files installed by the CE npm package. The recorded Cloud E2E used official Tunnel Client 0.0.19 on macOS arm64; qualify a different Client/version independently. Absolute internal Pi SDK and CE module paths are pinned to the listed versions.
@@ -45,6 +47,10 @@ Keep configuration, task and runtime state outside Git in an owned0700directory.
 ```
 
 Obtain process/window identity with `agent-desktop list-windows --app Ovis`. Select a separate empty Ovis test Agent; never bridge the coordinating Pi session into itself. The script refuses another conversation, nonempty draft, active turn or incomplete snapshot. Reconfigure only after observing a relaunched app/window. Never retain refs across UI mutations.
+
+The target pane must be an **Agent chat**. A shell workspace can expose the same `消息` field and `对话` log; a bare Enter can execute its draft. Real tasks therefore require a local `agentButtonPrefix` beginning with `pi: <target> `, a unique matching live Agent button, and a matching conversation after selection. Missing/ambiguous Agent identity is refused before any task input. Legacy echo mode retains optional Agent selection.
+
+The driver types short text pieces without literal newlines. Each newline focuses the current input and sends `Shift+Return` to the configured Ovis window to avoid bare-Enter submission. It observes the exact cumulative draft after each piece, waiting up to `inputSettleSeconds` (maximum/default 3 seconds) for delayed input. A stable prefix does not prove loss: there is no automatic retyping. A different draft or expired wait stops with `CHUNK_READBACK_MISMATCH`, leaving the draft and no automatic replay. Task and execution deadlines apply to observations, input and click calls.
 At task start, optional `agentButtonPrefix` may select one uniquely matching test Agent from a fresh Ovis snapshot and reopen its Chat panel. A new snapshot must then match the exact configured conversation before any text input. Ambiguous targets are refused. This selection is not repeated after text entry or submission; later target drift stops execution. Results expose only fixed uppercase failure codes, never raw desktop diagnostics.
 
 Task schema is closed:
@@ -64,6 +70,46 @@ node --test tools/ce-ovis-desktop/*.test.mjs
 The driver uses fresh snapshots around actions. Ovis's semantic `set-value` did not change its React input in actual testing. Explicitly authorized headed input uses short chunks and checks the cumulative draft after every chunk; single long Unicode input lost content in actual testing. Full draft equality is mandatory before the one send click. The response must have the task-specific end-marker and idle/send UI. Text stability alone is UNKNOWN. Read-only observations cannot prove model correctness or remote business completion.
 
 The0600task journal and flock serialize this local bridge. A task is journaled before any input and before send. Repeating the same task returns its saved outcome without another desktop mutation, even when outcome is UNKNOWN. Same ID/different body is refused. Do not delete journals to retry. This is a conservative local no-replay rule, not distributed exactly-once or protection against a human independently submitting the same content.
+
+## Explicit current-Session task intake (not activated)
+
+`createIntake({config,getSessionId,callTool})` returns an async function that accepts one explicit Message ID. `getSessionId()` must synchronously return the invoking Pi Session ID. `callTool(name,args)` must execute that Session's **registered** `ce_read` / `ce_read_payload` tools and return their unchanged Pi results (`details`, `content`, `isError`). Use the current tool context, with its existing CE mapping and grants. A callback that loads another Session, creates a Host or reads a Store directly violates this contract. This API creates no new CE permissions. It performs no ACK or result send.
+
+Local policy must explicitly set `enabled:true` and `taskMode:"execute"`. Omission leaves intake disabled before any CE read. Required policy fields are:
+
+- `runtimeSessionId`, `exchangeId`, `from`, `to`: exact current Session and CE identities, supplied locally.
+- `activatedAt`: timezone-qualified activation time; `afterAuditSequence`: the audit boundary observed at activation, so messages from that boundary or earlier are refused even within the same timestamp.
+- `maxAgeSeconds`: a positive value up to 300. Metadata must be at/after activation, no later than the current clock and within this freshness limit.
+- `runDirectory`: an existing owned 0700 directory. Preserve it across controller restarts; changing/deleting journals to retry defeats the local no-replay rule.
+- `python`, `bridge`: trusted absolute executable/script paths; `tasks`: 1–8 local entries `{taskId,taskFile,desktopConfig,taskPayloadSha256}` using absolute paths. Keep task and desktop JSON files owned 0600, outside Git. The digest binds the exact incoming UTF-8 JSON bytes, including whitespace.
+
+Real tasks have the same closed six-field schema:
+
+```json
+{"schemaVersion":1,"taskId":"CE-OVIS-TASK-example-01","target":"approved-workspace","testOnly":false,"text":"执行本地已审核的具体任务","deadline":"2030-01-01T00:00:00Z"}
+```
+
+Set a near-term deadline when authorizing the task. The local desktop config must also set `taskMode:"execute"`, the exact `allowedTaskId`, `allowedTextSha256`, conversation and existing desktop identity/physical-input permissions described above. Incoming task JSON cannot supply command paths, desktop config paths, new tools, routing or CE grants. The selected Agent retains its own permission and approval requirements. Legacy `testOnly:true` / `CE-OVIS-TEST-*` retains the echo behavior without an execution-mode opt-in.
+
+The intake checks protected metadata before reading payload. It compares both reads' Message ID, Exchange, sender, recipient, digest, byte length, creation time and audit sequence, then verifies the actual UTF-8 payload bytes and local allowlist. A read refusal, absent/malformed metadata, changed Session, stale message or unauthorized body stops before bridge dispatch. It rechecks the invoking Session around asynchronous calls; the existing desktop runner monitors Session changes, stop requests and the task deadline.
+
+Before dispatch, exclusive 0600 records durably bind Task ID to Message ID and payload digest under `runDirectory/intake/`. Same-message repeats return saved evidence after current CE/local authorization checks. Different messages using the same Task ID, conflicts, unsafe/corrupt state, a partial attempt after a crash and existing bridge history cannot dispatch again. An uncertain bridge call is saved as `STOPPED_NO_REPLAY`. These local records prevent automatic resubmission; they do not assert distributed exactly-once execution. Keep both intake records and bridge journals, including unknown outcomes.
+
+Real-task evidence remains separate:
+
+| Field | Meaning |
+|---|---|
+| `desktopSubmission` | `NOT_ATTEMPTED`, `UNKNOWN` or `OBSERVED` from prompt readback in the selected conversation |
+| `agentProcessingObserved` | A matching submitted prompt and active Agent UI were actually observed; positive evidence survives a later idle view |
+| `completionReport` | `REPORTED` only for an idle reply ending in this task's marker; otherwise `UNKNOWN` |
+| `taskCompletion` | Always `UNVERIFIED`; task-specific external evidence is required to verify the business result |
+
+For real tasks, bridge `ovisState:REPORTED` replaces the legacy echo test's `COMPLETED`. A desktop return or end marker is never business success. The intake's `BRIDGE_RETURNED` status means the bridge returned valid observation evidence. `desktopRunner` and `now` are injectable trusted test seams; tests run the real execution helper and bridge journal with a fake desktop, without invoking Ovis.
+
+An observed `CE_HOST_UNAVAILABLE (MESSAGE_READ_REJECTED)` is an opaque visibility/correlation refusal. Missing messages, a different immutable recipient or creation at/before the join boundary can all cause it; an empty inbox does not distinguish them. Payload opt-in failures have a separate `CE_HOST_PAYLOAD_DISABLED` path. Confirm the sender's actual `ce_send` metadata against the current published Pi recipient and Exchange, then send a fresh correctly routed authorized task. Do not bypass the refusal through SQL, another Session or a direct Host, and do not ACK a body that was not authorized and read. Real-message acceptance remains unverified until such a read succeeds.
+
+Do not use `ce-peer.mjs prepare/run` or `supervise.py` to attach this API to a live Session: those utilities create an isolated test Session and require the normal Tunnel receiver stopped. Production wiring and activation require a separate explicit authorization. This implementation does not alter the working wake Hook, installed copies, live policy or shared Tunnel.
+
 
 ## CE adapter
 
