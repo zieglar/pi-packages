@@ -27,7 +27,11 @@ test('release depends on fresh no-OIDC latest job and gate is enforced by both p
   const w = load('npm-publish.yml'); assert.equal(w.jobs.publish.needs, 'tunnel-latest');
   assert.deepEqual(w.jobs['tunnel-latest'].permissions, { contents: 'read' });
   assert.match(commands(w.jobs['tunnel-latest']), /result\.json" latest/);
-  assert.equal(w.jobs.publish.env.CE_TUNNEL_COMPAT_RESULT, '${{ runner.temp }}/tunnel-release/result.json');
+  for (const mode of ['preflight', 'publish']) {
+    const steps = w.jobs.publish.steps.filter(s => s.run === `node scripts/npm-release.mjs ${mode}`);
+    assert.equal(steps.length, 1, `exactly one ${mode} entry point`);
+    assert.equal(steps[0].env?.CE_TUNNEL_COMPAT_RESULT, '${{ runner.temp }}/tunnel-release/result.json');
+  }
   const script = readFileSync(resolve(root, 'packages/pi-chat-exchange/scripts/npm-release.mjs'), 'utf8');
   assert(script.indexOf('await assertTunnelReleaseReady({ directory })') < script.indexOf('assertVersionAbsent(pkg, directory, run)'));
   assert.match(script, /const \{ artifactPath \} = await preflight\(\)/);

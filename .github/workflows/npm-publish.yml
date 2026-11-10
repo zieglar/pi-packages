@@ -70,7 +70,6 @@ jobs:
       id-token: write
     env:
       EXPECTED_SHA: ${{ inputs.publish_sha }}
-      CE_TUNNEL_COMPAT_RESULT: ${{ runner.temp }}/tunnel-release/result.json
     steps:
       - name: Checkout exact release commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -102,7 +101,11 @@ jobs:
           path: ${{ runner.temp }}/tunnel-release
       - name: Verify identity, package contents and version absence
         working-directory: packages/pi-chat-exchange
+        env:
+          CE_TUNNEL_COMPAT_RESULT: ${{ runner.temp }}/tunnel-release/result.json
         run: node scripts/npm-release.mjs preflight
       - name: Publish once using OIDC trusted publishing
         working-directory: packages/pi-chat-exchange
+        env:
+          CE_TUNNEL_COMPAT_RESULT: ${{ runner.temp }}/tunnel-release/result.json
         run: node scripts/npm-release.mjs publish
