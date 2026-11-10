@@ -28,8 +28,8 @@ import { parseMcpBindingConfig } from "../../src/host/mcp-binding-config.js";
 import { publishMessagingGeneration } from "../../src/tunnel/messaging-config.js";
 import { createLivePolicyRegistration, initializeLivePolicy, readLivePolicy } from "../../src/tunnel/live-session-policy.js";
 
-const NODE24 = "/Users/zieglar/.local/share/mise/installs/node/24.21.0/bin/node";
-const EVIDENCE = "/private/tmp/ce-live-stdio-evidence.json";
+const NODE24 = process.execPath;
+const EVIDENCE = join(fs.realpathSync(tmpdir()), "ce-live-stdio-evidence.json");
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
 
@@ -96,13 +96,14 @@ it("real live MCP child keeps one chatgpt Owner, serves A and B exactly, and ref
   const f = fixture();
   const hostA = piHost(f.store, "pi/A");
   hostA.beginSession("pi/A");
-  const childEnv: Record<string, string> = { PATH: "/Users/zieglar/.local/share/mise/installs/node/24.21.0/bin:/usr/bin:/bin" };
+  const childEnv: Record<string, string> = { PATH: "/usr/bin:/bin" };
   if (process.env["HOME"] !== undefined) childEnv["HOME"] = process.env["HOME"];
   const transport = new StdioClientTransport({ command: NODE24, args: [join(process.cwd(), "dist/bin/mcp-stdio.js"), "--config", f.bindingPath], env: childEnv, stderr: "pipe" });
   let diagnostics = "";
   transport.stderr?.on("data", (b) => { diagnostics += String(b); });
   const client = new Client({ name: "live-stdio-fixture", version: "1" });
   let childPid: number | null = null;
+  let ownedSession: { participantId: string; sessionId: string } | undefined;
   const evidence: Record<string, unknown> = { transport: "local-mcp-stdio-peer", cloud: "UNVERIFIED" };
   const send = (to: string, key: string, text: string) => client.callTool({ name: "ce_send", arguments: { to, text, idempotencyKey: key } });
   try {
@@ -114,6 +115,8 @@ it("real live MCP child keeps one chatgpt Owner, serves A and B exactly, and ref
     expect(childPid).not.toBeNull();
     const chatgptParticipant = readParticipantByEndpoint(f.store, "chatgpt", "chatgpt/main")!;
     const ownershipBefore = readCurrentOwnership(f.store, chatgptParticipant.participantId)!;
+    expect(ownershipBefore).toBeDefined();
+    ownedSession = { participantId: chatgptParticipant.participantId, sessionId: ownershipBefore.sessionId };
     evidence["childPid"] = childPid;
 
     // chatgpt -> pi/A, exact payload and ACK on the Pi side.
@@ -222,30 +225,29 @@ it("real live MCP child keeps one chatgpt Owner, serves A and B exactly, and ref
       storeB.close();
     }
   } finally {
-    const participantId = readParticipantByEndpoint(f.store, "chatgpt", "chatgpt/main")!.participantId;
-    const shutdownOwner = readCurrentOwnership(f.store, participantId)!;
-    await client.close();
-    await transport.close();
-    // SDK transport close may stop forwarding stderr before shutdown finishes.
-    await vi.waitFor(() => {
-      expect(readCurrentOwnership(f.store, participantId)).toBeUndefined();
-      expect(readSessionLifecycle(f.store, { participantId, sessionId: shutdownOwner.sessionId }).state).toBe("DETACHED");
-    }, { timeout: 5_000 });
-    if (childPid !== null) await vi.waitFor(() => {
-      let absent = false;
-      try { process.kill(childPid!, 0); } catch (error) { absent = (error as NodeJS.ErrnoException).code === "ESRCH"; }
-      expect(absent).toBe(true);
-    }, { timeout: 5_000 });
-    expect(readCurrentOwnership(f.store, readParticipantByEndpoint(f.store, "chatgpt", "chatgpt/main")!.participantId)).toBeUndefined();
-    hostA.end("pi/A");
-    f.store.close();
+    try {
+      try { await client.close(); } finally { await transport.close(); }
+      // A failed spawn creates no Owner; keep its error while still closing every resource.
+      if (ownedSession !== undefined) {
+        const { participantId, sessionId } = ownedSession;
+        await vi.waitFor(() => {
+          expect(readCurrentOwnership(f.store, participantId)).toBeUndefined();
+          expect(readSessionLifecycle(f.store, { participantId, sessionId }).state).toBe("DETACHED");
+        }, { timeout: 5_000 });
+      }
+      if (childPid !== null) await vi.waitFor(() => {
+        let absent = false;
+        try { process.kill(childPid!, 0); } catch (error) { absent = (error as NodeJS.ErrnoException).code === "ESRCH"; }
+        expect(absent).toBe(true);
+      }, { timeout: 5_000 });
+    } finally { hostA.end("pi/A"); f.store.close(); }
   }
 });
 
 it("real child permanently stops renewal after invalid policy; restored successor cannot revive writes", { timeout: 60_000 }, async () => {
   const f = fixture(1);
   const host = piHost(f.store, "pi/A"); host.beginSession("pi/A");
-  const env: Record<string, string> = { PATH: "/Users/zieglar/.local/share/mise/installs/node/24.21.0/bin:/usr/bin:/bin" };
+  const env: Record<string, string> = { PATH: "/usr/bin:/bin" };
   if (process.env.HOME) env.HOME = process.env.HOME;
   const transport = new StdioClientTransport({ command: NODE24, args: [join(process.cwd(), "dist/bin/mcp-stdio.js"), "--config", f.bindingPath], env, stderr: "pipe" });
   const client = new Client({ name: "terminal-live-stdio", version: "1" });
@@ -255,6 +257,7 @@ it("real child permanently stops renewal after invalid policy; restored successo
   transport.stderr?.on("data", b => { diagnostics += String(b); if (diagnostics.includes("CE_MCP_RENEWAL_STOPPED code=CE_HOST_AUTHORITY_ABSENT")) stopped(); });
   const genesisPath = join(f.ref.root, "000000.json");
   const genesis = fs.readFileSync(genesisPath);
+  let ownedSession: { participantId: string; sessionId: string } | undefined;
   try {
     await client.connect(transport);
     const pid = transport.pid!; expect(pid).toBeGreaterThan(0);
@@ -271,6 +274,7 @@ it("real child permanently stops renewal after invalid policy; restored successo
     const query = () => queryLiveAdoptionProbe({ ref: f.ref, identity, launchDigest, current: readLivePolicy(f.ref), targetEndpointId: "pi/A", owner: owner() });
     expect(await query()).toEqual({ kind: "OBSERVED" });
     const initialOwner = owner();
+    ownedSession = { participantId: initialOwner.participantId, sessionId: initialOwner.sessionId };
     fs.writeFileSync(genesisPath, "invalid-policy");
     // Wait for the actual renewal event, bounded by a deadline; no guessed sleep.
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -302,14 +306,15 @@ it("real child permanently stops renewal after invalid policy; restored successo
     fs.writeFileSync(EVIDENCE, `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
   } finally {
     fs.writeFileSync(genesisPath, genesis);
-    const participantId = readParticipantByEndpoint(f.store, "chatgpt", "chatgpt/main")!.participantId;
-    const shutdownOwner = readCurrentOwnership(f.store, participantId)!;
-    await client.close(); await transport.close();
     try {
-      await vi.waitFor(() => {
-        expect(readCurrentOwnership(f.store, participantId)).toBeUndefined();
-        expect(readSessionLifecycle(f.store, { participantId, sessionId: shutdownOwner.sessionId }).state).toBe("DETACHED");
-      }, { timeout: 5000 });
+      try { await client.close(); } finally { await transport.close(); }
+      if (ownedSession !== undefined) {
+        const { participantId, sessionId } = ownedSession;
+        await vi.waitFor(() => {
+          expect(readCurrentOwnership(f.store, participantId)).toBeUndefined();
+          expect(readSessionLifecycle(f.store, { participantId, sessionId }).state).toBe("DETACHED");
+        }, { timeout: 5000 });
+      }
       expect(transport.pid).toBeNull();
     } finally { host.end("pi/A"); f.store.close(); }
   }
