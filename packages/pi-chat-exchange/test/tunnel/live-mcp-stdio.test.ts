@@ -22,7 +22,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { CeEndpointHost } from "../../src/host/endpoint-host.js";
 import { initializeStore, openStore, type DurableStore } from "../../src/storage/store.js";
-import { readCurrentOwnership } from "../../src/storage/ownership.js";
+import { readCurrentOwnership, readSessionLifecycle } from "../../src/storage/ownership.js";
 import { readParticipantByEndpoint } from "../../src/storage/participant.js";
 import { parseMcpBindingConfig } from "../../src/host/mcp-binding-config.js";
 import { publishMessagingGeneration } from "../../src/tunnel/messaging-config.js";
@@ -221,11 +221,16 @@ it("real live MCP child keeps one chatgpt Owner, serves A and B exactly, and ref
       hostB.end("pi/B");
       storeB.close();
     }
-    expect(diagnostics).toContain("CE_MCP_STARTED");
   } finally {
+    const participantId = readParticipantByEndpoint(f.store, "chatgpt", "chatgpt/main")!.participantId;
+    const shutdownOwner = readCurrentOwnership(f.store, participantId)!;
     await client.close();
     await transport.close();
-    await vi.waitFor(() => expect(diagnostics).toContain("CE_MCP_STOPPED released=true detached=true"), { timeout: 5_000 });
+    // SDK transport close may stop forwarding stderr before shutdown finishes.
+    await vi.waitFor(() => {
+      expect(readCurrentOwnership(f.store, participantId)).toBeUndefined();
+      expect(readSessionLifecycle(f.store, { participantId, sessionId: shutdownOwner.sessionId }).state).toBe("DETACHED");
+    }, { timeout: 5_000 });
     if (childPid !== null) await vi.waitFor(() => {
       let absent = false;
       try { process.kill(childPid!, 0); } catch (error) { absent = (error as NodeJS.ErrnoException).code === "ESRCH"; }
@@ -297,9 +302,14 @@ it("real child permanently stops renewal after invalid policy; restored successo
     fs.writeFileSync(EVIDENCE, `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
   } finally {
     fs.writeFileSync(genesisPath, genesis);
+    const participantId = readParticipantByEndpoint(f.store, "chatgpt", "chatgpt/main")!.participantId;
+    const shutdownOwner = readCurrentOwnership(f.store, participantId)!;
     await client.close(); await transport.close();
     try {
-      await vi.waitFor(() => expect(diagnostics).toContain("CE_MCP_STOPPED released=true detached=true"), { timeout: 5000 });
+      await vi.waitFor(() => {
+        expect(readCurrentOwnership(f.store, participantId)).toBeUndefined();
+        expect(readSessionLifecycle(f.store, { participantId, sessionId: shutdownOwner.sessionId }).state).toBe("DETACHED");
+      }, { timeout: 5000 });
       expect(transport.pid).toBeNull();
     } finally { host.end("pi/A"); f.store.close(); }
   }

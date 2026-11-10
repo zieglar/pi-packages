@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { acquireOwnership, bindSession, readCurrentOwnership } from "../../src/storage/ownership.js";
+import { acquireOwnership, bindSession, readCurrentOwnership, readFencingHighWater, readSessionLifecycle } from "../../src/storage/ownership.js";
 import { openStore } from "../../src/storage/store.js";
 import {
   capabilityFor,
@@ -165,7 +165,17 @@ describe("operator stale-ownership recovery CLI", () => {
     const results = await Promise.all([run(args), run(args)]);
     expect(results.map((result) => result.code).sort()).toEqual([0, 1]);
     const loser = results.find((result) => result.code === 1)!;
-    expect(["CE_RECOVERY_OWNER_ABSENT\n", "CE_RECOVERY_RACE_LOST\n"]).toContain(loser.stderr);
+    // Preflight may observe the winner's temporary takeover before its release.
+    expect(["CE_RECOVERY_OWNER_ABSENT\n", "CE_RECOVERY_OWNER_MISMATCH\n", "CE_RECOVERY_RACE_LOST\n"]).toContain(loser.stderr);
+    expect(loser.stdout).toBe("");
+    const receipt = JSON.parse(results.find(result => result.code === 0)!.stdout);
+    const store = openStore({ directory: active.directory, filename: active.filename });
+    try {
+      expect(readCurrentOwnership(store, participantId)).toBeUndefined();
+      expect(readFencingHighWater(store, participantId)).toBe(2);
+      expect(receipt.takeover.fencingToken).toBe(2);
+      expect(readSessionLifecycle(store, { participantId, sessionId: receipt.recoverySessionId }).state).toBe("DETACHED");
+    } finally { store.close(); }
     expect(results.map((result) => result.stdout + result.stderr).join("\n")).not.toContain("cap_");
   });
 

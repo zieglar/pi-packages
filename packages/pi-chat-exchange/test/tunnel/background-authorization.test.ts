@@ -1,5 +1,6 @@
 import { chmodSync, lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import * as fs from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { createBackgroundAuthorizationStore } from "../../src/tunnel/background-authorization.js";
@@ -8,7 +9,7 @@ const roots: string[] = [];
 const digest = "a".repeat(64);
 const profile = "/profiles/operator.json";
 function fixture() {
-  const root = mkdtempSync("/private/tmp/ce-auth-");
+  const root = mkdtempSync(join(fs.realpathSync(tmpdir()), "ce-auth-"));
   roots.push(root);
   const directory = join(root, "authorization");
   return { root, directory, store: createBackgroundAuthorizationStore({ directory, now: () => 123 }) };

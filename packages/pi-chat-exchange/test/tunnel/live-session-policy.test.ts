@@ -104,11 +104,17 @@ it("real Node24 writers sharing a parent elect one winner without rebase", async
   const module = new URL("../../dist/tunnel/live-session-policy.js", import.meta.url).href;
   const code = `import {createLivePolicyRegistration} from ${JSON.stringify(module)}; const input=JSON.parse(process.argv[1]); process.stdout.write('READY\\n'); process.stdin.once('data',()=>{try{const r=createLivePolicyRegistration({ref:input.ref}).register({expectedDigest:input.expectedDigest,registration:input.registration}); console.log(JSON.stringify({ok:true,seq:r.snapshot.sequence}));}catch(e){console.log(JSON.stringify({ok:false,code:e.code}));}});`;
   const children = ["B", "C"].map(id => {
-    const child = spawn("/Users/zieglar/.local/share/mise/installs/node/24.21.0/bin/node", ["--input-type=module", "-e", code, JSON.stringify({ ref, expectedDigest, registration: { ...B, endpointId: `pi/${id}`, runtimeSessionId: id } })], { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(process.execPath, ["--input-type=module", "-e", code, JSON.stringify({ ref, expectedDigest, registration: { ...B, endpointId: `pi/${id}`, runtimeSessionId: id } })], { stdio: ["pipe", "pipe", "pipe"] });
     let output = ""; let errors = "";
     child.stderr.on("data", b => { errors += b; });
-    const ready = new Promise<void>(resolve => child.stdout.on("data", b => { output += b; if (output.includes("READY")) resolve(); }));
+    const ready = new Promise<void>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", status => reject(Error(`writer exited before READY (${status}): ${errors}`)));
+      child.stdout.on("data", b => { output += b; if (output.includes("READY")) resolve(); });
+    });
     const done = new Promise<{ ok: boolean; seq?: number; code?: string }>((resolve, reject) => { child.on("error", reject); child.on("exit", status => { if (status !== 0) reject(Error(errors)); else { try { resolve(JSON.parse(output.trim().split("\n").at(-1)!)); } catch (e) { reject(e); } } }); });
+    // Observe startup failures even while the test is awaiting both READY signals.
+    void done.catch(() => {});
     return { child, ready, done };
   });
   try {

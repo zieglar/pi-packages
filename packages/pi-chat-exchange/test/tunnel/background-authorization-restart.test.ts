@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -11,6 +11,8 @@ describe("persistent permission across independent plain processes", () => {
   it("restores and validates selected profile/client, then denies after revocation without Tunnel environment", () => {
     const directory = realpathSync(mkdtempSync(join(tmpdir(), "ce-auth-restart-")));
     try {
+      // Hosted runner toolcache ancestors may be group-writable; admit a private copy of the same Node.
+      const node = join(directory, "node"); copyFileSync(process.execPath, node); chmodSync(node, 0o700);
       const home = join(directory, "home"); mkdirSync(home, { mode: 0o700 });
       const profilePath = join(directory, "other-profile.yaml");
       // Explicit selection intentionally supports this delegated group-writable ancestor.
@@ -28,7 +30,7 @@ describe("persistent permission across independent plain processes", () => {
       const script = join(directory, "probe.mjs");
       writeFileSync(script, `import {writeFileSync} from 'node:fs'; import {createBackgroundTunnelManager,resolveTunnelProfilePath} from ${JSON.stringify(managerUrl)}; import {buildTunnelProfile,serializeTunnelProfile,buildTunnelMcpCommand} from ${JSON.stringify(profileUrl)};\nconst action=process.argv[2]; const profile=${JSON.stringify(profilePath)}; const client=${JSON.stringify(clientPath)};\nif(action==='grant'){writeFileSync(profile,serializeTunnelProfile(buildTunnelProfile({tunnelId:'tunnel_abcdef123456',keyFile:${JSON.stringify(key)},healthUrlFile:${JSON.stringify(join(directory, "health.url"))},mcpCommand:buildTunnelMcpCommand({nodePath:process.execPath,scriptPath:${JSON.stringify(mcpPath)},bindingPath:${JSON.stringify(binding)}})})),{mode:0o600}); const first=createBackgroundTunnelManager({env:{CE_TUNNEL_CLIENT_PATH:client},profilePath:profile}); first.grantAuthorization(first.authorizationScope().digest);}\nconst selected=resolveTunnelProfilePath({env:{}}); const manager=createBackgroundTunnelManager({env:{}}); if(action==='revoke')manager.revokeAuthorization(); console.log(JSON.stringify({selected,status:manager.authorizationStatus()}));\n`, { mode: 0o600 });
       const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("CE_TUNNEL_") && key !== "NODE_OPTIONS"));
-      const run = (action: string) => JSON.parse(execFileSync(process.execPath, ["--import", bootstrap, script, action], { env, encoding: "utf8", timeout: 20_000 }));
+      const run = (action: string) => JSON.parse(execFileSync(node, ["--import", bootstrap, script, action], { env, encoding: "utf8", timeout: 20_000 }));
       expect(run("grant")).toEqual({ selected: profilePath, status: "granted" });
       expect(run("inspect")).toEqual({ selected: profilePath, status: "granted" });
       expect(run("revoke").status).toBe("revoked"); expect(run("inspect").status).toBe("revoked");
@@ -38,6 +40,7 @@ describe("persistent permission across independent plain processes", () => {
   it("denies permission after only the installed MCP script content changes, before spawning", () => {
     const directory = realpathSync(mkdtempSync(join(tmpdir(), "ce-auth-script-drift-")));
     try {
+      const node = join(directory, "node"); copyFileSync(process.execPath, node); chmodSync(node, 0o700);
       const installation = join(directory, "installation"); mkdirSync(installation, { mode: 0o700 });
       cpSync(new URL("../../dist", import.meta.url), join(installation, "dist"), { recursive: true });
       writeFileSync(join(installation, "package.json"), JSON.stringify({ type: "module" }), { mode: 0o600 });
@@ -81,7 +84,7 @@ assert.equal(spawned,0);
 console.log(JSON.stringify({before:'granted',after:changed.authorizationStatus(),denied:true,spawned,unchanged:true}));
 `, { mode: 0o600 });
       const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("CE_TUNNEL_") && key !== "NODE_OPTIONS"));
-      const result = JSON.parse(execFileSync(process.execPath, ["--import", bootstrap, probe], { env, encoding: "utf8", timeout: 20_000 }));
+      const result = JSON.parse(execFileSync(node, ["--import", bootstrap, probe], { env, encoding: "utf8", timeout: 20_000 }));
       expect(result).toEqual({ before: "granted", after: "changed", denied: true, spawned: 0, unchanged: true });
     } finally { rmSync(directory, { recursive: true, force: true }); }
   }, 40_000);
