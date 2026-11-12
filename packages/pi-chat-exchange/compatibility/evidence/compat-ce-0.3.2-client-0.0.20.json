@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "ce": {
+    "version": "0.3.2",
+    "baselineCommit": "cf51af0c50910c29c746c257f1e971e5e48efb48",
+    "runtimeSha256": "520141a878c2b2985613da90bb8e299bc9fa523f4665441441a77e22bfad1572",
+    "worktree": "clean"
+  },
+  "client": {
+    "version": "0.0.20",
+    "sourceCommit": "c2144b0904980bcbae2636cdca4f4167e9818e0b",
+    "publishedAt": "2026-11-06T22:05:17Z",
+    "url": "https://github.com/openai/tunnel-client/releases/tag/v0.0.20"
+  },
+  "testedAt": "2026-11-12T11:06:12.164449Z",
+  "environment": {
+    "os": "darwin",
+    "arch": "arm64",
+    "node": "24.21.0",
+    "pi": "1.3.0",
+    "native": "0.1.0"
+  },
+  "offline": {
+    "status": "VERIFIED",
+    "kind": "automated-offline",
+    "testedAt": "2026-11-12T07:48:29.227Z",
+    "hostedRun": 43177948461,
+    "checkoutCommit": "cf51af0c50910c29c746c257f1e971e5e48efb48",
+    "scope": "Existing exact-runtime official 0.0.20 Linux x64 loopback lifecycle evidence: profile, health, normal stop, child failure exit, failure stop, cleanup and synthetic namespace checks. Not manual Cloud. Publication still requires a fresh same-run result."
+  },
+  "lifecycle": {
+    "status": "VERIFIED",
+    "kind": "real-client-local",
+    "start": true,
+    "health": true,
+    "normalStop": true,
+    "cleanup": true,
+    "scope": "Actual official client, candidate MCP and real Pi SDK registered extension tools during the bounded manual Cloud window, using an isolated Store and metadata-only Hooks. Candidate received normal SIGTERM; both candidate sessions detached, ownership released, health file removed and process absence independently verified. No forced termination or separate slow-Hook scenario.",
+    "forced": false,
+    "ownershipRowsAfterStop": 0,
+    "attachedSessionsAfterStop": 0,
+    "healthRemoved": true,
+    "independentOwnedProcessAbsence": true,
+    "exitStatusCapture": "The controller did not retain child exit codes. Normal shutdown is supported by SIGTERM-only control flow, client shutdown logs, Pi shutdown marker, durable session detachment and independent process absence."
+  },
+  "cloud": {
+    "status": "VERIFIED",
+    "kind": "manual-cloud",
+    "resourceKind": "operator-authorized-bounded-existing-tunnel-private-store",
+    "durableMatch": true,
+    "normalOwnershipRelease": true,
+    "hardStopCleanup": true,
+    "receptionOnly": true,
+    "verifiedAt": "2026-11-12T11:06:12.164449Z",
+    "scope": "Actual ChatGPT Cloud calls and operator-driven real Pi SDK tools exchanged two fresh Unicode/Emoji/newline messages, read and acknowledged both receptions, and deliberately replayed each known idempotency key with unchanged message identity and creation audit. Exactly two durable messages and two receipts, with both metadata-only Hooks successful. Original production transport was restored through its existing manager and verified CONNECTED with unchanged profile/settings; the original Pi stayed open.",
+    "requestCorrelation": "Exclusive official same-Tunnel candidate poller forwarded real Cloud commands to the byte-verified candidate MCP. Cloud ping completion was correlated before enabling sample messages. User-relayed actual ChatGPT results were corroborated by candidate Cloud tool events, private Store payload digests/lengths, message/receipt audits and metadata Hooks. No raw remote transcript or globally unique per-tool wire-request join is claimed.",
+    "cleanupMeaning": "Completed bounded normal cleanup and restored the original connection; hardStopCleanup is the existing schema field, not a forced-kill or destructive Cloud recovery claim.",
+    "versionIdentity": "Generic ping reports protocolVersion, not software version. Software identity comes from the clean pinned source/runtime digest, byte-for-byte comparison of all 116 installed tarball payload files, sealed private command/binding and exclusive candidate ownership of the existing connection.",
+    "forward": {
+      "messageId": "msg_01M77PJBQ7J7RTTJ4QFKDYRJNW",
+      "receiptId": "rcpt_01M77PJZB99QWY4GZ3MQ54A5KT",
+      "createdAudit": 4,
+      "receiptAudit": 5,
+      "payloadDigest": "987a654a692ba0876dd7b7893cde2705944ce266937e94ca2073e31e586301d5",
+      "payloadLength": 78,
+      "deliberateReplay": "REPLAYED"
+    },
+    "reverse": {
+      "messageId": "msg_01M77PRT1FBHTS0W8B4G958WDD",
+      "receiptId": "rcpt_01M77PRTB7CASCHB4FEQ8R7792",
+      "createdAudit": 6,
+      "receiptAudit": 7,
+      "payloadDigest": "beab5fbfd974ef08d226adc2003c5032fa285d3f9d22f47a25e3d876c17a6581",
+      "payloadLength": 79,
+      "deliberateReplay": "REPLAYED"
+    }
+  },
+  "policyValidation": {
+    "scope": "Reuse current-candidate native-read/policy and exact-source hosted validation within their actual local scope; no new remote revocation/epoch experiment.",
+    "checkoutCommit": "cf51af0c50910c29c746c257f1e971e5e48efb48",
+    "hostedRun": 43177191229
+  },
+  "provenance": {
+    "method": "parent-verified-actual-window-and-user-relayed-peer-results",
+    "operatorManifestSha256": "c7e2b3e83819bff04cdffdc34480a55fd44f62d10f707f5e0a3b31fe052b3a21",
+    "darwinClientSha256": "ea217729ecb82987c599b4eb7192ed0ec011a528dbbde33a8c94d9d6d59cf975",
+    "testedTarballSha256": "de815bc63a07f1e8e5a075f6f8930b9809c85472b9dfaa2c0ce7eb142df9da7d",
+    "digestPolicy": "Existing runtimeDigest, Gate and publication workflows unchanged; no cross-runtime Cloud inheritance.",
+    "retainedFailures": [
+      "A prior independent-Tunnel readiness window closed with zero messages/receipts and was not qualification. Its raw peer-exit/stop-request classification is retained.",
+      "One real Cloud ce_endpoints call returned unknown tool; that tool is not advertised by this fixed candidate. All required supported sample calls succeeded.",
+      "After verified original-transport restoration, the operator controller's final SQLite readonly count query failed to open the database. Raw traceback/status were retained. A separate readonly verification confirmed exact payloads, two messages/two receipts, zero ownership/attached sessions and complete process cleanup; no Cloud sample or controller was replayed."
+    ]
+  },
+  "limitations": [
+    "Manual Cloud limited to macOS arm64 / Node24.21.0 / Pi1.3.0 / Native0.1.0 / official Client0.0.20 on one explicitly authorized existing Tunnel; real namespaced Cloud identity NOT_VERIFIED",
+    "Pi used real registered SDK tools driven by the operator; no model business-task execution, automatic task intake or desktop submission qualification",
+    "ACK proves reception only; no business completion, exactly-once effect, automatic retry or forced-kill recovery claim",
+    "No new remote slow-Hook, timeout, revocation or epoch scenarios; running Hook effects are not canceled by revocation",
+    "Actual remote results are user-relayed and corroborated locally; no raw remote transcript or globally unique per-tool wire-request join",
+    "Earlier failed probes and the post-restoration statistics error remain part of operator evidence; neither was relabeled as a successful Cloud test",
+    "Same-run publication latest offline result remains required; imported observations do not replace that run"
+  ]
+}
