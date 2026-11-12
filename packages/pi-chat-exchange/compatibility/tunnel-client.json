@@ -241,6 +241,52 @@
         "Remote call results were relayed by the user and corroborated with durable sample data; no raw remote transcript or wire request-ID correlation",
         "Same-run publication latest offline result remains required; earlier hosted evidence does not substitute for the publication run"
       ]
+    },
+    {
+      "ce": {
+        "version": "0.3.2",
+        "baselineCommit": "cf51af0c50910c29c746c257f1e971e5e48efb48",
+        "runtimeSha256": "520141a878c2b2985613da90bb8e299bc9fa523f4665441441a77e22bfad1572",
+        "worktree": "clean"
+      },
+      "client": {
+        "version": "0.0.20",
+        "sourceCommit": "c2144b0904980bcbae2636cdca4f4167e9818e0b",
+        "publishedAt": "2026-11-06T22:05:17Z",
+        "url": "https://github.com/openai/tunnel-client/releases/tag/v0.0.20"
+      },
+      "testedAt": "2026-11-12T11:06:12.164449Z",
+      "environment": {
+        "os": "darwin",
+        "arch": "arm64",
+        "node": "24.21.0",
+        "pi": "1.3.0",
+        "native": "0.1.0"
+      },
+      "offline": {
+        "status": "VERIFIED",
+        "kind": "automated-offline",
+        "evidence": "evidence/compat-ce-0.3.2-client-0.0.20.json"
+      },
+      "lifecycle": {
+        "status": "VERIFIED",
+        "kind": "real-client-local",
+        "evidence": "evidence/compat-ce-0.3.2-client-0.0.20.json"
+      },
+      "cloud": {
+        "status": "VERIFIED",
+        "kind": "manual-cloud",
+        "evidence": "evidence/compat-ce-0.3.2-client-0.0.20.json"
+      },
+      "limitations": [
+        "Manual Cloud limited to macOS arm64 / Node24.21.0 / Pi1.3.0 / Native0.1.0 / official Client0.0.20 on one explicitly authorized existing Tunnel; real namespaced Cloud identity NOT_VERIFIED",
+        "Pi used real registered SDK tools driven by the operator; no model business-task execution, automatic task intake or desktop submission qualification",
+        "ACK proves reception only; no business completion, exactly-once effect, automatic retry or forced-kill recovery claim",
+        "No new remote slow-Hook, timeout, revocation or epoch scenarios; running Hook effects are not canceled by revocation",
+        "Actual remote results are user-relayed and corroborated locally; no raw remote transcript or globally unique per-tool wire-request join",
+        "Earlier failed probes and the post-restoration statistics error remain part of operator evidence; neither was relabeled as a successful Cloud test",
+        "Same-run publication latest offline result remains required; imported observations do not replace that run"
+      ]
     }
   ]
 }
