@@ -38,7 +38,7 @@ import {
 import { callEndpointDiscovery, CE_ENDPOINTS_TOOL, CE_ENDPOINTS_TOOL_NAME, type EndpointDiscoveryPort } from "./endpoint-discovery.js";
 
 export const SERVER_NAME = "pi-chat-exchange" as const;
-export const SERVER_VERSION = "0.3.1" as const;
+export const SERVER_VERSION = "0.3.2" as const;
 
 const PING_TOOL = {
   name: PING_TOOL_NAME,

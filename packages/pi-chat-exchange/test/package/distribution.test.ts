@@ -95,7 +95,7 @@ it("native pack carries the runtime closure and no author/private state", () => 
     const target = join(dir, path); mkdirSync(resolve(target, ".."), { recursive: true }); writeFileSync(target, "CE_SECRET_SENTINEL");
   }
   const files = pack(dir);
-  for (const path of ["LICENSE", "pi-extension/index.ts", "dist/bin/mcp-stdio.js", "dist/tunnel/multi-session-policy.js", "dist/tunnel/offline-client.js", "native/tunnel-keychain.swift", "scripts/recover-stale-ownership.mjs", "scripts/reconcile-session-process-mutex.mjs"])
+  for (const path of ["LICENSE", "pi-extension/index.ts", "pi-extension/native-read-protocol.ts", "dist/bin/mcp-stdio.js", "dist/tunnel/multi-session-policy.js", "dist/tunnel/offline-client.js", "native/tunnel-keychain.swift", "scripts/recover-stale-ownership.mjs", "scripts/reconcile-session-process-mutex.mjs"])
     expect(files).toContain(`package/${path}`);
   expect(files.filter((p) => /(?:node_modules|\/test\/|\/src\/|\.env|store\.sqlite|tsconfig)/.test(p))).toEqual([]);
   // URL-asset boundary: the bundled offline simulator ships, no real native

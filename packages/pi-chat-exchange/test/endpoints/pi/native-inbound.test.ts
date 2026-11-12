@@ -4,20 +4,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { createNativeInbound } from "../../../pi-extension/native-inbound.js";
+import { createNativeReadProtocol } from "../../../pi-extension/native-read-protocol.js";
 
 const outcome = (result: { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }, isError = false) => ({
   toolCall: { type: "toolCall" as const, id: "nested-call", name: "ce_read", arguments: {} }, result, isError,
 });
 const roots: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
-function fixture() {
+function fixture(text = "请检查项目状态，然后给出结果。") {
   const root = fs.mkdtempSync(join(tmpdir(), "ce-inbound-")); roots.push(root); fs.chmodSync(root, 0o700);
   const policyPath = join(root, "real-A.json");
   let clock = Date.parse("2026-11-06T12:00:01Z"), session = "real-A";
   const policy = { version: 1, enabled: true, runtimeSessionId: "real-A", endpointId: "pi/A", exchangeId: "ex-1", from: "chatgpt/main",
     activatedAt: "2026-11-06T12:00:00Z", afterAuditSequence: 100, maxAgeSeconds: 300 };
   const save = (value: unknown = policy) => fs.writeFileSync(policyPath, JSON.stringify(value), { mode: 0o600 }); save();
-  const text = "请检查项目状态，然后给出结果。";
   const metadata = { messageId: "msg_fresh", exchangeId: "ex-1", from: "chatgpt/main", to: "pi/A", state: "CREATED",
     createdAt: "2026-11-06T12:00:01Z", auditSequence: 101, payloadLength: Buffer.byteLength(text), payloadDigest: createHash("sha256").update(text).digest("hex") };
   const entries: Array<Record<string, unknown>> = [];
@@ -74,6 +74,25 @@ it("refuses a public or symlink policy file", () => {
 it("requires an actual wake claim before reading any task", async () => {
   const f = fixture(); await expect(f.create().receive("msg_fresh", { executeTool: f.executeTool })).rejects.toThrow("INBOUND_NOT_CLAIMED"); expect(f.executeTool).not.toHaveBeenCalled();
 });
+it("receives exact protocol bytes after a >4 KiB nested result is compacted for display", async () => {
+  const f = fixture("x".repeat(3873)); const c = f.create(); c.poll();
+  const protocol = createNativeReadProtocol(); let ordinal = 0;
+  f.executeTool.mockImplementation(async name => {
+    if (name !== "ce_read" && name !== "ce_read_payload") throw Error("unexpected tool");
+    const id = `parent/${++ordinal}`;
+    const content = name === "ce_read_payload"
+      ? [{ type: "text" as const, text: "h".repeat(433) }, { type: "text" as const, text: f.text }] : [];
+    const result = protocol.capture(id, name, f.metadata.messageId, { content, details: { ...f.metadata } });
+    // The installed presentation hook replaces BOTH content and structured details.
+    const displayed = content.reduce((n, block) => n + Buffer.byteLength(block.text), 0) > 4096
+      ? { content: [{ type: "text" as const, text: "indexed; search the stored output" }], details: { text: "indexed" } } : result;
+    return { ...outcome(displayed), toolCall: { type: "toolCall" as const, id, name, arguments: {} } };
+  });
+  await expect(protocol.run("parent", f.metadata.messageId, { executeTool: f.executeTool }, ctx => c.receive(f.metadata.messageId, ctx))).resolves.toMatchObject({ text: f.text });
+  expect(f.executeTool).toHaveBeenCalledTimes(2);
+  await expect(c.receive(f.metadata.messageId, { executeTool: f.executeTool })).rejects.toThrow("INBOUND_ALREADY_ATTEMPTED");
+});
+
 it("reads through both registered CE tools and exposes exact bytes once", async () => {
   const f = fixture(); const c = f.create(); c.poll();
   expect(await c.receive("msg_fresh", { executeTool: f.executeTool })).toEqual({ messageId: "msg_fresh", text: f.text, metadata: expect.objectContaining({ payloadDigest: f.metadata.payloadDigest }) });

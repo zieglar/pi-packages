@@ -2,6 +2,12 @@
 
 # Changelog
 
+## 0.3.2 (candidate; not released)
+
+- Preserve invocation-scoped native read results when presentation Hooks compact large tool output. Registered SDK tools and Hooks still run; errors and strict native validation remain authoritative.
+- Add the native-read protocol module to the packed runtime closure and cover exact reception after display replacement.
+- Keep task ownership, selectors, permissions and no-replay behavior unchanged. Publication and production upgrades require their own authorization and artifact evidence. See [0.3.2 scope and limits](docs/releases/0.3.2.md).
+
 ## 0.3.1 (candidate; not released)
 
 - Reconcile session onboarding/recovery, scoped background permissions and Hook management with optional native intake and structured ownership feedback.
