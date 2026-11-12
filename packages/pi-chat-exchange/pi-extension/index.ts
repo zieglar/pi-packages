@@ -26,6 +26,7 @@
  * seam from packages/pi-chat-exchange/dist.
  */
 import { createNativeInbound, isNativeFeedback, type NativeInboundToolContext } from "./native-inbound.js";
+import { createNativeReadProtocol } from "./native-read-protocol.js";
 import { createOwnershipFeedbackBridge } from "./ownership-feedback.js";
 import { createCaptureScheduler, createDeliveryGuard, createDesktopTargetBridge, deliverAfterDesktopCapture, type DesktopTargetBridge } from "./desktop-target.js";
 import { runSessionConfiguration } from "./multi-session-commands.js";
@@ -761,6 +762,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     failure: CeHostRefusal | undefined;
   };
   let generation: Generation | undefined;
+  const nativeReadProtocol = createNativeReadProtocol();
   let nativeInbound: ReturnType<typeof createNativeInbound> | undefined;
   let inboundEnabled = false;
   const closeNativeInbound = (): void => {
@@ -1532,7 +1534,8 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         if (generation === undefined || generation.stopping || generation.failure !== undefined || nativeInbound === undefined) throw Error("INBOUND_DISABLED");
         const messageId = (params as { messageId?: unknown }).messageId;
         if (typeof messageId !== "string") throw Error("INBOUND_INVALID_MESSAGE_ID");
-        const task = await nativeInbound.receive(messageId, ctx);
+        const receiver = nativeInbound;
+        const task = await nativeReadProtocol.run(_toolCallId, messageId, ctx, protocol => receiver.receive(messageId, protocol));
         if (ctx.sessionManager.getSessionId() !== generation.piSessionId || endpointId !== generation.endpointId) throw Error("INBOUND_SESSION_CHANGED");
         if (!("text" in task)) {
           // Pi extensions.md: terminate suppresses the automatic follow-up when every tool in the batch agrees.
@@ -1595,7 +1598,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       try {
         const endpointId = guardedEndpoint(ctx);
         const result = withHost("metadata", () => getHost().readMetadata(endpointId, params));
-        return {
+        return nativeReadProtocol.capture(_toolCallId, "ce_read", result.messageId, {
           content: [
             {
               type: "text",
@@ -1606,7 +1609,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
             },
           ],
           details: { ...result },
-        };
+        });
       } catch (error) {
         return refusalResult(error);
       }
@@ -1708,7 +1711,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           }
           // No await between context validation and the synchronous Host call.
           const result = withHost("payload", () => getHost().readPayload(endpointId, { messageId: field.value }));
-          return {
+          return nativeReadProtocol.capture(_toolCallId, "ce_read_payload", result.messageId, {
             content: [
               {
                 type: "text",
@@ -1735,7 +1738,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
               createdAt: result.createdAt,
               auditSequence: result.auditSequence,
             },
-          };
+          });
         } catch (error) {
           return refusalResult(error);
         }
