@@ -32,3 +32,4 @@ Use [CE operations](packages/pi-chat-exchange/docs/operations.md) and the existi
 - Put temporary task artifacts under `$TMPDIR`; keep durable project documentation in the repository’s existing documentation locations.
 - Follow the repository’s existing worktree convention, or use `~/Code/.worktrees/pi-packages/<branch>`; do not create task worktrees under `~/.local/share`.
 - Application-owned persistent data may continue to use `~/.local/share`.
+- Make cross-endpoint results self-contained; local-only paths are supplementary. Retain durable evidence in existing project locations with stated retention/cleanup conditions; clean temporary artifacts only after checking references.
