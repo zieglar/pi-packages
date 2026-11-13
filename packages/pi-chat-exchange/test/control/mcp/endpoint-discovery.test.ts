@@ -3,6 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createExchangeMcpServer, type MessagingServerBinding } from "../../../src/control/mcp/server.js";
 
+import { callEndpointDiscovery } from "../../../src/control/mcp/endpoint-discovery.js";
 import type { EndpointDiscoveryResult } from "../../../src/control/mcp/endpoint-discovery.js";
 
 const projection = (): EndpointDiscoveryResult => ({
@@ -19,6 +20,16 @@ async function connected(binding: MessagingServerBinding | undefined, check: (cl
 }
 const base = (): MessagingServerBinding => ({ port: {} as never });
 
+it("accepts only a bounded explicit Runtime scope and passes it without a Session ID", async () => {
+  const calls: unknown[] = [];
+  const port = { discover(previous?: string, runtimeId?: string) { calls.push([previous, runtimeId]);
+    return { ...projection(), runtimes: [{ runtimeId: "workbench" }], currentBinding: { status: "unknown" as const, runtimeId: runtimeId! } }; } };
+  expect(callEndpointDiscovery(port, { runtimeId: "workbench" }).structuredContent).toMatchObject({ currentBinding: { status: "unknown", runtimeId: "workbench" } });
+  expect(calls).toEqual([[undefined, "workbench"]]);
+  for (const runtimeId of ["", "../auth", "bad scope", "x".repeat(129)]) expect(() => callEndpointDiscovery(port, { runtimeId })).toThrow();
+  expect(calls).toHaveLength(1);
+});
+
 it("keeps legacy tool order and refuses discovery without an explicit port", async () => {
   for (const binding of [undefined, base(), { ...base(), ackEnabled: true }]) {
     await connected(binding, async client => {
@@ -28,12 +39,12 @@ it("keeps legacy tool order and refuses discovery without an explicit port", asy
   }
 });
 
-it("advertises a closed empty tool after ACK and returns only validated projection", async () => {
+it("advertises a closed optional-predecessor query after ACK and returns only validated projection", async () => {
   let calls = 0;
   await connected({ ...base(), ackEnabled: true, discovery: { discover: () => { calls++; return projection(); } } }, async client => {
     const tools = (await client.listTools()).tools;
     expect(tools.map(t => t.name)).toEqual(["ping", "ce_send", "ce_inbox_list", "ce_read_payload", "ce_ack", "ce_endpoints"]);
-    expect(tools.at(-1)?.inputSchema).toMatchObject({ properties: {}, additionalProperties: false });
+    expect(tools.at(-1)?.inputSchema).toMatchObject({ properties: { previousEndpointId: { type: "string", minLength: 1, maxLength: 256 } }, additionalProperties: false });
     for (const field of ["sender", "target", "cursor", "session", "capability"]) {
       await expect(client.callTool({ name: "ce_endpoints", arguments: { [field]: "secret" } })).rejects.toMatchObject({ code: -32602 });
     }
@@ -66,6 +77,9 @@ it("refuses malformed, oversized or private source results and sanitizes source 
     { ...valid, targets: [{ ...valid.targets[0], authorized: { send: false } }] },
     { ...valid, targets: [{ ...valid.targets[0], payloadRead: true }] },
     { ...valid, self: { ...valid.self, ownCapabilities: { send: "true" } } },
+    { ...valid, sessionSwitch: { status: "unknown", previousEndpointId: "pi/A", successorEndpointId: "pi/B" } },
+    { ...valid, sessionSwitch: { status: "verified", previousEndpointId: "pi/A", successorEndpointId: "pi/B", source: "guessed-from-time", observedAt: valid.observedAt } },
+    { ...valid, sessionSwitch: { status: "verified", previousEndpointId: "pi/A", successorEndpointId: "pi/B", source: "pi.new.lifecycle", observedAt: valid.observedAt, nativeSessionId: "private-id" } },
   ];
   for (const value of [...invalid, new Error("private-path credential payload")]) {
     await connected({ ...base(), discovery: { discover: () => { if (value instanceof Error) throw value; return value as EndpointDiscoveryResult; } } }, async client => {
@@ -75,4 +89,13 @@ it("refuses malformed, oversized or private source results and sanitizes source 
       expect(String(error)).not.toMatch(/private-path|credential|payload/);
     });
   }
+});
+
+it("accepts an explicit previous Endpoint for /new discovery without selecting a target", async () => {
+  const queries: unknown[] = [];
+  await connected({ ...base(), discovery: { discover: (...args: unknown[]) => { queries.push(args); return projection(); } } }, async client => {
+    const result = await client.callTool({ name: "ce_endpoints", arguments: { previousEndpointId: "pi/old" } });
+    expect(result.isError).toBe(false);
+    expect(queries).toEqual([["pi/old"]]);
+  });
 });

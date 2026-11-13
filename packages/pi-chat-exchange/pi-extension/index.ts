@@ -27,6 +27,7 @@
  */
 import { createNativeInbound, isNativeFeedback, type NativeInboundToolContext } from "./native-inbound.js";
 import { createNativeReadProtocol } from "./native-read-protocol.js";
+import { runRuntimeBindingCommand } from "./runtime-binding-command.js";
 import { createOwnershipFeedbackBridge } from "./ownership-feedback.js";
 import { createCaptureScheduler, createDeliveryGuard, createDesktopTargetBridge, deliverAfterDesktopCapture, type DesktopTargetBridge } from "./desktop-target.js";
 import { runSessionConfiguration } from "./multi-session-commands.js";
@@ -39,6 +40,8 @@ import { createHooksManagement, runSafeHookFixture } from "../dist/tunnel/hooks-
 import { runHooksManagementUi } from "../dist/tunnel/hooks-management-ui.js";
 import { createBackgroundAuthorizationStore } from "../dist/tunnel/background-authorization.js";
 import { readLivePolicy } from "../dist/tunnel/live-session-policy.js";
+import { observeSessionDeparture, observeSessionArrival } from "../dist/tunnel/session-switch-observation.js";
+import { createCurrentRuntimeObserver } from "../dist/tunnel/current-runtime-binding.js";
 import { readLiveSelectedSessionPolicy, projectLivePiRegistration } from "./live-session-profile.js";
 import { readSelectedMultiSessionPolicy, projectPiRegistration, effectivePiHookRules } from "../dist/tunnel/multi-session-policy.js";
 import { runSetupWizard, presentTunnelStatus } from "../dist/tunnel/setup-ui.js";
@@ -154,7 +157,7 @@ interface ToolDefinitionView {
 interface ExtensionApiView {
   on(
     event: "session_start" | "session_shutdown",
-    handler: (event: { reason: string }, ctx: ExtensionContextView) => Promise<void> | void,
+    handler: (event: { reason: string; previousSessionFile?: string; targetSessionFile?: string }, ctx: ExtensionContextView) => Promise<void> | void,
   ): void;
   on(
     event: "agent_settled",
@@ -434,8 +437,15 @@ function openHostStore(allowlist: AllowlistFile) {
 // recently observed (always simulated in B1.1) client activity.
 const TUNNEL_STATUS_KEYS = ["ce", "ce-tunnel", "ce-client"] as const;
 
+interface RuntimeIdentityState { runtimeId: string; observerId: ReturnType<typeof randomUUID>; }
+const runtimeIdentityKey = Symbol.for("pi-chat-exchange.runtime-identity.v1");
+const runtimeIdentityState = globalThis as typeof globalThis & { [key: symbol]: RuntimeIdentityState | undefined };
+const processRuntimeIdentity = runtimeIdentityState[runtimeIdentityKey] ??= { runtimeId: `runtime-${randomUUID()}`, observerId: randomUUID() };
+const processRuntimeId = processRuntimeIdentity.runtimeId;
+
 export default function ceChatExchange(pi: ExtensionApiView): void {
   let operationSequence = 0;
+  const activeRuntimeId = process.env.CE_RUNTIME_ID ?? processRuntimeId;
   const operationFeedback = new Map<string, () => void>();
   let clearCommandResult = (): void => {};
   // Feedback has its own lifetime and never controls transport or admission.
@@ -705,12 +715,42 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   // CE_ALLOWLIST keeps its explicit legacy precedence.
   let multiPolicy: SelectedSessionPolicy | undefined;
   let selectedPolicyInvalid = false;
+  let currentRuntimeObserver: ReturnType<typeof createCurrentRuntimeObserver> | undefined;
+  let currentRuntimeScope: string | undefined;
+  let currentRuntimeTimer: ReturnType<typeof setInterval> | undefined;
+  const stopCurrentRuntime = (): void => {
+    if (currentRuntimeTimer !== undefined) clearInterval(currentRuntimeTimer);
+    currentRuntimeTimer = undefined;
+    currentRuntimeObserver?.stop();
+  };
+  const startCurrentRuntime = (ctx: ExtensionContextView): void => {
+    stopCurrentRuntime();
+    if (multiPolicy === undefined || !isLivePolicy(multiPolicy)) return;
+    try {
+      const scope = `${multiPolicy.ref.root}:${multiPolicy.ref.policyId}:${multiPolicy.ref.genesisDigest}`;
+      if (currentRuntimeObserver === undefined || currentRuntimeScope !== scope) {
+        currentRuntimeObserver = createCurrentRuntimeObserver(multiPolicy.ref, activeRuntimeId, Date.now, processRuntimeIdentity.observerId);
+        currentRuntimeScope = scope;
+      }
+      const sessionId = ctx.sessionManager.getSessionId();
+      if (!currentRuntimeObserver.observe(sessionId)) return;
+      currentRuntimeTimer = setInterval(() => {
+        try { if (ctx.sessionManager.getSessionId() !== sessionId || !currentRuntimeObserver?.observe(sessionId)) stopCurrentRuntime(); }
+        catch { stopCurrentRuntime(); }
+      }, 1_000);
+      currentRuntimeTimer.unref();
+    } catch { /* Observation never grants CE admission. */ }
+  };
   let explicitlySelectedProfile = Boolean(process.env.CE_TUNNEL_PROFILE);
+  let loadedBindingProfile: string | undefined;
+  let loadedBindingProfileText: string | undefined;
   if (!process.env.CE_ALLOWLIST) {
     try {
       explicitlySelectedProfile ||= createBackgroundAuthorizationStore().readSelection().kind === "valid";
       const profilePath = resolveTunnelProfilePath({ env: process.env });
-      multiPolicy = readLiveSelectedSessionPolicy(profilePath, readFileSync(profilePath, "utf8"));
+      const profileText = readFileSync(profilePath, "utf8");
+      multiPolicy = readLiveSelectedSessionPolicy(profilePath, profileText);
+      if (multiPolicy !== undefined) { loadedBindingProfile = profilePath; loadedBindingProfileText = profileText; }
       if (multiPolicy === undefined) { try { multiPolicy = readSelectedMultiSessionPolicy(profilePath); } catch { /* existing legacy loader validates its own selected pair */ } }
     } catch (error) { selectedPolicyInvalid = (error as NodeJS.ErrnoException).code !== "ENOENT" || explicitlySelectedProfile; }
   }
@@ -1289,6 +1329,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   };
 
   pi.on("session_start", async (event, ctx) => {
+    startCurrentRuntime(ctx);
     // The warning is about the Native default path only. An explicit node-sqlite
     // compatibility selection keeps messaging available, so it must not be told
     // that messaging is disabled.
@@ -1315,6 +1356,10 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     inboxBinding = undefined;
     advisoryState = undefined;
     const piSessionId = ctx.sessionManager.getSessionId();
+    if (event.reason === "new" && multiPolicy !== undefined && isLivePolicy(multiPolicy)) {
+      observeSessionArrival(multiPolicy.ref, { runtimeSessionId: piSessionId,
+        sessionFile: ctx.sessionManager.getSessionFile(), previousSessionFile: event.previousSessionFile });
+    }
     if (multiPolicy !== undefined) {
       // Project only this trusted runtime, never all manifest registrations.
       try { allowlist = (isLivePolicy(multiPolicy) ? projectLivePiRegistration(multiPolicy, piSessionId) : projectPiRegistration(multiPolicy, piSessionId)) as AllowlistFile; }
@@ -1442,7 +1487,22 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     await continueConnect();
   });
 
-  pi.on("session_shutdown", (event) => shutdown(event.reason));
+  pi.on("session_shutdown", (event, ctx) => {
+    stopCurrentRuntime();
+    const state = generation;
+    let observation: Parameters<typeof observeSessionDeparture> | undefined;
+    try {
+      if (event.reason === "new" && state !== undefined && !state.stopping && state.failure === undefined &&
+          state.piSessionId === ctx.sessionManager.getSessionId() && multiPolicy !== undefined && isLivePolicy(multiPolicy)) {
+        const registration = multiPolicy.manifest.registrations.find(r => r.status === "active" && r.runtimeSessionId === state.piSessionId && r.endpointId === state.endpointId);
+        if (registration !== undefined) observation = [multiPolicy.ref, { runtimeSessionId: state.piSessionId,
+          endpointId: state.endpointId, epoch: registration.epoch, sessionFile: ctx.sessionManager.getSessionFile(), targetSessionFile: event.targetSessionFile }];
+      }
+    } catch { /* Missing observation never changes cleanup. */ }
+    return shutdown(event.reason).then(() => {
+      if (observation !== undefined && state?.failure === undefined) observeSessionDeparture(...observation);
+    });
+  });
 
   pi.on("agent_settled", (_event, ctx) => {
     checkInboxAdvisory(ctx);
@@ -1848,6 +1908,21 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     },
   });
 
+
+  pi.registerCommand("ce-bind", {
+    description: "Manage named Runtime groups: status [group], bind/rebind/revoke <group>, rename <old> <new>; shared CE Endpoint scope, independent grants",
+    getArgumentCompletions: prefix => ["status", "bind", "rebind", "revoke", "rename"].filter(value => value.startsWith(prefix)).map(value => ({ value, label: value })),
+    async handler(args, ctx) {
+      await runRuntimeBindingCommand(args, ctx, {
+        ...(loadedBindingProfile === undefined ? {} : { profilePath: loadedBindingProfile }),
+        ...(loadedBindingProfileText === undefined ? {} : { profileText: loadedBindingProfileText }),
+        ...(multiPolicy !== undefined && isLivePolicy(multiPolicy) ? { ref: multiPolicy.ref } : {}),
+        runtimeId: activeRuntimeId,
+        isCurrent: () => !selectedPolicyInvalid && runtimeEnvironment() === loadedRuntimeEnvironment &&
+          loadedBindingProfile !== undefined && resolveTunnelProfilePath({ env: process.env }) === loadedBindingProfile,
+      });
+    },
+  });
 
   pi.registerCommand("ce-status", {
     description: "Show this session's chat-exchange endpoint, ownership lease, and fencing status",

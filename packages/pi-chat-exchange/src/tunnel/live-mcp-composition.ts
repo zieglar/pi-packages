@@ -9,6 +9,10 @@ import type { CeBoundEndpoint, BoundEndpointAdmission } from "../host/bound-endp
 import type { McpBindingConfig } from "../host/mcp-binding-config.js";
 import type { EndpointDiscoveryResult } from "../control/mcp/endpoint-discovery.js";
 import { readLivePolicy, type LivePolicyRef, type LiveReaderWatermark, type LiveSnapshot } from "./live-session-policy.js";
+import { discoverSessionSwitch } from "./session-switch-observation.js";
+import type { SessionSwitchResult } from "../control/mcp/endpoint-discovery.js";
+import { discoverCurrentRuntimes } from "./current-runtime-binding.js";
+import { createEndpointRuntimeBinding, type RuntimeSelection } from "./endpoint-runtime-binding.js";
 
 import type { DurableStore } from "../storage/store.js";
 import { readOwnershipObservation } from "../storage/ownership.js";
@@ -92,7 +96,14 @@ export function createLiveMcpComposition(config: McpBindingConfig, reader?: (ref
       r.endpointId === original.endpointId && r.runtimeSessionId === original.runtimeSessionId && r.status === "active" && r.epoch === original.epoch) &&
       (config.hooks ?? []).some(candidate => candidate.enabled && isDeepStrictEqual(candidate, rule));
   };
-  return Object.freeze({ ref, loaded, snapshot, recipients, admission, hookAllowed });
+  const runtimeSelection = (group?: string): RuntimeSelection => {
+    try {
+      if (options.bindingPath === undefined) return { scope: "ce-endpoint", status: "unavailable", ...(group === undefined ? {} : { group }) };
+      const binding = createEndpointRuntimeBinding(options.bindingPath, config);
+      return group === undefined ? binding.read() : binding.readGroup(group);
+    } catch { return { scope: "ce-endpoint", status: "unavailable", ...(group === undefined ? {} : { group }) }; }
+  };
+  return Object.freeze({ ref, loaded, snapshot, recipients, admission, hookAllowed, runtimeSelection });
 }
 
 /** Synchronous observation only; never renews or changes bound admission. */
@@ -115,7 +126,8 @@ export function observeLiveMcpRuntime(
 
 /** Only the visible projection is hashed. Internal sequence, IDs and policy
  * digests never cross this adapter; real operational readiness remains advisory. */
-export function projectEndpointDiscovery(discovery: CeEndpointDiscovery): EndpointDiscoveryResult {
+export function projectEndpointDiscovery(discovery: CeEndpointDiscovery, sessionSwitch?: SessionSwitchResult,
+  current?: ReturnType<typeof discoverCurrentRuntimes>, runtimeSelection?: RuntimeSelection): EndpointDiscoveryResult {
   const observedAt = discovery.observedAt;
   if (!Number.isFinite(Date.parse(observedAt))) return denied();
   const state = (value: "TRUE" | "FALSE" | "UNKNOWN"): "true" | "false" | "unknown" => value === "TRUE" ? "true" : value === "FALSE" ? "false" : "unknown";
@@ -128,6 +140,35 @@ export function projectEndpointDiscovery(discovery: CeEndpointDiscovery): Endpoi
     reachable: target.reason === "PORT_BLOCKED" ? "false" as const : "unknown" as const,
     reason: target.reason === "PRESENCE_WITHHELD" ? "PRESENCE_WITHHELD" as const
       : target.reason === "PORT_BLOCKED" ? "MCP_OPERATION_BLOCKED" as const : "OBSERVATION_UNKNOWN" as const }));
-  const projection = { self, targets };
+  const projection = { self, targets, ...(sessionSwitch === undefined ? {} : { sessionSwitch }), ...current,
+    ...(runtimeSelection === undefined ? {} : { runtimeSelection }) };
   return { ...projection, observedAt, viewDigest: createHash("sha256").update(JSON.stringify(projection)).digest("hex") };
+}
+
+/** Equal policy tips around the complete observation bind visible targets and
+ * metadata to one revision. Any mid-query change removes the selected target. */
+export function discoverLiveEndpoints(live: ReturnType<typeof createLiveMcpComposition>, bound: Pick<CeBoundEndpoint, "discover">,
+  previousEndpointId?: string, runtimeId?: string, useRuntimeBinding?: true, group?: string): EndpointDiscoveryResult {
+  const before = live.snapshot();
+  const selectedBinding = useRuntimeBinding === true || group !== undefined;
+  const selection = selectedBinding ? live.runtimeSelection(group) : undefined;
+  const selectedRuntime = selection === undefined ? runtimeId : selection.status === "bound" ? selection.runtimeId : undefined;
+  const admitted = bound.discover();
+  const endpoints = admitted.targets.map(target => target.endpointId);
+  const current = selectedBinding && selectedRuntime === undefined ? { runtimes: [] }
+    : discoverCurrentRuntimes(before, endpoints, selectedRuntime);
+  const relation = current.currentBinding;
+  const scoped = selectedBinding || runtimeId !== undefined;
+  const visible = !scoped ? admitted : { ...admitted, targets: admitted.targets.filter(target =>
+    relation?.status === "verified" && target.endpointId === relation.endpointId) };
+  const relationship = previousEndpointId === undefined ? undefined : discoverSessionSwitch(before, previousEndpointId, endpoints);
+  const after = live.snapshot();
+  if (selectedBinding && (before.digest !== after.digest || !isDeepStrictEqual(selection, live.runtimeSelection(group)))) {
+    return projectEndpointDiscovery({ ...admitted, targets: [] }, undefined, { runtimes: [] },
+      { scope: "ce-endpoint", status: "unavailable", ...(group === undefined ? {} : { group }) });
+  }
+  if (before.digest !== after.digest) return projectEndpointDiscovery({ ...visible, targets: [] },
+    previousEndpointId === undefined ? undefined : { status: "unknown", previousEndpointId },
+    { runtimes: [], ...(runtimeId === undefined ? {} : { currentBinding: { status: "unknown", runtimeId } }) });
+  return projectEndpointDiscovery(visible, relationship, current, selection);
 }

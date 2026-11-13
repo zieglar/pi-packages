@@ -25,6 +25,7 @@ import {
 import { Value } from "@sinclair/typebox/value";
 import { argumentShape, debugEvent, errorSummary } from "../debug-log.js";
 import { observeTransport } from "./debug-transport.js";
+import type { SourceMetadataProbe } from "./source-metadata-probe.js";
 import { PING_TOOL_NAME, PingArgsSchema, PingResultSchema, defaultHostLabel, ping } from "./ping.js";
 import {
   callMessagingTool,
@@ -36,6 +37,7 @@ import {
 } from "./messaging-tools.js";
 
 import { callEndpointDiscovery, CE_ENDPOINTS_TOOL, CE_ENDPOINTS_TOOL_NAME, type EndpointDiscoveryPort } from "./endpoint-discovery.js";
+import { callTaskOwner, CE_TASK_OWNER_TOOL, CE_TASK_OWNER_TOOL_NAME, type TaskOwnerPort } from "./task-owner.js";
 
 export const SERVER_NAME = "pi-chat-exchange" as const;
 export const SERVER_VERSION = "0.3.2" as const;
@@ -76,11 +78,16 @@ export interface MessagingServerBinding {
    * refusal is a fixed JSON-RPC error carrying no tool arguments; the
    * diagnostic records only the tool name and request id. */
   readonly executionGuard?: { readonly enabled: boolean };
+  /** Optional read-only TaskOwner registry fixed by trusted launch state. */
+  readonly taskOwner?: TaskOwnerPort;
+  /** Fresh deny-only authority check for each TaskOwner query. */
+  readonly taskOwnerAdmission?: () => void;
 }
 
 export function createExchangeMcpServer(
   hostLabel: string = defaultHostLabel(),
   messaging: MessagingServerBinding | undefined = undefined,
+  sourceMetadataProbe?: SourceMetadataProbe,
 ): Server {
   const server = new Server(
     { name: SERVER_NAME, version: SERVER_VERSION },
@@ -95,7 +102,8 @@ export function createExchangeMcpServer(
   // HANDOFF-CE-E2B-01: `ce_ack` is advertised last, and only on the explicit
   // operator ack opt-in carried by the binding.
   const withAck = messaging?.ackEnabled === true ? [...tools, CE_ACK_TOOL] : tools;
-  const advertised = messaging?.discovery === undefined ? withAck : [...withAck, CE_ENDPOINTS_TOOL];
+  const withDiscovery = messaging?.discovery === undefined ? withAck : [...withAck, CE_ENDPOINTS_TOOL];
+  const advertised = messaging?.taskOwner === undefined ? withDiscovery : [...withDiscovery, CE_TASK_OWNER_TOOL];
   for (const tool of advertised) debugEvent("tool", "TOOL_REGISTERED", { tool: tool.name });
 
   const admit = (): void => {
@@ -111,7 +119,7 @@ export function createExchangeMcpServer(
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
-    const tool = isMessagingToolName(name) || isAckToolName(name) || name === PING_TOOL_NAME ? name : "unknown-tool";
+    const tool = isMessagingToolName(name) || isAckToolName(name) || name === PING_TOOL_NAME || name === CE_TASK_OWNER_TOOL_NAME ? name : "unknown-tool";
     const started = Date.now();
     // HANDOFF-CE-DIAG-06: the single unified dispatch entry. When the
     // development execution guard is armed, refuse BEFORE any business
@@ -132,6 +140,14 @@ export function createExchangeMcpServer(
     admit();
     debugEvent("tool", "TOOL_CALL_STARTED", { tool, args: argumentShape(args) });
     try {
+    if (name === CE_TASK_OWNER_TOOL_NAME) {
+      if (messaging?.taskOwner === undefined) {
+        throw new McpError(ErrorCode.MethodNotFound, "unknown tool: ce_task_owner");
+      }
+      try { messaging.taskOwnerAdmission?.(); }
+      catch { throw new McpError(ErrorCode.InternalError, "runtime admission denied"); }
+      return callTaskOwner(messaging.taskOwner, args ?? {});
+    }
     // HANDOFF-CE-E2B-01: `ce_ack` exists only behind the explicit opt-in; a
     // call without it fails closed exactly like an unadvertised tool.
     if (name === CE_ENDPOINTS_TOOL_NAME) {
@@ -177,6 +193,8 @@ export function createExchangeMcpServer(
         "ping takes no arguments; unexpected argument shape rejected",
       );
     }
+    // Trusted diagnostics only: invalid, denied, and non-ping calls never sample.
+    try { sourceMetadataProbe?.(extra._meta); } catch { /* Preserve the frozen ping behavior. */ }
     const result = ping(hostLabel);
     if (!Value.Check(PingResultSchema, result)) {
       // Defensive: the result is constructed in-process, but never serve a

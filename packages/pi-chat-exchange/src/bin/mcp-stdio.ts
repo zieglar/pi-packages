@@ -44,7 +44,9 @@ import { createMcpPolicyAdmission } from "../tunnel/multi-session-admission.js";
 import { CeHookRunner } from "../hooks/runner.js";
 import { isDeepStrictEqual } from "node:util";
 import { effectiveMcpHookRules, readLoadedMultiSessionPolicy, readSelectedMultiSessionPolicy } from "../tunnel/multi-session-policy.js";
-import { createLiveMcpComposition, projectEndpointDiscovery, observeLiveMcpRuntime } from "../tunnel/live-mcp-composition.js";
+import { createLiveMcpComposition, discoverLiveEndpoints, observeLiveMcpRuntime } from "../tunnel/live-mcp-composition.js";
+import { createTaskOwnerComposition } from "../control/mcp/task-owner-composition.js";
+import { createSourceMetadataProbe } from "../control/mcp/source-metadata-probe.js";
 
 debugEvent("server", "SERVER_ENTRY", { version: process.version });
 // Monitor rather than handle exceptions: preserve Node's fatal exit behavior.
@@ -158,6 +160,8 @@ async function main(): Promise<void> {
   });
 
   debugEvent("authority", "OWNERSHIP_ACQUIRED", { owned: true });
+  const taskOwner = createTaskOwnerComposition(configPath, config, live, host, bound);
+  const sourceMetadataProbe = createSourceMetadataProbe(launchDigest, process.env.CE_SOURCE_METADATA_PROBE_LAUNCH_DIGEST);
   let probe: Awaited<ReturnType<typeof startLiveAdoptionProbe>> | undefined;
   try {
   if (live !== undefined) {
@@ -181,10 +185,12 @@ async function main(): Promise<void> {
   // declares the ack opt-in; the default surface stays exactly four tools.
   const server = createExchangeMcpServer(undefined, {
     port: bound, ackEnabled: config.ack.enabled, executionGuard: config.debugExecutionGuard,
+    ...(taskOwner ?? {}),
     ...(live === undefined
       ? admission === undefined ? {} : { admission: () => admission({ kind: "inbox" }) }
-      : { discovery: { discover: () => projectEndpointDiscovery(bound.discover()) } }),
-  });
+      : { discovery: { discover: (previousEndpointId?: string, runtimeId?: string, useRuntimeBinding?: true, group?: string) =>
+        discoverLiveEndpoints(live, bound, previousEndpointId, runtimeId, useRuntimeBinding, group) } }),
+  }, sourceMetadataProbe);
   if (config.debugExecutionGuard.enabled) {
     debugEvent("server", "EXECUTION_GUARD_ARMED", { scope: "tools/call", stage: "unified-dispatch-entry" });
   }
@@ -238,6 +244,7 @@ async function main(): Promise<void> {
     ...MESSAGING_TOOL_NAMES,
     ...(config.ack.enabled ? [CE_ACK_TOOL.name] : []),
     ...(live === undefined ? [] : ["ce_endpoints"]),
+    ...(taskOwner === undefined ? [] : ["ce_task_owner"]),
   ];
   console.error(`CE_MCP_STARTED tools=${advertisedTools.join(",")}`);
   await shutdownRequested;

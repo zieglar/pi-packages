@@ -2,12 +2,14 @@ import { afterEach, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import { join } from "node:path";
 import { parseMcpBindingConfig } from "../../src/host/mcp-binding-config.js";
-import { createLiveMcpComposition, projectEndpointDiscovery, observeLiveMcpRuntime } from "../../src/tunnel/live-mcp-composition.js";
+import { createLiveMcpComposition, projectEndpointDiscovery, discoverLiveEndpoints, observeLiveMcpRuntime } from "../../src/tunnel/live-mcp-composition.js";
+import { observeSessionDeparture, observeSessionArrival } from "../../src/tunnel/session-switch-observation.js";
 import { initializeLivePolicy, createLivePolicyRegistration, readLivePolicy } from "../../src/tunnel/live-session-policy.js";
 import { CeEndpointHost } from "../../src/host/endpoint-host.js";
 import { CeBoundEndpoint } from "../../src/host/bound-endpoint.js";
 import { cleanupFixtures, fixture } from "../storage/support/participant-fixture.js";
 import { callEndpointDiscovery } from "../../src/control/mcp/endpoint-discovery.js";
+import { createCurrentRuntimeObserver, discoverCurrentRuntimes } from "../../src/tunnel/current-runtime-binding.js";
 
 afterEach(cleanupFixtures);
 function setup(timers?: import("../../src/host/bound-endpoint.js").TimerSeams) {
@@ -124,4 +126,87 @@ it("rejects mismatched global launch ceilings before creating any binding", asyn
   const f = setup();
   try { expect(() => createLiveMcpComposition({ ...f.config, payloadRead: { enabled: false } })).toThrow(); }
   finally { await f.bound.shutdown(); }
+});
+
+it("exposes a witnessed replacement through the MCP port without changing old messages or ACKs", async () => {
+  const f = setup();
+  const register = (id: string) => f.api.register({ expectedDigest: readLivePolicy(f.ref).digest, registration: { runtimeSessionId: `native-${id}`, endpointId: `pi/${id}`, payloadRead: false, ack: false, presenceDisclosure: true } });
+  register("B");
+  const pi = new CeEndpointHost(f.store, { adapter: "pi", allowlist: [{ endpointId: "pi/B" }], recipients: [f.config.endpoint], exchangeNamespace: "live", exchangeIdempotencyKey: "test" });
+  pi.beginSession("pi/B");
+  try {
+    const message = f.bound.send({ to: "pi/B", text: "pending old work", idempotencyKey: "old-work" });
+    const before = f.store.database.prepare("SELECT * FROM message").all();
+    const receipts = f.store.database.prepare("SELECT * FROM delivery_ack_receipt").all();
+    pi.end("pi/B");
+    observeSessionDeparture(f.ref, { runtimeSessionId: "native-B", endpointId: "pi/B", epoch: 1, sessionFile: join(f.directory, "old.jsonl"), targetSessionFile: join(f.directory, "new.jsonl") });
+    observeSessionArrival(f.ref, { runtimeSessionId: "native-C", previousSessionFile: join(f.directory, "old.jsonl"), sessionFile: join(f.directory, "new.jsonl") });
+    const query = () => callEndpointDiscovery({ discover: previous => discoverLiveEndpoints(f.composition, f.bound, previous) }, { previousEndpointId: "pi/B" });
+    expect(query().structuredContent).toMatchObject({ sessionSwitch: { status: "unknown" } });
+    expect(() => f.bound.send({ to: "pi/C", text: "not authorized", idempotencyKey: "denied" })).toThrow();
+    register("C");
+    const writes = f.store.database.prepare("SELECT total_changes() AS n").get();
+    expect(query().structuredContent).toMatchObject({ sessionSwitch: { status: "verified", previousEndpointId: "pi/B", successorEndpointId: "pi/C" }, targets: expect.arrayContaining([expect.objectContaining({ endpointId: "pi/C", registered: true, authorized: { send: true }, reachable: "unknown" })]) });
+    expect(f.store.database.prepare("SELECT total_changes() AS n").get()).toEqual(writes);
+    expect(f.store.database.prepare("SELECT * FROM message").all()).toEqual(before);
+    expect(f.store.database.prepare("SELECT * FROM delivery_ack_receipt").all()).toEqual(receipts);
+    expect(message.disposition).toBe("CREATED");
+    // Independently authorized addressing still does not prove that Pi has joined.
+    expect(() => f.bound.send({ to: "pi/C", text: "not joined", idempotencyKey: "not-joined" })).toThrow();
+  } finally { pi.drop("pi/B"); await f.bound.shutdown(); }
+});
+
+it("requires caller authorization, presence and active policy for current Runtime discovery", async () => {
+  const f = setup(), observer = createCurrentRuntimeObserver(f.ref, "workbench"); observer.observe("native-A");
+  f.api.register({ expectedDigest: readLivePolicy(f.ref).digest, registration: { endpointId: "pi/A", runtimeSessionId: "native-A", payloadRead: true, ack: true, presenceDisclosure: true } });
+  try {
+    const read = () => discoverLiveEndpoints(f.composition, f.bound, undefined, "workbench");
+    expect(read()).toMatchObject({ currentBinding: { status: "verified", endpointId: "pi/A" } });
+    f.api.register({ expectedDigest: readLivePolicy(f.ref).digest, registration: { endpointId: "pi/A", runtimeSessionId: "native-A", payloadRead: true, ack: true, presenceDisclosure: false } });
+    expect(read()).toMatchObject({ currentBinding: { status: "unknown" }, runtimes: [] });
+    f.api.register({ expectedDigest: readLivePolicy(f.ref).digest, registration: { endpointId: "pi/A", runtimeSessionId: "native-A", payloadRead: true, ack: true, presenceDisclosure: true } });
+    f.api.revoke({ expectedDigest: readLivePolicy(f.ref).digest, endpointId: "pi/A" });
+    expect(discoverCurrentRuntimes(readLivePolicy(f.ref), ["pi/A"], "workbench").currentBinding?.status).toBe("unknown");
+    // No active registration means bound.discover itself cannot grant a target.
+    expect(() => read()).toThrow(); observer.stop();
+  } finally { await f.bound.shutdown(); }
+});
+it("limits caller targets to the selected Runtime's current Session and exposes no stale fallback", async () => {
+  const f = setup(), observer = createCurrentRuntimeObserver(f.ref, "workbench"); observer.observe("native-A");
+  f.api.register({ expectedDigest: readLivePolicy(f.ref).digest, registration: { endpointId: "pi/A", runtimeSessionId: "native-A", payloadRead: true, ack: true, presenceDisclosure: true } });
+  try {
+    f.api.register({ expectedDigest: readLivePolicy(f.ref).digest, registration: { endpointId: "pi/B", runtimeSessionId: "native-B", payloadRead: false, ack: false, presenceDisclosure: true } });
+    const pi = new CeEndpointHost(f.store, { adapter: "pi", allowlist: [{ endpointId: "pi/B" }], recipients: [f.config.endpoint], exchangeNamespace: "live", exchangeIdempotencyKey: "test" });
+    pi.beginSession("pi/B");
+    try {
+      const read = () => discoverLiveEndpoints(f.composition, f.bound, undefined, "workbench");
+      expect(read().targets.map(t => t.endpointId)).toEqual(["pi/A"]);
+      observer.observe("native-B"); expect(read().targets.map(t => t.endpointId)).toEqual(["pi/B"]);
+      observer.stop(); expect(read()).toMatchObject({ targets: [], currentBinding: { status: "unknown" } });
+    } finally { pi.end("pi/B"); }
+  } finally { await f.bound.shutdown(); }
+});
+
+
+
+it("fails the complete current Runtime relation closed on a mid-query policy tip change", async () => {
+  const f = setup(); createCurrentRuntimeObserver(f.ref, "workbench").observe("native-A");
+  try {
+    const discover = f.bound.discover.bind(f.bound);
+    const port = { discover: () => { const result = discover(); f.api.register({ expectedDigest: readLivePolicy(f.ref).digest, registration: { endpointId: "pi/B", runtimeSessionId: "native-B", payloadRead: false, ack: false, presenceDisclosure: true } }); return result; } } as CeBoundEndpoint;
+    const result = discoverLiveEndpoints(f.composition, port, undefined, "workbench");
+    expect(result.runtimes).toEqual([]); expect(result.currentBinding).toEqual({ status: "unknown", runtimeId: "workbench" });
+  } finally { await f.bound.shutdown(); }
+});
+
+
+it("returns unknown if policy changes during caller-bound discovery", async () => {
+  const f = setup();
+  try {
+    const discover = f.bound.discover.bind(f.bound);
+    const changed = { ...f.composition, snapshot: vi.fn(f.composition.snapshot) };
+    const port = { discover: () => { const result = discover(); f.api.register({ expectedDigest: readLivePolicy(f.ref).digest, registration: { endpointId: "pi/B", runtimeSessionId: "native-B", payloadRead: false, ack: false, presenceDisclosure: false } }); return result; } } as CeBoundEndpoint;
+    expect(discoverLiveEndpoints(changed, port, "pi/A").sessionSwitch).toEqual({ status: "unknown", previousEndpointId: "pi/A" });
+    expect(changed.snapshot).toHaveBeenCalledTimes(2);
+  } finally { await f.bound.shutdown(); }
 });
