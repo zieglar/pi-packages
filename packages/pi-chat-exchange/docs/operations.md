@@ -16,6 +16,9 @@ Executable admission checks ownership/permissions on the original path, symlink 
 
 Storage enforces identity, migration checksums, integrity, leases/fencing and payload authorization. File permissions do not eliminate every filesystem race, mount substitution or crash/power-loss risk. In-memory runtime probes do not establish disk durability. See [Storage security](storage-security.md), [Storage contract](storage-contract.md) and [Ownership contract](ownership-contract.md).
 
+
+TaskOwner sidecars default to the existing endpoint-equality check. A sidecar with an explicit `piEndpoint` may select `ownerProof: "ce-store-v1"` to read a CE Ownership Guard Store's private `scope.json`, `metadata` projection and `owners` registration. The lookup verifies their exact scope and labels and returns `UNVERIFIED` for missing, conflicting or unsafe records. It observes the owner record when opened; it cannot revoke an already returned result or protect against replacement or rollback of the trusted private Store. Live lease, recipient and policy admission still apply. A local registration, endpoint or successful query does not establish desktop identity or authorize business execution.
+
 ## Diagnose by layer
 
 | Symptom | Check and response |

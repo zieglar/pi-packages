@@ -221,7 +221,16 @@ class Store:
 
     def fetch(self, message_id, current_chat, execute_tool):
         with self.locked():
-            outcome = decide(self.projection(message_id), current_chat)
+            projection = self.projection(message_id)
+            outcome = decide(projection, current_chat)
+            if outcome == 'MATCH':
+                try:
+                    owner = auto_wake.read_private(self.root / 'owners' / (projection['requestMessageId'] + '.json'))
+                except (OSError, ValueError):
+                    owner = None
+                expected = {key: projection[key] for key in ('projectLabel', 'taskOwner', 'ownerStatus')}
+                if owner != expected:
+                    outcome = 'UNVERIFIED'
             if outcome != 'MATCH':
                 return {'outcome': outcome, 'payloadRead': 'NOT_ATTEMPTED', 'suppressOrdinaryReply': True}
             state = self.state(message_id)

@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { isAbsolute, join, parse, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import { validMessageId, validRegisteredTaskOwner, type TaskOwnerPort } from "./task-owner.js";
 
 const MAX_BYTES = 16_384;
@@ -9,6 +9,7 @@ export interface TaskOwnershipSidecar {
   readonly schemaVersion: 1;
   readonly registryDirectory: string;
   readonly piEndpoint?: string;
+  readonly ownerProof?: "ce-store-v1";
 }
 
 export interface TaskOwnerScope {
@@ -77,25 +78,48 @@ export function loadTaskOwnershipSidecar(configPath: string): TaskOwnershipSidec
   }
   try {
     const value = parseFlatUniqueJson(readPrivateBounded(path));
-    const expectedKeys = "piEndpoint" in value ? 3 : 2;
-    if (Object.keys(value).length !== expectedKeys || value.schemaVersion !== 1 || typeof value.registryDirectory !== "string" ||
-      value.registryDirectory.includes("\0") || !isAbsolute(value.registryDirectory) || resolve(value.registryDirectory) !== value.registryDirectory) return invalid();
+    if (Object.keys(value).some(key => !["schemaVersion", "registryDirectory", "piEndpoint", "ownerProof"].includes(key)) ||
+        value.schemaVersion !== 1 || typeof value.registryDirectory !== "string" ||
+        value.registryDirectory.includes("\0") || !isAbsolute(value.registryDirectory) || resolve(value.registryDirectory) !== value.registryDirectory) return invalid();
     const piEndpoint = value.piEndpoint;
     if ("piEndpoint" in value && (typeof piEndpoint !== "string" || !/^pi\/[A-Za-z0-9-]{1,64}$/.test(piEndpoint))) return invalid();
+    if ("ownerProof" in value && (value.ownerProof !== "ce-store-v1" || typeof piEndpoint !== "string")) return invalid();
     return { schemaVersion: 1, registryDirectory: value.registryDirectory,
-      ...(typeof piEndpoint === "string" ? { piEndpoint } : {}) };
+      ...(typeof piEndpoint === "string" ? { piEndpoint } : {}),
+      ...(value.ownerProof === "ce-store-v1" ? { ownerProof: "ce-store-v1" } : {}) };
   } catch { return invalid(); }
 }
 
-export function createTaskOwnerRegistryPort(directory: string, scope: TaskOwnerScope): TaskOwnerPort {
+export function createTaskOwnerRegistryPort(directory: string, scope: TaskOwnerScope, ownerProof?: "ce-store-v1"): TaskOwnerPort {
   return Object.freeze({ lookup(messageId: string): unknown {
     const unverified = { messageId, ownerStatus: "UNVERIFIED" as const };
     if (!validMessageId(messageId)) return unverified;
     try {
+      if (ownerProof === undefined) {
+        assertPrivateDirectory(directory);
+        const candidate = parseFlatUniqueJson(readPrivateBounded(join(directory, `${messageId}.json`)));
+        if (!validRegisteredTaskOwner(candidate) || candidate.messageId !== messageId || candidate.exchangeId !== scope.exchangeId ||
+            candidate.from !== scope.from || candidate.to !== scope.to || candidate.taskOwner !== scope.from) return unverified;
+        return candidate;
+      }
+      if (basename(directory) !== "metadata") return unverified;
+      const registryRoot = dirname(directory);
+      const owners = join(registryRoot, "owners");
+      assertPrivateDirectory(registryRoot);
       assertPrivateDirectory(directory);
+      assertPrivateDirectory(owners);
+      const registryScope = parseFlatUniqueJson(readPrivateBounded(join(registryRoot, "scope.json")));
+      if (Object.keys(registryScope).length !== 3 || registryScope.exchangeId !== scope.exchangeId ||
+          registryScope.from !== scope.from || registryScope.to !== scope.to) return unverified;
       const candidate = parseFlatUniqueJson(readPrivateBounded(join(directory, `${messageId}.json`)));
       if (!validRegisteredTaskOwner(candidate) || candidate.messageId !== messageId || candidate.exchangeId !== scope.exchangeId ||
-        candidate.from !== scope.from || candidate.to !== scope.to || candidate.taskOwner !== scope.from) return unverified;
+          candidate.from !== scope.from || candidate.to !== scope.to) return unverified;
+      // The Store writes CONFLICT to the owner before updating any projections.
+      // Opening the owner last makes a successful lookup valid at that instant,
+      // assuming supported Store writes and no rollback of its private directory.
+      const owner = parseFlatUniqueJson(readPrivateBounded(join(owners, `${candidate.requestMessageId}.json`)));
+      if (Object.keys(owner).length !== 3 || owner.ownerStatus !== "REGISTERED" ||
+          owner.projectLabel !== candidate.projectLabel || owner.taskOwner !== candidate.taskOwner) return unverified;
       return candidate;
     } catch { return unverified; }
   } });

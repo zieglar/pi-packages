@@ -39,7 +39,7 @@ export function createTaskOwnerComposition(
   const initial = host.status(config.endpoint.endpointId);
   if (initial.lease !== "ACTIVE" || initial.exchangeId === undefined) throw new Error(INVALID);
   const scope = Object.freeze({ exchangeId: initial.exchangeId, from: selected.endpointId, to: config.endpoint.endpointId });
-  const taskOwner = createTaskOwnerRegistryPort(sidecar.registryDirectory, scope);
+  const taskOwner = createTaskOwnerRegistryPort(sidecar.registryDirectory, scope, sidecar.ownerProof);
 
   const taskOwnerAdmission = (): void => {
     const operational = bound.operationalStatus();
