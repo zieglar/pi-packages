@@ -2,7 +2,14 @@
 
 # 更新日志
 
-## 0.3.2（候选，尚未发布）
+## 0.3.3（候选）
+
+- 将 Session Switch、显式/当前 Runtime Binding、Named Groups 与 `ce-bind` 统一纳入正式源码和构建链。
+- 重建 TaskOwner Guard：私有有界 registry 读取并在每次查询前重新执行实时准入；Runtime 选择与消息投递均不授予归属权。
+- 新增默认关闭、绑定精确 launch digest 的 Source Metadata Probe，仅用于一次真实 `ping` 观察，不暴露来源元数据。
+- 保留 0.3.2 native-read 行为及既有消息、ACK、Hooks、Native 与 Tunnel 权限边界。范围与限制见 [0.3.3](docs/releases/0.3.3.zh-CN.md)。
+
+## 0.3.2
 
 - 原生读取在单次调用内保留协议结果，避免大型工具输出被展示 Hook 压缩后无法校验。注册 SDK 工具和 Hook 仍照常执行，错误与严格原生校验保持有效。
 - 将 native-read 协议模块纳入制品运行依赖，覆盖展示替换后仍能精确接收的回归场景。

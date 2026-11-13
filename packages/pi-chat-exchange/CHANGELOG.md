@@ -2,7 +2,14 @@
 
 # Changelog
 
-## 0.3.2 (candidate; not released)
+## 0.3.3 (candidate)
+
+- Unify Session Switch, explicit/current Runtime Binding, Named Groups and `ce-bind` in the formal source and package build.
+- Restore the TaskOwner guard with private bounded registry reads and fresh live admission; Runtime selection and message delivery do not grant ownership.
+- Add the default-off, exact-launch-digest Source Metadata Probe for one real `ping` observation without exposing source metadata.
+- Preserve the 0.3.2 native-read behavior and existing messaging, ACK, Hooks, Native and Tunnel authority boundaries. See [0.3.3 scope and limits](docs/releases/0.3.3.md).
+
+## 0.3.2
 
 - Preserve invocation-scoped native read results when presentation Hooks compact large tool output. Registered SDK tools and Hooks still run; errors and strict native validation remain authoritative.
 - Add the native-read protocol module to the packed runtime closure and cover exact reception after display replacement.

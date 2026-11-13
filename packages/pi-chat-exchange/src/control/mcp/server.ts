@@ -40,7 +40,7 @@ import { callEndpointDiscovery, CE_ENDPOINTS_TOOL, CE_ENDPOINTS_TOOL_NAME, type 
 import { callTaskOwner, CE_TASK_OWNER_TOOL, CE_TASK_OWNER_TOOL_NAME, type TaskOwnerPort } from "./task-owner.js";
 
 export const SERVER_NAME = "pi-chat-exchange" as const;
-export const SERVER_VERSION = "0.3.2" as const;
+export const SERVER_VERSION = "0.3.3" as const;
 
 const PING_TOOL = {
   name: PING_TOOL_NAME,
