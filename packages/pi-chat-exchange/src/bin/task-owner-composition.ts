@@ -1,9 +1,9 @@
-import type { CeBoundEndpoint } from "../../host/bound-endpoint.js";
-import type { CeEndpointHost } from "../../host/endpoint-host.js";
-import type { McpBindingConfig } from "../../host/mcp-binding-config.js";
-import type { createLiveMcpComposition } from "../../tunnel/live-mcp-composition.js";
-import { createTaskOwnerRegistryPort, loadTaskOwnershipSidecar } from "./task-owner-registry.js";
-import type { TaskOwnerPort } from "./task-owner.js";
+import type { CeBoundEndpoint } from "../host/bound-endpoint.js";
+import type { CeEndpointHost } from "../host/endpoint-host.js";
+import type { McpBindingConfig } from "../host/mcp-binding-config.js";
+import type { createLiveMcpComposition } from "../tunnel/live-mcp-composition.js";
+import { createTaskOwnerRegistryPort, loadTaskOwnershipSidecar } from "../control/mcp/task-owner-registry.js";
+import type { TaskOwnerPort } from "../control/mcp/task-owner.js";
 
 const INVALID = "CE_MCP_TASK_OWNERSHIP_INVALID";
 const DENIED = "CE_MCP_TASK_OWNERSHIP_DENIED";

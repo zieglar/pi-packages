@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { createTaskOwnerComposition } from "../../../src/control/mcp/task-owner-composition.js";
+import { createTaskOwnerComposition } from "../../../src/bin/task-owner-composition.js";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });

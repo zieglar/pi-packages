@@ -10,15 +10,11 @@ import { parseMcpBindingConfig, type McpBindingConfig } from "../host/mcp-bindin
 import { readPrivateMessagingFile } from "./messaging-config.js";
 import { readLivePolicy } from "./live-session-policy.js";
 import { discoverCurrentRuntimes, RUNTIME_ID_PATTERN } from "./current-runtime-binding.js";
+import { normalizeRuntimeGroup, RUNTIME_GROUP_PATTERN } from "../runtime/runtime-group.js";
+export { normalizeRuntimeGroup } from "../runtime/runtime-group.js";
 
 const runtime = Type.String({pattern: RUNTIME_ID_PATTERN});
 const revision = Type.String({pattern: "^(unbound|[a-f0-9]{64})$"});
-export const RUNTIME_GROUP_PATTERN = "^[a-z0-9][a-z0-9._-]{0,63}$";
-export function normalizeRuntimeGroup(name: string): string {
-  const normalized = name.normalize("NFKC").toLowerCase();
-  if (!new RegExp(RUNTIME_GROUP_PATTERN).test(normalized)) throw refusal("INVALID");
-  return normalized;
-}
 const groupName = Type.String({pattern: RUNTIME_GROUP_PATTERN});
 const recordFields = {scopeDigest: Type.String({pattern: "^[a-f0-9]{64}$"}),
   nonce: Type.String({pattern: "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"}), runtimeId: Type.Union([runtime, Type.Null()])};

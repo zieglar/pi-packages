@@ -45,8 +45,9 @@ import { CeHookRunner } from "../hooks/runner.js";
 import { isDeepStrictEqual } from "node:util";
 import { effectiveMcpHookRules, readLoadedMultiSessionPolicy, readSelectedMultiSessionPolicy } from "../tunnel/multi-session-policy.js";
 import { createLiveMcpComposition, discoverLiveEndpoints, observeLiveMcpRuntime } from "../tunnel/live-mcp-composition.js";
-import { createTaskOwnerComposition } from "../control/mcp/task-owner-composition.js";
+import { createTaskOwnerComposition } from "./task-owner-composition.js";
 import { createSourceMetadataProbe } from "../control/mcp/source-metadata-probe.js";
+import { sourceMetadataProbeLaunchDigest } from "../runtime/source-metadata-probe-opt-in.js";
 
 debugEvent("server", "SERVER_ENTRY", { version: process.version });
 // Monitor rather than handle exceptions: preserve Node's fatal exit behavior.
@@ -161,7 +162,7 @@ async function main(): Promise<void> {
 
   debugEvent("authority", "OWNERSHIP_ACQUIRED", { owned: true });
   const taskOwner = createTaskOwnerComposition(configPath, config, live, host, bound);
-  const sourceMetadataProbe = createSourceMetadataProbe(launchDigest, process.env.CE_SOURCE_METADATA_PROBE_LAUNCH_DIGEST);
+  const sourceMetadataProbe = createSourceMetadataProbe(launchDigest, sourceMetadataProbeLaunchDigest());
   let probe: Awaited<ReturnType<typeof startLiveAdoptionProbe>> | undefined;
   try {
   if (live !== undefined) {

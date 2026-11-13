@@ -5,7 +5,7 @@ import { Value } from "@sinclair/typebox/value";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import type { ToolCallResult } from "./messaging-tools.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import { normalizeRuntimeGroup, RUNTIME_GROUP_PATTERN } from "../../tunnel/endpoint-runtime-binding.js";
+import { normalizeRuntimeGroup, RUNTIME_GROUP_PATTERN } from "../../runtime/runtime-group.js";
 
 export const CE_ENDPOINTS_TOOL_NAME = "ce_endpoints" as const;
 const closed = { additionalProperties: false } as const;
