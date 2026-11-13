@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "ce": {
+    "version": "0.3.3",
+    "baselineCommit": "4eed8ccbc4dd416f6c69921560afa35b56ccca5f",
+    "runtimeSha256": "3decd5bff264cf759f8238ed484b16ca47f9137743bfad94a0e6790d605b43a9",
+    "worktree": "clean"
+  },
+  "client": {
+    "version": "0.0.20",
+    "sourceCommit": "c2144b0904980bcbae2636cdca4f4167e9818e0b",
+    "publishedAt": "2026-11-06T22:05:17Z",
+    "url": "https://github.com/openai/tunnel-client/releases/tag/v0.0.20"
+  },
+  "testedAt": "2026-11-13T12:23:59.846Z",
+  "environment": {
+    "os": "darwin",
+    "arch": "arm64",
+    "node": "24.21.0",
+    "pi": "1.3.0",
+    "native": "0.1.0"
+  },
+  "offline": {
+    "status": "VERIFIED",
+    "kind": "automated-offline",
+    "testedAt": "2026-11-13T10:09:00.682Z",
+    "hostedRun": 43406867538,
+    "checkoutCommit": "4eed8ccbc4dd416f6c69921560afa35b56ccca5f",
+    "scope": "Exact-runtime official0.0.20 Linux x64 loopback profile, health, normal stop, child failure exit, failure stop, cleanup and synthetic namespace checks. Not manual Cloud; publication still requires a fresh same-run result."
+  },
+  "lifecycle": {
+    "status": "VERIFIED",
+    "kind": "real-client-local",
+    "start": true,
+    "health": true,
+    "normalStop": true,
+    "cleanup": true,
+    "scope": "Same official0.0.20 client, canonical0.3.3 candidate MCP and actual Pi SDK tools in an isolated Store. Normal SIGTERM shutdown, both Sessions detached, ownership released, health file removed, independent process absence and original managed transport restoration verified.",
+    "forced": "NOT_VERIFIED",
+    "ownershipRowsAfterStop": 0,
+    "attachedSessionsAfterStop": 0,
+    "healthRemoved": true,
+    "independentOwnedProcessAbsence": true,
+    "exitStatusCapture": "Raw child exit status values not retained; normal signal and independent process absence were observed."
+  },
+  "cloud": {
+    "status": "VERIFIED",
+    "kind": "manual-cloud",
+    "resourceKind": "existing-tunnel-private-store",
+    "durableMatch": true,
+    "normalOwnershipRelease": true,
+    "hardStopCleanup": true,
+    "receptionOnly": true,
+    "verifiedAt": "2026-11-13T12:23:59.846Z",
+    "scope": "Actual ChatGPT ping/send/inbox/read/ACK through the selected existing Tunnel to canonical candidate0.3.3; actual native Pi SDK tools on the other side. Two fresh messages and receipts; both metadata-only hooks succeeded.",
+    "requestCorrelation": "Exclusive official Cloud poller; a forwarded successful ping and five successful tool completions; no local MCP caller. Relayed actual ChatGPT returns match both durable messages and ACK metadata.",
+    "cleanupMeaning": "Completed bounded normal cleanup and restored the original profile; hardStopCleanup is the existing schema field, not a forced-kill or destructive Cloud recovery claim.",
+    "versionIdentity": "Canonical0.3.3 archive payload was byte-verified before the real window; source runtime digest matches fixed4eed8cc and hosted baseline.",
+    "forward": {
+      "direction": "Pi-to-ChatGPT",
+      "messageId": "msg_01M7ADRM4N6DNREFS5WGECB6GQ",
+      "receiptId": "rcpt_01M7ADSDW6SWVV9G85Y1S22ASS",
+      "createdAudit": 4,
+      "receiptAudit": 7,
+      "payloadDigest": "f9afb07e8b4b6839c43ad29dc205f8e170fd60578124800897bb7c804b58901d",
+      "payloadLength": 77,
+      "deliberateReplay": "REPLAYED"
+    },
+    "reverse": {
+      "direction": "ChatGPT-to-Pi",
+      "messageId": "msg_01M7ADRVGPWV265FX4J58K2GZR",
+      "receiptId": "rcpt_01M7ADRW8Y2BV1NAM1E73YPX3T",
+      "createdAudit": 5,
+      "receiptAudit": 6,
+      "payloadDigest": "0951851fadf46974fd85ce7a6f31de2f54491a25642897e44e768bd4a2e8f6b7",
+      "payloadLength": 78,
+      "deliberateReplay": "NOT_VERIFIED"
+    }
+  },
+  "policyValidation": {
+    "scope": "Existing fixed-source hosted CI and native/policy checks; no redundant full local suite or new gate",
+    "checkoutCommit": "4eed8ccbc4dd416f6c69921560afa35b56ccca5f",
+    "hostedRun": 43387639082
+  },
+  "provenance": {
+    "method": "parent-verified-actual-window-and-user-relayed-peer-results",
+    "operatorManifestSha256": "b2f4740c0ce2300e92c28094bbc97344a721d45fd4af2d46a0c37d7cc49a7d89",
+    "darwinClientSha256": "ea217729ecb82987c599b4eb7192ed0ec011a528dbbde33a8c94d9d6d59cf975",
+    "testedTarballSha256": "ac37723ba9209ab6c4021440946a9319e04eafadd5db87108943a9002af1349d",
+    "digestPolicy": "Existing runtimeDigest, Gate and publication workflows unchanged; no cross-runtime Cloud inheritance.",
+    "retainedFailures": [
+      "Local peer preload initially refused a symlinked temporary Store path before creating a Store, stopping production or sending messages; the canonical path passed local initialization and the later real window.",
+      "The initial exited-peer cleanup was classified as identity drift; independent observations found the processes absent and original transport still running. Controller child reaping was corrected only in the operator fixture."
+    ]
+  },
+  "limitations": [
+    "Manual Cloud limited to macOS arm64, Node24.21.0, Pi1.3.0, Native0.1.0 and official Client0.0.20 on one authorized existing Tunnel with a private Store; real namespaced Cloud NOT_VERIFIED",
+    "Pi used actual SDK-wrapped registered tools driven by the operator; no model business task, automatic intake, TaskOwner migration or desktop submission qualification",
+    "ACK proves reception only; no business completion, exactly-once effect, unknown retry or forced-kill recovery claim",
+    "No new remote slow-Hook, timeout, revocation or epoch scenarios; running Hook effects are not canceled by revocation",
+    "Remote results are user-relayed and corroborated by actual Cloud tool completions and independent durable reads; no raw remote transcript or global per-tool wire-request join",
+    "Earlier local preloading refused a symlinked Store path before production stop or messages; canonical fixture correction and exited-child cleanup history are retained",
+    "Fresh same-run latest-client offline evidence remains mandatory for publication; imported observations do not replace that run"
+  ]
+}
