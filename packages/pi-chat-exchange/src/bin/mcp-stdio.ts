@@ -143,8 +143,11 @@ async function main(): Promise<void> {
     onMessageCommitted: event => hookRunner.publish(event),
   });
 
+  let bound: CeBoundEndpoint | undefined;
+  let probe: Awaited<ReturnType<typeof startLiveAdoptionProbe>> | undefined;
+  try {
   debugEvent("authority", "AUTHORITY_CHECK_STARTED", { stage: "requireUnowned" });
-  const bound = CeBoundEndpoint.start(host, config.endpoint.endpointId, {
+  const activeBound = CeBoundEndpoint.start(host, config.endpoint.endpointId, {
     renewIntervalMs: config.lease.renewIntervalSeconds * 1_000,
     ...(admission === undefined ? {} : { admission }),
     onEvent: (event) => {
@@ -159,12 +162,11 @@ async function main(): Promise<void> {
       );
     },
   });
+  bound = activeBound;
 
   debugEvent("authority", "OWNERSHIP_ACQUIRED", { owned: true });
-  const taskOwner = createTaskOwnerComposition(configPath, config, live, host, bound);
+  const taskOwner = createTaskOwnerComposition(configPath, config, live, host, activeBound);
   const sourceMetadataProbe = createSourceMetadataProbe(launchDigest, sourceMetadataProbeLaunchDigest());
-  let probe: Awaited<ReturnType<typeof startLiveAdoptionProbe>> | undefined;
-  try {
   if (live !== undefined) {
     try {
       const output = execFileSync("/bin/ps", ["-p", String(process.pid), "-o", "lstart="], {
@@ -174,7 +176,7 @@ async function main(): Promise<void> {
       if (match === null) throw new Error("process identity unavailable");
       probe = await startLiveAdoptionProbe({ ref: live.ref, launchDigest,
         identity: { pid: process.pid, startedKey: match[1]! },
-        observe: () => observeLiveMcpRuntime(live, host, bound, store, config.endpoint.endpointId),
+        observe: () => observeLiveMcpRuntime(live, host, activeBound, store, config.endpoint.endpointId),
       });
     } catch {
       // Local observation is advisory. Unsupported socket paths/identity cannot
@@ -185,12 +187,12 @@ async function main(): Promise<void> {
   // HANDOFF-CE-E2B-01: advertise `ce_ack` only when the validated binding
   // declares the ack opt-in; the default surface stays exactly four tools.
   const server = createExchangeMcpServer(undefined, {
-    port: bound, ackEnabled: config.ack.enabled, executionGuard: config.debugExecutionGuard,
+    port: activeBound, ackEnabled: config.ack.enabled, executionGuard: config.debugExecutionGuard,
     ...(taskOwner ?? {}),
     ...(live === undefined
       ? admission === undefined ? {} : { admission: () => admission({ kind: "inbox" }) }
       : { discovery: { discover: (previousEndpointId?: string, runtimeId?: string, useRuntimeBinding?: true, group?: string) =>
-        discoverLiveEndpoints(live, bound, previousEndpointId, runtimeId, useRuntimeBinding, group) } }),
+        discoverLiveEndpoints(live, activeBound, previousEndpointId, runtimeId, useRuntimeBinding, group) } }),
   }, sourceMetadataProbe);
   if (config.debugExecutionGuard.enabled) {
     debugEvent("server", "EXECUTION_GUARD_ARMED", { scope: "tools/call", stage: "unified-dispatch-entry" });
@@ -209,7 +211,7 @@ async function main(): Promise<void> {
       // Transport already gone; the lease release below is what matters.
     }
     const hookCleanup = hookRunner.close();
-    const shutdown = await bound.shutdown();
+    const shutdown = await activeBound.shutdown();
     debugEvent("authority", "OWNERSHIP_RELEASED", { released: shutdown.released, detached: shutdown.detached });
     console.error(
       shutdown.released
@@ -254,7 +256,7 @@ async function main(): Promise<void> {
     try { await probe?.close(); }
     finally {
       const hooks = hookRunner.close();
-      try { await bound.shutdown(); }
+      try { await bound?.shutdown(); }
       finally { await hooks; store.close(); }
     }
   }

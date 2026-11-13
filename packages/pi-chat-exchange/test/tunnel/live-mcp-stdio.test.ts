@@ -11,7 +11,7 @@
  * reachability remain UNVERIFIED here.
  */
 import fs from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { queryLiveAdoptionProbe } from "../../src/tunnel/live-adoption-probe.js";
 import { createExchange } from "../../src/storage/creation.js";
@@ -242,6 +242,37 @@ it("real live MCP child keeps one chatgpt Owner, serves A and B exactly, and ref
       }, { timeout: 5_000 });
     } finally { hostA.end("pi/A"); f.store.close(); }
   }
+});
+
+it("releases chatgpt ownership when TaskOwner composition rejects startup", { timeout: 20_000 }, async () => {
+  const f = fixture();
+  const registry = join(f.dir, "task-owners");
+  fs.mkdirSync(registry, { mode: 0o700 });
+  fs.writeFileSync(`${f.bindingPath}.task-ownership.json`, JSON.stringify({
+    schemaVersion: 1,
+    registryDirectory: registry,
+    piEndpoint: "pi/not-authorized",
+  }), { mode: 0o600 });
+
+  const env: Record<string, string> = { PATH: "/usr/bin:/bin" };
+  if (process.env.HOME) env.HOME = process.env.HOME;
+  const child = spawn(NODE24, [join(process.cwd(), "dist/bin/mcp-stdio.js"), "--config", f.bindingPath], {
+    env,
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let diagnostics = "";
+  child.stderr.on("data", chunk => { diagnostics += String(chunk); });
+  const exitCode = await new Promise<number | null>((resolveExit, reject) => {
+    child.once("error", reject);
+    child.once("exit", resolveExit);
+  });
+
+  expect(exitCode).toBe(1);
+  expect(diagnostics).toContain("CE_MCP_START_FAILED");
+  const participant = readParticipantByEndpoint(f.store, "chatgpt", "chatgpt/main");
+  expect(participant).toBeDefined();
+  expect(readCurrentOwnership(f.store, participant!.participantId)).toBeUndefined();
+  f.store.close();
 });
 
 it("real child permanently stops renewal after invalid policy; restored successor cannot revive writes", { timeout: 60_000 }, async () => {
