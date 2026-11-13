@@ -2,6 +2,12 @@
 
 # Changelog
 
+## 0.3.4 (candidate)
+
+- Allow an explicitly selected CE Store proof to return the registered business owner label for the scoped endpoint, while preserving legacy sidecar behavior.
+- Recheck the authoritative owner under the Python Store lock before reading a payload, including after interrupted conflict updates.
+- See [0.3.4 scope and limits](docs/releases/0.3.4.md).
+
 ## 0.3.3 (candidate)
 
 - Unify Session Switch, explicit/current Runtime Binding, Named Groups and `ce-bind` in the formal source and package build.
