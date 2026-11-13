@@ -16,6 +16,8 @@ Profile 默认 `~/.config/pi-chat-exchange/tunnel/tunnel.yaml`，生成内容使
 
 Storage 强制检查 identity、migration checksum、integrity、lease/fencing 与 payload 权限。文件权限不能消除所有文件系统 race、mount substitution 或 crash/power-loss 风险；内存运行时探针不证明磁盘耐久。详见 [Storage 安全](storage-security.zh-CN.md)、[Storage 契约](storage-contract.zh-CN.md)与 [Ownership 契约](ownership-contract.zh-CN.md)。
 
+TaskOwner sidecar 默认保留 endpoint 等值检查。明确指定 `piEndpoint` 的 sidecar 可选择 `ownerProof: "ce-store-v1"`，读取 CE Ownership Guard Store 的私有 `scope.json`、`metadata` 投影和 `owners` 登记。查询核对范围与标签；记录缺失、冲突或不安全时返回 `UNVERIFIED`。结果反映打开 owner 文件时的状态，不能撤销已返回的结果，也不能防止受信任私有 Store 被替换或回滚。实时 lease、recipient 与 policy 准入仍然适用。本地登记、endpoint 或查询成功均不证明桌面身份，也不授权业务执行。
+
 ## 按层排障
 
 | 症状 | 检查与处理 |

@@ -10,7 +10,10 @@ afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursiv
 function fixture(options: { sidecar?: boolean; selector?: string; recipients?: string[] } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "ce-owner-composition-"))); roots.push(root); fs.chmodSync(root, 0o700);
   const configPath = join(root, "binding.json"); fs.writeFileSync(configPath, "{}", { mode: 0o600 });
-  const registry = join(root, "registry"); fs.mkdirSync(registry, { mode: 0o700 });
+  const registryRoot = join(root, "registry"); fs.mkdirSync(registryRoot, { mode: 0o700 });
+  const registry = join(registryRoot, "metadata"); fs.mkdirSync(registry, { mode: 0o700 });
+  fs.mkdirSync(join(registryRoot, "owners"), { mode: 0o700 });
+  fs.writeFileSync(join(registryRoot, "scope.json"), JSON.stringify({ exchangeId: "exchange-1", from: "pi/session-a", to: "chatgpt/main" }), { mode: 0o600 });
   if (options.sidecar !== false) fs.writeFileSync(`${configPath}.task-ownership.json`, JSON.stringify({ schemaVersion: 1, registryDirectory: registry,
     ...(options.selector === undefined ? {} : { piEndpoint: options.selector }) }), { mode: 0o600 });
   let state = "ACTIVE"; let lease = "ACTIVE"; let active = options.recipients ?? ["pi/session-a"];
@@ -39,9 +42,30 @@ it("binds registry scope to the live exchange and unique Pi owner", () => {
     from: "pi/session-a", to: "chatgpt/main", projectLabel: "Project A", taskOwner: "pi/session-a", ownerStatus: "REGISTERED",
     probeId: "123e4567-e89b-42d3-a456-426614174000" };
   fs.writeFileSync(join(f.registry, `${messageId}.json`), JSON.stringify(registration), { mode: 0o600 });
+  fs.writeFileSync(join(f.registry, "..", "owners", `${registration.requestMessageId}.json`), JSON.stringify({
+    projectLabel: registration.projectLabel, taskOwner: registration.taskOwner, ownerStatus: registration.ownerStatus,
+  }), { mode: 0o600 });
   composed.taskOwnerAdmission();
   expect(composed.taskOwner.lookup(messageId)).toEqual(registration);
   expect(f.admission).toHaveBeenCalledWith({ kind: "inbox" }, expect.objectContaining({ recipients: expect.any(Array) }));
+});
+
+it("enables a business label only for the explicitly selected CE registry", () => {
+  const f = fixture({ selector: "pi/session-a" });
+  fs.writeFileSync(`${f.configPath}.task-ownership.json`, JSON.stringify({
+    schemaVersion: 1, registryDirectory: f.registry, piEndpoint: "pi/session-a", ownerProof: "ce-store-v1",
+  }), { mode: 0o600 });
+  const messageId = "msg_01M73NE8XRRBED0ER5QA9RF9JV";
+  const registration = { schemaVersion: 1, exchangeId: "exchange-1", requestMessageId: "msg_01M73NE8XRRBED0ER5QA9RF9JW", messageId,
+    from: "pi/session-a", to: "chatgpt/main", projectLabel: "Project A", taskOwner: "business-owner", ownerStatus: "REGISTERED",
+    probeId: "123e4567-e89b-42d3-a456-426614174000" };
+  fs.writeFileSync(join(f.registry, `${messageId}.json`), JSON.stringify(registration), { mode: 0o600 });
+  fs.writeFileSync(join(f.registry, "..", "owners", `${registration.requestMessageId}.json`), JSON.stringify({
+    projectLabel: registration.projectLabel, taskOwner: registration.taskOwner, ownerStatus: registration.ownerStatus,
+  }), { mode: 0o600 });
+  const composed = createTaskOwnerComposition(f.configPath, f.config as never, f.live as never, f.host as never, f.bound as never)!;
+  composed.taskOwnerAdmission();
+  expect(composed.taskOwner.lookup(messageId)).toEqual(registration);
 });
 
 it("rechecks bound, lease and live owner identity on every call", () => {

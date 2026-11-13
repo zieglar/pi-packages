@@ -2,6 +2,12 @@
 
 # 更新日志
 
+## 0.3.4（候选）
+
+- 对明确选择的 CE Store 证明，返回作用域内登记的业务 Owner 标签，保留旧 sidecar 行为。
+- 在 Python Store 锁内重新检查 Owner 后才读取正文，包括冲突更新中断的情况。
+- 范围与限制见 [0.3.4](docs/releases/0.3.4.zh-CN.md)。
+
 ## 0.3.3（候选）
 
 - 将 Session Switch、显式/当前 Runtime Binding、Named Groups 与 `ce-bind` 统一纳入正式源码和构建链。

@@ -76,6 +76,22 @@ class OwnershipTests(unittest.TestCase):
         self.store.fetch(OUT, own, execute)
         self.assertEqual(calls, [('ce_read_payload', {'messageId': OUT})])
 
+    def test_interrupted_owner_conflict_cannot_read_stale_projection(self):
+        self.associate()
+        original_write = self.store.write
+        def interrupt(path, value):
+            original_write(path, value)
+            if path.parent.name == 'owners' and value.get('ownerStatus') == 'CONFLICT':
+                raise OSError('synthetic interruption')
+        with mock.patch.object(self.store, 'write', side_effect=interrupt):
+            with self.assertRaises(OSError):
+                self.store.register(REQUEST, 'different', 'synthetic-owner', confirmation='EXPLICIT_USER')
+        calls = []
+        own = {'projectLabel': 'synthetic-project', 'taskOwner': 'synthetic-owner', 'confirmation': 'EXPLICIT_USER'}
+        result = self.store.fetch(OUT, own, lambda *args: calls.append(args))
+        self.assertEqual(result['outcome'], 'UNVERIFIED')
+        self.assertEqual(calls, [])
+
     def test_prompt_contains_exact_ids_without_owner_claim_or_business_execution(self):
         p = self.associate()
         text = guard.prompt(p)
