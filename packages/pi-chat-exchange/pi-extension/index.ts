@@ -121,6 +121,8 @@ interface UiView {
   /** Pi 1.3.0 built-in cancellable operator dialog; never a model tool. */
   confirm?(title: string, message: string, options?: { signal?: AbortSignal; timeout?: number }): Promise<boolean>;
   select?(title: string, options: string[], config?: { signal?: AbortSignal; timeout?: number }): Promise<string | undefined>;
+  /** Pi 1.3.0 non-secret text dialog; used here only for an explicit sender Endpoint label. */
+  input?(title: string, placeholder?: string, options?: { signal?: AbortSignal; timeout?: number }): Promise<string | undefined>;
 }
 
 interface ExtensionContextView {
@@ -3605,7 +3607,12 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       if (selectedMenu === "Session unbind") { await runTunnelCommand("deactivate", ctx); return; }
       if (selectedMenu === "Session list") { await runTunnelCommand("liveSessions", ctx); return; }
       if (selectedMenu === "Inbound status") { await runInboundCommand("status", ctx); return; }
-      if (selectedMenu === "Inbound enable") { notify(ctx, "ce-inbound: sender must be explicit; run /ce inbound enable --from <sender>", "warning"); return; }
+      if (selectedMenu === "Inbound enable") {
+        if (typeof ctx.ui.input !== "function") { notify(ctx, "ce-inbound: change refused CE_TUNNEL_INPUT_UNAVAILABLE", "warning"); return; }
+        const sender = (await ctx.ui.input("CE inbound sender Endpoint", "chatgpt/main"))?.trim();
+        if (sender === undefined) return;
+        await runInboundCommand(`enable --from ${sender}`, ctx); return;
+      }
       if (selectedMenu === "Inbound disable") { await runInboundCommand("disable", ctx); return; }
       if (selectedMenu === "Transport") { await runManager(ctx); return; }
       if (selectedMenu === "Native") { await runNativeCommand("status", ctx); return; }
