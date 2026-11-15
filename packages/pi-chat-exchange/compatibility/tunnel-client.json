@@ -427,6 +427,49 @@
         "The restored production service is running with all three startup attempts consumed; no budget reset was performed.",
         "A fresh official-client offline result from the same authorized publication workflow run remains mandatory."
       ]
+    },
+    {
+      "ce": {
+        "version": "0.3.6",
+        "baselineCommit": "3fea83109184a4d01ae84e8db1fb38ff14974607",
+        "runtimeSha256": "a3144e54284f70d3c44eb11cfb7374e9b1951bc0a29bd20a125c4bddf6e8cb1a",
+        "worktree": "clean"
+      },
+      "client": {
+        "version": "0.0.20",
+        "sourceCommit": "c2144b0904980bcbae2636cdca4f4167e9818e0b",
+        "publishedAt": "2026-11-06T22:05:17Z",
+        "url": "https://github.com/openai/tunnel-client/releases/tag/v0.0.20"
+      },
+      "testedAt": "2026-11-15T19:14:33.355Z",
+      "environment": {
+        "os": "darwin",
+        "arch": "arm64",
+        "node": "24.21.0",
+        "pi": "not-tested",
+        "native": "node-sqlite"
+      },
+      "offline": {
+        "status": "NOT_VERIFIED"
+      },
+      "lifecycle": {
+        "status": "VERIFIED",
+        "kind": "real-client-local",
+        "evidence": "evidence/compat-ce-0.3.6-client-0.0.20.json"
+      },
+      "cloud": {
+        "status": "VERIFIED",
+        "kind": "manual-cloud",
+        "evidence": "evidence/compat-ce-0.3.6-client-0.0.20.json"
+      },
+      "limitations": [
+        "Manual Cloud covers macOS arm64, Node 24.21.0 and node-sqlite with official Client 0.0.20 and one existing Tunnel; other platforms and real namespaced Cloud identity are NOT_VERIFIED.",
+        "The Pi test peer was an exact-candidate MCP runtime driven by the operator, not a production Pi Session; native inbound, automatic model wake, task execution and desktop submission are NOT_VERIFIED.",
+        "ACK records reception only; forced-kill recovery, unknown-result replay, exactly-once business completion and remote revoke or timeout scenarios are NOT_VERIFIED.",
+        "The first parallel Pi fixture start lost the exclusive empty-database creation race, exited before acquiring Owner, and then succeeded when started sequentially.",
+        "The restored production MCP still runs from the pre-existing development worktree; npm installation does not update that command.",
+        "A fresh official-client offline result from the same authorized publication workflow run remains mandatory."
+      ]
     }
   ]
 }
