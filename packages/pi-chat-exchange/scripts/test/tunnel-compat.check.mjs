@@ -8,15 +8,20 @@ const sha = 'a'.repeat(40), digest = 'b'.repeat(64);
 const release = { version: '0.0.19', sourceCommit: sha, publishedAt: '2026-10-30T20:26:10Z', url: 'https://github.com/openai/tunnel-client/releases/tag/v0.0.19' };
 const lane = kind => ({ status: 'VERIFIED', kind, evidence: 'evidence/test.json' });
 function fixture() {
-  return { schemaVersion: 1, regressionVersion: '0.0.19', records: [{ ce: { version: '0.2.2', baselineCommit: sha, runtimeSha256: digest, worktree: 'modified' }, client: release, testedAt: '2026-10-31T12:44:20Z', environment: { os: 'darwin', arch: 'arm64', node: '24.21.0', pi: '1.3.0', native: '0.1.0' }, offline: lane('automated-offline'), lifecycle: lane('real-client-local'), cloud: lane('manual-cloud'), limitations: ['namespaced Cloud NOT_VERIFIED'] }] };
+  return { schemaVersion: 1, regressionVersion: '0.0.19', ciVerifiedVersions: ['0.0.19', '0.0.20'], releaseVersion: '0.0.19', records: [{ ce: { version: '0.2.2', baselineCommit: sha, runtimeSha256: digest, worktree: 'modified' }, client: release, testedAt: '2026-10-31T12:44:20Z', environment: { os: 'darwin', arch: 'arm64', node: '24.21.0', pi: '1.3.0', native: '0.1.0' }, offline: lane('automated-offline'), lifecycle: lane('real-client-local'), cloud: lane('manual-cloud'), limitations: ['namespaced Cloud NOT_VERIFIED'] }] };
 }
 const now = Date.parse('2026-10-31T13:00:00Z');
 const offline = { schemaVersion: 1, status: 'VERIFIED', kind: 'automated-offline', client: release, runtimeSha256: digest, ceVersion: '0.2.2', testedAt: new Date(now).toISOString(), checks: { profile: true, health: true, normalStop: true, childFailureExit: true, failureStop: true, cleanup: true } };
-const decide = (matrix = fixture(), result = offline, latest = release) => releaseDecision({ matrix, offline: result, latest, ceVersion: '0.2.2', runtimeSha256: digest, now });
-test('valid matrix and same-source latest evidence are ready', () => { validateMatrix(fixture()); assert.equal(decide().status, 'RELEASE_READY'); });
-test('latest drift and runtime drift never reuse historical Cloud evidence', () => {
-  assert.equal(decide(fixture(), offline, { ...release, version: '0.0.20', url: 'https://github.com/openai/tunnel-client/releases/tag/v0.0.20' }).status, 'RELEASE_NOT_READY');
+const decide = (matrix = fixture(), result = offline, latest = release) => releaseDecision({ matrix, offline: result, latest, selected: release, ceVersion: '0.2.2', runtimeSha256: digest, now });
+test('valid matrix and same-source baseline evidence are ready', () => { validateMatrix(fixture()); assert.equal(decide().status, 'RELEASE_READY'); });
+test('official latest drift does not invalidate a CI-verified release baseline', () => {
+  const newer = { ...release, version: '0.0.21', url: 'https://github.com/openai/tunnel-client/releases/tag/v0.0.21' };
+  assert.equal(decide(fixture(), offline, newer).status, 'RELEASE_READY');
   const m = fixture(); m.records[0].ce.runtimeSha256 = 'c'.repeat(64); assert.equal(decide(m).status, 'RELEASE_NOT_READY');
+});
+test('unlisted baseline and changed selected client source refuse release', () => {
+  const m = fixture(); m.releaseVersion = '0.0.18'; assert.throws(() => validateMatrix(m));
+  assert.equal(decide(fixture(), { ...offline, client: { ...release, sourceCommit: 'd'.repeat(40) } }).status, 'RELEASE_NOT_READY');
 });
 test('missing, synthetic, blocked or failed Cloud cannot satisfy manual gate', () => {
   for (const status of ['FAILED', 'BLOCKED', 'NOT_VERIFIED']) { const m = fixture(); m.records[0].cloud = { status }; assert.equal(decide(m).status, 'RELEASE_NOT_READY'); }
@@ -48,7 +53,8 @@ test("readMatrix rejects damaged and identity-mismatched evidence files", async 
   assert.throws(() => readMatrix(root));
   const e = m.records[0]; const evidence = { ce: e.ce, client: e.client, testedAt: e.testedAt, offline: e.offline, lifecycle: { ...e.lifecycle, start: true, health: true, normalStop: true, cleanup: true }, cloud: { ...e.cloud, durableMatch: true, normalOwnershipRelease: true, hardStopCleanup: true, receptionOnly: true, forward: { messageId: "msg_A", receiptId: "rcpt_B", createdAudit: 1, receiptAudit: 2 }, reverse: { messageId: "msg_C", receiptId: "rcpt_D", createdAudit: 3, receiptAudit: 4 } } };
   writeFileSync(join(root, "compatibility/evidence/test.json"), JSON.stringify(evidence)); assert.deepEqual(readMatrix(root), m);
-  evidence.ce.runtimeSha256 = "c".repeat(64); writeFileSync(join(root, "compatibility/evidence/test.json"), JSON.stringify(evidence)); assert.throws(() => readMatrix(root));
+  evidence.ce = { ...e.ce, baselineCommit: "d".repeat(40) }; writeFileSync(join(root, "compatibility/evidence/test.json"), JSON.stringify(evidence)); assert.throws(() => readMatrix(root));
+  evidence.ce = { ...e.ce, runtimeSha256: "c".repeat(64) }; writeFileSync(join(root, "compatibility/evidence/test.json"), JSON.stringify(evidence)); assert.throws(() => readMatrix(root));
 });
 test("official archive provenance and checksum failures are refused", async () => {
   const { verifyOfficialChecksumAndAttestation } = await import("../tunnel-compat.mjs");

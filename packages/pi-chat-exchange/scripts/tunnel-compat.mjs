@@ -39,7 +39,7 @@ function readJson(path) {
   catch { throw new Error('Invalid or unreadable Tunnel compatibility JSON'); }
 }
 export function validateMatrix(matrix) {
-  requireValue(object(matrix) && matrix.schemaVersion === 1 && semver.test(matrix.regressionVersion) && Array.isArray(matrix.records) && matrix.records.length > 0, 'matrix');
+  requireValue(object(matrix) && matrix.schemaVersion === 1 && semver.test(matrix.regressionVersion) && Array.isArray(matrix.ciVerifiedVersions) && matrix.ciVerifiedVersions.length > 0 && matrix.ciVerifiedVersions.every(v => typeof v === 'string' && semver.test(v)) && new Set(matrix.ciVerifiedVersions).size === matrix.ciVerifiedVersions.length && matrix.ciVerifiedVersions.includes(matrix.regressionVersion) && matrix.ciVerifiedVersions.includes(matrix.releaseVersion) && Array.isArray(matrix.records) && matrix.records.length > 0, 'matrix');
   const seen = new Set();
   for (const r of matrix.records) {
     requireValue(object(r) && object(r.ce) && semver.test(r.ce.version) && sha.test(r.ce.baselineCommit) && hash.test(r.ce.runtimeSha256) && ['clean', 'modified'].includes(r.ce.worktree), 'ce');
@@ -95,16 +95,17 @@ export async function discoverRelease(version = 'latest', fetcher = fetch) {
   const commit = await api(`commits/${raw.tag_name}`, fetcher);
   return parseRelease(raw, commit.sha);
 }
-export function releaseDecision({ matrix, offline, latest, ceVersion, runtimeSha256, now = Date.now() }) {
-  validateMatrix(matrix); client(latest);
+export function releaseDecision({ matrix, offline, selected, ceVersion, runtimeSha256, now = Date.now() }) {
+  validateMatrix(matrix); client(selected);
   const reasons = [];
-  const record = matrix.records.find(r => r.ce.version === ceVersion && r.ce.runtimeSha256 === runtimeSha256 && r.client.version === latest.version && r.client.sourceCommit === latest.sourceCommit && r.lifecycle.status === 'VERIFIED' && r.cloud.status === 'VERIFIED');
-  if (!record) reasons.push('latest client lacks matching-source reviewed lifecycle and manual Cloud evidence');
+  if (selected.version !== matrix.releaseVersion || !matrix.ciVerifiedVersions.includes(selected.version)) reasons.push('selected client is not the declared CI-verified release baseline');
+  const record = matrix.records.find(r => r.ce.version === ceVersion && r.ce.runtimeSha256 === runtimeSha256 && r.client.version === selected.version && r.client.sourceCommit === selected.sourceCommit && r.lifecycle.status === 'VERIFIED' && r.cloud.status === 'VERIFIED');
+  if (!record) reasons.push('selected client lacks matching-source reviewed lifecycle and manual Cloud evidence');
   const age = now - Date.parse(offline?.testedAt);
   if (!object(offline) || offline.schemaVersion !== 1 || offline.kind !== 'automated-offline' || offline.status !== 'VERIFIED'
-      || offline.ceVersion !== ceVersion || offline.runtimeSha256 !== runtimeSha256 || offline.client?.version !== latest.version || offline.client?.sourceCommit !== latest.sourceCommit
-      || !Number.isFinite(age) || age < 0 || age > 24 * 60 * 60 * 1000 || !requiredChecks.every(k => offline.checks?.[k] === true)) reasons.push('fresh latest-client automated offline lifecycle result missing or invalid');
-  return { status: reasons.length ? 'RELEASE_NOT_READY' : 'RELEASE_READY', latest: latest.version, runtimeSha256, reasons };
+      || offline.ceVersion !== ceVersion || offline.runtimeSha256 !== runtimeSha256 || offline.client?.version !== selected.version || offline.client?.sourceCommit !== selected.sourceCommit
+      || !Number.isFinite(age) || age < 0 || age > 24 * 60 * 60 * 1000 || !requiredChecks.every(k => offline.checks?.[k] === true)) reasons.push('fresh selected-client automated offline lifecycle result missing or invalid');
+  return { status: reasons.length ? 'RELEASE_NOT_READY' : 'RELEASE_READY', clientVersion: selected.version, runtimeSha256, reasons };
 }
 export function readMatrix(root = packageRoot) {
   const directory = join(root, 'compatibility');
@@ -112,7 +113,7 @@ export function readMatrix(root = packageRoot) {
   for (const r of matrix.records) for (const key of ['offline', 'lifecycle', 'cloud']) {
     if (r[key].status !== 'VERIFIED') continue;
     const evidence = readJson(join(directory, r[key].evidence));
-    requireValue(evidence.ce?.runtimeSha256 === r.ce.runtimeSha256 && evidence.client?.sourceCommit === r.client.sourceCommit && evidence.client?.version === r.client.version && evidence[key]?.status === 'VERIFIED', `${key} evidence identity`);
+    requireValue(evidence.ce?.runtimeSha256 === r.ce.runtimeSha256 && evidence.ce?.baselineCommit === r.ce.baselineCommit && evidence.ce?.worktree === r.ce.worktree && evidence.client?.sourceCommit === r.client.sourceCommit && evidence.client?.version === r.client.version && evidence[key]?.status === 'VERIFIED', `${key} evidence identity`);
     requireValue(evidence[key].kind === r[key].kind && evidence.ce.version === r.ce.version && evidence.testedAt === r.testedAt, `${key} evidence scope`);
     if (key === 'lifecycle') requireValue(['start', 'health', 'normalStop', 'cleanup'].every(k => evidence.lifecycle[k] === true), 'lifecycle outcomes');
     if (key === 'cloud') {
@@ -123,11 +124,12 @@ export function readMatrix(root = packageRoot) {
   }
   return matrix;
 }
-export async function assertTunnelReleaseReady({ directory = packageRoot, resultPath = process.env.CE_TUNNEL_COMPAT_RESULT, latest = undefined, now = Date.now() } = {}) {
+export async function assertTunnelReleaseReady({ directory = packageRoot, resultPath = process.env.CE_TUNNEL_COMPAT_RESULT, selected = undefined, now = Date.now(), ci = process.env } = {}) {
   if (!resultPath) throw new Error('RELEASE_NOT_READY: CE_TUNNEL_COMPAT_RESULT must name this release run offline result');
   const matrix = readMatrix(directory), pkg = readJson(join(directory, 'package.json'));
   const offline = readJson(resultPath);
-  const decision = releaseDecision({ matrix, offline, latest: latest ?? await discoverRelease(), ceVersion: pkg.version, runtimeSha256: runtimeDigest(directory), now });
+  if (!sha.test(ci.GITHUB_SHA ?? '') || !/^[0-9]+$/.test(ci.GITHUB_RUN_ID ?? '') || !/^[0-9]+$/.test(ci.GITHUB_RUN_ATTEMPT ?? '') || offline.ci?.sha !== ci.GITHUB_SHA || offline.ci?.runId !== ci.GITHUB_RUN_ID || offline.ci?.attempt !== ci.GITHUB_RUN_ATTEMPT || !hash.test(offline.installation?.sha256 ?? '')) throw new Error('RELEASE_NOT_READY: offline CI run, source or client artifact identity mismatch');
+  const decision = releaseDecision({ matrix, offline, selected: selected ?? await discoverRelease(matrix.releaseVersion), ceVersion: pkg.version, runtimeSha256: runtimeDigest(directory), now });
   if (decision.status !== 'RELEASE_READY') throw new Error(`RELEASE_NOT_READY: ${decision.reasons.join('; ')}`);
   return decision;
 }
@@ -171,7 +173,7 @@ async function main() {
       release = await discoverRelease(version); const installed = await installOfficial(release, join(dirname(resolve(output)), 'official-client'), process.env.CE_TUNNEL_VERIFY_DIR);
       const { exerciseClient } = await import('./tunnel-compat-lifecycle.mjs');
       const checks = await exerciseClient({ binary: installed.binary, root: packageRoot });
-      writeResult(output, { schemaVersion: 1, status: 'VERIFIED', kind: 'automated-offline', ceVersion: JSON.parse(readFileSync(join(packageRoot, 'package.json'))).version, runtimeSha256: runtimeDigest(), testedAt, client: release, installation: installed, checks, environment: { os: process.platform, arch: process.arch, node: process.version }, cloud: { status: 'NOT_VERIFIED' } });
+      writeResult(output, { schemaVersion: 1, status: 'VERIFIED', kind: 'automated-offline', ceVersion: JSON.parse(readFileSync(join(packageRoot, 'package.json'))).version, runtimeSha256: runtimeDigest(), testedAt, client: release, installation: installed, checks, ci: { sha: process.env.GITHUB_SHA ?? null, runId: process.env.GITHUB_RUN_ID ?? null, attempt: process.env.GITHUB_RUN_ATTEMPT ?? null }, environment: { os: process.platform, arch: process.arch, node: process.version }, cloud: { status: 'NOT_VERIFIED' } });
     } catch {
       // Raw client/network logs can contain configuration. Upload only this closed result.
       writeResult(output, { schemaVersion: 1, status: 'FAILED', kind: 'automated-offline', testedAt, client: release, reason: 'Official discovery, verification, install or lifecycle check failed; no fallback performed', cloud: { status: 'NOT_VERIFIED' } });

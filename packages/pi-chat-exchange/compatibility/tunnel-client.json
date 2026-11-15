@@ -1,6 +1,8 @@
 {
   "schemaVersion": 1,
   "regressionVersion": "0.0.19",
+  "ciVerifiedVersions": ["0.0.19", "0.0.20"],
+  "releaseVersion": "0.0.20",
   "records": [
     {
       "ce": {

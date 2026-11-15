@@ -1,6 +1,6 @@
 # Tunnel Client compatibility
 
-Users install the official latest stable Tunnel Client. The pinned PR version is a regression target, not a user installation requirement.
+The release baseline is an explicitly declared CI-verified Tunnel Client version. The independent latest-client monitor continues to report new upstream versions; latest is not a publication prerequisite.
 
 `tunnel-client.json` schema version 1 is the maintained matrix. Each combination binds CE version, baseline commit, actual runtime source digest, client release/source commit, date and environment. `worktree: modified` means the tested patch was not committed at that baseline; its manifest is retained in the sanitized evidence. Never describe the baseline commit alone as the tested patched code.
 
@@ -16,13 +16,13 @@ Statuses are `VERIFIED`, `FAILED`, `NOT_VERIFIED`, `BLOCKED`. A `VERIFIED` lane 
 
 ## Checks and release rules
 
-- **Rule:** PR regression uses the maintained fixed client (currently 0.0.19). **Scope:** CI `tunnel-compat` job. **Check:** matrix/gate/workflow tests, official archive verification, real local client lifecycle. Existing `validate` job owns full TS tests/build/typecheck. **Failure:** REWORK. Configure `Tunnel compatibility (pinned 0.0.19)` as a required branch-protection check externally; workflow code does not change GitHub settings.
+- **Rule:** PR regression covers every `ciVerifiedVersions` entry, currently 0.0.19 and 0.0.20. **Scope:** CI `tunnel-compat` matrix. **Check:** matrix/gate/workflow tests, official archive verification and real local client lifecycle for each version. Existing `validate` job owns full TS tests/build/typecheck. **Failure:** REWORK. Branch protection is configured externally; workflow code does not change GitHub settings.
 - **Rule:** monitor official latest independently of PRs. **Scope:** `tunnel-client-latest.yml`, daily 06:17 UTC and manual. **Check:** GitHub official stable release API and tag commit; full official Linux amd64 bundle, signed SLSA provenance (official signer workflow/ref/source/signer digest, hosted runner), SHA256; then real `run`/health/Stop/fault tests against loopback synthetic resources. **Failure:** workflow FAILED; inspect sanitized result. No downgrade, matrix edit, Issue or PR creation.
-- **Rule:** publication needs current latest evidence for current runtime source. **Scope:** both npm preflight and publish entry points. **Check:** official latest is queried again; a same-run `tunnel-latest` job supplies a no-Cloud result less than 24 hours old; exact client/source/CE version/runtime digest and required outcomes must match. Reviewed matrix lifecycle plus manual Cloud must match the same client/source/runtime. **Failure:** RELEASE_NOT_READY. Missing network evidence fails closed.
+- **Rule:** publication needs evidence for the declared `releaseVersion`, which must appear in `ciVerifiedVersions`. **Scope:** both npm preflight and publish entry points. **Check:** the exact official release and source are resolved again; a same-run `tunnel-baseline` job supplies a no-Cloud result less than 24 hours old, bound to the source SHA, workflow run and attempt, client artifact hash, CE version and runtime digest. Reviewed lifecycle and manual Cloud evidence must match the selected client/source/runtime. **Failure:** RELEASE_NOT_READY. Missing network evidence fails closed.
 
 `runtimeDigest` covers all `src/`, Pi extension files, the packaged `native/tunnel-keychain.swift` helper, and runtime package metadata (name/version/engines/dependencies/peer dependencies/Pi entry). Author-only scripts, tests, docs, workflows and other Native source do not invalidate manual runtime evidence; the Swift helper is included because CE resolves, compiles and runs it. A runtime change requires new authorized evidence; CI cannot refresh manual Cloud. Both the current source digest and the full artifact are still subject to normal build/package/release checks. Changing this digest policy is itself a release-policy change requiring review.
 
-The release client job has only `contents: read` and no OIDC write permission. Its result artifact is downloaded from the same workflow run. The protected publish job rechecks latest immediately before each preflight/publication; it never executes the downloaded client under its OIDC write permission. Green compatibility evidence does not grant publication authority.
+The release client job has only `contents: read` and no OIDC write permission. Its result artifact is downloaded from the same workflow run. The protected publish job rechecks the selected official release immediately before each preflight/publication; it never executes the downloaded client under its OIDC write permission. Green compatibility evidence does not grant publication authority.
 
 ## Coverage boundaries
 

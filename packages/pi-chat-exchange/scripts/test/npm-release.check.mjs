@@ -48,6 +48,8 @@ function invoke(args, { env = {}, routes = {}, scriptPath = releaseScript, cwd =
       CE_NPM_STUB_ROUTES: routesPath,
       EXPECTED_SHA: SHA,
       GITHUB_SHA: SHA,
+      GITHUB_RUN_ID: "123",
+      GITHUB_RUN_ATTEMPT: "1",
       CE_TUNNEL_COMPAT_RESULT: resultPath,
       ...env,
     },
@@ -93,11 +95,18 @@ function tempPackage(fields = {}) {
   const lanes = Object.fromEntries([["offline", "automated-offline"], ["lifecycle", "real-client-local"], ["cloud", "manual-cloud"]].map(([key, kind]) => [key, { status: "VERIFIED", kind, evidence: "evidence/test.json" }]));
   mkdirSync(join(directory, "compatibility/evidence"), { recursive: true });
   const testedAt = new Date().toISOString();
-  writeFileSync(join(directory, "compatibility/tunnel-client.json"), JSON.stringify({ schemaVersion: 1, regressionVersion: "0.0.19", records: [{ ce, client, testedAt, environment: { os: "darwin", arch: "arm64", node: "24.21.0", pi: "1.3.0", native: "0.1.0" }, ...lanes, limitations: [] }] }));
+  writeFileSync(join(directory, "compatibility/tunnel-client.json"), JSON.stringify({ schemaVersion: 1, regressionVersion: "0.0.19", ciVerifiedVersions: ["0.0.19"], releaseVersion: "0.0.19", records: [{ ce, client, testedAt, environment: { os: "darwin", arch: "arm64", node: "24.21.0", pi: "1.3.0", native: "0.1.0" }, ...lanes, limitations: [] }] }));
   writeFileSync(join(directory, "compatibility/evidence/test.json"), JSON.stringify({ ce, client, testedAt, ...lanes, lifecycle: { ...lanes.lifecycle, start: true, health: true, normalStop: true, cleanup: true }, cloud: { ...lanes.cloud, durableMatch: true, normalOwnershipRelease: true, hardStopCleanup: true, receptionOnly: true, forward: { messageId: "msg_ABC", receiptId: "rcpt_DEF", createdAudit: 1, receiptAudit: 2 }, reverse: { messageId: "msg_GHI", receiptId: "rcpt_JKL", createdAudit: 3, receiptAudit: 4 } } }));
-  writeFileSync(join(directory, "tunnel-result.json"), JSON.stringify({ schemaVersion: 1, status: "VERIFIED", kind: "automated-offline", client, ceVersion: ce.version, runtimeSha256: digest, testedAt: new Date().toISOString(), checks: { profile: true, health: true, normalStop: true, childFailureExit: true, failureStop: true, cleanup: true } }));
+  writeFileSync(join(directory, "tunnel-result.json"), JSON.stringify({ schemaVersion: 1, status: "VERIFIED", kind: "automated-offline", client, ceVersion: ce.version, runtimeSha256: digest, testedAt: new Date().toISOString(), ci: { sha: SHA, runId: "123", attempt: "1" }, installation: { sha256: "b".repeat(64) }, checks: { profile: true, health: true, normalStop: true, childFailureExit: true, failureStop: true, cleanup: true } }));
   return directory;
 }
+
+test("offline evidence from another CI run is refused before publication", () => {
+  const result = invoke(["preflight"], { env: { GITHUB_RUN_ID: "999" } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /offline CI run, source or client artifact identity mismatch/);
+  assert.equal(result.calls.length, 0);
+});
 
 test("a missing publish SHA refuses before any npm call", () => {
   const result = invoke(["preflight"], { env: { EXPECTED_SHA: "" } });
