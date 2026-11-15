@@ -350,6 +350,7 @@ export interface TunnelProfileFacts {
   readonly keyFile: string;
   readonly urlFile: string;
   readonly mcpCommand: string | undefined;
+  readonly mcpHttp?: { readonly url: "http://localhost/mcp"; readonly unixSocket: string };
 }
 
 type RecordLoad =
@@ -418,6 +419,11 @@ export function parseTunnelProfile(text: string): TunnelProfileFacts {
   };
   let section: Section | undefined;
   let inCommands = false;
+  let inServerUrls = false;
+  let httpConfigured = false;
+  let httpItemSeen = false;
+  let httpUrl: string | undefined;
+  let httpSocket: string | undefined;
   let itemOpen = false;
   const seen = new Set<string>();
   const found: { tunnelId?: string; organizationId?: string; apiKey?: string; urlFile?: string; mcpCommand?: string } = {};
@@ -428,6 +434,7 @@ export function parseTunnelProfile(text: string): TunnelProfileFacts {
     if (indent === 0) {
       itemOpen = false;
       inCommands = false;
+      inServerUrls = false;
       if (line === "config_version: 1") { section = undefined; continue; }
       const m = /^(\w+):$/.exec(line);
       if (m === null || !(m[1]! in SECTION_KEYS)) throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "profile");
@@ -438,6 +445,24 @@ export function parseTunnelProfile(text: string): TunnelProfileFacts {
     }
     if (section === undefined) throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "profile");
     if (section === "mcp") {
+      if (!inCommands && !inServerUrls && indent === 2 && line === "server_urls:") {
+        inServerUrls = true;
+        httpConfigured = true;
+        continue;
+      }
+      if (inServerUrls) {
+        if (indent === 4 && line === "- channel: main" && !httpItemSeen) {
+          httpItemSeen = true;
+          continue;
+        }
+        if (!httpItemSeen || indent !== 6) throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "mcp.server_urls");
+        const kv = /^(\w+):\s*(.+)$/.exec(line);
+        if (kv === null) throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "mcp.server_urls");
+        if (kv[1] === "url" && httpUrl === undefined) httpUrl = quoted(kv[2]!, "mcp.server_urls.url");
+        else if (kv[1] === "unix_socket" && httpSocket === undefined) httpSocket = quoted(kv[2]!, "mcp.server_urls.unix_socket");
+        else throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "mcp.server_urls");
+        continue;
+      }
       if (!inCommands) {
         if (indent !== 2 || line !== "commands:") throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "mcp");
         inCommands = true;
@@ -508,6 +533,13 @@ export function parseTunnelProfile(text: string): TunnelProfileFacts {
   }
   if (found.urlFile === undefined || !isAbsolute(found.urlFile) || normalize(found.urlFile) !== found.urlFile) {
     throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "health.url_file");
+  }
+  if (httpConfigured) {
+    if (!httpItemSeen || httpUrl !== "http://localhost/mcp" || httpSocket === undefined || !isAbsolute(httpSocket) || normalize(httpSocket) !== httpSocket) {
+      throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "mcp.server_urls");
+    }
+    return { tunnelId: found.tunnelId, organizationId: found.organizationId, keyFile, urlFile: found.urlFile, mcpCommand: undefined,
+      mcpHttp: { url: "http://localhost/mcp", unixSocket: httpSocket } };
   }
   return { tunnelId: found.tunnelId, organizationId: found.organizationId, keyFile, urlFile: found.urlFile, mcpCommand: found.mcpCommand };
 }
@@ -1394,6 +1426,9 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
       throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "profile");
     }
     const facts = parseTunnelProfile(profileText);
+    // HTTP profiles require a trusted binding between the actual Tunnel connection
+    // and the authorized independent runtime; profile parsing alone grants nothing.
+    if (facts.mcpHttp !== undefined) throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "mcp.server_urls.authorization");
     checkKeyFileMetadata(facts.keyFile);
     const profileSha256 = createHash("sha256").update(profileText, "utf8").digest("hex");
     if (expectedProfileSha256 !== undefined && expectedProfileSha256 !== profileSha256) throw new TunnelRefusal("CE_TUNNEL_CONFIG_CONFLICT", "profile");

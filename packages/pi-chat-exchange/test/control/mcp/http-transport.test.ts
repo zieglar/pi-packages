@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
@@ -42,6 +43,22 @@ describe("local MCP HTTP transport", () => {
       expect((await call(socket, {}, { host: "evil.example" })).status).toBe(403);
     } finally {
       await http?.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform !== "darwin")("refuses a private-mode directory with a granting ACL", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ce-http-acl-"));
+    let http: Awaited<ReturnType<typeof startLocalMcpHttp>> | undefined;
+    let refusal: unknown;
+    try {
+      execFileSync("/bin/chmod", ["+a", "everyone allow search", root]);
+      try { http = await startLocalMcpHttp(join(root, "mcp.sock"), () => createExchangeMcpServer()); }
+      catch (error) { refusal = error; }
+      expect(refusal).toBeDefined();
+    } finally {
+      await http?.close();
+      execFileSync("/bin/chmod", ["-N", root]);
       rmSync(root, { recursive: true, force: true });
     }
   });

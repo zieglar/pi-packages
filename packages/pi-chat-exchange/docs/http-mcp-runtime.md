@@ -8,6 +8,8 @@ node dist/bin/mcp-stdio.js --config /absolute/path/binding.json --http-socket /a
 
 The socket directory must already exist, be owned by the effective user, and grant no group or other permissions (for example, mode `0700`). The socket is created with mode `0600`. The endpoint accepts only `POST /mcp`, the `Host: localhost` header, and requests without an `Origin` header. Any process running as the same user that can access the socket can use the bound MCP authority; this is an OS-user boundary, not per-client authentication. Do not expose or proxy the socket to untrusted clients.
 
+The CE background manager does not yet authorize HTTP profiles: it refuses to start them until the actual Tunnel connection can be bound to the authorized Runtime identity. The existing Homebrew launcher remains stdio-only.
+
 Tunnel Client 0.0.20 supports a logical HTTP URL dialed through a Unix socket. In an independently managed tunnel profile, a channel binding can use:
 
 ```yaml

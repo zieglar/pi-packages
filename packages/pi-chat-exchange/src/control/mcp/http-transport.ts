@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { lstatSync, chmodSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, isAbsolute } from "node:path";
@@ -10,6 +11,22 @@ export async function startLocalMcpHttp(socketPath: string, createMcpServer: () 
   const directory = lstatSync(dirname(socketPath));
   if (!directory.isDirectory() || directory.uid !== process.getuid?.() || (directory.mode & 0o077) !== 0) {
     throw new Error("MCP socket directory must be private and owned by the current user");
+  }
+  // Darwin ACL grants can permit access even when POSIX mode is 0700.
+  if (process.platform === "darwin") {
+    let acl: string;
+    try {
+      acl = execFileSync("/bin/ls", ["-lde", dirname(socketPath)], {
+        encoding: "utf8", timeout: 5_000, maxBuffer: 16_384,
+        env: { PATH: "/usr/bin:/bin", LC_ALL: "C" }, stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch { throw new Error("MCP socket directory ACL could not be verified"); }
+    const [header = "", ...entries] = acl.trimEnd().split("\n");
+    if (!/^[bcdlps-][rwxStTs-]{9}[+@ ]/.test(header) ||
+        entries.some(entry => !/^\s*\d+: \S+ deny [a-z_,]+$/.test(entry)) ||
+        (header[10] === "+" && entries.length === 0)) {
+      throw new Error("MCP socket directory ACL must not grant access");
+    }
   }
   const http = createServer((req, res) => {
     if (req.headers.origin !== undefined || req.headers.host !== "localhost") {
