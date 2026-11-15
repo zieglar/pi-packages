@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,7 +24,7 @@ function call(socketPath: string, body: unknown, headers: Record<string, string>
 
 describe("local MCP HTTP transport", () => {
   it("serves the existing ping tool over a private socket and rejects browser origins", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ce-http-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ce-http-"));
     const socket = join(root, "mcp.sock");
     let http: Awaited<ReturnType<typeof startLocalMcpHttp>> | undefined;
     try {
@@ -48,7 +48,7 @@ describe("local MCP HTTP transport", () => {
   });
 
   it.skipIf(process.platform !== "darwin")("refuses a private-mode directory with a granting ACL", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ce-http-acl-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ce-http-acl-"));
     let http: Awaited<ReturnType<typeof startLocalMcpHttp>> | undefined;
     let refusal: unknown;
     try {
@@ -63,8 +63,43 @@ describe("local MCP HTTP transport", () => {
     }
   });
 
+  it.skipIf(process.platform !== "darwin")("refuses a granting ACL on an ancestor directory", async () => {
+    const parent = mkdtempSync(join(realpathSync(tmpdir()), "ce-http-parent-acl-"));
+    const root = join(parent, "private");
+    let http: Awaited<ReturnType<typeof startLocalMcpHttp>> | undefined;
+    let refusal: unknown;
+    try {
+      mkdirSync(root, { mode: 0o700 });
+      execFileSync("/bin/chmod", ["+a", "everyone allow delete_child", parent]);
+      try { http = await startLocalMcpHttp(join(root, "mcp.sock"), () => createExchangeMcpServer()); }
+      catch (error) { refusal = error; }
+      expect(refusal).toBeDefined();
+    } finally {
+      await http?.close();
+      execFileSync("/bin/chmod", ["-N", parent]);
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a private socket directory beneath a replaceable parent", async () => {
+    const parent = mkdtempSync(join(realpathSync(tmpdir()), "ce-http-parent-"));
+    const root = join(parent, "private");
+    let http: Awaited<ReturnType<typeof startLocalMcpHttp>> | undefined;
+    let refusal: unknown;
+    try {
+      mkdirSync(root, { mode: 0o700 });
+      chmodSync(parent, 0o777);
+      try { http = await startLocalMcpHttp(join(root, "mcp.sock"), () => createExchangeMcpServer()); }
+      catch (error) { refusal = error; }
+      expect(refusal).toBeDefined();
+    } finally {
+      await http?.close();
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
   it("refuses a socket directory accessible to other users", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ce-http-unsafe-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ce-http-unsafe-"));
     try {
       chmodSync(root, 0o755);
       await expect(startLocalMcpHttp(join(root, "mcp.sock"), () => createExchangeMcpServer())).rejects.toThrow();
