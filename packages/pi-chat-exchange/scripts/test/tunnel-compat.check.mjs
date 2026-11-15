@@ -19,6 +19,11 @@ test('official latest drift does not invalidate a CI-verified release baseline',
   assert.equal(decide(fixture(), offline, newer).status, 'RELEASE_READY');
   const m = fixture(); m.records[0].ce.runtimeSha256 = 'c'.repeat(64); assert.equal(decide(m).status, 'RELEASE_NOT_READY');
 });
+test('0.0.20 release baseline remains eligible when 0.0.21 exists', () => {
+  const selected = { ...release, version: '0.0.20', sourceCommit: 'e'.repeat(40), url: 'https://github.com/openai/tunnel-client/releases/tag/v0.0.20' };
+  const m = fixture(); m.releaseVersion = selected.version; m.records.push({ ...structuredClone(m.records[0]), client: selected });
+  assert.equal(releaseDecision({ matrix: m, offline: { ...offline, client: selected }, selected, latest: { ...release, version: '0.0.21' }, ceVersion: '0.2.2', runtimeSha256: digest, now }).status, 'RELEASE_READY');
+});
 test('unlisted baseline and changed selected client source refuse release', () => {
   const m = fixture(); m.releaseVersion = '0.0.18'; assert.throws(() => validateMatrix(m));
   assert.equal(decide(fixture(), { ...offline, client: { ...release, sourceCommit: 'd'.repeat(40) } }).status, 'RELEASE_NOT_READY');
