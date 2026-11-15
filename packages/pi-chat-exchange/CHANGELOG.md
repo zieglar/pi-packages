@@ -2,6 +2,13 @@
 
 # Changelog
 
+## 0.3.6 (candidate)
+
+- Consolidate ordinary user operations under `/ce`, with compatibility-only legacy commands hidden from ordinary completion.
+- Add explicit per-Session native inbound enable/disable policy with sender, Session, Endpoint, Exchange, audit-boundary and post-confirmation drift checks.
+- Preserve Owner, message protocol, Store Schema and shared Tunnel/MCP lifecycle boundaries; unavailable status evidence remains `UNKNOWN`.
+- See [0.3.6 scope and limits](docs/releases/0.3.6.md).
+
 ## 0.3.5 (candidate)
 
 - Preserve request and reply associations with Session-bound reply authorization and metadata-only reply lookup.

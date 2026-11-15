@@ -2,6 +2,13 @@
 
 # 更新日志
 
+## 0.3.6（候选）
+
+- 将普通用户操作统一到 `/ce`，旧命令仅保留兼容且不再出现于普通补全。
+- 新增显式的当前 Session native inbound 启用/停用策略，校验 sender、Session、Endpoint、Exchange、audit 边界及确认后漂移。
+- 保持 Owner、消息协议、Store Schema 及共享 Tunnel/MCP 生命周期边界不变；无法验证的状态仍显示 `UNKNOWN`。
+- 范围与限制见 [0.3.6](docs/releases/0.3.6.zh-CN.md)。
+
 ## 0.3.5（候选）
 
 - 持久保存请求与回复关联，按 Session 授权回复并支持仅元数据的回复查询。
