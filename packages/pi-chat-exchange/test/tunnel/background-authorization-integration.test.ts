@@ -1,4 +1,5 @@
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -41,6 +42,89 @@ function fixture(env: NodeJS.ProcessEnv = {}) {
   return { dir, profilePath, store, options, spawned };
 }
 describe("persistent background authorization scope", () => {
+  it("requires a fresh HTTP grant and preserves exclusive start", async () => {
+    const f = fixture({ CE_TUNNEL_BACKGROUND_ALLOW: "1" });
+    const manager = createBackgroundTunnelManager(f.options);
+    manager.grantAuthorization(manager.authorizationScope().digest);
+    const socket = join(f.dir, "mcp.sock");
+    const original = readFileSync(f.profilePath, "utf8");
+    const http = original.replace(/  commands:\n    - channel: main\n      command: .*\n$/,
+      `  server_urls:\n    - channel: main\n      url: "http://localhost/mcp"\n      unix_socket: "${socket}"\n`);
+    expect(http).not.toBe(original);
+    writeFileSync(f.profilePath, http);
+    await expect(createBackgroundTunnelManager(f.options).start()).rejects.toMatchObject({ code: "CE_TUNNEL_BACKGROUND_UNAUTHORIZED" });
+    expect(f.spawned).toHaveLength(0);
+    const options = { ...f.options, timing: { ...f.options.timing!, startupTimeoutMs: 3_000, pollIntervalMs: 10 } };
+    const httpManager = createBackgroundTunnelManager(options);
+    httpManager.grantAuthorization(httpManager.authorizationScope().digest);
+    const server = createServer();
+    try {
+      await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(socket, resolve); });
+      chmodSync(socket, 0o666);
+      await expect(httpManager.start()).rejects.toMatchObject({ code: "CE_TUNNEL_PROFILE_INVALID" });
+      expect(f.spawned).toHaveLength(0);
+      chmodSync(socket, 0o600);
+      await httpManager.start();
+      expect(f.spawned).toHaveLength(1);
+      const second = await createBackgroundTunnelManager(options).start();
+      expect(second.alreadyRunning).toBe(true);
+      expect(f.spawned).toHaveLength(1);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      await httpManager.dispose();
+    }
+  });
+
+  it("does not start HTTP from environment-only permission or without a private socket", async () => {
+    const f = fixture({ CE_TUNNEL_BACKGROUND_ALLOW: "1" });
+    const original = readFileSync(f.profilePath, "utf8");
+    const socket = join(f.dir, "mcp.sock");
+    writeFileSync(f.profilePath, original.replace(/  commands:\n    - channel: main\n      command: .*\n$/,
+      `  server_urls:\n    - channel: main\n      url: "http://localhost/mcp"\n      unix_socket: "${socket}"\n`));
+    const manager = createBackgroundTunnelManager(f.options);
+    await expect(manager.start()).rejects.toMatchObject({ code: "CE_TUNNEL_BACKGROUND_UNAUTHORIZED" });
+    manager.grantAuthorization(manager.authorizationScope().digest);
+    await expect(manager.start()).rejects.toMatchObject({ code: "CE_TUNNEL_PROFILE_INVALID" });
+    expect(f.spawned).toHaveLength(0);
+  });
+
+  it("binds the HTTP socket and requires a separate grant when restoring stdio", () => {
+    const f = fixture({ CE_TUNNEL_BACKGROUND_ALLOW: "1" });
+    const manager = createBackgroundTunnelManager(f.options);
+    const stdio = readFileSync(f.profilePath, "utf8");
+    const stdioDigest = manager.authorizationScope().digest;
+    manager.grantAuthorization(stdioDigest);
+    const socket = join(f.dir, "mcp.sock");
+    const http = stdio.replace(/  commands:\n    - channel: main\n      command: .*\n$/,
+      `  server_urls:\n    - channel: main\n      url: "http://localhost/mcp"\n      unix_socket: "${socket}"\n`);
+    writeFileSync(f.profilePath, http);
+    expect(manager.authorizationStatus()).toBe("changed");
+    const httpDigest = manager.authorizationScope().digest;
+    expect(httpDigest).not.toBe(stdioDigest);
+    manager.grantAuthorization(httpDigest);
+    expect(manager.authorizationStatus()).toBe("granted");
+    writeFileSync(f.profilePath, http.replace(socket, join(f.dir, "other.sock")));
+    expect(manager.authorizationStatus()).toBe("changed");
+    writeFileSync(f.profilePath, stdio);
+    expect(manager.authorizationScope().digest).toBe(stdioDigest);
+    expect(manager.authorizationStatus()).toBe("changed");
+    manager.grantAuthorization(stdioDigest);
+    expect(manager.authorizationStatus()).toBe("granted");
+  });
+
+  it.each(["client", "credential"])("invalidates an HTTP grant when %s identity changes", async target => {
+    const f = fixture({ CE_TUNNEL_BACKGROUND_ALLOW: "1" });
+    const profile = readFileSync(f.profilePath, "utf8").replace(/  commands:\n    - channel: main\n      command: .*\n$/,
+      `  server_urls:\n    - channel: main\n      url: "http://localhost/mcp"\n      unix_socket: "${join(f.dir, "mcp.sock")}"\n`);
+    writeFileSync(f.profilePath, profile);
+    const manager = createBackgroundTunnelManager(f.options);
+    manager.grantAuthorization(manager.authorizationScope().digest);
+    const path = target === "client" ? f.options.clientPath! : join(f.dir, "credential");
+    writeFileSync(path, readFileSync(path, "utf8") + "changed");
+    await expect(manager.start()).rejects.toMatchObject({ code: "CE_TUNNEL_BACKGROUND_UNAUTHORIZED" });
+    expect(f.spawned).toHaveLength(0);
+  });
+
   it("requires permission without env, honors only a fresh grant, and reloads it in a new manager", async () => {
     const f = fixture();
     await expect(createBackgroundTunnelManager(f.options).start()).rejects.toMatchObject({ code: "CE_TUNNEL_BACKGROUND_UNAUTHORIZED" });

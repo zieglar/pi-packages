@@ -492,7 +492,7 @@ describe("background manager v2 — review regression coverage", () => {
     await expect(createBackgroundTunnelManager({ ...h.options, env: {} }).stop()).resolves.toBeUndefined();
   });
 
-  it("refuses HTTP startup under legacy environment opt-in until peer identity is proven", async () => {
+  it("refuses HTTP startup under legacy environment opt-in without an explicit grant", async () => {
     const h = makeHarness();
     const original = readFileSync(h.profilePath, "utf8");
     const profile = original.replace(/  commands:\n    - channel: main\n      command: .*\n$/,
@@ -500,7 +500,7 @@ describe("background manager v2 — review regression coverage", () => {
     expect(profile).not.toBe(original);
     writeFileSync(h.profilePath, profile);
     const manager = createBackgroundTunnelManager({ ...h.options, authorizationDirectory: join(realpathSync(h.dir), "authorization") });
-    await expect(manager.start()).rejects.toMatchObject({ code: "CE_TUNNEL_PROFILE_INVALID" });
+    await expect(manager.start()).rejects.toMatchObject({ code: "CE_TUNNEL_BACKGROUND_UNAUTHORIZED" });
     expect(h.spawnCalls).toHaveLength(0);
   });
 

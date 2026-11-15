@@ -170,6 +170,7 @@ import { dirname, isAbsolute, join, normalize } from "node:path";
 import { TunnelRefusal } from "./codes.js";
 import { TUNNEL_ID_PATTERN } from "./tunnel-id.js";
 import { resolveTunnelClient } from "../runtime/executables.js";
+import { assertPrivateUnixSocket } from "../runtime/private-unix-socket.js";
 import { resolveWrapperIdentityEvidence } from "../runtime/wrapper-identity.js";
 import { createBackgroundAuthorizationStore } from "./background-authorization.js";
 import { captureBackgroundAuthorizationScope, type BackgroundAuthorizationScope } from "./background-scope.js";
@@ -768,7 +769,8 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
     const profileText = readFileSync(profilePath, "utf8");
     const facts = parseTunnelProfile(profileText);
     checkKeyFileMetadata(facts.keyFile);
-    return captureBackgroundAuthorizationScope({ profilePath, profileText, credentialPath: facts.keyFile, mcpCommand: facts.mcpCommand, clientPath });
+    return captureBackgroundAuthorizationScope({ profilePath, profileText, credentialPath: facts.keyFile,
+      mcpCommand: facts.mcpCommand, mcpHttp: facts.mcpHttp, clientPath });
   };
   const authorizationStatus = (): "absent" | "invalid" | "revoked" | "changed" | "granted" | "environment" => {
     const selected = authorizationStore.readSelection();
@@ -1426,9 +1428,10 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
       throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "profile");
     }
     const facts = parseTunnelProfile(profileText);
-    // HTTP profiles require a trusted binding between the actual Tunnel connection
-    // and the authorized independent runtime; profile parsing alone grants nothing.
-    if (facts.mcpHttp !== undefined) throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "mcp.server_urls.authorization");
+    // The legacy environment opt-in does not authorize a new HTTP socket.
+    if (facts.mcpHttp !== undefined && authorizationStatus() !== "granted") {
+      throw new TunnelRefusal("CE_TUNNEL_BACKGROUND_UNAUTHORIZED", "authorization.http");
+    }
     checkKeyFileMetadata(facts.keyFile);
     const profileSha256 = createHash("sha256").update(profileText, "utf8").digest("hex");
     if (expectedProfileSha256 !== undefined && expectedProfileSha256 !== profileSha256) throw new TunnelRefusal("CE_TUNNEL_CONFIG_CONFLICT", "profile");
@@ -1488,6 +1491,12 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
       // Admission uses this final grant snapshot. A concurrent revoke cannot
       // retract an admitted start; Stop is the explicit process cleanup barrier.
       assertAuthorization();
+      if (facts.mcpHttp !== undefined) {
+        // Recheck the explicit grant and the trusted socket immediately before spawn.
+        if (authorizationStatus() !== "granted") throw new TunnelRefusal("CE_TUNNEL_BACKGROUND_UNAUTHORIZED", "authorization.http");
+        try { assertPrivateUnixSocket(facts.mcpHttp.unixSocket); }
+        catch { throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "mcp.server_urls.unix_socket"); }
+      }
       if (clientPath === undefined) throw new TunnelRefusal("CE_TUNNEL_SPAWN_FAILED", "client");
       const runId = `bg-${randomUUID()}`;
       const startedAt = now();
