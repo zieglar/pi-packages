@@ -39,6 +39,7 @@ import {
 } from "../host/mcp-binding-config.js";
 import { debugEvent, errorSummary } from "../control/debug-log.js";
 import { observeTransport } from "../control/mcp/debug-transport.js";
+import { startLocalMcpHttp } from "../control/mcp/http-transport.js";
 import { initializeStore, openStore } from "../storage/store.js";
 import { createMcpPolicyAdmission } from "../tunnel/multi-session-admission.js";
 import { CeHookRunner } from "../hooks/runner.js";
@@ -107,9 +108,10 @@ async function main(): Promise<void> {
     await runStdioServer();
     return;
   }
-  const [flag, configPath] = argv;
-  if (argv.length !== 2 || flag !== "--config" || configPath === undefined || !configPath.startsWith("/")) {
-    fail("CE_MCP_LAUNCH_INVALID", "usage: mcp-stdio.js [--config /absolute/path.json]");
+  const [flag, configPath, socketFlag, socketPath] = argv;
+  if ((argv.length !== 2 && argv.length !== 4) || flag !== "--config" || configPath === undefined || !configPath.startsWith("/") ||
+      (argv.length === 4 && (socketFlag !== "--http-socket" || socketPath === undefined || !socketPath.startsWith("/")))) {
+    fail("CE_MCP_LAUNCH_INVALID", "usage: mcp-stdio.js --config /absolute/path.json [--http-socket /absolute/path.sock]");
   }
   const { config, launchDigest } = loadBindingConfig(configPath);
   // Verify actual launch bytes before Store creation; managed provenance grants nothing.
@@ -186,7 +188,7 @@ async function main(): Promise<void> {
   }
   // HANDOFF-CE-E2B-01: advertise `ce_ack` only when the validated binding
   // declares the ack opt-in; the default surface stays exactly four tools.
-  const server = createExchangeMcpServer(undefined, {
+  const createServer = () => createExchangeMcpServer(undefined, {
     port: activeBound, ackEnabled: config.ack.enabled, executionGuard: config.debugExecutionGuard,
     ...(taskOwner ?? {}),
     ...(live === undefined
@@ -194,11 +196,11 @@ async function main(): Promise<void> {
       : { discovery: { discover: (previousEndpointId?: string, runtimeId?: string, useRuntimeBinding?: true, group?: string) =>
         discoverLiveEndpoints(live, activeBound, previousEndpointId, runtimeId, useRuntimeBinding, group) }, selectedTarget: live.selectedTarget }),
   }, sourceMetadataProbe);
+  const server = socketPath === undefined ? createServer() : undefined;
+  let http: Awaited<ReturnType<typeof startLocalMcpHttp>> | undefined;
   if (config.debugExecutionGuard.enabled) {
     debugEvent("server", "EXECUTION_GUARD_ARMED", { scope: "tools/call", stage: "unified-dispatch-entry" });
   }
-  const transport = observeTransport(new StdioServerTransport());
-  debugEvent("server", "TRANSPORT_CREATED");
 
   let initiated = false;
   const initiateShutdown = async (): Promise<void> => {
@@ -206,7 +208,8 @@ async function main(): Promise<void> {
     initiated = true;
     await probe?.close();
     try {
-      await server.close();
+      await http?.close();
+      await server?.close();
     } catch {
       // Transport already gone; the lease release below is what matters.
     }
@@ -232,11 +235,15 @@ async function main(): Promise<void> {
   // disposition and killing the process before the lease is released.
   process.on("SIGTERM", () => { debugEvent("process", "PROCESS_SIGNAL", { signal: "SIGTERM" }); requestShutdown(); });
   process.on("SIGINT", () => { debugEvent("process", "PROCESS_SIGNAL", { signal: "SIGINT" }); requestShutdown(); });
-  process.stdin.once("end", requestShutdown);
-  process.stdin.once("close", requestShutdown);
-  server.onclose = requestShutdown;
-
-  await server.connect(transport);
+  if (server !== undefined) {
+    debugEvent("server", "TRANSPORT_CREATED");
+    process.stdin.once("end", requestShutdown);
+    process.stdin.once("close", requestShutdown);
+    server.onclose = requestShutdown;
+    await server.connect(observeTransport(new StdioServerTransport()));
+  } else {
+    http = await startLocalMcpHttp(socketPath!, createServer);
+  }
   debugEvent("server", "TRANSPORT_CONNECTED");
   debugEvent("server", "SERVER_READY", { mode: "bound" });
   // HANDOFF-CE-E2B-01: the diagnostic mirrors exactly what the server above
