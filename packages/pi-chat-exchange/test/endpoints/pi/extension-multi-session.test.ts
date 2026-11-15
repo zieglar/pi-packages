@@ -72,11 +72,11 @@ async function fixture(convert = true) {
   if (convert) { await api.convert({ expectedRevision: api.revision(), confirm: true }); await api.register({ expectedRevision: api.revision(), registration: { endpointId: "pi/B", runtimeSessionId: "real-B", payloadRead: true, ack: true } }); }
   for (const [key, value] of Object.entries({ CE_ALLOWLIST: "", CE_STORE_DIR: "", CE_STORE_FILE: "", CE_TUNNEL_PROFILE: profilePath, CE_LEASE_TTL_SECONDS: "", CE_TUNNEL_OFFLINE_TEST: "" })) vi.stubEnv(key, value);
   async function runtime(id: string, entries: Entry[] = []) {
-    const events = new Map<string, Handler>(); const tools = new Map<string, Tool>(); const commands = new Map<string, { handler(args: string, ctx: Context): Promise<void> }>();
+    const events = new Map<string, Handler>(); const tools = new Map<string, Tool>(); const commands = new Map<string, { description: string; getArgumentCompletions?: (prefix: string) => Array<{ value: string }>; handler(args: string, ctx: Context): Promise<void> }>();
     let runtimeId = id; const messages: unknown[] = [];
     const ctx: Context = { mode: "tui", hasUI: true, cwd: join(dir, id), sessionManager: { getSessionId: () => runtimeId, getSessionFile: () => "not-authority", getBranch: () => entries, getEntries: () => entries }, ui: { notify: vi.fn(), confirm: vi.fn(async () => true), custom: vi.fn() } };
     const { default: factory } = await import(new URL("../../../pi-extension/index.ts", import.meta.url).href);
-    const reloadFactory = () => factory({ on: (name: string, handler: Handler) => events.set(name, handler), registerTool: (tool: Tool) => tools.set(tool.name, tool), registerCommand: (name: string, command: { handler(args: string, ctx: Context): Promise<void> }) => commands.set(name, command), appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
+    const reloadFactory = () => factory({ on: (name: string, handler: Handler) => events.set(name, handler), registerTool: (tool: Tool) => tools.set(tool.name, tool), registerCommand: (name: string, command: { description: string; getArgumentCompletions?: (prefix: string) => Array<{ value: string }>; handler(args: string, ctx: Context): Promise<void> }) => commands.set(name, command), appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
       sendMessage: (message: unknown) => { messages.push(message); } });
     reloadFactory();
     const stop = (reason = "quit") => events.get("session_shutdown")!({ reason }, ctx); shutdowns.push(stop);
@@ -84,11 +84,42 @@ async function fixture(convert = true) {
       reloadFactory,
       call: (name: string, input: unknown = {}, toolContext = ctx) => tools.get(name)!.execute("test", input, undefined, undefined, toolContext),
       command: (args: string) => commands.get("ce-tunnel")!.handler(args, ctx),
+      ce: (args: string) => commands.get("ce")!.handler(args, ctx),
+      commands,
       ceStatus: () => commands.get("ce-status")!.handler("", ctx),
       switchSession: () => { runtimeId = "changed-runtime"; }, notices: () => ctx.ui.notify.mock.calls.map(([s]) => String(s)).join("\n") };
   }
   return { dir, profilePath, api, binding, runtime, setProcessState: (state: typeof processState) => { processState = state; } };
 }
+
+it("exposes one canonical /ce tree while legacy commands remain compatibility shims", async () => {
+  const f = await fixture(); const a = await f.runtime("real-A"); await a.start();
+  expect(a.commands.get("ce")!.getArgumentCompletions!("").map(item => item.value)).toEqual(["status", "setup", "session", "inbound", "advanced"]);
+  expect(a.commands.get("ce")!.getArgumentCompletions!("session ").map(item => item.value)).toEqual(["session bind", "session unbind", "session list"]);
+  for (const legacy of ["ce-status", "ce-tunnel", "ce-native", "ce-hooks", "ce-bind"]) {
+    expect(a.commands.get(legacy)?.description).toContain("Compatibility");
+    expect(a.commands.get(legacy)?.getArgumentCompletions).toBeUndefined();
+  }
+  await a.ce("session list"); expect(a.notices()).toContain("pi/A");
+  a.ctx.ui.notify.mockClear(); await a.ce("status"); expect(a.notices()).toContain("mcpSource=UNKNOWN");
+  a.ctx.ui.notify.mockClear(); await a.ce("advanced native status"); expect(a.notices()).toContain("CE_NATIVE_");
+  a.ctx.ui.notify.mockClear(); await a.ce("unknown"); expect(a.notices()).toContain("usage: /ce");
+});
+
+it("enables and disables native inbound only for the current Session after confirmation", async () => {
+  const f = await fixture(); const a = await f.runtime("real-A"); await a.start();
+  const policyDir = f.profilePath + ".native-inbound";
+  await a.ce("inbound enable --from chatgpt/main");
+  expect(a.ctx.ui.confirm).toHaveBeenCalled();
+  const files = fs.readdirSync(policyDir); expect(files).toHaveLength(1);
+  const policyPath = join(policyDir, files[0]!); const enabled = JSON.parse(fs.readFileSync(policyPath, "utf8"));
+  expect(enabled).toMatchObject({ enabled: true, runtimeSessionId: "real-A", endpointId: "pi/A", from: "chatgpt/main" });
+  expect(enabled.afterAuditSequence).toBeGreaterThanOrEqual(0);
+  await a.ce("inbound status"); expect(a.notices()).toContain("inbound=enabled");
+  await a.ce("inbound disable");
+  expect(JSON.parse(fs.readFileSync(policyPath, "utf8"))).toMatchObject({ enabled: false, runtimeSessionId: "real-A", endpointId: "pi/A" });
+  expect(a.entries.some(e => e.customType === "ce-mapping")).toBe(true);
+});
 it("Connect offers a generated minimal Endpoint for a fresh trusted Session without manual identifiers", async () => {
   const f = await fixture(); const c = await f.runtime("brand-new-session"); await c.start();
   vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");
