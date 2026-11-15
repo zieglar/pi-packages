@@ -108,7 +108,7 @@ See the [user guide](../docs/tunnel-setup.md#4-双向-send--inbox--read--ack) fo
 
 `/ce-tunnel permission status|grant|revoke` inspects, explicitly grants or revokes future startup. Connect/start prompts when permission is needed; cancellation does not grant, activate or spawn. Revoke does not stop a running client. See [persistent startup permission](../docs/tunnel-manager-background.md#persistent-startup-permission) for fixed OS-home storage, exact scope, trust checks, legacy fallback and uncertain-write handling. Saved selection is not authority; profile/binding/script/client changes require fresh confirmation. Real Pi restart, cloud, desktop and production acceptance remain unverified for this change.
 
-`/ce-status` displays the native Pi Session, Endpoint, registered state, Participant, CE Session, Exchange, lease and fencing after current admission checks. CE Session is an Owner incarnation, not the native Pi Session. Identifiers are not credentials. `/ce-tunnel status` inspects transport; `/ce-tunnel doctor` checks host/child Node and client trust read-only, without network or Store reads.
+`/ce` is the ordinary entry point. Use `/ce status`, `/ce setup`, `/ce session bind|unbind|list`, `/ce inbound status|enable|disable`, and `/ce advanced transport|native|hooks|bindings|maintenance`. The status view reports the native Pi Session, Endpoint, Participant, CE Session/Owner, Exchange, Tunnel, Native, inbound policy and MCP source; unavailable evidence is `UNKNOWN`. The older `/ce-status`, `/ce-tunnel`, `/ce-native`, `/ce-hooks` and `/ce-bind` commands remain compatibility shims and are not advertised through ordinary completion.
 
 - `session_start` looks up the allowlist using trusted `ctx.sessionManager.getSessionId()`. startup/reload/resume with a mapping validate through `resume()`. Reload without a mapping refuses; other initialization branches may call initial beginSession. New/forked Sessions do not inherit the old mapping.
 - Successful binding uses `pi.appendEntry("ce-mapping", ...)` to save identifiers only. Plaintext capability stays in Host memory. Heartbeat defaults to 30 seconds / TTL 120 seconds and only maintains its own Ownership; it sends/receives no messages.
@@ -137,7 +137,7 @@ With `inboxNotification.enabled`, successful binding and `agent_settled` may eac
 - Current Session/Endpoint/binding are checked before inspection and before publication. Failure latches automatic checks for that generation; explicit Inbox tools remain independent.
 - Without available UI there is no automatic discovery. Display/persistence in TUI/RPC/PI WEB is client behavior. Dismiss does not ACK, and an old notification does not prove current permissions.
 
-Separate opt-in [native inbound task intake](../docs/native-inbound.md) adds bounded metadata polling and a native turn trigger. Its private per-Session policy is independent of `inboxNotification` and CE read/ACK grants. Missing policy keeps task intake disabled.
+Separate opt-in [native inbound task intake](../docs/native-inbound.md) adds bounded metadata polling and a native turn trigger. Enable it with `/ce inbound enable --from <sender>` after the current Session is bound; the command confirms the exact Session/Endpoint/Exchange and current audit boundary, then requires an explicit Pi reload. Its private per-Session policy is independent of `inboxNotification` and CE read/ACK grants. Missing policy keeps task intake disabled.
 
 <a id="信任边界与不提供的能力"></a>
 

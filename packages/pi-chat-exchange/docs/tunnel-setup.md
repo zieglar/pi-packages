@@ -8,6 +8,8 @@ This is the Secure MCP Tunnel path. This working tree prepares local candidate *
 
 For restoring an existing registered session, see [Daily use](daily-use.md). The added connect/disconnect commands reuse existing activation, release and transport gates; load an extension containing this change first.
 
+The canonical user command is `/ce`: use `/ce setup`, `/ce status`, `/ce session bind|unbind|list`, `/ce inbound status|enable|disable`, and `/ce advanced ...`. Legacy `/ce-tunnel`, `/ce-status`, `/ce-native`, `/ce-hooks`, and `/ce-bind` spellings remain compatibility-only. In live mode, connect may reuse an already running shared Tunnel, disconnect releases only the current Pi Session while retaining shared transport, and register publishes current-Session policy without starting or stopping Tunnel; legacy behavior is described separately where it differs.
+
 <a id="1-前提与安装"></a>
 
 ## Native readiness before Tunnel start (0.2.2 candidate)

@@ -3282,15 +3282,16 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
               `authorize = synthetic Keychain fixture only with CE_TUNNEL_OFFLINE_TEST=1; ` +
               `connect = restore this registered Pi session, explicitly authorize persistent background startup if needed, then activate/start or measure selected transport; no shell variable required after grant. ` +
               `permission status|grant|revoke = inspect/confirm/revoke profile-scoped background startup permission; revoke overrides inherited env1 and does not stop an already running client. ` +
-              `disconnect = confirm release of this Pi binding and Stop of the selected shared tunnel (other sessions may lose transport); registration/history stay. ` +
+              `live connect may bind/resume this Pi Session and reuse an already running shared Tunnel; legacy connect may start the selected transport after authorization. ` +
+              `live disconnect releases only this Pi Session and retains the shared Tunnel, registration and history; legacy disconnect may stop the selected shared Tunnel. ` +
               `start/stop = with CE_TUNNEL_OFFLINE_TEST=1 the bundled OFFLINE simulator; otherwise the REAL background client ` +
                 `(detached, survives this session; ownership record + process-identity verified; manual only — no autostart/reconnect); ` +
               `migrate = repair a saved real profile in place (drop the rejected admin_ui keys + repoint the mcp node); ` +
               `deactivate = confirm normal release of this current Pi binding only, preserving registration/history and transport; explicitly activate afterward. ` +
               `doctor = read-only independent host/MCP child qualification and client metadata admission; no client execution, configuration/Store writes or transport operations. ` +
               `status = separate CE segment plus the measured tunnel state (real background or offline simulator). ` +
-              `sessions = exact selected active Endpoints, not loaded MCP evidence; liveSessions = own Endpoint only; register <endpoint> [--payload-read] [--ack] = current real Session only; revoke <endpoint> = exact stable registration; migrate-live = separate STOPPED confirmation, then explicit reload; convert = separate explicit legacy conversion with old-runtime acknowledgement. ` +
-              `Registration requires verified STOPPED transport and confirmations; never stops/starts it. Reload Pi explicitly; Stop then Start separately loads MCP grants. Shared ChatGPT inbox is not conversation isolation. ` +
+              `sessions = exact selected active Endpoints, not loaded MCP evidence; liveSessions = own Endpoint only; live register publishes current-Session policy without starting or stopping Tunnel; legacy register requires verified STOPPED transport; revoke <endpoint> = exact stable registration; migrate-live = separate STOPPED confirmation, then explicit reload; convert = separate explicit legacy conversion with old-runtime acknowledgement. ` +
+              `Registration requires confirmation and never proves a loaded runtime. Reload Pi explicitly; Stop then Start separately loads legacy MCP grants. Shared ChatGPT inbox is not conversation isolation. ` +
               `Transport only: never delivery, ACK, reconciliation or completion evidence. ` +
               `The client reads its key file via the profile's file: reference; lifecycle/status never read existing key contents. Configured != Connected.`,
           );

@@ -95,7 +95,7 @@ Storage 在读取任何正文 bytes 前检查 payload_read scope、ATTACHED Sess
 
 `/ce-tunnel permission status|grant|revoke` 分别检查、明确授予或撤销后续启动。connect/start 需要许可时先询问；取消不授权、不激活、不启动。撤销不终止已运行 client。固定 OS home 存储、精确范围、信任检查、旧版兼容与不确定写入处理见[持久启动许可](../docs/tunnel-manager-background.zh-CN.md#persistent-startup-permission)。记住的选择不是授权；profile、binding、script、client 变化须重新确认。此变更的真实 Pi 重启、云端、桌面与生产验收仍未验证。
 
-`/ce-status` 展示经当前 admission 校验的 native Pi Session、Endpoint、registered、Participant、CE Session、Exchange、lease 和 fencing。CE Session 是 Owner incarnation，不是 native Pi Session；标识符都不是认证凭据。`/ce-tunnel status` 查看 transport；`/ce-tunnel doctor` 只读检查 host/child Node 与 client 信任，不联网或读 Store。
+`/ce` 是普通用户入口：`/ce status`、`/ce setup`、`/ce session bind|unbind|list`、`/ce inbound status|enable|disable`、`/ce advanced transport|native|hooks|bindings|maintenance`。综合状态展示 native Pi Session、Endpoint、Participant、CE Session/Owner、Exchange、Tunnel、Native、inbound 策略和 MCP 来源；无法验证的证据明确显示 `UNKNOWN`。旧 `/ce-status`、`/ce-tunnel`、`/ce-native`、`/ce-hooks`、`/ce-bind` 仅保留兼容，不再出现在普通补全中。
 
 - `session_start` 从可信 `ctx.sessionManager.getSessionId()` 查 allowlist。startup/reload/resume 有 mapping 时经 `resume()` 校验；reload 缺 mapping 拒绝，其他初始化分支可调用初始 beginSession。新/fork 不继承旧 mapping。
 - 成功绑定后 `pi.appendEntry("ce-mapping", ...)` 只保存 identifiers；capability 明文仅在 Host 内存。Heartbeat 默认 30 秒 / TTL 120 秒，仅维持自身 Ownership，不收发消息。
@@ -119,6 +119,8 @@ Storage 在读取任何正文 bytes 前检查 payload_read scope、ATTACHED Sess
 - watermark 只在当前 runtime 内存中保存，不写 delivery_cursor；换代后可能重复通知。预算不完整时必须标明不完整，完整零结果静默。
 - 检查前与发布前校验当前 Session/Endpoint/binding；失败锁住该代自动检查，显式 Inbox 工具仍独立。
 - 无可用 UI 则不自动发现。TUI/RPC/PI WEB 是否显示或保留通知属客户端行为；dismiss 不 ACK，历史通知不证明当前权限仍有效。
+
+需要 native 自动接收时，在当前 Session 完成绑定后执行 `/ce inbound enable --from <sender>`。命令会确认当前 Session、Endpoint、Exchange 与 audit 边界，安全写入该 Session 的私有策略；显式 reload Pi 后才生效。`disable` 只停用当前 Session 策略，不删除历史、不改变 Owner，也不停止 Tunnel/MCP。
 
 ## 信任边界与不提供的能力
 

@@ -103,6 +103,9 @@ it("exposes one canonical /ce tree while legacy commands remain compatibility sh
   await a.ce("session list"); expect(a.notices()).toContain("pi/A");
   a.ctx.ui.notify.mockClear(); await a.ce("status"); expect(a.notices()).toContain("mcpSource=UNKNOWN");
   a.ctx.ui.notify.mockClear(); await a.ce("advanced native status"); expect(a.notices()).toContain("CE_NATIVE_");
+  a.ctx.ui.notify.mockClear(); await a.ce("advanced transport help");
+  expect(a.notices()).toContain("live disconnect releases only this Pi Session and retains the shared Tunnel");
+  expect(a.notices()).toContain("live register publishes current-Session policy without starting or stopping Tunnel");
   a.ctx.ui.notify.mockClear(); await a.ce("unknown"); expect(a.notices()).toContain("usage: /ce");
 });
 

@@ -8,13 +8,15 @@ This feature defaults disabled. CE payload-read permission permits a protected r
 
 First install and adopt an extension version containing `native-inbound.ts`. Preserve the active registration, Store, shared transport and CE grants. Package files on disk do not prove that the current Pi process loaded them. Follow the normal managed installation and reload procedures; do not restart shared Tunnel merely to enable a local timer.
 
+The supported ordinary activation path is `/ce inbound enable --from <sender>`. It requires the current Session to be bound, captures the exact Session/Endpoint/Exchange and current audit high-water, shows them in a TUI confirmation, writes only that Session's policy, and instructs the operator to reload Pi. `/ce inbound status` is read-only. `/ce inbound disable` writes `enabled:false` for the matching current Session and requires reload; it does not delete history, change Owner, ACK messages, or stop Tunnel/MCP.
+
 Default policy path:
 
 ```text
 <selected-profile-path>.native-inbound/<sha256-of-native-Pi-Session-ID>.json
 ```
 
-For example, a profile named `/private/operator/tunnel.yaml` uses a sibling directory `/private/operator/tunnel.yaml.native-inbound/`. Create an operator-owned 0700 directory and an owned 0600 regular policy file. Symlink files, hard links, public permissions, malformed JSON, unknown fields and policies larger than 4096 bytes are refused. `CE_NATIVE_INBOUND_POLICY` can explicitly select a trusted absolute policy path before Pi starts; the policy must still match the current Session and endpoint.
+For example, a profile named `/private/operator/tunnel.yaml` uses a sibling directory `/private/operator/tunnel.yaml.native-inbound/`. The command creates an operator-owned 0700 directory and atomically replaces an owned 0600 regular policy file. Symlink files, hard links, public permissions, malformed JSON, unknown fields and policies larger than 4096 bytes are refused. Manual inspection of this contract is an advanced diagnostic path, not the ordinary activation workflow. `CE_NATIVE_INBOUND_POLICY` can explicitly select a trusted absolute policy path before Pi starts; the policy must still match the current Session and endpoint.
 
 Policy shape (replace every example identity and activation boundary with verified current values):
 
