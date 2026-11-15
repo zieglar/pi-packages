@@ -40,9 +40,47 @@ function fixture(): Fixture {
   const reader = new DatabaseSync(join(directory, "store.sqlite"), { readOnly: true });
   const exchangeId = createExchange(store, { namespace: "owner", idempotencyKey: "exchange-key" },
     { now: () => exchangeTime }).exchange.exchangeId;
+  installRawFaultInjection(store.database);
   const result = { root, store, reader, exchangeId };
   fixtures.push(result);
   return result;
+}
+
+// Tests deliberately corrupt persisted state through raw SQLite. Provide the
+// v8 transaction permit only for direct fixture writes, never for code under test.
+function installRawFaultInjection(db: SqliteConnection): void {
+  const exec = db.exec.bind(db);
+  const prepare = db.prepare.bind(db);
+  const mutate = <T>(sql: string, action: () => T): T => {
+    if (db.isTransaction) return action();
+    exec("BEGIN IMMEDIATE");
+    try {
+      exec("INSERT INTO v8_write_permit(singleton) VALUES (1)");
+      const endpointMutation = /UPDATE\s+message\s+SET\s+(?:from|to)_endpoint_json/i.test(sql);
+      const trigger = endpointMutation ? prepare("SELECT sql FROM sqlite_schema WHERE name='message_endpoints_immutable'").get()?.sql : undefined;
+      if (typeof trigger === "string") exec("DROP TRIGGER message_endpoints_immutable");
+      const result = action();
+      if (typeof trigger === "string") exec(trigger);
+      exec("DELETE FROM v8_write_permit WHERE singleton=1; COMMIT");
+      return result;
+    } catch (error) { try { exec("ROLLBACK"); } catch {} throw error; }
+  };
+  db.exec = (sql) => /\b(?:INSERT|UPDATE|DELETE)\s+(?:INTO\s+|FROM\s+)?(?:message|exchange|idempotency_record|audit_event|disposition)\b/i.test(sql) ? mutate(sql, () => exec(sql)) : exec(sql);
+  db.prepare = (sql) => {
+    const statement = prepare(sql);
+    if (!/^\s*(?:INSERT|UPDATE|DELETE)\b/i.test(sql)) return statement;
+    const run = statement.run.bind(statement);
+    statement.run = (...args) => {
+      const directFixtureWrite = !db.isTransaction;
+      return mutate(sql, () => {
+        if (directFixtureWrite && /^\s*INSERT INTO message\(/i.test(sql)) {
+          prepare("INSERT INTO message_association(message_id,exchange_id,request_message_id,from_endpoint_json,to_endpoint_json,created_at) VALUES (?,?,?,?,?,?)").run(args[0]!, args[1]!, args[0]!, args[2]!, args[3]!, timestamp);
+        }
+        return run(...args);
+      });
+    };
+    return statement;
+  };
 }
 const request = (exchangeId: string, overrides: Record<string, unknown> = {}) =>
   ({ exchangeId, from, to, payload: bytes(), idempotencyKey: "message-key", ...overrides });
@@ -487,7 +525,7 @@ it("T4 preserves conditional-mutation classification on unexpected change counts
   const original = store.database.prepare.bind(store.database);
   store.database.prepare = (sql) => {
     const statement = original(sql);
-    if (sql.startsWith("INSERT INTO message")) {
+    if (sql.startsWith("INSERT INTO message(")) {
       const run = statement.run.bind(statement);
       statement.run = ((...args: Parameters<typeof run>) => ({ ...run(...args), changes: 0 })) as typeof statement.run;
     }
@@ -724,7 +762,7 @@ it("N1 contains an actual copy-cleanup failure without masking the primary error
   let cleanupCalls = 0, insertCalls = 0;
   store.database.prepare = (sql) => {
     const statement = original(sql);
-    if (sql.startsWith("INSERT INTO message")) {
+    if (sql.startsWith("INSERT INTO message(")) {
       const run = statement.run.bind(statement);
       statement.run = ((...args: Parameters<typeof run>) => {
         insertCalls++;

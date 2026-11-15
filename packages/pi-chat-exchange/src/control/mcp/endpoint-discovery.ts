@@ -53,6 +53,7 @@ export const EndpointDiscoveryResultSchema = Type.Object({
     ]),
   }, closed), { maxItems: 128 }),
   sessionSwitch: Type.Optional(SessionSwitchResultSchema),
+  selectedTarget: Type.Optional(Type.Object({ endpointId: previousEndpoint, generation: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }), scope: Type.Literal("shared-mcp-endpoint") }, closed)),
   runtimes: Type.Optional(Type.Array(Type.Object({ runtimeId }, closed), { maxItems: 128 })),
   currentBinding: Type.Optional(CurrentBindingResultSchema),
   runtimeSelection: Type.Optional(RuntimeSelectionSchema),
@@ -71,7 +72,7 @@ const groupArgs = Type.Object({ group: Type.String({ minLength: 1, maxLength: 25
 const argsSchema = Type.Union([legacyArgs, boundArgs, groupArgs]);
 export const CE_ENDPOINTS_TOOL: Tool = {
   name: CE_ENDPOINTS_TOOL_NAME,
-  description: "Read this caller's authorized targets. Use group:<name> to explicitly resolve a local operator's named Runtime group to its independently authorized current Session. Alternatively use runtimeId or useRuntimeBinding:true; do not combine selectors. Groups and unnamed bindings are CE Endpoint scoped. No permissions, receipt or task ownership are inferred; ce_send still requires an exact Endpoint and rechecks authority.",
+  description: "Read this caller's authorized targets. Use group:<name> to explicitly resolve a local operator's named Runtime group to its independently authorized current Session. Alternatively use runtimeId or useRuntimeBinding:true; do not combine selectors. Groups and unnamed bindings are CE Endpoint scoped. A selectedTarget, when present, is shared across conversations; refresh its generation before selected sends. No permissions, receipt or task ownership are inferred; ce_send rechecks authority.",
   inputSchema: { ...Type.Object({ ...legacyArgs.properties, useRuntimeBinding: Type.Optional(Type.Literal(true)), group: Type.Optional(groupArgs.properties.group) }, closed),
     oneOf: [legacyArgs, boundArgs, groupArgs] },
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },

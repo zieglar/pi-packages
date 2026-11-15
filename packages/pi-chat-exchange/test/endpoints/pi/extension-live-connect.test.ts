@@ -39,7 +39,7 @@ vi.mock("../../../dist/endpoints/pi/session-host.js", async (original) => {
   } };
 });
 type Entry = { type: string; customType: string; data: unknown };
-type Context = { mode: string; hasUI: boolean; cwd: string; reload?: () => Promise<void>; sessionManager: { getSessionId(): string; getSessionFile(): string; getBranch(): Entry[]; getEntries(): Entry[] }; ui: { notify: ReturnType<typeof vi.fn>; confirm: ReturnType<typeof vi.fn<(title: string, message: string) => Promise<boolean>>>; custom: ReturnType<typeof vi.fn> } };
+type Context = { mode: string; hasUI: boolean; cwd: string; reload?: () => Promise<void>; sessionManager: { getSessionId(): string; getSessionFile(): string; getBranch(): Entry[]; getEntries(): Entry[] }; ui: { notify: ReturnType<typeof vi.fn>; confirm: ReturnType<typeof vi.fn<(title: string, message: string) => Promise<boolean>>>; select: ReturnType<typeof vi.fn<(title: string, options: string[]) => Promise<string | undefined>>>; custom: ReturnType<typeof vi.fn> } };
 type Handler = (event: { reason: string }, ctx: Context) => Promise<void>;
 type Tool = { name: string; execute(id: string, input: unknown, signal: undefined, update: undefined, ctx: Context): Promise<{ isError?: boolean; details?: Record<string, unknown> }> };
 const dirs: string[] = []; const shutdowns: Array<() => Promise<void>> = [];
@@ -72,7 +72,7 @@ async function fixture(convert = true) {
   async function runtime(id: string, entries: Entry[] = []) {
     const events = new Map<string, Handler>(); const tools = new Map<string, Tool>(); const commands = new Map<string, { handler(args: string, ctx: Context): Promise<void> }>();
     let runtimeId = id;
-    const ctx: Context = { mode: "tui", hasUI: true, cwd: join(dir, id), sessionManager: { getSessionId: () => runtimeId, getSessionFile: () => "not-authority", getBranch: () => entries, getEntries: () => entries }, ui: { notify: vi.fn(), confirm: vi.fn(async () => true), custom: vi.fn() } };
+    const ctx: Context = { mode: "tui", hasUI: true, cwd: join(dir, id), sessionManager: { getSessionId: () => runtimeId, getSessionFile: () => "not-authority", getBranch: () => entries, getEntries: () => entries }, ui: { notify: vi.fn(), confirm: vi.fn(async () => true), select: vi.fn(async () => undefined), custom: vi.fn() } };
     const { default: factory } = await import(new URL("../../../pi-extension/index.ts", import.meta.url).href);
     const reloadFactory = () => factory({ on: (name: string, handler: Handler) => events.set(name, handler), registerTool: (tool: Tool) => tools.set(tool.name, tool), registerCommand: (name: string, command: { handler(args: string, ctx: Context): Promise<void> }) => commands.set(name, command), appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }) });
     reloadFactory();
@@ -81,6 +81,7 @@ async function fixture(convert = true) {
       reloadFactory,
       call: (name: string, input: unknown = {}) => tools.get(name)!.execute("test", input, undefined, undefined, ctx),
       command: (args: string) => commands.get("ce-tunnel")!.handler(args, ctx),
+      ce: () => commands.get("ce")!.handler("", ctx),
       ceStatus: () => commands.get("ce-status")!.handler("", ctx),
       switchSession: () => { runtimeId = "changed-runtime"; }, notices: () => ctx.ui.notify.mock.calls.map(([s]) => String(s)).join("\n") };
   }
@@ -132,6 +133,124 @@ it("Manager observes current binding independently of shared transport and refus
   a.switchSession();
   expect(await frame(a)).toMatch(/Current Session +Unknown/);
   expect(start).not.toHaveBeenCalled(); expect(stop).not.toHaveBeenCalled();
+});
+
+it("does not register a new live session when the user declines", async () => {
+  const f = await fixture();
+  const { createLiveSessionMigration } = await import("../../../dist/tunnel/live-session-migration.js");
+  const migration = createLiveSessionMigration({ profilePath: f.profilePath, manager: seam.manager as never });
+  const migrated = await migration.migrate({ expectedRevision: migration.revision(), confirm: true });
+  const session = await f.runtime("declined-session");
+  session.ctx.reload = vi.fn(async () => { throw Error("unexpected reload"); });
+  session.ctx.ui.confirm.mockResolvedValue(false);
+  await session.start();
+  const { readLivePolicy } = await import("../../../dist/tunnel/live-session-policy.js");
+  expect(readLivePolicy(migrated.ref).manifest.registrations.some(r => r.runtimeSessionId === "declined-session")).toBe(false);
+  expect(session.ctx.reload).not.toHaveBeenCalled();
+  expect(session.entries.some(e => e.customType === "ce-mapping")).toBe(false);
+  await session.stop();
+  await session.start();
+  expect(session.ctx.ui.confirm).toHaveBeenCalledTimes(1);
+});
+
+it("does not connect after the session closes while consent is pending", async () => {
+  const f = await fixture();
+  const { createLiveSessionMigration } = await import("../../../dist/tunnel/live-session-migration.js");
+  const migration = createLiveSessionMigration({ profilePath: f.profilePath, manager: seam.manager as never });
+  const migrated = await migration.migrate({ expectedRevision: migration.revision(), confirm: true });
+  const session = await f.runtime("closing-session");
+  session.ctx.reload = vi.fn(async () => { throw Error("unexpected reload"); });
+  let resolveConsent!: (accepted: boolean) => void;
+  session.ctx.ui.confirm.mockImplementation(() => new Promise(resolve => { resolveConsent = resolve; }));
+  const starting = session.start();
+  await vi.waitFor(() => expect(resolveConsent).toBeDefined());
+  await session.stop();
+  resolveConsent(true);
+  await starting;
+  const { readLivePolicy } = await import("../../../dist/tunnel/live-session-policy.js");
+  expect(readLivePolicy(migrated.ref).manifest.registrations.some(r => r.runtimeSessionId === "closing-session")).toBe(false);
+  expect(session.ctx.reload).not.toHaveBeenCalled();
+});
+
+it("offers to connect a new live session without restarting the shared transport", async () => {
+  const f = await fixture();
+  const { createLiveSessionMigration } = await import("../../../dist/tunnel/live-session-migration.js");
+  const migration = createLiveSessionMigration({ profilePath: f.profilePath, manager: seam.manager as never });
+  const migrated = await migration.migrate({ expectedRevision: migration.revision(), confirm: true });
+  const manager = seam.manager as ReturnType<typeof createBackgroundTunnelManager>;
+  vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");
+  vi.spyOn(manager, "authorizationStatus").mockReturnValue("environment");
+  vi.spyOn(manager, "authorizationScope").mockReturnValue({ digest: "synthetic", profileSha256: "synthetic", clientPath: "/synthetic", credentialPath: "/synthetic" });
+  const stopped = await manager.refresh();
+  vi.spyOn(manager, "refresh").mockResolvedValue({ ...stopped, state: "CONNECTED", running: true, evidence: "health-probe" });
+  vi.spyOn(manager, "start").mockResolvedValue({ runId: "same-run", pid: 123, tunnelId: "tunnel_abcdefgh123456", startedAt: "test", health: "connected", alreadyRunning: true });
+  const stop = vi.spyOn(manager, "stop");
+  const existing = await f.runtime("real-A");
+  await existing.start();
+  const { parseMcpBindingConfig } = await import("../../../dist/host/mcp-binding-config.js");
+  const { createLiveMcpComposition } = await import("../../../dist/tunnel/live-mcp-composition.js");
+  const { CeEndpointHost } = await import("../../../dist/host/endpoint-host.js");
+  const { CeBoundEndpoint } = await import("../../../dist/host/bound-endpoint.js");
+  const config = parseMcpBindingConfig(JSON.parse(fs.readFileSync(migrated.bindingPath, "utf8")));
+  const live = createLiveMcpComposition(config);
+  const host = new CeEndpointHost(seam.stores[0]!, { adapter: "chatgpt", allowlist: [config.endpoint],
+    recipients: config.recipients, liveRecipients: live.recipients, exchangeNamespace: config.exchange.namespace,
+    exchangeIdempotencyKey: config.exchange.idempotencyKey, payloadRead: { enabled: true }, ack: { enabled: true } });
+  const sender = CeBoundEndpoint.start(host, config.endpoint.endpointId, { admission: live.admission, renewIntervalMs: 100000 });
+  const oldMessage = sender.send({ to: "pi/A", text: "work for A", idempotencyKey: "test-old-a" });
+  const session = await f.runtime("new-auto-session");
+  session.ctx.reload = vi.fn(async () => { await session.stop("reload"); session.reloadFactory(); await session.start("reload"); });
+  await session.start();
+  expect(session.ctx.ui.confirm.mock.calls.some(([title]) => title === "Chat Exchange · connect this session?")).toBe(true);
+  const { readLivePolicy } = await import("../../../dist/tunnel/live-session-policy.js");
+  const registration = readLivePolicy(migrated.ref).manifest.registrations.find(r => r.runtimeSessionId === "new-auto-session");
+  expect(registration?.status).toBe("active");
+  expect(registration!.endpointId).toContain("new-auto-session");
+  expect(session.entries.some(e => e.customType === "ce-mapping")).toBe(true);
+  expect(seam.stores[0]!.database.prepare("SELECT * FROM native_session_binding WHERE runtime_session_id=?").get("new-auto-session")).toBeDefined();
+  const target = registration!.endpointId;
+  session.ctx.ui.select.mockImplementation(async (_title, options) => options.find(option => option.includes("new-auto-session")));
+  await session.ce();
+  expect(session.ctx.ui.select.mock.calls[0]![0]).toContain("所有使用此连接的 ChatGPT 对话共享");
+  expect(session.ctx.ui.select.mock.calls[0]![1].some(option => option.includes("new-auto-session") && option.includes("在线"))).toBe(true);
+  const selected = readLivePolicy(migrated.ref).manifest.selectedTarget;
+  expect(selected?.endpointId).toBe(target);
+  expect(seam.stores[0]!.database.prepare("SELECT * FROM selected_session_binding WHERE policy_id=? AND selection_version=?").get(migrated.ref.policyId, selected!.generation)).toBeDefined();
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+  const { createExchangeMcpServer } = await import("../../../dist/control/mcp/server.js");
+  const { discoverLiveEndpoints } = await import("../../../dist/tunnel/live-mcp-composition.js");
+  const server = createExchangeMcpServer("fixture", { port: sender, selectedTarget: live.selectedTarget, discovery: { discover: previous => discoverLiveEndpoints(live, sender, previous) } });
+  const client = new Client({ name: "fixture", version: "1" });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  await Promise.all([client.connect(ct), server.connect(st)]);
+  try {
+    const sent = await client.callTool({ name: "ce_send", arguments: { selectionVersion: selected!.generation, text: "selected via TUI", idempotencyKey: "selected-via-tui" } });
+    expect(sent.isError).not.toBe(true);
+    expect((await session.call("ce_read_payload", { messageId: (sent.structuredContent as { messageId: string }).messageId })).isError).not.toBe(true);
+  } finally { await client.close(); await server.close(); }
+  const policyApi = (await import("../../../dist/tunnel/live-session-policy.js")).createLivePolicyRegistration({ ref: migrated.ref });
+  session.ctx.ui.select.mockImplementationOnce(async (_title, options) => {
+    const snapshot = readLivePolicy(migrated.ref);
+    policyApi.register({ expectedDigest: snapshot.digest, registration: { endpointId: "pi/concurrent", runtimeSessionId: "concurrent", payloadRead: false, ack: false, presenceDisclosure: false } });
+    return options.find(option => option.includes("new-auto-session"));
+  });
+  await session.ce();
+  expect(readLivePolicy(migrated.ref).manifest.selectedTarget).toEqual(selected);
+  expect(session.notices()).toContain("会话或选择已变化");
+  const newMessage = sender.send({ to: target, text: "work for new session", idempotencyKey: "test-new-session" });
+  expect(sender.send({ to: target, text: "work for new session", idempotencyKey: "test-new-session" }).messageId).toBe(newMessage.messageId);
+  expect((await session.call("ce_read_payload", { messageId: newMessage.messageId })).isError).not.toBe(true);
+  expect((await session.call("ce_read_payload", { messageId: oldMessage.messageId })).isError).toBe(true);
+  expect((await existing.call("ce_read_payload", { messageId: oldMessage.messageId })).isError).not.toBe(true);
+  expect(() => sender.send({ to: "pi/not-authorized", text: "denied", idempotencyKey: "test-denied" })).toThrow();
+  const reply = await session.call("ce_send", { to: "chatgpt/main", text: `Result for ${newMessage.messageId}`, idempotencyKey: "test-reply" });
+  expect(reply.isError).not.toBe(true);
+  const replyId = reply.details!.messageId as string;
+  expect(sender.listInbox({}).messages.some(message => message.messageId === replyId)).toBe(true);
+  expect(sender.readPayload({ messageId: replyId }).payloadText).toBe(`Result for ${newMessage.messageId}`);
+  await sender.shutdown();
+  expect(stop).not.toHaveBeenCalled();
 });
 
 it("live B Connect joins a running shared transport and Disconnect retains A", async () => {

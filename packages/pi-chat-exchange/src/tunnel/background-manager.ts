@@ -170,6 +170,7 @@ import { dirname, isAbsolute, join, normalize } from "node:path";
 import { TunnelRefusal } from "./codes.js";
 import { TUNNEL_ID_PATTERN } from "./tunnel-id.js";
 import { resolveTunnelClient } from "../runtime/executables.js";
+import { assertPrivateUnixSocket } from "../runtime/private-unix-socket.js";
 import { resolveWrapperIdentityEvidence } from "../runtime/wrapper-identity.js";
 import { createBackgroundAuthorizationStore } from "./background-authorization.js";
 import { captureBackgroundAuthorizationScope, type BackgroundAuthorizationScope } from "./background-scope.js";
@@ -350,6 +351,7 @@ export interface TunnelProfileFacts {
   readonly keyFile: string;
   readonly urlFile: string;
   readonly mcpCommand: string | undefined;
+  readonly mcpHttp?: { readonly url: "http://localhost/mcp"; readonly unixSocket: string };
 }
 
 type RecordLoad =
@@ -418,6 +420,11 @@ export function parseTunnelProfile(text: string): TunnelProfileFacts {
   };
   let section: Section | undefined;
   let inCommands = false;
+  let inServerUrls = false;
+  let httpConfigured = false;
+  let httpItemSeen = false;
+  let httpUrl: string | undefined;
+  let httpSocket: string | undefined;
   let itemOpen = false;
   const seen = new Set<string>();
   const found: { tunnelId?: string; organizationId?: string; apiKey?: string; urlFile?: string; mcpCommand?: string } = {};
@@ -428,6 +435,7 @@ export function parseTunnelProfile(text: string): TunnelProfileFacts {
     if (indent === 0) {
       itemOpen = false;
       inCommands = false;
+      inServerUrls = false;
       if (line === "config_version: 1") { section = undefined; continue; }
       const m = /^(\w+):$/.exec(line);
       if (m === null || !(m[1]! in SECTION_KEYS)) throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "profile");
@@ -438,6 +446,24 @@ export function parseTunnelProfile(text: string): TunnelProfileFacts {
     }
     if (section === undefined) throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "profile");
     if (section === "mcp") {
+      if (!inCommands && !inServerUrls && indent === 2 && line === "server_urls:") {
+        inServerUrls = true;
+        httpConfigured = true;
+        continue;
+      }
+      if (inServerUrls) {
+        if (indent === 4 && line === "- channel: main" && !httpItemSeen) {
+          httpItemSeen = true;
+          continue;
+        }
+        if (!httpItemSeen || indent !== 6) throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "mcp.server_urls");
+        const kv = /^(\w+):\s*(.+)$/.exec(line);
+        if (kv === null) throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "mcp.server_urls");
+        if (kv[1] === "url" && httpUrl === undefined) httpUrl = quoted(kv[2]!, "mcp.server_urls.url");
+        else if (kv[1] === "unix_socket" && httpSocket === undefined) httpSocket = quoted(kv[2]!, "mcp.server_urls.unix_socket");
+        else throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "mcp.server_urls");
+        continue;
+      }
       if (!inCommands) {
         if (indent !== 2 || line !== "commands:") throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "mcp");
         inCommands = true;
@@ -508,6 +534,13 @@ export function parseTunnelProfile(text: string): TunnelProfileFacts {
   }
   if (found.urlFile === undefined || !isAbsolute(found.urlFile) || normalize(found.urlFile) !== found.urlFile) {
     throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "health.url_file");
+  }
+  if (httpConfigured) {
+    if (!httpItemSeen || httpUrl !== "http://localhost/mcp" || httpSocket === undefined || !isAbsolute(httpSocket) || normalize(httpSocket) !== httpSocket) {
+      throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "mcp.server_urls");
+    }
+    return { tunnelId: found.tunnelId, organizationId: found.organizationId, keyFile, urlFile: found.urlFile, mcpCommand: undefined,
+      mcpHttp: { url: "http://localhost/mcp", unixSocket: httpSocket } };
   }
   return { tunnelId: found.tunnelId, organizationId: found.organizationId, keyFile, urlFile: found.urlFile, mcpCommand: found.mcpCommand };
 }
@@ -736,7 +769,8 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
     const profileText = readFileSync(profilePath, "utf8");
     const facts = parseTunnelProfile(profileText);
     checkKeyFileMetadata(facts.keyFile);
-    return captureBackgroundAuthorizationScope({ profilePath, profileText, credentialPath: facts.keyFile, mcpCommand: facts.mcpCommand, clientPath });
+    return captureBackgroundAuthorizationScope({ profilePath, profileText, credentialPath: facts.keyFile,
+      mcpCommand: facts.mcpCommand, mcpHttp: facts.mcpHttp, clientPath });
   };
   const authorizationStatus = (): "absent" | "invalid" | "revoked" | "changed" | "granted" | "environment" => {
     const selected = authorizationStore.readSelection();
@@ -1394,6 +1428,10 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
       throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "profile");
     }
     const facts = parseTunnelProfile(profileText);
+    // The legacy environment opt-in does not authorize a new HTTP socket.
+    if (facts.mcpHttp !== undefined && authorizationStatus() !== "granted") {
+      throw new TunnelRefusal("CE_TUNNEL_BACKGROUND_UNAUTHORIZED", "authorization.http");
+    }
     checkKeyFileMetadata(facts.keyFile);
     const profileSha256 = createHash("sha256").update(profileText, "utf8").digest("hex");
     if (expectedProfileSha256 !== undefined && expectedProfileSha256 !== profileSha256) throw new TunnelRefusal("CE_TUNNEL_CONFIG_CONFLICT", "profile");
@@ -1453,6 +1491,12 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
       // Admission uses this final grant snapshot. A concurrent revoke cannot
       // retract an admitted start; Stop is the explicit process cleanup barrier.
       assertAuthorization();
+      if (facts.mcpHttp !== undefined) {
+        // Recheck the explicit grant and the trusted socket immediately before spawn.
+        if (authorizationStatus() !== "granted") throw new TunnelRefusal("CE_TUNNEL_BACKGROUND_UNAUTHORIZED", "authorization.http");
+        try { assertPrivateUnixSocket(facts.mcpHttp.unixSocket); }
+        catch { throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID", "mcp.server_urls.unix_socket"); }
+      }
       if (clientPath === undefined) throw new TunnelRefusal("CE_TUNNEL_SPAWN_FAILED", "client");
       const runId = `bg-${randomUUID()}`;
       const startedAt = now();

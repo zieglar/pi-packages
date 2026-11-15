@@ -24,10 +24,35 @@ function fixture() {
   const root = mkdtempSync(join(realpathSync(tmpdir()), "ce-s2-"));
   const directory = join(root, "db");
   const store = initializeStore({ directory, filename: "store.sqlite", busyTimeoutMs: 25 });
+  installRawFaultInjection(store.database);
   const reader = new DatabaseSync(join(directory, "store.sqlite"), { readOnly: true });
   const result = { root, store, reader };
   fixtures.push(result);
   return result;
+}
+
+// Direct fault injection is privileged test setup; application writes still use
+// the real transaction boundary and must supply their own v8 writer permit.
+function installRawFaultInjection(db: SqliteConnection): void {
+  const exec = db.exec.bind(db);
+  const prepare = db.prepare.bind(db);
+  const mutate = <T>(action: () => T): T => {
+    if (db.isTransaction) return action();
+    exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1)");
+    try {
+      const result = action();
+      exec("DELETE FROM v8_write_permit WHERE singleton=1; COMMIT");
+      return result;
+    } catch (error) { try { exec("ROLLBACK"); } catch {} throw error; }
+  };
+  db.exec = sql => /\b(?:INSERT|UPDATE|DELETE)\s+(?:INTO\s+|FROM\s+)?(?:exchange|idempotency_record|audit_event)\b/i.test(sql) ? mutate(() => exec(sql)) : exec(sql);
+  db.prepare = sql => {
+    const statement = prepare(sql);
+    if (!/^\s*(?:INSERT|UPDATE|DELETE)\b/i.test(sql)) return statement;
+    const run = statement.run.bind(statement);
+    statement.run = (...args) => mutate(() => run(...args));
+    return statement;
+  };
 }
 function snapshot(db: Pick<DatabaseSync | SqliteConnection, "prepare">) {
   return ["exchange", "idempotency_record", "audit_event", "message"].map((table) =>

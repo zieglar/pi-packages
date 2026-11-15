@@ -46,7 +46,7 @@ it.each(["foreign", "incompatible", "held", "drift"])("F3: refuses %s DELETE sto
   if (kind === "foreign") modifier.exec("CREATE TABLE unrelated(id TEXT PRIMARY KEY)");
   if (kind === "incompatible") modifier.exec("PRAGMA user_version=0");
   if (kind === "drift") modifier.exec("DROP TRIGGER result_immutable");
-  if (kind === "held") modifier.exec("UPDATE restore_hold SET held=1, reason='review', detected_at='now'");
+  if (kind === "held") modifier.exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1); UPDATE restore_hold SET held=1, reason='review', detected_at='now'; DELETE FROM v8_write_permit; COMMIT");
   modifier.close();
   chmodSync(path, 0o600);
   const before = snapshot(options.directory);
@@ -58,7 +58,7 @@ it("F3: WAL refusal preserves existing DB/WAL/SHM bytes with a live writer", () 
   const options = location();
   const writer = initializeStore(options);
   try {
-    writer.database.exec("UPDATE restore_hold SET held=1, reason='review', detected_at='now'");
+    writer.database.exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1); UPDATE restore_hold SET held=1, reason='review', detected_at='now'; DELETE FROM v8_write_permit; COMMIT");
     const before = snapshot(options.directory);
     expect(() => openStore(options)).toThrow();
     expect(snapshot(options.directory)).toEqual(before);

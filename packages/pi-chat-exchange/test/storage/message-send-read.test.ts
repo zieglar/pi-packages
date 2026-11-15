@@ -113,6 +113,8 @@ function insertRawMessageWithoutTrustedApi(
   const digest = createHash("sha256").update(body).digest("hex");
   const db = privileged(w.active);
   try {
+    db.exec("BEGIN IMMEDIATE");
+    db.prepare("INSERT INTO message_association(message_id,exchange_id,request_message_id,from_endpoint_json,to_endpoint_json,created_at) VALUES (?,?,?,?,?,?)").run(messageId, w.exchangeId, messageId, JSON.stringify(senderEndpoint), JSON.stringify(recipientEndpoint), AT_SEND);
     db.prepare(
       "INSERT INTO message(message_id, exchange_id, from_endpoint_json, to_endpoint_json, state, payload_digest, payload_length, payload_body, created_at, idempotency_key, private_revision) VALUES (?, ?, ?, ?, 'CREATED', ?, ?, ?, ?, NULL, 1)",
     ).run(
@@ -141,6 +143,7 @@ function insertRawMessageWithoutTrustedApi(
         body.byteLength,
       );
     }
+    db.exec("COMMIT");
   } finally {
     db.close();
   }

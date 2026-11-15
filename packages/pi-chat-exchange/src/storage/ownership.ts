@@ -335,6 +335,16 @@ function loadOwnershipState(handle: QueryHandle, participantId: string): Ownersh
   return { ownership, highWater: highWater ?? 0 };
 }
 
+
+/** Validate every preserved ownership tuple without interpreting or changing its lease. */
+export function assertStoredOwnershipConsistent(tx: TransactionHandle): void {
+  const rows = tx.prepare("SELECT participant_id FROM participant_ownership ORDER BY participant_id").all();
+  for (const row of rows) {
+    const participantId = requireParticipantId(row.participant_id, "participantId");
+    if (readParticipantRow(tx, participantId) === undefined) corrupt();
+    loadOwnershipState(tx, participantId);
+  }
+}
 type LeaseEvaluation = "ACTIVE" | "EXPIRED" | "CLOCK_REGRESSION";
 
 /** Evaluates the lease against the persisted term boundaries only. A request

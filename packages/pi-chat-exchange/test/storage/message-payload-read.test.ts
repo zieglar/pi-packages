@@ -136,6 +136,8 @@ function insertRawMessageWithoutTrustedApi(w: PayloadWorld, messageId: string, a
   const digest = createHash("sha256").update(body).digest("hex");
   const db = privileged(w.active);
   try {
+    db.exec("BEGIN IMMEDIATE");
+    db.prepare("INSERT INTO message_association(message_id,exchange_id,request_message_id,from_endpoint_json,to_endpoint_json,created_at) VALUES (?,?,?,?,?,?)").run(messageId, w.exchangeId, messageId, JSON.stringify(senderEndpoint), JSON.stringify(recipientEndpoint), AT_SEND);
     db.prepare(
       "INSERT INTO message(message_id, exchange_id, from_endpoint_json, to_endpoint_json, state, payload_digest, payload_length, payload_body, created_at, idempotency_key, private_revision) VALUES (?, ?, ?, ?, 'CREATED', ?, ?, ?, ?, NULL, 1)",
     ).run(
@@ -164,6 +166,7 @@ function insertRawMessageWithoutTrustedApi(w: PayloadWorld, messageId: string, a
         body.byteLength,
       );
     }
+    db.exec("COMMIT");
   } finally {
     db.close();
   }
@@ -196,7 +199,8 @@ describe("CE-0002 B3-P4D authorized durable payload read", () => {
   it("keeps DELIVERY_UNKNOWN unchanged across repeated authorized payload reads", () => {
     const w = payloadWorld();
     const messageId = sendOne(w);
-    w.active.store.database.prepare("UPDATE message SET state='DELIVERY_UNKNOWN' WHERE message_id=?").run(messageId);
+    const writer = privileged(w.active);
+    try { writer.prepare("UPDATE message SET state='DELIVERY_UNKNOWN' WHERE message_id=?").run(messageId); } finally { writer.close(); }
     const before = w.active.store.database.prepare("SELECT * FROM message WHERE message_id=?").get(messageId);
     const changesBefore = w.active.store.database.prepare("SELECT total_changes() AS n").get()!.n;
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -437,7 +441,8 @@ describe("CE-0002 B3-P4D authorized durable payload read", () => {
   it("refuses a BLOB whose actual length disagrees with otherwise valid metadata and Audit", () => {
     const w = payloadWorld();
     const messageId = sendOne(w);
-    w.active.store.database.prepare("UPDATE message SET payload_body=? WHERE message_id=?").run(new Uint8Array([1]), messageId);
+    const writer = privileged(w.active);
+    try { writer.prepare("UPDATE message SET payload_body=? WHERE message_id=?").run(new Uint8Array([1]), messageId); } finally { writer.close(); }
     expectRefusal(() => readMessagePayload(w.active.store, payloadRequest(w, messageId), { now: () => AT_SEND }), "STORAGE_IDEMPOTENCY_CORRUPT");
   });
 

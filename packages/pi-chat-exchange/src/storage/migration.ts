@@ -19,8 +19,10 @@ import {
   V6_MIGRATION_CHECKSUM,
   V6_MIGRATION_NAME,
   V6_SWAP_SQL,
+  V8_ASSOCIATION_SQL, V8_MIGRATION_NAME, V8_MIGRATION_CHECKSUM,
 } from "./schema.js";
 import { assertPreV4SessionState } from "./session-state.js";
+import { assertStoredOwnershipConsistent } from "./ownership.js";
 import {
   classifyStoreShape,
   openMigratedStore,
@@ -329,6 +331,20 @@ const APPROVED_PATHS: readonly (readonly [number, number])[] = [
 ];
 
 export function migrateStore(options: MigrateStoreOptions): DurableStore {
+  if (options.fromVersion === 7 && options.toVersion === 8) {
+    assertStorageRuntimeEligibility(options);
+    const databasePath = prepareDatabasePath(options);
+    assertSecureDatabaseArtifacts(databasePath);
+    if (pathStat(databasePath) === undefined) throw new StoreLifecycleError("STORAGE_FOREIGN_STORE", "no initialized store exists at the explicit path");
+    runMigrationStep(options, databasePath, "v7", (tx, appliedAt) => {
+      // Preserve live and expired owners; validate identity and fencing under the migration writer lock.
+      assertStoredOwnershipConsistent(tx);
+      tx.exec(V8_ASSOCIATION_SQL);
+      tx.prepare("INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)").run(8, V8_MIGRATION_NAME, V8_MIGRATION_CHECKSUM, appliedAt);
+      tx.exec("PRAGMA user_version=8");
+    }, writer => validateTrustRoot(databasePath, writer));
+    return openStore(options);
+  }
   assertStorageRuntimeEligibility(options);
   const approved = APPROVED_PATHS.some(
     ([fromVersion, toVersion]) => options.fromVersion === fromVersion && options.toVersion === toVersion,

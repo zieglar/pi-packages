@@ -48,6 +48,7 @@ import {
   V7_FOUNDATION_SQL,
   V7_FOUNDATION_NAME,
   V7_FOUNDATION_CHECKSUM,
+  V8_FOUNDATION_SQL, V8_FOUNDATION_NAME, V8_FOUNDATION_CHECKSUM, V8_MIGRATION_NAME, V8_MIGRATION_CHECKSUM,
 } from "./schema.js";
 import { withImmediateTransaction, StorageTransactionError } from "./transaction.js";
 import { StoreLifecycleError } from "./errors.js";
@@ -143,7 +144,7 @@ function approvedManifest(version: StoreShapeKind): string {
               ? V4_FOUNDATION_SQL
               : version === "v5"
                 ? V5_FOUNDATION_SQL
-                : version === "v6" ? V6_FOUNDATION_SQL : V7_FOUNDATION_SQL,
+                : version === "v6" ? V6_FOUNDATION_SQL : version === "v7" ? V7_FOUNDATION_SQL : V8_FOUNDATION_SQL,
     );
     const manifest = schemaManifest(reference);
     approvedManifests[version] = manifest;
@@ -214,7 +215,7 @@ interface MigrationLedgerRow {
   readonly checksum: string;
 }
 
-export type StoreShapeKind = "v1" | "v2" | "v3" | "v4" | "v5" | "v6" | "v7";
+export type StoreShapeKind = "v1" | "v2" | "v3" | "v4" | "v5" | "v6" | "v7" | "v8";
 export interface StoreShape {
   readonly kind: StoreShapeKind;
   readonly metadata: StoreMetadataRow;
@@ -350,7 +351,9 @@ export function classifyStoreShape(db: DatabaseSync, currentOnly = false): Store
             ? 5
             : V6_LEDGERS.some((ledger) => ledgerMatches(migrations, ledger))
               ? 6
-              : ledgerMatches(migrations, [[7, V7_FOUNDATION_NAME, V7_FOUNDATION_CHECKSUM]]) ? 7 : undefined;
+              : ledgerMatches(migrations, [[7, V7_FOUNDATION_NAME, V7_FOUNDATION_CHECKSUM]]) ? 7
+              : ledgerMatches(migrations, [[8, V8_FOUNDATION_NAME, V8_FOUNDATION_CHECKSUM]]) ||
+                ledgerMatches(migrations, [[7, V7_FOUNDATION_NAME, V7_FOUNDATION_CHECKSUM], [8, V8_MIGRATION_NAME, V8_MIGRATION_CHECKSUM]]) ? 8 : undefined;
   if (shapeVersion === undefined) {
     throw new StoreLifecycleError(
       "STORAGE_MIGRATION_CHECKSUM_MISMATCH",
@@ -374,7 +377,7 @@ export function classifyStoreShape(db: DatabaseSync, currentOnly = false): Store
     );
   }
 
-  if (currentOnly && shapeVersion !== 7) {
+  if (currentOnly && shapeVersion !== 8) {
     throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", "unsupported Store; separate operator-approved Dev Reset required");
   }
 
@@ -384,7 +387,7 @@ export function classifyStoreShape(db: DatabaseSync, currentOnly = false): Store
       throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", `required private table ${table} is missing`);
     }
   }
-  if (shapeVersion === 7 && !tables.has("delivery_ack_receipt")) {
+  if (shapeVersion >= 7 && !tables.has("delivery_ack_receipt")) {
     throw new StoreLifecycleError("STORAGE_INCOMPATIBLE", "current receipt schema is missing");
   }
   assertApprovedSchema(db, shapeKind(shapeVersion));
@@ -403,20 +406,24 @@ function shapeKind(version: number): StoreShapeKind {
           ? "v4"
           : version === 5
             ? "v5"
-            : version === 6 ? "v6" : "v7";
+            : version === 6 ? "v6" : version === 7 ? "v7" : "v8";
 }
 
 /** Normal open is current-only. Old shapes are recognized for truthful refusal,
  * never upgraded or rebuilt through this path. The host root is checked on every open. */
 function readAndValidateStore(db: DatabaseSync, databasePath: string): StoreMetadataRow {
   const shape = classifyStoreShape(db, true);
-  if (shape.kind !== "v7") {
+  if (shape.kind !== "v8") {
     throw new StoreLifecycleError(
       "STORAGE_INCOMPATIBLE",
       "unsupported Store; separate operator-approved Dev Reset required",
     );
   }
   validateTrustRoot(databasePath, db);
+  // A permit is transaction-local in normal operation; a committed one is foreign state.
+  if (!db.isTransaction && db.prepare("SELECT 1 FROM v8_write_permit LIMIT 1").get() !== undefined) {
+    throw new StoreLifecycleError("STORAGE_CORRUPT", "committed v8 writer permit");
+  }
   return shape.metadata;
 }
 
@@ -456,7 +463,7 @@ export function initializeStore(options: InitializeStoreOptions): DurableStore {
     };
     const secretDigest = createHostSecretFile(databasePath, safeSecretBytes);
     withImmediateTransaction(db, (tx) => {
-      tx.exec(V7_FOUNDATION_SQL);
+      tx.exec(V8_FOUNDATION_SQL);
       tx.prepare(
         "INSERT INTO store_metadata(singleton, store_uuid, application_id, schema_version, created_at) VALUES (1, ?, ?, ?, ?)",
       ).run(storeUuid, APPLICATION_ID, CURRENT_SCHEMA_VERSION, appliedAt);
@@ -464,8 +471,8 @@ export function initializeStore(options: InitializeStoreOptions): DurableStore {
         "INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
       ).run(
         CURRENT_SCHEMA_VERSION,
-        V7_FOUNDATION_NAME,
-        V7_FOUNDATION_CHECKSUM,
+        V8_FOUNDATION_NAME,
+        V8_FOUNDATION_CHECKSUM,
         appliedAt,
       );
       tx.prepare("INSERT INTO restore_hold(singleton, held) VALUES (1, 0)").run();

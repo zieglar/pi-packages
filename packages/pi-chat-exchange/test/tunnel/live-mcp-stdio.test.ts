@@ -108,7 +108,7 @@ it("real live MCP child keeps one chatgpt Owner, serves A and B exactly, and ref
   const send = (to: string, key: string, text: string) => client.callTool({ name: "ce_send", arguments: { to, text, idempotencyKey: key } });
   try {
     await client.connect(transport);
-    expect((await client.listTools()).tools.map((t) => t.name)).toEqual(["ping", "ce_send", "ce_inbox_list", "ce_read_payload", "ce_ack", "ce_endpoints"]);
+    expect((await client.listTools()).tools.map((t) => t.name)).toEqual(["ping", "ce_send", "ce_inbox_list", "ce_read_payload", "ce_ack", "ce_endpoints", "ce_find_replies"]);
     expect((await client.callTool({ name: "ping", arguments: {} })).isError).not.toBe(true);
 
     childPid = transport.pid;

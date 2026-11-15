@@ -131,7 +131,7 @@ describe("bound endpoint: admission", () => {
   it("sends through the fixed endpoint with exactly the admitted fields", () => {
     const { bound, calls } = start();
     bound.send({ to: "pi/main", text: "hi", idempotencyKey: "k1" });
-    expect(calls.send).toEqual([["chatgpt/main", { to: "pi/main", text: "hi", idempotencyKey: "k1" }]]);
+    expect(calls.send).toEqual([["chatgpt/main", { to: "pi/main", text: "hi", idempotencyKey: "k1" }, undefined]]);
   });
 
   it("omits undefined inbox options instead of passing them through", () => {

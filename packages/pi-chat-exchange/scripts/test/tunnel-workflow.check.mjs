@@ -8,9 +8,11 @@ const { parse } = requireFromHost('yaml');
 const root = resolve(import.meta.dirname, '../../../..');
 const load = name => parse(readFileSync(resolve(root, '.github/workflows', name), 'utf8'));
 const commands = job => job.steps.map(s => s.run ?? '').join('\n');
-test('fixed PR lane is required, pinned and does not depend on latest', () => {
+test('PR lanes cover all declared fixed clients and do not depend on latest', () => {
   const ci = load('ci.yml'), job = ci.jobs['tunnel-compat'];
-  assert(ci.on.pull_request !== undefined); assert.match(commands(job), /result\.json" 0\.0\.19/);
+  const matrix = JSON.parse(readFileSync(resolve(root, 'packages/pi-chat-exchange/compatibility/tunnel-client.json'), 'utf8'));
+  assert(ci.on.pull_request !== undefined); assert.deepEqual(job.strategy.matrix.client, matrix.ciVerifiedVersions);
+  assert.match(commands(job), /result\.json" "\$CE_CI_CLIENT"/);
   assert.doesNotMatch(commands(job), /result\.json" latest/); assert(!job['continue-on-error']);
   assert.match(commands(job), /tunnel-compat\.check\.mjs/);
   // Existing validate job already owns full TS tests/build/typecheck.
@@ -23,10 +25,11 @@ test('latest monitor only scheduled/manual, read-only, no writes or raw log uplo
   assert.doesNotMatch(commands(job), /gh (issue|pr)|git push|publish|setup|pairing/i);
   assert.equal(job.steps.find(s => s.uses?.startsWith('actions/upload-artifact')).with.path, '${{ runner.temp }}/tunnel-latest/result.json');
 });
-test('release depends on fresh no-OIDC latest job and gate is enforced by both publication entry points', () => {
-  const w = load('npm-publish.yml'); assert.equal(w.jobs.publish.needs, 'tunnel-latest');
-  assert.deepEqual(w.jobs['tunnel-latest'].permissions, { contents: 'read' });
-  assert.match(commands(w.jobs['tunnel-latest']), /result\.json" latest/);
+test('release depends on fresh no-OIDC baseline job and gate is enforced by both publication entry points', () => {
+  const w = load('npm-publish.yml'); assert.equal(w.jobs.publish.needs, 'tunnel-baseline');
+  assert.deepEqual(w.jobs['tunnel-baseline'].permissions, { contents: 'read' });
+  const matrix = JSON.parse(readFileSync(resolve(root, 'packages/pi-chat-exchange/compatibility/tunnel-client.json'), 'utf8'));
+  assert(commands(w.jobs['tunnel-baseline']).includes(`result.json\" ${matrix.releaseVersion}`));
   for (const mode of ['preflight', 'publish']) {
     const steps = w.jobs.publish.steps.filter(s => s.run === `node scripts/npm-release.mjs ${mode}`);
     assert.equal(steps.length, 1, `exactly one ${mode} entry point`);
@@ -41,7 +44,7 @@ test('all new/modified workflows use pinned actions and bounded read-only client
     const w = load(name);
     for (const [key, job] of Object.entries(w.jobs)) {
       for (const step of job.steps ?? []) if (step.uses) assert.match(step.uses, /^[\w-]+\/[\w-]+@[a-f0-9]{40}$/);
-      if (['tunnel-compat', 'tunnel-latest', 'latest'].includes(key)) {
+      if (['tunnel-compat', 'tunnel-baseline', 'latest'].includes(key)) {
         assert(job['timeout-minutes'] <= 15); assert(!job.permissions?.['id-token']);
         assert(!commands(job).includes('CE_TUNNEL_BACKGROUND_ALLOW'));
       }

@@ -64,6 +64,7 @@ The wake notice carries fixed instructions and message identifiers only; the act
 
 - [Native management](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/native-management.md) and [Native SQLite](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/native-sqlite.md).
 - [Tunnel setup and troubleshooting](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/tunnel-setup.md).
+- [Local HTTP MCP runtime](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/http-mcp-runtime.md): an independently managed Unix socket transport with the existing binding and authorization.
 - [Multiple Sessions](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/multi-session-usage.md), [Pi tools](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/pi-extension/README.md), [local Hooks](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/hooks.md) and [ACK contract](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/delivery-ack-contract.md).
 - [Operations / source development](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/operations.md). The prebuilt npm install needs no repository or compiler.
 - [Independent Host / tarball installation](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/independent-install.md), with current0.2.1 alternatives and a separate historical0.2.0 record.

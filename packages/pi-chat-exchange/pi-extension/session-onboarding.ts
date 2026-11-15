@@ -1,6 +1,7 @@
 /** Configuration-only onboarding. Transport and messaging authority stay with Connect. */
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { basename } from "node:path";
 import { readLivePolicy, createLivePolicyRegistration, type LiveSnapshot } from "../dist/tunnel/live-session-policy.js";
 import { readLiveSelectedSessionPolicy } from "./live-session-profile.js";
 import { sanitizeTerminalText } from "@narumitw/pi-tui-kit";
@@ -19,6 +20,7 @@ export class SessionOnboardingRefusal extends Error {
 interface OnboardingContext {
   readonly mode: string;
   readonly hasUI: boolean;
+  readonly cwd?: string;
   readonly sessionManager: { getSessionId(): string };
   readonly ui: {
     confirm?(title: string, message: string, options?: { signal?: AbortSignal; timeout?: number }): Promise<boolean>;
@@ -116,7 +118,9 @@ async function prepareLiveSession(ctx: OnboardingContext, options: Parameters<ty
   const old = selected.manifest.registrations.find(r => r.runtimeSessionId === runtimeSessionId);
   if (old?.status === "revoked") throw new SessionOnboardingRefusal("registration-revoked", "Connect cannot restore a revoked registration. Fresh operator confirmation is required.");
   if (old?.payloadRead && old.ack) return "ready";
-  const endpointId = old?.endpointId ?? "pi/session-" + createHash("sha256").update(JSON.stringify(["ce-session-onboarding-v1", runtimeSessionId])).digest("hex").slice(0, 32);
+  const project = typeof ctx.cwd === "string" ? basename(ctx.cwd).replace(/[^\p{L}\p{N}._-]+/gu, "-").slice(0, 40) : "";
+  const visibleProject = /cap_[0-9a-f]{16,}/i.test(project) ? "" : project;
+  const endpointId = old?.endpointId ?? "pi/session-" + createHash("sha256").update(JSON.stringify(["ce-session-onboarding-v1", runtimeSessionId])).digest("hex").slice(0, 32) + (visibleProject ? `-${visibleProject}` : "");
   if (selected.manifest.chatgptEndpoint.endpointId === endpointId || selected.manifest.registrations.some(r => r.endpointId === endpointId && r !== old)) throw new SessionOnboardingRefusal("endpoint-collision", "Endpoint collision; nothing was overwritten.");
   if (ctx.mode !== "tui" || !ctx.hasUI || typeof ctx.ui.confirm !== "function") throw new SessionOnboardingRefusal("input-unavailable", "Open an interactive Pi TUI to confirm live messaging grants.");
   const api = createLivePolicyRegistration({ ref: selected.ref });

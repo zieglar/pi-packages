@@ -539,9 +539,20 @@ export function createMessageInTransaction(
   request: NormalizedMessageRequest,
   trusted: TrustedMessageCreationMetadata,
   hooks: MessageTransactionHooks = {},
+  association?: { readonly requestMessageId?: string; readonly policyId?: string; readonly selectionVersion?: number; readonly targetRuntimeSessionId?: string; readonly bindingEpoch?: number; readonly targetOwnerSessionId?: string; readonly targetOwnerFencingToken?: number },
 ): TransactionMessageCreation {
   const existing = replayMessage(tx, request);
-  if (existing !== undefined) return Object.freeze({ creation: existing });
+  if (existing !== undefined) {
+    const link = tx.prepare("SELECT request_message_id, policy_id, selection_version, target_runtime_session_id, binding_epoch FROM message_association WHERE message_id=? AND exchange_id=?").get(existing.message.messageId, request.exchangeId);
+    if (link === undefined) {
+      // A v7 message can be replayed without inventing historical association data.
+      if (association?.requestMessageId !== undefined || association?.selectionVersion !== undefined) throw new CreationDomainError("IDEMPOTENCY_KEY_CONFLICT");
+    }
+    else if (link.request_message_id !== (association?.requestMessageId ?? existing.message.messageId) ||
+      link.policy_id !== (association?.policyId ?? null) || link.selection_version !== (association?.selectionVersion ?? null) ||
+      (association?.selectionVersion !== undefined && (link.target_runtime_session_id !== association.targetRuntimeSessionId || link.binding_epoch !== association.bindingEpoch))) throw new CreationDomainError("IDEMPOTENCY_KEY_CONFLICT");
+    return Object.freeze({ creation: existing });
+  }
 
   admitExchange(tx, request.exchangeId);
   if (
@@ -565,6 +576,11 @@ export function createMessageInTransaction(
   } satisfies Message);
   if (!Value.Check(MessageSchema, message)) throw new Error("creation candidate failed frozen schema validation");
 
+  requireSingleRowChange(tx.prepare(
+    "INSERT INTO message_association(message_id, exchange_id, request_message_id, from_endpoint_json, to_endpoint_json, policy_id, selection_version, target_runtime_session_id, binding_epoch, target_owner_session_id, target_owner_fencing_token, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(message.messageId, message.exchangeId, association?.requestMessageId ?? message.messageId, request.fromEndpointJson, request.toEndpointJson,
+    association?.policyId ?? null, association?.selectionVersion ?? null, association?.targetRuntimeSessionId ?? null, association?.bindingEpoch ?? null,
+    association?.targetOwnerSessionId ?? null, association?.targetOwnerFencingToken ?? null, message.createdAt), "message association insert");
   persistCapturedMessageSnapshot(tx, request, trusted);
   hook(hooks.afterMessageInsert);
   requireSingleRowChange(

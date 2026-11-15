@@ -24,7 +24,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  tunnel-latest:
+  tunnel-baseline:
     if: >-
       inputs.publish && github.event_name == 'workflow_dispatch' &&
       github.repository == 'zieglar/pi-packages' &&
@@ -43,11 +43,11 @@ jobs:
       - run: npm install --global pnpm@12.9.1
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm --dir packages/pi-chat-exchange run build
-      - name: Fresh latest stable offline qualification (no OIDC write permission)
+      - name: Fresh CI baseline offline qualification (no OIDC write permission)
         working-directory: packages/pi-chat-exchange
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/tunnel-compat.mjs run "$RUNNER_TEMP/tunnel-release/result.json" latest
+        run: node scripts/tunnel-compat.mjs run "$RUNNER_TEMP/tunnel-release/result.json" 0.0.20
       - name: Upload sanitized release compatibility result
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -58,7 +58,7 @@ jobs:
           retention-days: 30
 
   publish:
-    needs: tunnel-latest
+    needs: tunnel-baseline
     if: >-
       inputs.publish && github.event_name == 'workflow_dispatch' &&
       github.repository == 'zieglar/pi-packages' &&
@@ -94,7 +94,7 @@ jobs:
           pnpm run build
           pnpm run typecheck
           node --test scripts/test/npm-release.check.mjs scripts/test/native-release.check.mjs scripts/test/native-release.auth.test.mjs
-      - name: Download same-run latest compatibility evidence
+      - name: Download same-run baseline compatibility evidence
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: tunnel-release-result

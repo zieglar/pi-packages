@@ -12,7 +12,7 @@
  * C-v4-1…7; each test names its finding.
  */
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, chmodSync, readFileSync, symlinkSync, mkdirSync, readdirSync, rmSync, lstatSync, utimesSync } from "node:fs";
+import { mkdtempSync, writeFileSync, chmodSync, readFileSync, symlinkSync, mkdirSync, readdirSync, rmSync, lstatSync, realpathSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -490,6 +490,18 @@ describe("background manager v2 — review regression coverage", () => {
     // status/stop stay gate-free: they create no cost and only reduce it.
     const h = makeHarness({});
     await expect(createBackgroundTunnelManager({ ...h.options, env: {} }).stop()).resolves.toBeUndefined();
+  });
+
+  it("refuses HTTP startup under legacy environment opt-in without an explicit grant", async () => {
+    const h = makeHarness();
+    const original = readFileSync(h.profilePath, "utf8");
+    const profile = original.replace(/  commands:\n    - channel: main\n      command: .*\n$/,
+      `  server_urls:\n    - channel: main\n      url: "http://localhost/mcp"\n      unix_socket: "${join(h.dir, "mcp.sock")}"\n`);
+    expect(profile).not.toBe(original);
+    writeFileSync(h.profilePath, profile);
+    const manager = createBackgroundTunnelManager({ ...h.options, authorizationDirectory: join(realpathSync(h.dir), "authorization") });
+    await expect(manager.start()).rejects.toMatchObject({ code: "CE_TUNNEL_BACKGROUND_UNAUTHORIZED" });
+    expect(h.spawnCalls).toHaveLength(0);
   });
 
   it("S2: YAML escapes, block scalars and duplicate keys refuse", async () => {

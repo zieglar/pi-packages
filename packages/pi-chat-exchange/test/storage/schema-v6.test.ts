@@ -150,13 +150,13 @@ afterEach(() => {
 });
 
 describe("current-only payload-capability vocabulary and old-store refusal (E2-A)", () => {
-  it("CUR-INIT-01/fresh-current-foundation: v7 preserves payload_read, scope separation and all current guards", () => {
+  it("CUR-INIT-01/fresh-current-foundation: v8 preserves payload_read, scope separation and all current guards", () => {
     const loc=location();
     const store=initializeStore({...loc,storeUuid:()=>STORE_UUID,secretBytes:()=>SECRET,now:()=>NOW});
     try {
-      expect(CURRENT_SCHEMA_VERSION).toBe(7);
-      expect(store.schemaVersion).toBe(7);
-      expect(store.database.prepare("PRAGMA user_version").get()).toEqual({user_version:7});
+      expect(CURRENT_SCHEMA_VERSION).toBe(8);
+      expect(store.schemaVersion).toBe(8);
+      expect(store.database.prepare("PRAGMA user_version").get()).toEqual({user_version:8});
       const ddl=String(store.database.prepare("SELECT sql FROM sqlite_schema WHERE name='participant_capability'").get()!.sql);
       expect(ddl).toContain("'payload_read'"); expect(ddl).toContain("'ack'");
       expect(store.database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);

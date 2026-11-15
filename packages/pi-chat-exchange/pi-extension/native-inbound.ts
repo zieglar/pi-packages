@@ -26,6 +26,7 @@ interface InboundOptions {
   append(customType: string, data: unknown): void;
   listInbox(input: { afterAuditSequence: number; pageSize: number; rawScanLimit: number }): { messages: ReadonlyArray<{ messageId: string; auditSequence: number }>; continuationAuditSequence: number | null; scanBudgetExhausted: boolean };
   readMetadata(input: { messageId: string }): Metadata;
+  canReceiveTask(messageId: string): boolean;
   wake(input: { messageId: string; auditSequence: number; policyDigest: string; policyRevision: string }): void;
   readonly feedback?: OwnershipFeedbackPort | undefined;
   controlWake?(input: { messageId: string; auditSequence: number; policyDigest: string; policyRevision: string }): void;
@@ -143,6 +144,7 @@ export function createNativeInbound(options: InboundOptions) {
       const records = history();
       for (const candidate of result.messages) {
         if (records.some(entry => entry.data.messageId === candidate.messageId)) continue;
+        if (!options.canReceiveTask(candidate.messageId)) continue;
         const admittedAt = options.now();
         const fresh = metadata(options.readMetadata({ messageId: candidate.messageId }), current.policy, candidate.messageId, admittedAt);
         if (!fresh) continue;

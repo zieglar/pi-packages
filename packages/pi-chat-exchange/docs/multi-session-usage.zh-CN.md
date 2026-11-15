@@ -6,6 +6,18 @@
 
 先完成 [Tunnel 首次设置](tunnel-setup.zh-CN.md)。下面的配置操作不发送/读取/ACK 消息，也不会自动启停 Tunnel。
 
+## Live 模式下加入新会话
+
+在已选择 live 多会话策略的交互式 Pi 中，新会话启动时会询问是否连接到已配置的 ChatGPT 连接。选择连接后，继续确认消息权限和可选在线状态；扩展会生成该会话的内部地址并在需要时重载当前 Pi 扩展。新地址包含经过处理的项目目录名称，授权界面会显示该地址，已授权的对端可以看到它。已有共享 Tunnel 可以继续运行，无需手动填写地址或修改配置。拒绝时不会登记或连接，同一会话不会反复询问；以后仍可通过 `/ce` 中的 Connect 主动连接。
+
+已连接的 Pi 会话中输入 `/ce`，选择在线且已同意披露在线状态的目标；菜单显示当前选择，并可进入连接与状态管理。选择属于整个 ChatGPT MCP 连接，使用该连接的所有 ChatGPT 对话共享，不能视为对话隔离。
+
+告诉 ChatGPT 使用当前选择发送：它应先调用 `ce_endpoints` 获取 `selectedTarget.generation`，再以 `selectionVersion` 调用 `ce_send`。如果另一对话或 Pi 会话改变了选择，旧版本发送会被拒绝，需要重新查看并确认。目标离线、撤销或状态未知时也会拒绝，不会自动改投。已有使用精确 `to` 的调用仍可用；不要同时传入 `to` 和 `selectionVersion`。
+
+目标选择只影响之后的发送，不更改既有消息或任务。新选择写入 live 策略；升级包含此功能的部署前，需确保使用同一策略的 Pi 扩展和 MCP 进程均能读取新版记录，否则旧进程会因无法识别记录而拒绝工作。
+
+若自动桌面回复关联不可用，可在 ChatGPT 中要求列出收件箱，再明确选择并读取结果。此方式使用共享收件箱，不证明结果来自当前 ChatGPT 对话；应核对结果中提供的任务信息。
+
 ## 1. 从单 Session 显式转换
 
 已有 single-session 配置可以继续使用，不必强制转换。需要多 Session 时：
@@ -57,6 +69,9 @@ Pi grants 在 factory 加载时捕获，Save/register 不自动扩大旧运行�
 它列出所选配置中 active 的精确 Endpoint IDs，可复制为 `ce_send.to`。它仍需当前 runtime、所载 registration epoch、current policy 与 process mutex 全部准入。未绑定、未加载、revoked、stale 或 uncertain 均拒绝，不列出其他目标。
 
 该列表不读 Inbox，不证明 MCP child 已加载，也不证明消息已被接收；`to` 不使用 native/CE Session ID，不额外拼 adapter。ChatGPT 仍共享自己的历史/inbox，需操作者明确选择每次消息的收件 Endpoint。
+
+请求被目标 Pi 接收后，`ce_receive_task` 会显示原始 Message ID。Pi 回复时在 `ce_send` 的 `replyTo` 填入该 ID；ChatGPT 可用 `ce_find_replies` 查询回复 ID，再按各 ID 读取内容。查询不读取正文、不消费消息，也不自动 ACK。结果每页最多 50 条；有更多结果时，将本页最后一条的 Message ID 作为 `afterMessageId` 继续查询。
+请求记录创建时的目标 Owner。相同 CE Session 在有效 Owner 下恢复后可以继续回复；Endpoint 重新绑定到新的 CE Session 后，旧请求不会自动转交。迁移前的旧消息没有可验证的新关联。
 
 ## 5. 区分解绑、撤销、停止与 reload
 

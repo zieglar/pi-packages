@@ -140,7 +140,7 @@ it("blocks every tools/call at the unified dispatch entry before any handler (gu
 
     const list = await server.call("tools/list", {});
     const tools = (list.result as { tools: { name: string }[] }).tools.map((t) => t.name);
-    expect(tools.sort()).toEqual(["ce_ack", "ce_inbox_list", "ce_read_payload", "ce_send", "ping"]);
+    expect(tools.sort()).toEqual(["ce_ack", "ce_find_replies", "ce_inbox_list", "ce_read_payload", "ce_send", "ping"]);
 
     // One canary attempt carries a SECRET-SHAPED STRING request id; the guard
     // must block it like any other call and the raw id must never reach

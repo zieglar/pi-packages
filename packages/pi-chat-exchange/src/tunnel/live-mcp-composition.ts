@@ -103,7 +103,13 @@ export function createLiveMcpComposition(config: McpBindingConfig, reader?: (ref
       return group === undefined ? binding.read() : binding.readGroup(group);
     } catch { return { scope: "ce-endpoint", status: "unavailable", ...(group === undefined ? {} : { group }) }; }
   };
-  return Object.freeze({ ref, loaded, snapshot, recipients, admission, hookAllowed, runtimeSelection });
+  const selectedTarget = () => {
+    const current = snapshot();
+    const selected = current.manifest.selectedTarget;
+    if (!selected || !current.manifest.registrations.some(r => r.status === "active" && r.endpointId === selected.endpointId && r.runtimeSessionId === selected.runtimeSessionId && r.epoch === selected.epoch)) return undefined;
+    return Object.freeze({ ...selected, policyId: ref.policyId });
+  };
+  return Object.freeze({ ref, loaded, snapshot, recipients, admission, hookAllowed, runtimeSelection, selectedTarget });
 }
 
 /** Synchronous observation only; never renews or changes bound admission. */
@@ -127,7 +133,8 @@ export function observeLiveMcpRuntime(
 /** Only the visible projection is hashed. Internal sequence, IDs and policy
  * digests never cross this adapter; real operational readiness remains advisory. */
 export function projectEndpointDiscovery(discovery: CeEndpointDiscovery, sessionSwitch?: SessionSwitchResult,
-  current?: ReturnType<typeof discoverCurrentRuntimes>, runtimeSelection?: RuntimeSelection): EndpointDiscoveryResult {
+  current?: ReturnType<typeof discoverCurrentRuntimes>, runtimeSelection?: RuntimeSelection,
+  selectedTarget?: { endpointId: string; generation: number; scope: "shared-mcp-endpoint" }): EndpointDiscoveryResult {
   const observedAt = discovery.observedAt;
   if (!Number.isFinite(Date.parse(observedAt))) return denied();
   const state = (value: "TRUE" | "FALSE" | "UNKNOWN"): "true" | "false" | "unknown" => value === "TRUE" ? "true" : value === "FALSE" ? "false" : "unknown";
@@ -141,7 +148,7 @@ export function projectEndpointDiscovery(discovery: CeEndpointDiscovery, session
     reason: target.reason === "PRESENCE_WITHHELD" ? "PRESENCE_WITHHELD" as const
       : target.reason === "PORT_BLOCKED" ? "MCP_OPERATION_BLOCKED" as const : "OBSERVATION_UNKNOWN" as const }));
   const projection = { self, targets, ...(sessionSwitch === undefined ? {} : { sessionSwitch }), ...current,
-    ...(runtimeSelection === undefined ? {} : { runtimeSelection }) };
+    ...(runtimeSelection === undefined ? {} : { runtimeSelection }), ...(selectedTarget === undefined ? {} : { selectedTarget }) };
   return { ...projection, observedAt, viewDigest: createHash("sha256").update(JSON.stringify(projection)).digest("hex") };
 }
 
@@ -170,5 +177,9 @@ export function discoverLiveEndpoints(live: ReturnType<typeof createLiveMcpCompo
   if (before.digest !== after.digest) return projectEndpointDiscovery({ ...visible, targets: [] },
     previousEndpointId === undefined ? undefined : { status: "unknown", previousEndpointId },
     { runtimes: [], ...(runtimeId === undefined ? {} : { currentBinding: { status: "unknown", runtimeId } }) });
-  return projectEndpointDiscovery(visible, relationship, current, selection);
+  const selected = live.selectedTarget();
+  if (live.snapshot().digest !== after.digest) return projectEndpointDiscovery({ ...visible, targets: [] }, undefined, { runtimes: [] });
+  const selectedTarget = selected && visible.targets.some(target => target.endpointId === selected.endpointId)
+    ? { endpointId: selected.endpointId, generation: selected.generation, scope: "shared-mcp-endpoint" as const } : undefined;
+  return projectEndpointDiscovery(visible, relationship, current, selection, selectedTarget);
 }

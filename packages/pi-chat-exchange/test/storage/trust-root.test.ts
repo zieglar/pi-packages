@@ -186,6 +186,7 @@ describe("host trust root (B3-P1A)", () => {
   it("keeps trust generations append-only at the storage layer", () => {
     const store = initialize(location());
     try {
+      store.database.exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1)");
       expect(() =>
         store.database.prepare("UPDATE host_trust_root SET secret_digest = ? WHERE generation = 1").run(
           "0".repeat(64),
@@ -198,6 +199,7 @@ describe("host trust root (B3-P1A)", () => {
           .run("0".repeat(64), NOW_B),
       ).toThrow();
       expect(store.database.prepare("SELECT COUNT(*) AS count FROM host_trust_root").get()).toEqual({ count: 1 });
+      store.database.exec("ROLLBACK");
     } finally {
       store.close();
     }
@@ -226,6 +228,7 @@ describe("host trust root (B3-P1A)", () => {
   it("operator recovery appends generation N+1 and revokes every existing capability", () => {
     const loc = location();
     const store = initialize(loc);
+    store.database.exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1)");
     store.database
       .prepare(
         "INSERT INTO participant(participant_id, endpoint_adapter, endpoint_id, created_at) VALUES (?, ?, ?, ?)",
@@ -236,6 +239,7 @@ describe("host trust root (B3-P1A)", () => {
         "INSERT INTO participant_capability(capability_digest, participant_id, scope, trust_generation, created_at) VALUES (?, ?, ?, ?, ?)",
       )
       .run("a".repeat(64), "prt_01ARZ3NDEKTSV4RRFFQ69G5FAV", "join", 1, NOW_A);
+    store.database.exec("DELETE FROM v8_write_permit WHERE singleton=1; COMMIT");
     store.close();
 
     // The operator explicitly removes the lost secret first; recovery never

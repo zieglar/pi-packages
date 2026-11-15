@@ -26,8 +26,8 @@ function fixture(text = "请检查项目状态，然后给出结果。") {
   const readMetadata = vi.fn(() => metadata);
   const wake = vi.fn();
   const executeTool = vi.fn(async (name: string) => outcome({ content: name === "ce_read_payload" ? [{ type: "text", text: "untrusted payload" }, { type: "text", text }] : [], details: { ...metadata } }));
-  const create = () => createNativeInbound({ policyPath, runtimeSessionId: "real-A", endpointId: "pi/A", getSessionId: () => session,
-    getEntries: () => entries, append, listInbox, readMetadata, wake, now: () => clock });
+  const create = (canReceiveTask?: (messageId: string) => boolean) => createNativeInbound({ policyPath, runtimeSessionId: "real-A", endpointId: "pi/A", getSessionId: () => session,
+    getEntries: () => entries, append, listInbox, readMetadata, wake, now: () => clock, canReceiveTask: canReceiveTask ?? (() => true) });
   return { policyPath, policy, save, metadata, entries, append, listInbox, readMetadata, wake, executeTool, create, text,
     setClock: (value: number) => { clock = value; }, switchSession: () => { session = "real-B"; } };
 }
@@ -41,6 +41,21 @@ it("records a metadata-only claim before requesting one native follow-up", () =>
   expect(f.wake).toHaveBeenCalledTimes(1); expect(f.append.mock.invocationCallOrder[0]).toBeLessThan(f.wake.mock.invocationCallOrder[0]!);
   expect(f.wake.mock.calls[0]![0]).toMatchObject({ messageId: "msg_fresh" });
   expect(JSON.stringify(f.entries) + JSON.stringify(f.wake.mock.calls)).not.toContain(f.text);
+});
+it("does not wake a task assigned to a different Owner", () => {
+  const f = fixture();
+  f.create(() => false).poll();
+  expect(f.wake).not.toHaveBeenCalled();
+  expect(f.readMetadata).not.toHaveBeenCalled();
+  expect(f.append).not.toHaveBeenCalled();
+});
+it("does not advance discovery when target verification is unavailable", () => {
+  const f = fixture();
+  const c = f.create(() => { throw Error("busy"); });
+  expect(() => c.poll()).toThrow("busy");
+  expect(() => c.poll()).toThrow("busy");
+  expect(f.listInbox.mock.calls.map(call => call[0].afterAuditSequence)).toEqual([100, 100]);
+  expect(f.wake).not.toHaveBeenCalled();
 });
 it("full append history prevents another wake after reload or branch rollback", () => {
   const f = fixture(); f.create().poll(); f.create().poll(); expect(f.wake).toHaveBeenCalledTimes(1);

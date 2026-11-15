@@ -169,7 +169,9 @@ describe("MCP stdio entrypoint in --config mode (built artifact)", () => {
       const aged = { leaseStartedAt: past, expiresAt: new Date(Date.parse(past) + 30_000).toISOString() };
       const raw = openStorageConnection(storeOptions);
       try {
+        raw.exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1)");
         raw.prepare("UPDATE participant_ownership SET lease_started_at = ?, expires_at = ?").run(aged.leaseStartedAt, aged.expiresAt);
+        raw.exec("DELETE FROM v8_write_permit WHERE singleton=1; COMMIT");
       } finally {
         raw.close();
       }
@@ -251,7 +253,7 @@ describe("MCP stdio entrypoint in --config mode (built artifact)", () => {
       const listed = (await server.call("tools/list", {})) as {
         result: { tools: Array<{ name: string }> };
       };
-      expect(listed.result.tools.map((tool) => tool.name)).toEqual(["ping", "ce_send", "ce_inbox_list", "ce_read_payload"]);
+      expect(listed.result.tools.map((tool) => tool.name)).toEqual(["ping", "ce_send", "ce_inbox_list", "ce_read_payload", "ce_find_replies"]);
 
       const sent = (await server.call("tools/call", {
         name: "ce_send",

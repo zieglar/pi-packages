@@ -1,6 +1,8 @@
 {
   "schemaVersion": 1,
   "regressionVersion": "0.0.19",
+  "ciVerifiedVersions": ["0.0.19", "0.0.20"],
+  "releaseVersion": "0.0.20",
   "records": [
     {
       "ce": {
@@ -378,6 +380,52 @@
         "Remote results are peer-reported and corroborated by actual Cloud tool completions and independent durable reads; no raw remote transcript or global per-tool wire-request join",
         "Earlier unsuccessful windows and controller corrections remain in operator evidence and are not relabeled as successful Cloud tests",
         "Fresh same-run latest-client offline evidence remains mandatory for publication; imported observations do not replace that run"
+      ]
+    },
+    {
+      "ce": {
+        "version": "0.3.5",
+        "baselineCommit": "25f486fb00f8afa3caabbc1bfaa8bcb4189827ce",
+        "runtimeSha256": "6164117c7bd7367d85795931589a0ba9d2dbc7755f65029c641832b18fab8586",
+        "worktree": "clean"
+      },
+      "client": {
+        "version": "0.0.20",
+        "sourceCommit": "c2144b0904980bcbae2636cdca4f4167e9818e0b",
+        "publishedAt": "2026-11-06T22:05:17Z",
+        "url": "https://github.com/openai/tunnel-client/releases/tag/v0.0.20"
+      },
+      "testedAt": "2026-11-15T15:09:50.661Z",
+      "environment": {
+        "os": "darwin",
+        "arch": "arm64",
+        "node": "24.21.0",
+        "pi": "not-tested",
+        "native": "node-sqlite"
+      },
+      "offline": {
+        "status": "VERIFIED",
+        "kind": "automated-offline",
+        "evidence": "evidence/compat-ce-0.3.5-client-0.0.20.json"
+      },
+      "lifecycle": {
+        "status": "VERIFIED",
+        "kind": "real-client-local",
+        "evidence": "evidence/compat-ce-0.3.5-client-0.0.20.json"
+      },
+      "cloud": {
+        "status": "VERIFIED",
+        "kind": "manual-cloud",
+        "evidence": "evidence/compat-ce-0.3.5-client-0.0.20.json"
+      },
+      "limitations": [
+        "Manual Cloud covers macOS arm64, Node 24.21.0 and node-sqlite with the official 0.0.20 client and one existing Tunnel; other platforms and a real namespaced Cloud identity are NOT_VERIFIED.",
+        "The Pi test peer was a fixed-candidate MCP Runtime driven by the operator, not the production Pi Session; automatic intake, model task execution and desktop submission are NOT_VERIFIED.",
+        "ChatGPT received and ACKed a Pi message and sent an independent request; Pi used replyTo and ChatGPT queried and read the associated reply. ChatGPT-originated replyTo sending remains NOT_VERIFIED after the reported Schema refresh.",
+        "ACK records reception only; forced-kill recovery, unknown-result replay, exactly-once business completion and remote revoke or timeout scenarios are NOT_VERIFIED.",
+        "Remote observations were relayed by the user and corroborated by durable local evidence, without a raw remote transcript or global per-tool wire-request join.",
+        "The restored production service is running with all three startup attempts consumed; no budget reset was performed.",
+        "A fresh official-client offline result from the same authorized publication workflow run remains mandatory."
       ]
     }
   ]

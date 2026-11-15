@@ -190,10 +190,14 @@ export class CeBoundEndpoint {
     }
   }
 
-  send(input: { readonly to: string; readonly text: string; readonly idempotencyKey: string }): CeSendResult {
+  send(input: { readonly to: string; readonly text: string; readonly idempotencyKey: string; readonly replyTo?: string }, selection?: { readonly policyId: string; readonly selectionVersion: number; readonly targetRuntimeSessionId: string; readonly bindingEpoch: number }): CeSendResult {
     return this.#run(true, { kind: "send", to: input.to }, () =>
-      this.#host.send(this.#endpointId, { to: input.to, text: input.text, idempotencyKey: input.idempotencyKey }),
+      this.#host.send(this.#endpointId, input, selection),
     );
+  }
+
+  findReplies(input: { readonly requestMessageId: string; readonly afterMessageId?: string }) {
+    return this.#run(false, { kind: "inbox" }, () => this.#host.findReplies(this.#endpointId, input));
   }
 
   listInbox(input: {

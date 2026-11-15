@@ -68,7 +68,39 @@ export function reader(active: Fixture): SqliteConnection {
 /** Privileged raw connection: accepted test/setup authority used to tamper
  * with durable state in negative controls. */
 export function privileged(active: Fixture): SqliteConnection {
-  return openStorageConnection({ directory: active.directory, filename: active.filename });
+  const db = openStorageConnection({ directory: active.directory, filename: active.filename });
+  const exec = db.exec.bind(db), prepare = db.prepare.bind(db);
+  let permitInExplicitTransaction = false;
+  const write = <T>(action: () => T): T => {
+    if (db.isTransaction) {
+      if (!permitInExplicitTransaction) {
+        exec("INSERT OR IGNORE INTO v8_write_permit(singleton) VALUES (1)");
+        permitInExplicitTransaction = true;
+      }
+      return action();
+    }
+    exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1)");
+    try { const result = action(); exec("DELETE FROM v8_write_permit WHERE singleton=1; COMMIT"); return result; }
+    catch (error) { try { exec("ROLLBACK"); } catch {} throw error; }
+  };
+  db.prepare = sql => {
+    const statement = prepare(sql);
+    if (!/^\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql) || /\bv8_write_permit\b/i.test(sql)) return statement;
+    const run = statement.run.bind(statement);
+    statement.run = (...args) => write(() => run(...args));
+    return statement;
+  };
+  db.exec = sql => {
+    if (/^\s*(?:COMMIT|END)\s*;?\s*$/i.test(sql) && permitInExplicitTransaction) { exec("DELETE FROM v8_write_permit WHERE singleton=1"); permitInExplicitTransaction = false; }
+    if (/^\s*ROLLBACK\s*;?\s*$/i.test(sql)) permitInExplicitTransaction = false;
+    if (/\bv8_write_permit\b/i.test(sql)) return exec(sql);
+    if (!db.isTransaction && /^\s*BEGIN\s*;/i.test(sql) && /\b(?:INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql)) {
+      permitInExplicitTransaction = true;
+      return exec(sql.replace(/^\s*BEGIN\s*;/i, "BEGIN; INSERT INTO v8_write_permit(singleton) VALUES (1);"));
+    }
+    return /\b(?:INSERT|UPDATE|DELETE|REPLACE)\s+(?:INTO\s+|FROM\s+)?(?:participant|participant_session|participant_ownership|participant_capability|participant_fencing_high_water|exchange_membership|audit_event|message|exchange|delivery_cursor|delivery_ack_receipt|idempotency_record)\b/i.test(sql) ? write(() => exec(sql)) : exec(sql);
+  };
+  return db;
 }
 
 export function exchange(active: Fixture, idempotencyKey = "exchange-key"): string {

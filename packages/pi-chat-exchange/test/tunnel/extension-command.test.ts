@@ -95,6 +95,16 @@ async function ceTunnel(): Promise<CommandRegistration> {
   return cmd;
 }
 
+describe("/ce entry", () => {
+  it("opens the existing manager only in an interactive TUI", async () => {
+    const command = (await loadExtension()).find(c => c.name === "ce");
+    expect(command).toBeDefined();
+    const { ctx, notifications } = makeCtx("rpc");
+    await command!.handler("", ctx);
+    expect(notifications.some(n => n.message.includes("Manager requires interactive TUI"))).toBe(true);
+  });
+});
+
 describe("/ce-tunnel — B1 offline wiring (T18)", () => {
   it("registers alongside the existing /ce-status command", async () => {
     const commands = await loadExtension();

@@ -16,12 +16,25 @@ import {
   fixture,
   NOW,
   participant,
-  privileged,
+  privileged as openPrivileged,
   reader,
   rowCounts,
   type Fixture,
 } from "./support/participant-fixture.js";
 
+// Fault injection is explicitly privileged and uses a bounded transaction; the
+// production path never grants this raw SQLite connection to callers.
+function privileged(active: Fixture) {
+  const db = openPrivileged(active);
+  const close = db.close.bind(db);
+  db.exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1)");
+  db.close = () => {
+    try { db.exec("DELETE FROM v8_write_permit WHERE singleton=1; COMMIT"); }
+    catch (error) { try { db.exec("ROLLBACK"); } finally { close(); } throw error; }
+    close();
+  };
+  return db;
+}
 const SENDER_SESSION = "ses_01ARZ3NDEKTSV4RRFFQ69G5FA0";
 const RECIPIENT_SESSION = "ses_01ARZ3NDEKTSV4RRFFQ69G5FA1";
 const OTHER_SESSION = "ses_01ARZ3NDEKTSV4RRFFQ69G5FA2";
@@ -153,6 +166,7 @@ function insertRawMessageCandidate(
     const sequence = Number(
       db.prepare("SELECT MAX(sequence) AS n FROM audit_event WHERE exchange_id=?").get(w.exchangeId)!.n,
     ) + 1;
+    db.prepare("INSERT INTO message_association(message_id,exchange_id,request_message_id,from_endpoint_json,to_endpoint_json,created_at) VALUES (?,?,?,?,?,?)").run(messageId, w.exchangeId, messageId, JSON.stringify(senderEndpoint), options.toEndpointJson ?? JSON.stringify(recipientEndpoint), "2026-10-10T00:00:11.000Z");
     db.prepare(
       "INSERT INTO message(message_id, exchange_id, from_endpoint_json, to_endpoint_json, state, payload_digest, payload_length, payload_body, created_at, idempotency_key, private_revision) VALUES (?, ?, ?, ?, 'CREATED', ?, ?, ?, ?, NULL, 1)",
     ).run(
@@ -653,6 +667,7 @@ describe("CE-0002 B3-P3C bounded Inbox Discovery", () => {
     const digest = createHash("sha256").update(body).digest("hex");
     const db = privileged(w.active);
     try {
+      db.prepare("INSERT INTO message_association(message_id,exchange_id,request_message_id,from_endpoint_json,to_endpoint_json,created_at) VALUES (?,?,?,?,?,?)").run("msg_01ARZ3NDEKTSV4RRFFQ69G5FAX", w.exchangeId, "msg_01ARZ3NDEKTSV4RRFFQ69G5FAX", JSON.stringify(senderEndpoint), JSON.stringify(recipientEndpoint), "2026-10-10T00:00:10.000Z");
       db.prepare(
         "INSERT INTO message(message_id, exchange_id, from_endpoint_json, to_endpoint_json, state, payload_digest, payload_length, payload_body, created_at, idempotency_key, private_revision) VALUES (?, ?, ?, ?, 'CREATED', ?, ?, ?, ?, NULL, 1)",
       ).run(

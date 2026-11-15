@@ -55,7 +55,11 @@ jobs:
 
 
   tunnel-compat:
-    name: Tunnel compatibility (pinned 0.0.19)
+    name: Tunnel compatibility (pinned ${{ matrix.client }})
+    strategy:
+      fail-fast: false
+      matrix:
+        client: ["0.0.19", "0.0.20"]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -80,12 +84,13 @@ jobs:
         working-directory: packages/pi-chat-exchange
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/tunnel-compat.mjs run "$RUNNER_TEMP/tunnel-pinned/result.json" 0.0.19
+          CE_CI_CLIENT: ${{ matrix.client }}
+        run: node scripts/tunnel-compat.mjs run "$RUNNER_TEMP/tunnel-pinned/result.json" "$CE_CI_CLIENT"
       - name: Upload sanitized result only
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: tunnel-pinned-result
+          name: tunnel-pinned-result-${{ matrix.client }}
           path: ${{ runner.temp }}/tunnel-pinned/result.json
           if-no-files-found: error
           retention-days: 30
