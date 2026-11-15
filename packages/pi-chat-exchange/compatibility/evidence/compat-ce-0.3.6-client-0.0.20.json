@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "ce": {
+    "version": "0.3.6",
+    "baselineCommit": "3fea83109184a4d01ae84e8db1fb38ff14974607",
+    "runtimeSha256": "a3144e54284f70d3c44eb11cfb7374e9b1951bc0a29bd20a125c4bddf6e8cb1a",
+    "worktree": "clean"
+  },
+  "client": {
+    "version": "0.0.20",
+    "sourceCommit": "c2144b0904980bcbae2636cdca4f4167e9818e0b",
+    "publishedAt": "2026-11-06T22:05:17Z",
+    "url": "https://github.com/openai/tunnel-client/releases/tag/v0.0.20"
+  },
+  "testedAt": "2026-11-15T19:14:33.355Z",
+  "environment": {
+    "os": "darwin",
+    "arch": "arm64",
+    "node": "24.21.0",
+    "pi": "not-tested",
+    "native": "node-sqlite"
+  },
+  "offline": {
+    "status": "NOT_VERIFIED",
+    "scope": "A fresh official-client offline result from the same publication workflow run remains mandatory."
+  },
+  "lifecycle": {
+    "status": "VERIFIED",
+    "kind": "real-client-local",
+    "start": true,
+    "health": true,
+    "normalStop": true,
+    "cleanup": true,
+    "scope": "Actual official 0.0.20 client and exact 0.3.6 HTTP MCP runtime on macOS arm64 in a bounded existing-Tunnel Cloud window with an independent Store; normal client and runtime shutdown, both test Sessions detached, ownership released, and the original stdio service restored and health checked.",
+    "forced": "NOT_VERIFIED",
+    "ownershipRowsAfterStop": 0,
+    "attachedSessionsAfterStop": 0,
+    "originalServiceRestored": true
+  },
+  "cloud": {
+    "status": "VERIFIED",
+    "kind": "manual-cloud",
+    "resourceKind": "existing-tunnel-private-store",
+    "durableMatch": true,
+    "normalOwnershipRelease": true,
+    "hardStopCleanup": true,
+    "receptionOnly": true,
+    "verifiedAt": "2026-11-15T19:14:33.355Z",
+    "scope": "One existing Cloud Tunnel, two independent exact-runtime MCP endpoints, three new messages and two ACKs. Pi sent a message; ChatGPT read and ACKed it; ChatGPT sent a request; Pi read and ACKed it, then created an explicitly associated reply that ChatGPT found and read through Cloud.",
+    "cleanupMeaning": "Bounded normal stop and restoration completed; the existing hardStopCleanup schema field does not claim forced-kill recovery.",
+    "requestCorrelation": "Cloud tool calls and local Unix-socket calls were observed in this qualification run and corroborated against the isolated Store receipts, audit events and message association; no payload bodies are retained in repository evidence.",
+    "forward": {
+      "direction": "Pi-to-ChatGPT",
+      "messageId": "msg_01M7G9Z8B9CKHVD1703KE61YX7",
+      "receiptId": "rcpt_01M7G9ZW5XNM2FN8Z7E0E8GQ2P",
+      "createdAudit": 4,
+      "receiptAudit": 5,
+      "payloadDigest": "9a65a7ce63aa2e066b3dd357496d306e227460b5ee0ce8d23db3da30087a2a9a",
+      "payloadLength": 73
+    },
+    "reverse": {
+      "direction": "ChatGPT-to-Pi",
+      "messageId": "msg_01M7GA02ZPGY06T2NXW09GNVA5",
+      "receiptId": "rcpt_01M7GA0ZGREBAVZ07EXM452CZC",
+      "createdAudit": 6,
+      "receiptAudit": 7,
+      "payloadDigest": "d67353f9d730cb68db96483ac1ee61ea1738a1b7d49afd37ac5d72b6ce0440b4",
+      "payloadLength": 73
+    },
+    "association": {
+      "requestMessageId": "msg_01M7GA02ZPGY06T2NXW09GNVA5",
+      "replyMessageId": "msg_01M7GA1A46WFF30J9ZK5SDCWK3",
+      "replySender": "pi",
+      "chatgptReplyToSend": "NOT_VERIFIED"
+    }
+  },
+  "qualification": {
+    "canonicalArchiveSha256": "cb5361d7a9db364b9a2f6caf2cd860110caaa73a3f8fe2c269505cafdb5a020b",
+    "clientBinarySha256": "ea217729ecb82987c599b4eb7192ed0ec011a528dbbde33a8c94d9d6d59cf975",
+    "artifactScope": "The Cloud runtime was built from the clean merge commit used for the canonical archive, before adding evidence-only compatibility files that do not affect runtimeDigest."
+  },
+  "operations": {
+    "startupBudgetBeforeWindow": 0,
+    "startupBudgetAfterRestore": 2,
+    "startupBudgetLimit": 3,
+    "budgetResetReceiptKind": "ce-tunnel-start-budget-reset-v1",
+    "productionTunnelPidAfterRestore": 66690,
+    "productionMcpPidAfterRestore": 66837,
+    "productionMcpSource": "existing development worktree; unchanged by this qualification"
+  },
+  "limitations": [
+    "Manual Cloud covers macOS arm64, Node 24.21.0 and node-sqlite with official Client 0.0.20 and one existing Tunnel; other platforms and real namespaced Cloud identity are NOT_VERIFIED.",
+    "The Pi test peer was an exact-candidate MCP runtime driven by the operator, not a production Pi Session; native inbound, automatic model wake, task execution and desktop submission are NOT_VERIFIED.",
+    "ACK records reception only; forced-kill recovery, unknown-result replay, exactly-once business completion and remote revoke or timeout scenarios are NOT_VERIFIED.",
+    "The first parallel Pi fixture start lost the exclusive empty-database creation race, exited before acquiring Owner, and then succeeded when started sequentially; it was not relabeled as a successful first start.",
+    "The restored production MCP still runs from the pre-existing development worktree; npm installation does not update that command.",
+    "The reviewed operator reset restored the external three-start budget to 0/3 before the window; the HTTP start and stdio restoration consumed two attempts, leaving 2/3 used.",
+    "A fresh official-client offline result from the same authorized publication workflow run remains mandatory."
+  ]
+}
