@@ -10,7 +10,7 @@ The release baseline is an explicitly declared CI-verified Tunnel Client version
 | 0.0.17 | NOT_VERIFIED | No inference from neighboring versions |
 | 0.0.18 | NOT_VERIFIED | No inference from neighboring versions |
 | 0.0.19 | Historical CE 0.2.2 COMPAT-03 and CE 0.3.0 A-group manual bidirectional Cloud VERIFIED; scoped local lifecycle qualification | Exact runtime records only; macOS arm64 legacy Cloud; B uses isolated loopback Client tests, C reuses actual Pi/MCP and policy tests; real namespaced Cloud NOT_VERIFIED |
-| 0.0.20 | CE 0.3.1 historical and CE 0.3.2 exact-runtime local lifecycle and manual bidirectional Cloud VERIFIED | macOS arm64 bounded existing-Tunnel/private-Store Cloud; scoped Linux x64 loopback lifecycle reused for the matching runtime; real namespaced Cloud NOT_VERIFIED |
+| 0.0.20 | CE 0.3.1–0.3.4 historical and CE 0.3.5 exact-runtime manual bidirectional Cloud and normal lifecycle VERIFIED | CE 0.3.5: macOS arm64, Node 24.21.0, node-sqlite, existing Tunnel and private Store; Pi sent the associated reply, ChatGPT-originated `replyTo` send remains NOT_VERIFIED; real namespaced Cloud NOT_VERIFIED |
 
 Statuses are `VERIFIED`, `FAILED`, `NOT_VERIFIED`, `BLOCKED`. A `VERIFIED` lane must include its correct evidence kind and a repository-relative sanitized evidence file. Imported evidence includes source-artifact hashes, message/receipt identifiers and cleanup outcomes. It excludes Tunnel/organization IDs, credentials, payloads, private configuration, machine-local paths and raw runtime logs. The original full evidence remains operator-managed; the repository summary is reviewed evidence, not a cryptographic proof that a human performed Cloud testing.
 
