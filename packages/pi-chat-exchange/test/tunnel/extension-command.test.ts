@@ -171,14 +171,9 @@ describe("/ce-tunnel — B1 offline wiring (T18)", () => {
     expect(notifications[0]?.message).toContain("unknown subcommand");
   });
 
-  it("completions carry `value` as required by pi-tui AutocompleteItem (r2, Lane D finding 1)", async () => {
+  it("hides compatibility command completions in favor of the canonical /ce tree", async () => {
     const cmd = await ceTunnel();
-    const completions = cmd.getArgumentCompletions?.("") ?? [];
-    expect(completions.length).toBeGreaterThan(0);
-    for (const item of completions) expect(typeof item.value).toBe("string");
-    const matching = cmd.getArgumentCompletions?.("sta") ?? [];
-    // B1.1 adds `start`, which shares the "sta" prefix with `status`.
-    expect(matching.map((i) => i.value)).toEqual(["start", "status"]);
+    expect(cmd.getArgumentCompletions).toBeUndefined();
   });
 });
 
