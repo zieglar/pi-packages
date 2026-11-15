@@ -49,6 +49,10 @@ import {
   readMessageMetadata,
   readMessagePayload,
   sendMessage,
+  findMessageReplies,
+  bindNativeSession,
+  bindSelectedSession,
+  verifyTaskTarget,
 } from "../storage/messaging.js";
 import { discoverInboxMessages } from "../storage/inbox-discovery.js";
 import {
@@ -870,10 +874,39 @@ export class CeEndpointHost {
   /** Session-authorized durable send. All authority comes from host memory;
    * the model supplies only the recipient label, the text, and an idempotency
    * key. */
-  send(endpointId: string, input: unknown): CeSendResult {
+  /** Trusted Pi composition only: capture the active runtime's own binding. */
+  bindNativeSession(endpointId: string, runtimeSessionId: string, bindingEpoch: number): void {
+    const authority = this.#authority(endpointId);
+    try {
+      bindNativeSession(this.#store, { participantId: authority.participantId, sessionId: authority.sessionId,
+        fencingToken: this.#currentFencing(authority), capability: authority.sendCapability, runtimeSessionId, bindingEpoch }, this.#seams);
+    } catch (error) { throw toRefusal(error); }
+  }
+
+  bindSelectedSession(endpointId: string, target: { endpointId: string; policyId: string; selectionVersion: number; runtimeSessionId: string; bindingEpoch: number }): void {
+    const authority = this.#authority(endpointId);
+    try {
+      bindSelectedSession(this.#store, { ...target, participantId: authority.participantId, sessionId: authority.sessionId,
+        exchangeId: authority.exchangeId, fencingToken: this.#currentFencing(authority), capability: authority.sendCapability }, this.#seams);
+    } catch (error) { throw toRefusal(error); }
+  }
+
+  verifyTaskTarget(endpointId: string, messageId: string): boolean {
+    const authority = this.#authority(endpointId);
+    try {
+      return verifyTaskTarget(this.#store, { participantId: authority.participantId, sessionId: authority.sessionId, exchangeId: authority.exchangeId,
+        fencingToken: this.#currentFencing(authority), capability: authority.readCapability, messageId }, this.#seams);
+    } catch (error) { throw toRefusal(error); }
+  }
+
+  send(endpointId: string, input: unknown, selection?: { readonly policyId: string; readonly selectionVersion: number; readonly targetRuntimeSessionId: string; readonly bindingEpoch: number }): CeSendResult {
     const authority = this.#authority(endpointId);
     if (!isPlainObject(input)) throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
-    const { to, text, idempotencyKey } = input;
+    if (Reflect.ownKeys(input).some(key => typeof key !== "string" || !["to", "text", "idempotencyKey", "replyTo"].includes(key))) {
+      throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
+    }
+    const { to, text, idempotencyKey, replyTo } = input;
+    if (replyTo !== undefined && (typeof replyTo !== "string" || selection !== undefined)) throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
     if (typeof to !== "string" || to.length === 0 || to.length > 256) {
       throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
     }
@@ -901,6 +934,7 @@ export class CeEndpointHost {
           sessionId: authority.sessionId,
           fencingToken,
           capability: authority.sendCapability,
+          ...(replyTo !== undefined ? { association: { requestMessageId: replyTo } } : selection !== undefined ? { association: selection } : {}),
           message: {
             exchangeId: authority.exchangeId,
             from: { adapter, endpointId },
@@ -1111,6 +1145,15 @@ export class CeEndpointHost {
       }),
       receiptAuditSequence: recorded.receiptAuditSequence,
     });
+  }
+
+  findReplies(endpointId: string, input: unknown) {
+    const authority = this.#authority(endpointId);
+    try {
+      const request = captureFields(input, ["requestMessageId", "afterMessageId"], ["requestMessageId"], "request");
+      return findMessageReplies(this.#store, { ...request, participantId: authority.participantId, sessionId: authority.sessionId,
+        exchangeId: authority.exchangeId, capability: authority.readCapability, fencingToken: this.#currentFencing(authority) }, this.#seams);
+    } catch (error) { throw toRefusal(error); }
   }
 
   /** Explicit, bounded metadata discovery. Pagination grants no authority and

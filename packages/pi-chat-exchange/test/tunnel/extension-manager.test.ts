@@ -38,7 +38,7 @@ async function fixture() {
   const ctx = { mode: "tui", hasUI: true, cwd: "/synthetic",
     sessionManager: { getSessionId: () => "unbound", getSessionFile: () => undefined, getBranch: () => [] },
     ui: { custom, notify, setStatus: vi.fn(), input: vi.fn() } };
-  return { command: commands.get("ce-tunnel")!, ctx, custom, notify, appendEntry, directory, events };
+  return { command: commands.get("ce-tunnel")!, ceCommand: commands.get("ce")!, ctx, custom, notify, appendEntry, directory, events };
 }
 
 async function flushUi() { for (let i = 0; i < 50; i++) await Promise.resolve(); }
@@ -127,6 +127,21 @@ describe("real tunnel manager extension routing", () => {
     expect(f.ctx.ui.input).not.toHaveBeenCalled();
   });
 
+
+  it("opens and closes the existing manager from /ce", async () => {
+    const f = await fixture();
+    const harness = createTuiHarness();
+    Object.assign(f.ctx.ui, { custom: harness.custom });
+    const pending = f.ceCommand.handler("", f.ctx);
+    try {
+      await vi.waitFor(() => expect(harness.isOpen).toBe(true));
+      expect(harness.render().join("\n")).toContain("UNCONFIGURED");
+      harness.press("tui.select.cancel");
+      await pending;
+      expect(harness.isOpen).toBe(false);
+      expect(f.appendEntry).not.toHaveBeenCalled();
+    } finally { harness.dispose(); await pending; }
+  });
 
   it("renders the real unconfigured Manager and Escape closes without persistence", async () => {
     const f = await fixture();

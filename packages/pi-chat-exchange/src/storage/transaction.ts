@@ -120,19 +120,26 @@ export function withImmediateTransaction(db: SqliteConnection, callback: (tx: Tr
     });
   }
 
+  let v8PermitIssued = false;
+  const ensureV8Permit = (): void => {
+    if (!v8PermitIssued && db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='v8_write_permit'").get()) {
+      db.prepare("INSERT INTO v8_write_permit(singleton) VALUES (1)").run();
+      v8PermitIssued = true;
+    }
+  };
   let capabilityActive = true;
   const assertActive = (): void => {
     if (!capabilityActive) throw new StorageTransactionError("transaction handle is revoked", "callback");
     if (!db.isTransaction) throw new StorageTransactionError("owned transaction ended unexpectedly", "callback");
   };
   const tx: TransactionHandle = Object.freeze({
-    exec(sql: string): void { assertActive(); db.exec(sql); },
+    exec(sql: string): void { assertActive(); ensureV8Permit(); db.exec(sql); },
     prepare(sql: string): Pick<SqliteStatement, "run" | "get" | "all"> {
       assertActive();
       const statement = db.prepare(sql);
       return Object.freeze({
         // Every supplied argument is forwarded unchanged to SQLite's typed method.
-        run: (...args: Parameters<SqliteStatement["run"]>) => { assertActive(); return statement.run(...args); },
+        run: (...args: Parameters<SqliteStatement["run"]>) => { assertActive(); ensureV8Permit(); return statement.run(...args); },
         get: (...args: Parameters<SqliteStatement["get"]>) => { assertActive(); return statement.get(...args); },
         all: (...args: Parameters<SqliteStatement["all"]>) => { assertActive(); return statement.all(...args); },
       });
@@ -145,6 +152,7 @@ export function withImmediateTransaction(db: SqliteConnection, callback: (tx: Tr
       // invalidated by setAuthorizer. Not a SQL-prefix/regex filter.
       db.setAuthorizerPolicy("deny-transaction-control");
       assertVoidResult(callback(tx));
+      if (v8PermitIssued && db.prepare("DELETE FROM v8_write_permit WHERE singleton=1").run().changes !== 1) throw new Error("v8 writer permit lost");
       if (db.authorizerDenials() > 0) throw new Error("callback attempted owned transaction control");
       if (!db.isTransaction) throw new Error("owned transaction ended unexpectedly");
     } catch (error) {

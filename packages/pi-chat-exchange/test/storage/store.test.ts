@@ -16,8 +16,8 @@ import {
   V5_FOUNDATION_CHECKSUM,
   V5_FOUNDATION_NAME,
   V5_MIGRATION_CHECKSUM,
-  V7_FOUNDATION_CHECKSUM,
-  V7_FOUNDATION_NAME,
+  V8_FOUNDATION_CHECKSUM,
+  V8_FOUNDATION_NAME,
   SQLITE_APPLICATION_ID,
 } from "../../src/storage/schema.js";
 import {
@@ -59,7 +59,7 @@ describe("private durable store schema and lifecycle", () => {
       now: () => "2026-10-08T00:00:00.000Z",
     });
     try {
-      expect(CURRENT_SCHEMA_VERSION).toBe(7);
+      expect(CURRENT_SCHEMA_VERSION).toBe(8);
       expect(store.storeUuid).toBe(STORE_UUID);
       expect(store.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
       expect(store.database.prepare("PRAGMA application_id").get()).toEqual({ application_id: SQLITE_APPLICATION_ID });
@@ -71,7 +71,7 @@ describe("private durable store schema and lifecycle", () => {
         schema_version: CURRENT_SCHEMA_VERSION,
       });
       expect(store.database.prepare("SELECT version, name, checksum FROM schema_migrations").all()).toEqual([
-        { version: CURRENT_SCHEMA_VERSION, name: V7_FOUNDATION_NAME, checksum: V7_FOUNDATION_CHECKSUM },
+        { version: CURRENT_SCHEMA_VERSION, name: V8_FOUNDATION_NAME, checksum: V8_FOUNDATION_CHECKSUM },
       ]);
     } finally {
       store.close();
@@ -120,6 +120,8 @@ describe("private durable store schema and lifecycle", () => {
         "host_trust_root",
         "idempotency_record",
         "message",
+        "message_association",
+        "native_session_binding",
         "participant",
         "participant_capability",
         "participant_fencing_high_water",
@@ -129,7 +131,9 @@ describe("private durable store schema and lifecycle", () => {
         "restore_hold",
         "result",
         "schema_migrations",
+        "selected_session_binding",
         "store_metadata",
+        "v8_write_permit",
       ]);
       const indexes = store.database
         .prepare("SELECT name FROM sqlite_schema WHERE type = 'index' AND name LIKE 'idx_%' ORDER BY name")
@@ -182,6 +186,7 @@ describe("private durable store schema and lifecycle", () => {
     const store = initializeStore({ ...storeLocation(), storeUuid: () => STORE_UUID });
     try {
       const db = store.database;
+      db.exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1)");
       db.prepare("INSERT INTO exchange(exchange_id, state, created_at) VALUES (?, 'OPEN', ?)").run(
         "ho_01ARZ3NDEKTSV4RRFFQ69G5FAV",
         "2026-10-08T00:00:00.000Z",
@@ -192,6 +197,8 @@ describe("private durable store schema and lifecycle", () => {
           payload_digest, payload_length, created_at
         ) VALUES (?, ?, '{}', '{}', 'QUEUED', ?, 0, ?)
       `);
+      db.exec("SAVEPOINT missing_exchange");
+      db.prepare("INSERT INTO message_association(message_id,exchange_id,request_message_id,from_endpoint_json,to_endpoint_json,created_at) VALUES (?,?,?,'{}','{}',?)").run("msg_01ARZ3NDEKTSV4RRFFQ69G5FAV", "ho_01ARZ3NDEKTSV4RRFFQ69G5FAW", "msg_01ARZ3NDEKTSV4RRFFQ69G5FAV", "2026-10-08T00:00:00.000Z");
       expect(() =>
         insertMessage.run(
           "msg_01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -200,6 +207,8 @@ describe("private durable store schema and lifecycle", () => {
           "2026-10-08T00:00:00.000Z",
         ),
       ).toThrow();
+      db.exec("ROLLBACK TO missing_exchange; RELEASE missing_exchange");
+      db.prepare("INSERT INTO message_association(message_id,exchange_id,request_message_id,from_endpoint_json,to_endpoint_json,created_at) VALUES (?,?,?,'{}','{}',?)").run("msg_01ARZ3NDEKTSV4RRFFQ69G5FAV", "ho_01ARZ3NDEKTSV4RRFFQ69G5FAV", "msg_01ARZ3NDEKTSV4RRFFQ69G5FAV", "2026-10-08T00:00:00.000Z");
       insertMessage.run(
         "msg_01ARZ3NDEKTSV4RRFFQ69G5FAV",
         "ho_01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -217,6 +226,7 @@ describe("private durable store schema and lifecycle", () => {
           "msg_01ARZ3NDEKTSV4RRFFQ69G5FAV",
         ),
       ).toThrow();
+      db.exec("ROLLBACK");
     } finally {
       store.close();
     }
@@ -226,11 +236,13 @@ describe("private durable store schema and lifecycle", () => {
     const store = initializeStore({ ...storeLocation(), storeUuid: () => STORE_UUID });
     try {
       const db = store.database;
+      db.exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1)");
       const exchangeId = "ho_01ARZ3NDEKTSV4RRFFQ69G5FAV";
       const messageId = "msg_01ARZ3NDEKTSV4RRFFQ69G5FAV";
       const attemptId = "att_01ARZ3NDEKTSV4RRFFQ69G5FAV";
       const at = "2026-10-08T00:00:00.000Z";
       db.prepare("INSERT INTO exchange(exchange_id, state, created_at) VALUES (?, 'OPEN', ?)").run(exchangeId, at);
+      db.prepare("INSERT INTO message_association(message_id,exchange_id,request_message_id,from_endpoint_json,to_endpoint_json,created_at) VALUES (?,?,?,'{}','{}',?)").run(messageId, exchangeId, messageId, at);
       db.prepare(`
         INSERT INTO message(
           message_id, exchange_id, from_endpoint_json, to_endpoint_json, state,
@@ -278,6 +290,7 @@ describe("private durable store schema and lifecycle", () => {
           at,
         ),
       ).not.toThrow();
+      db.exec("ROLLBACK");
     } finally {
       store.close();
     }
@@ -328,11 +341,13 @@ describe("private durable store schema and lifecycle", () => {
     const location = storeLocation();
     initializeStore({ ...location, storeUuid: () => STORE_UUID }).close();
     const db = openStorageConnection(location);
+    db.exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1)");
     db.exec("DROP TRIGGER schema_migrations_immutable");
     db.prepare("UPDATE schema_migrations SET checksum = ? WHERE version = ?").run(
       "0".repeat(64),
       CURRENT_SCHEMA_VERSION,
     );
+    db.exec("DELETE FROM v8_write_permit WHERE singleton=1; COMMIT");
     db.close();
     expect(() => openStore(location)).toThrowError(
       expect.objectContaining({ code: "STORAGE_MIGRATION_CHECKSUM_MISMATCH" }),
@@ -343,9 +358,11 @@ describe("private durable store schema and lifecycle", () => {
     const location = storeLocation();
     initializeStore({ ...location, storeUuid: () => STORE_UUID }).close();
     const db = openStorageConnection(location);
+    db.exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1)");
     db.prepare(
       "UPDATE restore_hold SET held = 1, reason = ?, detected_at = ? WHERE singleton = 1",
     ).run("historical restore requires operator review", "2026-10-08T00:00:00.000Z");
+    db.exec("DELETE FROM v8_write_permit WHERE singleton=1; COMMIT");
     db.close();
     expect(() => openStore(location)).toThrowError(
       expect.objectContaining({ code: "STORAGE_RESTORE_HOLD" }),

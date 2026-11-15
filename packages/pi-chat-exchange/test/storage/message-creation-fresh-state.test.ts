@@ -270,6 +270,7 @@ try {
     Atomics.wait(idle, 0, 0, 5);
   }
   db.exec("BEGIN IMMEDIATE");
+  db.exec("INSERT INTO v8_write_permit(singleton) VALUES (1)");
   const single = (result) => {
     if (result.changes !== 1 && result.changes !== 1n) throw new Error("fixture insert refused");
   };
@@ -289,6 +290,7 @@ try {
   single(db.prepare(
     "INSERT INTO disposition(exchange_id, status, owner_id, recorded_at, reason, reconciliation_id, unresolved_json, private_revision) VALUES (?, 'ABANDONED_UNRESOLVED', 'owner', ?, 'test-only administrative fixture', ?, '[]', 1)",
   ).run(config.exchangeId, config.recordedAt, config.reconciliationId));
+  db.exec("DELETE FROM v8_write_permit WHERE singleton=1");
   db.exec("COMMIT");
   store.close();
   store = undefined;
@@ -399,9 +401,11 @@ it("F2-A: an externally committed Exchange CLOSE is observed without reopening t
   // A missing reconciliation is rejected by the disposition FK (787). This
   // negative fixture is not disposition-row freshness evidence: F2-B below
   // commits the complete schema-valid test-only dependency chain instead.
+  active.raw.exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1)");
   expect(capturedError(() => active.raw.prepare(
     "INSERT INTO disposition(exchange_id, status, owner_id, recorded_at, reason, reconciliation_id, unresolved_json) VALUES (?, 'ABANDONED_UNRESOLVED', 'owner', ?, 'characterization', 'rec_missing', '[]')",
   ).run(active.exchangeId, closedAt))).toMatchObject({ code: "ERR_SQLITE_ERROR", errcode: 787 });
+  active.raw.exec("ROLLBACK");
   expect(snapshot(active.reader)).toEqual(before);
 }, TEST_MS);
 
@@ -509,8 +513,10 @@ it("F4: SCHEMA_V1_UNAUTHENTICATED_STATE_CHARACTERIZATION — privileged CLOSED->
   expect(active.raw.prepare("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
   expect(active.raw.prepare("PRAGMA trusted_schema").get()).toEqual({ trusted_schema: 0 });
   expect(active.raw.prepare("PRAGMA recursive_triggers").get()).toEqual({ recursive_triggers: 1 });
+  active.raw.exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1)");
   const drift = active.raw.prepare("UPDATE exchange SET state='OPEN', closed_at=NULL WHERE exchange_id=? AND state='CLOSED'")
     .run(active.exchangeId);
+  active.raw.exec("DELETE FROM v8_write_permit WHERE singleton=1; COMMIT");
   // Observed behavior: schema v1 does not authenticate administrative state.
   expect(Number(drift.changes)).toBe(1);
   expect(active.reader.prepare("SELECT state, closed_at FROM exchange WHERE exchange_id=?").get(active.exchangeId))

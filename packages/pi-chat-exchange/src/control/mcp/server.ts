@@ -22,6 +22,7 @@ import {
   ListToolsRequestSchema,
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
+import { Type } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
 import { argumentShape, debugEvent, errorSummary } from "../debug-log.js";
 import { observeTransport } from "./debug-transport.js";
@@ -30,6 +31,7 @@ import { PING_TOOL_NAME, PingArgsSchema, PingResultSchema, defaultHostLabel, pin
 import {
   callMessagingTool,
   CE_ACK_TOOL,
+  CE_SEND_TOOL_NAME, SendArgsSchema,
   isAckToolName,
   isMessagingToolName,
   MESSAGING_TOOLS,
@@ -40,7 +42,7 @@ import { callEndpointDiscovery, CE_ENDPOINTS_TOOL, CE_ENDPOINTS_TOOL_NAME, type 
 import { callTaskOwner, CE_TASK_OWNER_TOOL, CE_TASK_OWNER_TOOL_NAME, type TaskOwnerPort } from "./task-owner.js";
 
 export const SERVER_NAME = "pi-chat-exchange" as const;
-export const SERVER_VERSION = "0.3.4" as const;
+export const SERVER_VERSION = "0.3.5" as const;
 
 const PING_TOOL = {
   name: PING_TOOL_NAME,
@@ -57,6 +59,8 @@ const PING_TOOL = {
   },
 } as const;
 
+const FIND_REPLIES_SCHEMA = Type.Object({ requestMessageId: Type.String({ pattern: "^msg_[0-9A-HJKMNP-TV-Z]{26}$" }), afterMessageId: Type.Optional(Type.String({ pattern: "^msg_[0-9A-HJKMNP-TV-Z]{26}$" })) }, { additionalProperties: false });
+const FIND_REPLIES_TOOL = { name: "ce_find_replies", description: "Find authorized reply message IDs for an original request. Reads metadata only; no ACK or consumption.", inputSchema: { ...FIND_REPLIES_SCHEMA }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } } as const;
 /** An endpoint-bound messaging port plus everything the surface needs from the
  * composition root. The port fixes the sender Endpoint; tool arguments never
  * carry sender/endpoint/session/capability fields. */
@@ -64,6 +68,8 @@ export interface MessagingServerBinding {
   readonly port: ExchangeMessagingPort;
   /** Explicit opt-in, caller-bound filtered discovery; no Host/Storage authority. */
   readonly discovery?: EndpointDiscoveryPort;
+  /** Shared Endpoint-scoped selection, re-read on every selected send. */
+  readonly selectedTarget?: () => { readonly endpointId: string; readonly policyId: string; readonly generation: number; readonly runtimeSessionId: string; readonly epoch: number } | undefined;
   /** Optional trusted, synchronous deny-only composition check. Runs freshly
    * before discovery and every tool dispatch, including ping/unknown names.
    * No authority inputs come from model arguments. */
@@ -103,7 +109,8 @@ export function createExchangeMcpServer(
   // operator ack opt-in carried by the binding.
   const withAck = messaging?.ackEnabled === true ? [...tools, CE_ACK_TOOL] : tools;
   const withDiscovery = messaging?.discovery === undefined ? withAck : [...withAck, CE_ENDPOINTS_TOOL];
-  const advertised = messaging?.taskOwner === undefined ? withDiscovery : [...withDiscovery, CE_TASK_OWNER_TOOL];
+  const withTaskOwner = messaging?.taskOwner === undefined ? withDiscovery : [...withDiscovery, CE_TASK_OWNER_TOOL];
+  const advertised = messaging?.port.findReplies === undefined ? withTaskOwner : [...withTaskOwner, FIND_REPLIES_TOOL];
   for (const tool of advertised) debugEvent("tool", "TOOL_REGISTERED", { tool: tool.name });
 
   const admit = (): void => {
@@ -140,6 +147,14 @@ export function createExchangeMcpServer(
     admit();
     debugEvent("tool", "TOOL_CALL_STARTED", { tool, args: argumentShape(args) });
     try {
+    if (name === "ce_find_replies") {
+      if (!messaging?.port.findReplies) throw new McpError(ErrorCode.MethodNotFound, "unknown tool");
+      if (!Value.Check(FIND_REPLIES_SCHEMA, args ?? {})) throw new McpError(ErrorCode.InvalidParams, "invalid request Message ID");
+      try {
+        const result = messaging.port.findReplies(args as { requestMessageId: string; afterMessageId?: string });
+        return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, isError: false };
+      } catch { return { content: [{ type: "text", text: "Reply lookup rejected or unavailable." }], isError: true }; }
+    }
     if (name === CE_TASK_OWNER_TOOL_NAME) {
       if (messaging?.taskOwner === undefined) {
         throw new McpError(ErrorCode.MethodNotFound, "unknown tool: ce_task_owner");
@@ -169,7 +184,21 @@ export function createExchangeMcpServer(
       }
       try {
         debugEvent("tool", "TOOL_DISPATCH", { tool, stage: "bound-port" });
-        const result = callMessagingTool(messaging.port, name, args ?? {});
+        let input: unknown = args ?? {};
+        let selectionMetadata: { policyId: string; selectionVersion: number; targetRuntimeSessionId: string; bindingEpoch: number } | undefined;
+        if (name === CE_SEND_TOOL_NAME && Value.Check(SendArgsSchema, input) && input.selectionVersion !== undefined) {
+          if (input.to !== undefined) return { content: [{ type: "text", text: "Choose either an explicit recipient or the shared selected target." }], isError: true };
+          const selection = messaging.selectedTarget?.();
+          const discovery = messaging.discovery?.discover();
+          const verified = messaging.selectedTarget?.();
+          if (!selection || selection.generation !== input.selectionVersion || verified?.generation !== selection.generation || verified.endpointId !== selection.endpointId ||
+              !discovery?.targets.some(t => t.endpointId === selection.endpointId && t.active === "true")) {
+            return { content: [{ type: "text", text: "Selected target unavailable or changed; refresh the shared selection." }], isError: true };
+          }
+          selectionMetadata = { policyId: selection.policyId, selectionVersion: selection.generation, targetRuntimeSessionId: selection.runtimeSessionId, bindingEpoch: selection.epoch };
+          input = { to: selection.endpointId, text: input.text, idempotencyKey: input.idempotencyKey, ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }) };
+        }
+        const result = callMessagingTool(messaging.port, name, input, selectionMetadata);
         debugEvent("tool", "TOOL_CALL_COMPLETED", { tool, isError: result.isError, durationMs: Date.now() - started });
         return result;
       } catch (error) {

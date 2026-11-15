@@ -31,7 +31,7 @@ it("CUR-INIT-01/fresh-current-foundation: full commit then response lost is not 
  });
  expect(()=>initializeStore(o)).toThrowError(expect.objectContaining({stage:"commit",outcome:"INDETERMINATE"}));
  expect(commits).toBe(1);vi.restoreAllMocks();
- const store=openStore(o);expect(store.schemaVersion).toBe(7);expect(store.database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);store.close();
+ const store=openStore(o);expect(store.schemaVersion).toBe(8);expect(store.database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);store.close();
 });
 it("CUR-INIT-01/fresh-current-foundation: secret failure closes created handle without deleting artifacts",()=>{
  const {methods}=faultConnection();
@@ -82,5 +82,5 @@ it("CUR-INIT-01/fresh-current-foundation: postcommit validation I/O failure may 
  let error:unknown;try{initializeStore(o);}catch(e){error=e;}
  expect(committed).toBe(true);expect(error).toMatchObject({code:"STORAGE_CORRUPT"});expect(error).not.toHaveProperty("outcome","ROLLED_BACK");
  expect(String(error)).not.toContain("PRIVATE_GENERATOR_SENTINEL");vi.restoreAllMocks();
- const store=openStore(o);expect(store.schemaVersion).toBe(7);store.close();
+ const store=openStore(o);expect(store.schemaVersion).toBe(8);store.close();
 });

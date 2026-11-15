@@ -25,7 +25,7 @@ for(const stage of ["before-begin","before-commit","after-commit"])it(`CUR-INIT-
   expect(child.kill("SIGKILL")).toBe(true);expect(await done).toEqual({code:null,signal:"SIGKILL"});expect(stderr).toBe("");
   expect(existsSync(join(directory,"host-secret"))).toBe(true);
   const options={directory,filename:"store.sqlite"};
-  if(stage==="after-commit"){const store=openStore(options);expect(store.schemaVersion).toBe(7);expect(store.database.prepare("PRAGMA integrity_check").get()).toEqual({integrity_check:"ok"});expect(store.database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);store.close();}
+  if(stage==="after-commit"){const store=openStore(options);expect(store.schemaVersion).toBe(8);expect(store.database.prepare("PRAGMA integrity_check").get()).toEqual({integrity_check:"ok"});expect(store.database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);store.close();}
   else expect(()=>openStore(options)).toThrow();
   expect(()=>initializeStore(options)).toThrowError(expect.objectContaining({code:"STORAGE_ALREADY_INITIALIZED"}));
  }finally{if(child.exitCode===null&&child.signalCode===null){child.kill("SIGKILL");await done;}}

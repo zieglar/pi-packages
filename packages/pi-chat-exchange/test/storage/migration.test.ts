@@ -71,7 +71,7 @@ for(const [name,sql,code] of [
  ["version forgery","PRAGMA user_version=7","STORAGE_INCOMPATIBLE"],
  ["metadata forgery","DROP TRIGGER store_metadata_immutable; UPDATE store_metadata SET schema_version=5","STORAGE_INCOMPATIBLE"],
  ["foreign identity","PRAGMA application_id=123","STORAGE_FOREIGN_STORE"],
- ["too new","PRAGMA user_version=8","STORAGE_SCHEMA_TOO_NEW"],
+ ["too new","PRAGMA user_version=9","STORAGE_SCHEMA_TOO_NEW"],
 ] as const)it(`legacy refusal retains ${name} security and never repairs`,()=>{
  const loc=legacy(3),db=openStorageConnection(loc);db.exec(sql);db.close();const before=bytes(loc.directory);
  expect(()=>openStore(loc)).toThrowError(expect.objectContaining({code}));expect(bytes(loc.directory)).toEqual(before);

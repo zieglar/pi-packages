@@ -17,10 +17,15 @@ const cases: [string,string,(db:Pick<DatabaseSync, "exec">)=>void][]=[
  ["CUR-OPEN-03/fk-failure","STORAGE_CORRUPT",db=>db.exec("PRAGMA foreign_keys=OFF; INSERT INTO delivery_cursor(exchange_id,participant_id,acked_audit_seq) VALUES ('absent','absent',0)")],
  ["OLD-REFUSE-01/unsupported-v6-header","STORAGE_INCOMPATIBLE",db=>db.exec("PRAGMA user_version=6")],
  ["OLD-REFUSE-01/unsupported-zero-header","STORAGE_INCOMPATIBLE",db=>db.exec("PRAGMA user_version=0")],
- ["OLD-READER-01/current-classifier-too-new","STORAGE_SCHEMA_TOO_NEW",db=>db.exec("PRAGMA user_version=8")],
+ ["OLD-READER-01/current-classifier-too-new","STORAGE_SCHEMA_TOO_NEW",db=>db.exec("PRAGMA user_version=9")],
 ];
 for(const [id,code,mutate] of cases)it(`${id}: refuse unchanged without migration/reset/repair`,()=>{
- const f=fixture();mutate(f.store.database);f.store.close();
+ const f=fixture(),db=f.store.database;
+ if (id === "CUR-OPEN-03/fk-failure") db.exec("PRAGMA foreign_keys=OFF");
+ db.exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1)");
+ try { mutate(db); db.exec("DELETE FROM v8_write_permit WHERE singleton=1; COMMIT"); }
+ catch (error) { db.exec("ROLLBACK"); throw error; }
+ f.store.close();
  const before=readFileSync(f.databasePath);
  expect(()=>openStore({directory:f.directory,filename:f.filename})).toThrowError(expect.objectContaining({code}));
  expect(readFileSync(f.databasePath)).toEqual(before);
@@ -41,9 +46,11 @@ it.each(["insecure-artifact","secret-missing","secret-mismatch","integrity-failu
 });
 it("OLD-REFUSE-01/unsupported-v6-header: normal open never executes historical reference rebuild SQL",()=>{
  const f=fixture(),db=f.store.database;
+ db.exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1)");
  db.exec("DROP TRIGGER store_metadata_immutable; DROP TRIGGER schema_migrations_immutable");
  db.exec("UPDATE store_metadata SET schema_version=6; PRAGMA user_version=6");
  db.prepare("UPDATE schema_migrations SET version=6,name=?,checksum=?").run(V6_FOUNDATION_NAME,V6_FOUNDATION_CHECKSUM);
+ db.exec("DELETE FROM v8_write_permit WHERE singleton=1; COMMIT");
  db.close();
  const original=DatabaseSync.prototype.exec,sql:string[]=[];
  const spy=vi.spyOn(DatabaseSync.prototype,"exec").mockImplementation(function(this:DatabaseSync,text:string){sql.push(text);return original.call(this,text);});

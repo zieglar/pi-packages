@@ -192,7 +192,7 @@ async function main(): Promise<void> {
     ...(live === undefined
       ? admission === undefined ? {} : { admission: () => admission({ kind: "inbox" }) }
       : { discovery: { discover: (previousEndpointId?: string, runtimeId?: string, useRuntimeBinding?: true, group?: string) =>
-        discoverLiveEndpoints(live, activeBound, previousEndpointId, runtimeId, useRuntimeBinding, group) } }),
+        discoverLiveEndpoints(live, activeBound, previousEndpointId, runtimeId, useRuntimeBinding, group) }, selectedTarget: live.selectedTarget }),
   }, sourceMetadataProbe);
   if (config.debugExecutionGuard.enabled) {
     debugEvent("server", "EXECUTION_GUARD_ARMED", { scope: "tools/call", stage: "unified-dispatch-entry" });

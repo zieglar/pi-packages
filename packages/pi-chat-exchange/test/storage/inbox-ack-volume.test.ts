@@ -18,6 +18,7 @@ for(const ratio of [0,50,90,99])it(`ISO-02/current-volume-queryplan: lawful 1000
  const w=ackWorld(),db=w.f.store.database,now=clockAt(5).now(),ackTime=clockAt(10).now();
  const read=capabilityFor(w.f,w.recipient,"read",{sessionId:S1});
  const message=db.prepare("INSERT INTO message(message_id,exchange_id,from_endpoint_json,to_endpoint_json,state,payload_digest,payload_length,payload_body,created_at,idempotency_key,private_revision) VALUES (?,?,?,?,'CREATED',?,4,?,?,?,1)");
+ const association=db.prepare("INSERT INTO message_association(message_id,exchange_id,request_message_id,from_endpoint_json,to_endpoint_json,created_at) VALUES (?,?,?,?,?,?)");
  const audit=db.prepare("INSERT INTO audit_event(event_id,exchange_id,sequence,kind,subject_id,created_at,digest,length,outcome,private_revision) VALUES (?,?,?,?,?,?,?,?,?,1)");
  const record=db.prepare("INSERT INTO idempotency_record(namespace,idempotency_key,request_digest,entity_id,created_at,private_revision) VALUES (?,?,?,?,?,1)");
  const receipt=db.prepare("INSERT INTO delivery_ack_receipt(receipt_id,exchange_id,message_id,recipient_participant_id,ack_session_id,ack_fencing_token,trust_generation,payload_digest,payload_length,message_created_audit_seq,created_at,private_revision) VALUES (?,?,?,?,?,1,1,?,4,?,?,1)");
@@ -25,6 +26,7 @@ for(const ratio of [0,50,90,99])it(`ISO-02/current-volume-queryplan: lawful 1000
  const body=new Uint8Array([7,7,7,7]);let ordinal=0;
  const create=(to=w.endpoint)=>{
   const id=deterministicId("msg_",++messageOrdinal),key=`volume-${++ordinal}`;
+  association.run(id,w.exchangeId,id,JSON.stringify(w.from),JSON.stringify(to),now);
   message.run(id,w.exchangeId,JSON.stringify(w.from),JSON.stringify(to),w.input.payloadDigest,body,now,key);
   record.run(JSON.stringify(["message.create",w.exchangeId]),key,canonicalDigest({op:"chat-exchange/message.create",v:1,exchangeId:w.exchangeId,from:w.from,to,payloadDigest:w.input.payloadDigest,payloadLength:4}),id,now);
   audit.run(deterministicId("evt_",++eventOrdinal),w.exchangeId,++sequence,"message_created",id,now,w.input.payloadDigest,4,null);
@@ -32,6 +34,7 @@ for(const ratio of [0,50,90,99])it(`ISO-02/current-volume-queryplan: lawful 1000
  };
  const prefix:{id:string;sequence:number}[]=[],oracle:string[]=[];
  db.exec("BEGIN IMMEDIATE");
+ db.exec("INSERT INTO v8_write_permit(singleton) VALUES (1)");
  try{
   for(let i=0;i<ratio*1000;i++)prefix.push(create());
   const after=sequence;let receiptIndex=0;
@@ -41,6 +44,7 @@ for(const ratio of [0,50,90,99])it(`ISO-02/current-volume-queryplan: lawful 1000
     audit.run(deterministicId("evt_",++eventOrdinal),w.exchangeId,++sequence,"receipt_recorded",id,ackTime,w.input.payloadDigest,4,"delivery_ack");
    }else {const visible=i%101===0;const created=create(visible?w.endpoint:w.from);if(visible)oracle.push(created.id);}
   }
+  db.exec("DELETE FROM v8_write_permit WHERE singleton=1");
   db.exec("COMMIT");
   expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   const range=db.prepare("EXPLAIN QUERY PLAN SELECT sequence,kind,subject_id FROM audit_event WHERE exchange_id=? AND sequence>? ORDER BY sequence LIMIT 2000").all(w.exchangeId,after);

@@ -32,7 +32,9 @@ const closed = { additionalProperties: false } as const;
 
 export const SendArgsSchema = Type.Object(
   {
-    to: Type.String({ minLength: 1, maxLength: 256, description: "Exact recipient label selected from a fresh ce_endpoints result in live mode; do not infer the latest Session" }),
+    to: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Explicit recipient; never overridden by a selected target" })),
+    selectionVersion: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER, description: "Version returned by ce_endpoints for the shared selected target" })),
+    replyTo: Type.Optional(Type.String({ pattern: "^msg_[0-9A-HJKMNP-TV-Z]{26}$", description: "Request Message ID for a reply; use an explicit recipient" })),
     text: Type.String({ minLength: 1, description: "Text to deliver; stored as the private payload" }),
     idempotencyKey: Type.String({ minLength: 1, maxLength: 256, description: "Stable key; a replay returns the original record" }),
   },
@@ -77,7 +79,8 @@ export type AckArgs = Static<typeof AckArgsSchema>;
 
 /** The only capability the MCP server holds: an Endpoint-bound port. */
 export interface ExchangeMessagingPort {
-  send(input: SendArgs): {
+  findReplies?(input: { readonly requestMessageId: string; readonly afterMessageId?: string }): { readonly requestMessageId: string; readonly target: string; readonly replies: readonly { readonly messageId: string }[]; readonly hasMore: boolean };
+  send(input: { readonly to: string; readonly text: string; readonly idempotencyKey: string; readonly replyTo?: string }, selection?: { readonly policyId: string; readonly selectionVersion: number; readonly targetRuntimeSessionId: string; readonly bindingEpoch: number }): {
     readonly disposition: "CREATED" | "REPLAYED";
     readonly messageId: string;
     readonly auditSequence: number;
@@ -133,7 +136,9 @@ export const MESSAGING_TOOLS: readonly MessagingToolDescriptor[] = [
     description:
       "Send one durable chat-exchange item from this server's fixed, operator-configured endpoint to an " +
       "operator-authorized recipient label. Idempotent by idempotencyKey. The sender is never a parameter. " +
-      "In live mode, call ce_endpoints before choosing a recipient. Do not reuse a recipient label from an " +
+      "Use an explicit to, or obtain the current shared MCP Endpoint selection from ce_endpoints and provide its selectionVersion. " +
+      "This selection is shared across ChatGPT conversations; if it changes or the target is offline, sending is refused. " +
+      "Never provide both to and selectionVersion. Do not reuse a recipient label from an " +
       "earlier conversation; ambiguous targets require explicit user selection. CREATED/REPLAYED does not prove " +
       "receiver reading or task completion. If the result is CE_HOST_UNCERTAIN the outcome is unknown: do not " +
       "retry; ask the operator to inspect.",
@@ -255,13 +260,13 @@ export function isAckToolName(name: unknown): name is AckToolName {
 /** Validate the closed schema, then call the bound port. Schema failures throw
  * `MessagingArgsError` (mapped to JSON-RPC invalid params by the server);
  * port refusals become sanitized `isError` tool results. */
-export function callMessagingTool(port: ExchangeMessagingPort, name: MessagingToolName | AckToolName, args: unknown): ToolCallResult {
+export function callMessagingTool(port: ExchangeMessagingPort, name: MessagingToolName | AckToolName, args: unknown, selection?: { readonly policyId: string; readonly selectionVersion: number; readonly targetRuntimeSessionId: string; readonly bindingEpoch: number }): ToolCallResult {
   const input = args ?? {};
   switch (name) {
     case CE_SEND_TOOL_NAME: {
-      if (!Value.Check(SendArgsSchema, input)) throw new MessagingArgsError(name);
+      if (!Value.Check(SendArgsSchema, input) || input.to === undefined || input.selectionVersion !== undefined) throw new MessagingArgsError(name);
       try {
-        const sent = port.send({ to: input.to, text: input.text, idempotencyKey: input.idempotencyKey });
+        const sent = port.send({ to: input.to, text: input.text, idempotencyKey: input.idempotencyKey, ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }) }, selection);
         const evidence = {
           disposition: sent.disposition,
           messageId: sent.messageId,

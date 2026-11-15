@@ -194,11 +194,13 @@ describe("P1A hardening B: missing trust-generation row", () => {
   function deleteGenerationRows(loc: Location): void {
     const db = openStorageConnection(loc);
     try {
+      db.exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1)");
       db.exec("DROP TRIGGER host_trust_root_nodelete");
       db.exec("DELETE FROM host_trust_root");
       db.exec(
         "CREATE TRIGGER host_trust_root_nodelete\nBEFORE DELETE ON host_trust_root BEGIN SELECT RAISE(ABORT, 'host trust root is append-only'); END;",
       );
+      db.exec("DELETE FROM v8_write_permit WHERE singleton=1; COMMIT");
     } finally {
       db.close();
     }
@@ -259,11 +261,13 @@ describe("P1A hardening B: missing trust-generation row", () => {
     const loc = location();
     const store = initializeStore({ ...loc, now: () => NOW, secretBytes: () => SECRET });
     try {
+      store.database.exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1)");
       store.database
         .prepare("INSERT INTO participant(participant_id, endpoint_adapter, endpoint_id, created_at, private_revision) VALUES (?, 'adapter-a', 'endpoint-1', ?, 1)")
         .run("prt_01ARZ3NDEKTSV4RRFFQ69G5FAV", NOW);
       store.database.exec("DROP TRIGGER host_trust_root_nodelete");
       store.database.exec("DELETE FROM host_trust_root");
+      store.database.exec("DELETE FROM v8_write_permit WHERE singleton=1; COMMIT");
 
       const error = captureError(() =>
         issueCapability(

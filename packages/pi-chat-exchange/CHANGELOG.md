@@ -2,6 +2,11 @@
 
 # Changelog
 
+## 0.3.5 (candidate)
+
+- Preserve request and reply associations with Session-bound reply authorization and metadata-only reply lookup.
+- Preserve existing ownership and fencing when migrating eligible v7 Stores to v8.
+
 ## 0.3.4 (candidate)
 
 - Allow an explicitly selected CE Store proof to return the registered business owner label for the scoped endpoint, while preserving legacy sidecar behavior.

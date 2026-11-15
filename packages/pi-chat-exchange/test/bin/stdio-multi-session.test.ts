@@ -28,7 +28,7 @@ it.each(qualificationChildren)("actual MCP child %s intersects loaded/current gr
   const client = new Client({ name: "multi-session-fixture", version: "1" });
   try {
     await client.connect(transport);
-    expect((await client.listTools()).tools.map((t) => t.name)).toEqual(["ping", "ce_send", "ce_inbox_list", "ce_read_payload", "ce_ack"]);
+    expect((await client.listTools()).tools.map((t) => t.name)).toEqual(["ping", "ce_send", "ce_inbox_list", "ce_read_payload", "ce_ack", "ce_find_replies"]);
     expect((await client.callTool({ name: "ping", arguments: {} })).isError).not.toBe(true);
     const send = (to: string, key: string) => client.callTool({ name: "ce_send", arguments: { to, text: "synthetic-chatgpt-text", idempotencyKey: key } });
     const a = await send("pi/A", "a"); const b = await send("pi/B", "b");
@@ -67,7 +67,7 @@ it.each(qualificationChildren)("actual MCP child %s intersects loaded/current gr
     fs.writeFileSync(f.profilePath, "partially-written-profile");
     await expect(client.listTools()).rejects.toMatchObject({ code: -32603 });
     await expect(client.callTool({ name: "ping", arguments: {} })).rejects.toMatchObject({ code: -32603 });
-    for (const name of ["ce_send", "ce_inbox_list", "ce_read_payload", "ce_ack"]) await expect(client.callTool({ name, arguments: {} })).rejects.toMatchObject({ code: -32603 });
+    for (const name of ["ce_send", "ce_inbox_list", "ce_read_payload", "ce_ack", "ce_find_replies"]) await expect(client.callTool({ name, arguments: {} })).rejects.toMatchObject({ code: -32603 });
     await client.close();
     // Invalid policy must NOT deny CE cleanup on EOF/SIGTERM.
     for (let i = 0; i < 100 && !diagnostics.includes("CE_MCP_STOPPED"); i++) await new Promise((r) => setTimeout(r, 10));

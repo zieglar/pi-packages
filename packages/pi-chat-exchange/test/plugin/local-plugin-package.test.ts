@@ -221,6 +221,7 @@ describe("ChatGPT Desktop local plugin source package", () => {
         "ce_send",
         "ce_inbox_list",
         "ce_read_payload",
+        "ce_find_replies",
       ]);
       const ping = await call("tools/call", { name: "ping", arguments: {} });
       expect((ping.result as { structuredContent: { status: string } }).structuredContent.status).toBe("reachable");
@@ -369,6 +370,7 @@ describe("ChatGPT Desktop local plugin source package", () => {
           "ce_send",
           "ce_inbox_list",
           "ce_read_payload",
+          "ce_find_replies",
         ]);
         for (const tool of tools) {
           expect(tool.inputSchema?.additionalProperties, `schema for ${tool.name}`).toBe(false);

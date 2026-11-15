@@ -62,7 +62,7 @@ it.skipIf(process.version !== "v24.21.0")("real launcher preserves JSON-RPC, log
       expect(initialized.result.serverInfo.name).toBe("pi-chat-exchange");
       child.stdin!.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n');
       const listed = await call("tools/list", {});
-      expect(listed.result.tools.map((t: any) => t.name).sort()).toEqual(["ping", "ce_send", "ce_inbox_list", "ce_read_payload", "ce_ack"].sort());
+      expect(listed.result.tools.map((t: any) => t.name).sort()).toEqual(["ping", "ce_send", "ce_inbox_list", "ce_read_payload", "ce_ack", "ce_find_replies"].sort());
       expect((await call("tools/call", { name: "ping", arguments: {} })).result.isError).not.toBe(true);
       expect((await call("tools/call", { name: "ping", arguments: { secret: "SECRET_CANARY" } })).error).toBeDefined();
       child.kill("SIGTERM"); expect(await exited).toBe(0); lines.close();

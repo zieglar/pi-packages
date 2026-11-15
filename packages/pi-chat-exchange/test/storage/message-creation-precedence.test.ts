@@ -151,9 +151,11 @@ function countControls(store: DurableStore) {
 }
 
 function corruptRecord(active: Fixture) {
+  active.raw.exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1)");
   expect(active.raw.prepare(
     "UPDATE idempotency_record SET private_revision=CAST(? AS INTEGER) WHERE namespace=? AND idempotency_key=?",
   ).run(unsafeRevision, namespace(active), key).changes).toBe(1);
+  active.raw.exec("DELETE FROM v8_write_permit WHERE singleton=1; COMMIT");
 }
 function recordRevision(active: Fixture) {
   return active.reader.prepare(

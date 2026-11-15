@@ -14,14 +14,16 @@ export type LivePolicyRef = LivePolicyV1Ref | LivePolicyV2Ref;
 export interface McpHookTarget { readonly ruleId: string; readonly endpointId: string; readonly runtimeSessionId: string; readonly epoch: number; }
 export interface McpHookConsent { readonly generation: number; readonly bindingGeneration: string | null; readonly targets: readonly McpHookTarget[]; }
 export interface LiveRegistration extends SessionRegistration { readonly payloadReadGeneration: number; readonly ackGeneration: number; readonly presenceDisclosure: boolean; readonly hookGeneration?: number; }
-export interface LiveSnapshot { readonly ref: LivePolicyRef; readonly sequence: number; readonly digest: string; readonly manifest: Omit<MultiSessionManifest, "registrations"> & { readonly registrations: readonly LiveRegistration[]; readonly mcpHookConsent?: McpHookConsent }; }
+export interface LiveTargetSelection { readonly endpointId: string; readonly runtimeSessionId: string; readonly epoch: number; readonly generation: number; }
+export interface LiveSnapshot { readonly ref: LivePolicyRef; readonly sequence: number; readonly digest: string; readonly manifest: Omit<MultiSessionManifest, "registrations"> & { readonly registrations: readonly LiveRegistration[]; readonly mcpHookConsent?: McpHookConsent; readonly selectedTarget?: LiveTargetSelection }; }
 export interface LiveReaderWatermark { sequence?: number; digest?: string; policyId?: string; }
 type Manifest = LiveSnapshot["manifest"];
 type Registration = Pick<LiveRegistration, "endpointId" | "runtimeSessionId" | "payloadRead" | "ack" | "presenceDisclosure">;
 type Intent = { kind: "genesis" } | { kind: "register" | "reauthorize"; registration: Registration } | { kind: "revoke"; endpointId: string }
   | { kind: "upgrade"; actorRuntimeSessionId: string; profileRevision: string; bindingGeneration: string }
   | { kind: "set-pi-hooks"; runtimeSessionId: string; endpointId: string; epoch: number; hooks: readonly CeHookRule[] }
-  | { kind: "set-mcp-hooks"; actorRuntimeSessionId: string; bindingGeneration: string; targets: readonly McpHookTarget[] };
+  | { kind: "set-mcp-hooks"; actorRuntimeSessionId: string; bindingGeneration: string; targets: readonly McpHookTarget[] }
+  | { kind: "select-target"; actorRuntimeSessionId: string; endpointId: string; epoch: number };
 interface Envelope { kind: LivePolicyRef["kind"]; policyId: string; sequence: number; parentDigest: string | null; identityDigest: string; operationId: string; intent: Intent; manifestDigest: string; manifest: Manifest; }
 interface Locator { kind: "ce-live-locator-v1"; policyId: string; runtimeSessionId: string; parentSequence: number; parentDigest: string; sequence: number; operationId: string; intentDigest: string; candidateDigest: string; }
 export interface LivePublication { readonly snapshot: LiveSnapshot; readonly durability: "synced" | "uncertain"; readonly operationId: string; }
@@ -80,11 +82,17 @@ function parseManifest(raw: unknown, sequence: number, v2 = false): Manifest {
     if (v2 && integer(hookGeneration) > sequence) return fail();
     return { base, payloadReadGeneration: payloadReadGeneration as number, ackGeneration: ackGeneration as number, presenceDisclosure, ...(v2 ? { hookGeneration: hookGeneration as number } : {}) };
   });
-  const { mcpHookConsent, ...baseRaw } = r;
+  const { mcpHookConsent, selectedTarget, ...baseRaw } = r;
+  let selection: LiveTargetSelection | undefined;
+  if (selectedTarget !== undefined) {
+    const target = closed(selectedTarget, ["endpointId", "runtimeSessionId", "epoch", "generation"]);
+    if (integer(target.epoch) < 1 || integer(target.generation) < 1 || integer(target.generation) > sequence) return fail();
+    selection = Object.freeze({ endpointId: label(target.endpointId), runtimeSessionId: label(target.runtimeSessionId), epoch: target.epoch as number, generation: target.generation as number });
+  }
   if (!v2 && Object.hasOwn(r, "mcpHookConsent")) return fail();
   const consent = v2 ? parseConsent(mcpHookConsent, sequence) : undefined;
   const base = parseMultiSessionManifest({ ...baseRaw, registrations: extras.map(e => e.base) });
-  return Object.freeze({ ...base, ...(consent ? { mcpHookConsent: consent } : {}), registrations: Object.freeze(base.registrations.map((e, i) => Object.freeze({ ...e,
+  return Object.freeze({ ...base, ...(consent ? { mcpHookConsent: consent } : {}), ...(selection ? { selectedTarget: selection } : {}), registrations: Object.freeze(base.registrations.map((e, i) => Object.freeze({ ...e,
     ...(v2 ? { hookGeneration: extras[i]!.hookGeneration! } : {}),
     payloadReadGeneration: extras[i]!.payloadReadGeneration, ackGeneration: extras[i]!.ackGeneration, presenceDisclosure: extras[i]!.presenceDisclosure }))) });
 }
@@ -111,6 +119,7 @@ function intent(raw: unknown, v2 = false): Intent {
   if (k === "genesis") { closed(raw, ["kind"]); return { kind: k }; }
   if (k === "register" || k === "reauthorize") { const r = closed(raw, ["kind", "registration"]); return { kind: k, registration: registration(r.registration) }; }
   if (k === "revoke") { const r = closed(raw, ["kind", "endpointId"]); return { kind: k, endpointId: label(r.endpointId) }; }
+  if (k === "select-target") { const r = closed(raw, ["kind", "actorRuntimeSessionId", "endpointId", "epoch"]); if (integer(r.epoch) < 1) return fail(); return { kind: k, actorRuntimeSessionId: label(r.actorRuntimeSessionId), endpointId: label(r.endpointId), epoch: r.epoch as number }; }
   if (v2 && k === "upgrade") { const r = closed(raw, ["kind", "actorRuntimeSessionId", "profileRevision", "bindingGeneration"]); return { kind: k, actorRuntimeSessionId: label(r.actorRuntimeSessionId), profileRevision: sha(r.profileRevision), bindingGeneration: sha(r.bindingGeneration) }; }
   if (v2 && k === "set-pi-hooks") { const r = closed(raw, ["kind", "runtimeSessionId", "endpointId", "epoch", "hooks"]); if (integer(r.epoch) < 1 || !Array.isArray(r.hooks)) return fail(); let hooks: readonly CeHookRule[]; try { hooks = parseHookRules(r.hooks); } catch { return fail(); } return { kind: k, runtimeSessionId: label(r.runtimeSessionId), endpointId: label(r.endpointId), epoch: r.epoch as number, hooks }; }
   if (v2 && k === "set-mcp-hooks") { const r = closed(raw, ["kind", "actorRuntimeSessionId", "bindingGeneration", "targets"]); return { kind: k, actorRuntimeSessionId: label(r.actorRuntimeSessionId), bindingGeneration: sha(r.bindingGeneration), targets: targets(r.targets) }; }
@@ -120,6 +129,12 @@ function fixed(m: Manifest): Omit<Manifest, "registrations"> { const { registrat
 function transform(m: Manifest, i: Intent, seq: number): Manifest {
   if (i.kind === "genesis") return fail();
   const v2 = m.mcpHookConsent !== undefined;
+  if (i.kind === "select-target") {
+    if (!m.registrations.some(r => r.status === "active" && r.runtimeSessionId === i.actorRuntimeSessionId)) return fail();
+    const target = m.registrations.find(r => r.status === "active" && r.endpointId === i.endpointId && r.epoch === i.epoch);
+    if (!target) return fail();
+    return parseManifest({ ...m, selectedTarget: { endpointId: target.endpointId, runtimeSessionId: target.runtimeSessionId, epoch: target.epoch, generation: seq } }, seq, v2);
+  }
   if (i.kind === "upgrade") {
     if (v2) return fail();
     return parseManifest({ ...m, registrations: m.registrations.map(r => ({ ...r, hookGeneration: seq })), mcpHookConsent: { generation: seq, bindingGeneration: null, targets: [] } }, seq, true);
@@ -230,7 +245,7 @@ function stage(root: string, bytes: Buffer, io: Io, credentialFile?: string): st
   try { io.writeFileSync(fd, bytes); io.fsyncSync(fd); } finally { io.closeSync(fd); }
   const checked = read(path, credentialFile); if (!checked?.equals(bytes)) return fail(); return path;
 }
-function fixedIdentity(m: Manifest, v2: boolean) { if (!v2) return fixed(m); const { mcpHookConsent: _, ...rest } = fixed(m); return rest; }
+function fixedIdentity(m: Manifest, v2: boolean) { const { selectedTarget: _selected, ...withoutSelection } = fixed(m); if (!v2) return withoutSelection; const { mcpHookConsent: _hooks, ...rest } = withoutSelection; return rest; }
 function makeEnvelope(policyId: string, sequence: number, parentDigest: string | null, operationId: string, i: Intent, manifest: Manifest): Envelope {
   const v2 = manifest.mcpHookConsent !== undefined;
   return { kind: v2 ? "ce-live-session-v2" : KIND, policyId, sequence, parentDigest, identityDigest: digest(fixedIdentity(manifest, v2)), operationId, intent: i, manifestDigest: digest(manifest), manifest };
@@ -273,6 +288,7 @@ function ownerOf(e: Envelope): string | undefined {
     // New intents carry their trusted actor in the closed intent record. The
     // actor is publication attribution only, never an Owner or capability.
     case "upgrade": return e.intent.actorRuntimeSessionId;
+    case "select-target": return e.intent.actorRuntimeSessionId;
     case "set-pi-hooks": return e.intent.runtimeSessionId;
     case "set-mcp-hooks": return e.intent.actorRuntimeSessionId;
     default: return fail();
@@ -396,6 +412,8 @@ export function createLivePolicyRegistration(options: { readonly ref: LivePolicy
     return publishFrom(tip, intent, input.operationId, () => readLivePolicy(v1ref, { ...(options.credentialFile === undefined ? {} : { credentialFile: options.credentialFile }) }));
   }
   return {
+    selectTarget: (input: { readonly expectedDigest: string; readonly actorRuntimeSessionId: string; readonly endpointId: string; readonly epoch: number; readonly operationId?: string }): LivePublication =>
+      publish(input.expectedDigest, { kind: "select-target", actorRuntimeSessionId: label(input.actorRuntimeSessionId), endpointId: label(input.endpointId), epoch: integer(input.epoch) }, input.operationId),
     register: (input: { readonly expectedDigest: string; readonly registration: Registration; readonly operationId?: string }): LivePublication => publish(input.expectedDigest, { kind: "register", registration: registration(input.registration) }, input.operationId),
     reauthorize: (input: { readonly expectedDigest: string; readonly registration: Registration; readonly operationId?: string }): LivePublication => publish(input.expectedDigest, { kind: "reauthorize", registration: registration(input.registration) }, input.operationId),
     revoke: (input: { readonly expectedDigest: string; readonly endpointId: string; readonly operationId?: string }): LivePublication => publish(input.expectedDigest, { kind: "revoke", endpointId: label(input.endpointId) }, input.operationId),

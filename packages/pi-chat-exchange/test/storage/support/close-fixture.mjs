@@ -37,6 +37,7 @@ if (!waitForBarrier(config.releasePath, config.waitMs)) {
 
 try {
   db.exec("BEGIN IMMEDIATE");
+  db.exec("INSERT INTO v8_write_permit(singleton) VALUES (1)");
   const closed = db.prepare(
     "UPDATE exchange SET state='CLOSED', closed_at=? WHERE exchange_id=? AND state='OPEN'",
   ).run(config.closedAt, config.exchangeId);
@@ -50,6 +51,7 @@ try {
     "INSERT INTO audit_event(event_id, exchange_id, sequence, kind, subject_id, created_at, private_revision)" +
     " VALUES (?, ?, ?, 'exchange_closed', ?, ?, 1)",
   ).run(config.eventId, config.exchangeId, sequence, config.exchangeId, config.closedAt);
+  db.exec("DELETE FROM v8_write_permit WHERE singleton=1");
   db.exec("COMMIT");
   emit({
     event: "result", stage: "close", tag: config.tag,

@@ -537,6 +537,7 @@ describe("B3-P1B-R1 minor hardening controls", () => {
     try {
       const writer = openStorageConnection({ directory, filename: "store.sqlite" });
       try {
+        writer.exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1)");
         writer
           .prepare(
             "INSERT INTO participant(participant_id, endpoint_adapter, endpoint_id, created_at, private_revision) VALUES (?, ?, ?, ?, 1)",
@@ -558,6 +559,7 @@ describe("B3-P1B-R1 minor hardening controls", () => {
             capabilityRow.trust_generation as number,
             capabilityRow.created_at as string,
           );
+        writer.exec("DELETE FROM v8_write_permit WHERE singleton=1; COMMIT");
       } finally {
         writer.close();
       }
@@ -659,11 +661,13 @@ describe("B3-P1B-R1 minor hardening controls", () => {
 function createParticipantFreeExchange(directory: string): string {
   const writer = openStorageConnection({ directory, filename: "store.sqlite" });
   try {
+    writer.exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1)");
     writer
       .prepare(
         "INSERT INTO exchange(exchange_id, state, created_at, closed_at, private_revision) VALUES (?, 'OPEN', ?, NULL, 1)",
       )
       .run("ho_01ARZ3NDEKTSV4RRFFQ69G5FAV", NOW);
+    writer.exec("DELETE FROM v8_write_permit WHERE singleton=1; COMMIT");
     return "ho_01ARZ3NDEKTSV4RRFFQ69G5FAV";
   } finally {
     writer.close();

@@ -33,7 +33,7 @@ function fixture() {
   const create = (enabled = true) => {
     const options = { policyPath, runtimeSessionId: 'session-A', endpointId: 'pi/A', getSessionId: () => 'session-A', getEntries: () => entries,
       append, listInbox: () => ({ messages: [{ messageId: incoming, auditSequence: 101 }], continuationAuditSequence: 101, scanBudgetExhausted: false }),
-      readMetadata: () => metadata, wake, controlWake, ...(enabled ? { feedback: { classify, consume } } : {}), now: () => Date.parse('2026-11-06T12:00:01Z') };
+      readMetadata: () => metadata, canReceiveTask: () => true, wake, controlWake, ...(enabled ? { feedback: { classify, consume } } : {}), now: () => Date.parse('2026-11-06T12:00:01Z') };
     // The unimplemented optional port is intentionally exercised before production changes.
     return createNativeInbound(options as Parameters<typeof createNativeInbound>[0]);
   };

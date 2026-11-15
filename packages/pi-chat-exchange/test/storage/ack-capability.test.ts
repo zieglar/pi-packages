@@ -467,7 +467,7 @@ describe("independent Session-bound ack capability scope (CE-0002-B3-P3B E1)", (
       // E2-A rebaseline: table availability is independent of ACK execution.
       expect(view.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='delivery_ack_receipt'").all()).toEqual([{name:"delivery_ack_receipt"}]);
       expect(view.prepare("SELECT count(*) AS n FROM delivery_ack_receipt").get()).toEqual({n:0});
-      expect(view.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 7 });
+      expect(view.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 8 });
       // The only audit kinds are the frozen vocabulary: no receipt_recorded
       // row was written by any authorization or lookup above.
       expect(view.prepare("SELECT DISTINCT kind FROM audit_event ORDER BY kind").all()).toEqual([

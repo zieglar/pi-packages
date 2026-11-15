@@ -40,8 +40,8 @@ import {
   V4_FOUNDATION_NAME,
   V4_MIGRATION_CHECKSUM,
   V4_MIGRATION_NAME,
-  V7_FOUNDATION_CHECKSUM,
-  V7_FOUNDATION_NAME,
+  V8_FOUNDATION_CHECKSUM,
+  V8_FOUNDATION_NAME,
 } from "../../src/storage/schema.js";
 import { initializeStore, openStore, preflightStoreShape, type DurableStore } from "../../src/storage/store.js";
 import { StorageTransactionError, withImmediateTransaction } from "../../src/storage/transaction.js";
@@ -123,8 +123,14 @@ function rawDetach(db: Pick<DatabaseSync | SqliteConnection, "prepare">, partici
 
 function withPrivileged<T>(active: Fixture, body: (db: Pick<DatabaseSync | SqliteConnection, "prepare" | "exec">) => T): T {
   const db = privileged(active);
+  db.exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1)");
   try {
-    return body(db);
+    const result = body(db);
+    db.exec("DELETE FROM v8_write_permit WHERE singleton=1; COMMIT");
+    return result;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
   } finally {
     db.close();
   }
@@ -168,15 +174,15 @@ function expectTriggerAbort(run: () => unknown, message: string): void {
 // Fresh v4 store
 // ---------------------------------------------------------------------------
 
-describe("current schema v7 store preserves the B3-P2C-A lifecycle", () => {
-  it("initializes at v7 with the current foundation ledger and every v4 lifecycle trigger", () => {
+describe("current schema v8 store preserves the B3-P2C-A lifecycle", () => {
+  it("initializes at v8 with the current foundation ledger and every v4 lifecycle trigger", () => {
     const active = fixture("ce-b3-p2c-a-fresh-");
-    expect(CURRENT_SCHEMA_VERSION).toBe(7);
-    expect(active.store.schemaVersion).toBe(7);
+    expect(CURRENT_SCHEMA_VERSION).toBe(8);
+    expect(active.store.schemaVersion).toBe(8);
     const db = active.store.database;
-    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 7 });
+    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 8 });
     expect(db.prepare("SELECT version, name, checksum FROM schema_migrations").all()).toEqual([
-      { version: 7, name: V7_FOUNDATION_NAME, checksum: V7_FOUNDATION_CHECKSUM },
+      { version: 8, name: V8_FOUNDATION_NAME, checksum: V8_FOUNDATION_CHECKSUM },
     ]);
     const triggers = db
       .prepare("SELECT name, tbl_name FROM sqlite_schema WHERE type = 'trigger' AND name LIKE 'participant_%session%' ORDER BY name")
@@ -389,11 +395,11 @@ describe("schema v4 lifecycle triggers (privileged writer)", () => {
           "INSERT INTO participant_session(participant_id, session_id, bound_at, detached_at, private_revision) VALUES (?, ?, ?, NULL, 1)",
         ).run(w.participantId, sessionId, boundAt);
         expectTriggerAbort(() => rawDetach(db, w.participantId, sessionId, at(5)), refuse);
-        expectRefusal(
-          () => readSessionLifecycle(w.active.store, { participantId: w.participantId, sessionId }),
-          "STORAGE_OWNERSHIP_CORRUPT",
-        );
       });
+    });
+    malformedBounds.forEach((_boundAt, index) => {
+      const sessionId = `${S_UNKNOWN.slice(0, -1)}${"ABCDEFGH"[index]!}`;
+      expectRefusal(() => readSessionLifecycle(w.active.store, { participantId: w.participantId, sessionId }), "STORAGE_OWNERSHIP_CORRUPT");
     });
     expect(rowCounts(w.active).session).toBe(String(3 + malformedBounds.length));
     expect(readSessionLifecycle(w.active.store, { participantId: w.participantId, sessionId: S1 })).toEqual({
@@ -603,11 +609,9 @@ describe("detached Sessions never regain authority (B3-P2C-A validation)", () =>
         detachedAt: at(7),
       });
       expect(readSessionLifecycle(reopened, { participantId: w.participantId, sessionId: S1 }).state).toBe("ATTACHED");
-      expect(() =>
-        reopened.database
-          .prepare("UPDATE participant_session SET detached_at = NULL, private_revision = 1 WHERE session_id = ?")
-          .run(S3),
-      ).toThrowError(/one-way and irreversible/);
+      withPrivileged(w.active, db => {
+        expect(() => db.prepare("UPDATE participant_session SET detached_at = NULL, private_revision = 1 WHERE session_id = ?").run(S3)).toThrowError(/one-way and irreversible/);
+      });
     } finally {
       reopened.close();
     }

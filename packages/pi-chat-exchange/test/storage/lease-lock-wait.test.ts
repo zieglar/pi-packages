@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { withImmediateTransaction } from "../../src/storage/transaction.js";
 import {
   acquireOwnership,
   bindSession,
@@ -85,7 +86,7 @@ function world(): World {
 function tamper(active: Fixture, sql: string, ...values: (string | number | null)[]): void {
   const db = privileged(active);
   try {
-    db.prepare(sql).run(...values);
+    withImmediateTransaction(db, tx => { tx.prepare(sql).run(...values); });
   } finally {
     db.close();
   }
@@ -129,6 +130,7 @@ function durableState(active: Fixture): string {
 function holdWriteLock(active: Fixture, participantId: string) {
   const blocker = privileged(active);
   blocker.exec("BEGIN IMMEDIATE");
+  blocker.exec("INSERT INTO v8_write_permit(singleton) VALUES (1)");
   blocker
     .prepare("UPDATE participant_fencing_high_water SET private_revision = private_revision WHERE participant_id = ?")
     .run(participantId);

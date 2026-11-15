@@ -14,8 +14,10 @@ function location() {
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 function seed(db: ReturnType<typeof openStorageConnection>) {
+  db.exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1)");
   db.exec(`
     INSERT INTO exchange(exchange_id, state, created_at) VALUES ('e', 'OPEN', 'now');
+    INSERT INTO message_association(message_id,exchange_id,request_message_id,from_endpoint_json,to_endpoint_json,created_at) VALUES ('m','e','m','{}','{}','now');
     INSERT INTO message(message_id, exchange_id, from_endpoint_json, to_endpoint_json, state,
       payload_digest, payload_length, created_at) VALUES ('m', 'e', '{}', '{}', 'CREATED', '${"a".repeat(64)}', 0, 'now');
     INSERT INTO attempt(attempt_id, message_id, endpoint_json, consumer_id, instance_id,
@@ -27,6 +29,7 @@ function seed(db: ReturnType<typeof openStorageConnection>) {
     INSERT INTO audit_event(event_id, exchange_id, sequence, kind, subject_id, created_at)
       VALUES ('audit', 'e', 1, 'original', 'm', 'now');
   `);
+  db.exec("DELETE FROM v8_write_permit WHERE singleton=1; COMMIT");
 }
 
 it.each(["result", "audit_event", "schema_migrations", "store_metadata"] as const)(
@@ -34,6 +37,7 @@ it.each(["result", "audit_event", "schema_migrations", "store_metadata"] as cons
     const store = initializeStore(location());
     try {
       seed(store.database);
+      store.database.exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1)");
       const before = store.database.prepare(`SELECT * FROM ${table}`).all();
       const columns = Object.keys(before[0]!);
       const changedColumn = { result: "body", audit_event: "kind", schema_migrations: "checksum", store_metadata: "created_at" }[table]!;
@@ -49,6 +53,7 @@ it.each(["result", "audit_event", "schema_migrations", "store_metadata"] as cons
       expect(() => store.database.exec(`DELETE FROM ${table}`)).toThrow(/immutable/);
       expect(store.database.prepare(`SELECT * FROM ${table}`).all()).toEqual(before);
       expect(store.database.prepare("PRAGMA recursive_triggers").get()).toEqual({ recursive_triggers: 1 });
+      store.database.exec("ROLLBACK");
     } finally { store.close(); }
   },
 );

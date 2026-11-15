@@ -25,7 +25,7 @@ vi.mock('../../../pi-extension/desktop-target.js', async original => ({ ...await
 vi.mock('../../../dist/endpoints/pi/session-host.js', () => ({
   CeHostRefusal: class extends Error { constructor(readonly code: string) { super('host refusal'); } },
   CeSessionHost: class { beginSession = fake.begin; renew = fake.renew; end = fake.end; listInbox = fake.list; readMetadata = fake.read;
-    drop() {} status() { return { registered: true, participantId: 'prt_test', sessionId: 'ses_test', exchangeId: 'ex-1' }; } },
+    verifyTaskTarget() { return true; } drop() {} status() { return { registered: true, participantId: 'prt_test', sessionId: 'ses_test', exchangeId: 'ex-1' }; } },
 }));
 vi.mock('../../../dist/storage/store.js', () => ({ openStore: fake.open, initializeStore: fake.open }));
 const incoming = `msg_${'A'.repeat(26)}`, request = `msg_${'B'.repeat(26)}`, outgoing = `msg_${'C'.repeat(26)}`;

@@ -34,7 +34,31 @@ export function ackWorld() {
   const input={participantId:recipient, sessionId:S1, fencingToken:1, capability, exchangeId,
     messageId:sent.message.messageId, payloadDigest:createHash("sha256").update(new Uint8Array([7,7,7,7])).digest("hex"),
     payloadLength:4, messageCreatedAuditSequence:sent.auditSequence};
+  installRawFaultInjection(f.store.database);
   return { f,exchangeId,recipient,sender,endpoint,from,attach,send,sent,input };
+}
+
+// Fault injection is explicit raw SQLite test authority. Runtime operations enter
+// their own transactions and continue to exercise the production permit path.
+function installRawFaultInjection(db: Fixture["store"]["database"]): void {
+  const exec = db.exec.bind(db), prepare = db.prepare.bind(db);
+  const mutate = <T>(action: () => T): T => {
+    if (db.isTransaction) return action();
+    exec("BEGIN IMMEDIATE; INSERT INTO v8_write_permit(singleton) VALUES (1)");
+    try { const result = action(); exec("DELETE FROM v8_write_permit WHERE singleton=1; COMMIT"); return result; }
+    catch (error) { try { exec("ROLLBACK"); } catch {} throw error; }
+  };
+  db.exec = sql => {
+    if (!db.isTransaction && /^\s*BEGIN\s*;/i.test(sql)) return exec(sql.replace(/^\s*BEGIN\s*;/i, "BEGIN; INSERT INTO v8_write_permit(singleton) VALUES (1);"));
+    return /\b(?:INSERT|UPDATE|DELETE)\s+(?:INTO\s+|FROM\s+)?(?:message|exchange|exchange_membership|delivery_ack_receipt|delivery_cursor|audit_event)\b/i.test(sql) ? mutate(() => exec(sql)) : exec(sql);
+  };
+  db.prepare = sql => {
+    const statement = prepare(sql);
+    if (!/^\s*(?:INSERT|UPDATE|DELETE)\b/i.test(sql)) return statement;
+    const run = statement.run.bind(statement);
+    statement.run = (...args) => mutate(() => run(...args));
+    return statement;
+  };
 }
 export type AckWorld = ReturnType<typeof ackWorld>;
 const SNAPSHOT_QUERIES = {
@@ -52,6 +76,8 @@ const SNAPSHOT_QUERIES = {
   host_trust_root: "SELECT * FROM host_trust_root ORDER BY rowid",
   idempotency_record: "SELECT * FROM idempotency_record ORDER BY rowid",
   message: "SELECT * FROM message ORDER BY rowid",
+  message_association: "SELECT * FROM message_association ORDER BY rowid",
+  native_session_binding: "SELECT * FROM native_session_binding ORDER BY rowid",
   participant: "SELECT * FROM participant ORDER BY rowid",
   participant_capability: "SELECT * FROM participant_capability ORDER BY rowid",
   participant_fencing_high_water: "SELECT * FROM participant_fencing_high_water ORDER BY rowid",
@@ -61,7 +87,9 @@ const SNAPSHOT_QUERIES = {
   restore_hold: "SELECT * FROM restore_hold ORDER BY rowid",
   result: "SELECT * FROM result ORDER BY rowid",
   schema_migrations: "SELECT * FROM schema_migrations ORDER BY rowid",
+  selected_session_binding: "SELECT * FROM selected_session_binding ORDER BY rowid",
   store_metadata: "SELECT * FROM store_metadata ORDER BY rowid",
+  v8_write_permit: "SELECT * FROM v8_write_permit ORDER BY rowid",
 };
 /** Full-row snapshot via independent observer after writer quiescence. */
 export function snapshot(f: Fixture, exclude: readonly string[] = []): string {
