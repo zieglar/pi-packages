@@ -29,7 +29,7 @@ it.each(["CE_TUNNEL_CLIENT_MISSING", "CE_EXECUTABLE_UNTRUSTED", "TRUSTED_METADAT
   const allowlist = join(dir, "allowlist.json"); fs.writeFileSync(allowlist, JSON.stringify({ sessions: {} }), { mode: 0o600 });
   vi.stubEnv("CE_ALLOWLIST", allowlist); vi.stubEnv("CE_TUNNEL_PROFILE", join(dir, "NEVER-READ-PROFILE"));
   vi.stubEnv("CE_NODE_PATH", "/private/override-secret"); vi.stubEnv("CE_TUNNEL_CLIENT_PATH", "/private/client-secret");
-  const commands = new Map<string, { handler(args: string, ctx: unknown): Promise<void>; getArgumentCompletions(prefix: string): Array<{ value: string }> }>();
+  const commands = new Map<string, { handler(args: string, ctx: unknown): Promise<void>; getArgumentCompletions?: (prefix: string) => Array<{ value: string }> }>();
   const append = vi.fn(); const notify = vi.fn();
   const { default: factory } = await import(new URL("../../pi-extension/index.ts", import.meta.url).href);
   factory({ on: vi.fn(), registerTool: vi.fn(), appendEntry: append, registerCommand: (name: string, command: never) => commands.set(name, command) } as never);
@@ -41,6 +41,6 @@ it.each(["CE_TUNNEL_CLIENT_MISSING", "CE_EXECUTABLE_UNTRUSTED", "TRUSTED_METADAT
   expect(message).toContain(`client=${outcome}`); expect(message).toContain("Pi host=QUALIFIED"); expect(message).toContain("MCP child=CE_NODE_INELIGIBLE");
   expect(message).not.toContain("private-"); expect(message).not.toContain(dir);
   expect(seam.store).not.toHaveBeenCalled(); expect(seam.manager).not.toHaveBeenCalled(); expect(append).not.toHaveBeenCalled(); expect(fs.readdirSync(dir)).toEqual(before);
-  expect(commands.get("ce-tunnel")!.getArgumentCompletions("doc").map(item => item.value)).toContain("doctor");
-  expect(commands.get("ce-tunnel")!.getArgumentCompletions("dea").map(item => item.value)).toContain("deactivate");
+  expect(commands.get("ce-tunnel")!.getArgumentCompletions).toBeUndefined();
+  expect(commands.get("ce")!.getArgumentCompletions?.("advanced ").map(item => item.value)).toContain("advanced transport");
 });

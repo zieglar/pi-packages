@@ -26,6 +26,7 @@
  * seam from packages/pi-chat-exchange/dist.
  */
 import { createNativeInbound, isNativeFeedback, type NativeInboundToolContext } from "./native-inbound.js";
+import { disableNativeInboundPolicy, enableNativeInboundPolicy, inspectNativeInboundPolicy, nativeInboundPolicyPath } from "./native-inbound-policy.js";
 import { createNativeReadProtocol } from "./native-read-protocol.js";
 import { runRuntimeBindingCommand } from "./runtime-binding-command.js";
 import { createOwnershipFeedbackBridge } from "./ownership-feedback.js";
@@ -120,6 +121,8 @@ interface UiView {
   /** Pi 1.3.0 built-in cancellable operator dialog; never a model tool. */
   confirm?(title: string, message: string, options?: { signal?: AbortSignal; timeout?: number }): Promise<boolean>;
   select?(title: string, options: string[], config?: { signal?: AbortSignal; timeout?: number }): Promise<string | undefined>;
+  /** Pi 1.3.0 non-secret text dialog; used here only for an explicit sender Endpoint label. */
+  input?(title: string, placeholder?: string, options?: { signal?: AbortSignal; timeout?: number }): Promise<string | undefined>;
 }
 
 interface ExtensionContextView {
@@ -485,18 +488,19 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   };
   // Management is registered independently of subsequent Store/session activation.
   let nativeStartupWarned = false;
+  const runNativeCommand = async (args: string, ctx: ExtensionContextView): Promise<void> => {
+    const feedback = beginOperation(ctx, "CE Native");
+    const command = args.trim();
+    feedback.stage(command === "check-updates" ? "Checking release metadata"
+      : command === "install" || command === "repair confirm" ? "Preparing and verifying the trusted Native artifact" : "Inspecting Native command");
+    try {
+      const result = await runNativeCommandOutcome(args);
+      if (feedback.current()) notify(ctx, result.message, result.kind === "ok" ? "info" : "warning");
+    } finally { feedback.finish(); }
+  };
   pi.registerCommand("ce-native", {
-    description: "Inspect, install or verify the trusted Native driver; check release discovery",
-    async handler(args, ctx) {
-      const feedback = beginOperation(ctx, "CE Native");
-      const command = args.trim();
-      feedback.stage(command === "check-updates" ? "Checking release metadata"
-        : command === "install" || command === "repair confirm" ? "Preparing and verifying the trusted Native artifact" : "Inspecting Native command");
-      try {
-        const result = await runNativeCommandOutcome(args);
-        if (feedback.current()) notify(ctx, result.message, result.kind === "ok" ? "info" : "warning");
-      } finally { feedback.finish(); }
-    },
+    description: "Compatibility command; use /ce advanced native",
+    handler: runNativeCommand,
   });
   // Transport UI, the offline manager, and any in-flight credential capture
   // belong to THIS factory instance, independently of CE generation.
@@ -1939,7 +1943,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     });
   }
   pi.registerCommand("ce-hooks", {
-    description: "Manage Hooks with explicit native consent; headless sessions inspect loaded rules only",
+    description: "Compatibility command; use /ce advanced hooks",
     async handler(_args, ctx) {
       if (ctx.mode === "tui" && ctx.hasUI && typeof ctx.ui.custom === "function") { await runHooksCommand(ctx); return; }
       const audit = hookSnapshot();
@@ -1952,11 +1956,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     },
   });
 
-
-  pi.registerCommand("ce-bind", {
-    description: "Manage named Runtime groups: status [group], bind/rebind/revoke <group>, rename <old> <new>; shared CE Endpoint scope, independent grants",
-    getArgumentCompletions: prefix => ["status", "bind", "rebind", "revoke", "rename"].filter(value => value.startsWith(prefix)).map(value => ({ value, label: value })),
-    async handler(args, ctx) {
+  const runBindingsCommand = async (args: string, ctx: ExtensionContextView): Promise<void> => {
       await runRuntimeBindingCommand(args, ctx, {
         ...(loadedBindingProfile === undefined ? {} : { profilePath: loadedBindingProfile }),
         ...(loadedBindingProfileText === undefined ? {} : { profileText: loadedBindingProfileText }),
@@ -1965,12 +1965,13 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         isCurrent: () => !selectedPolicyInvalid && runtimeEnvironment() === loadedRuntimeEnvironment &&
           loadedBindingProfile !== undefined && resolveTunnelProfilePath({ env: process.env }) === loadedBindingProfile,
       });
-    },
+  };
+  pi.registerCommand("ce-bind", {
+    description: "Compatibility command; use /ce advanced bindings",
+    handler: runBindingsCommand,
   });
 
-  pi.registerCommand("ce-status", {
-    description: "Show this session's chat-exchange endpoint, ownership lease, and fencing status",
-    async handler(_args, ctx) {
+  const runCeStatus = async (ctx: ExtensionContextView): Promise<void> => {
       if (startupFailure !== undefined) {
         notify(ctx, `ce-chat-exchange: session start failed closed (${startupFailure.code})${startupRuntimeRepair === undefined ? "" : `; ${startupRuntimeRepair}`}`, "warning");
         return;
@@ -1987,10 +1988,18 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         notify(ctx, "ce-chat-exchange: status unavailable (CE_HOST_UNAVAILABLE)", "warning");
         return;
       }
+      const policyPath = nativeInboundPolicyPath(resolveTunnelProfilePath({ env: process.env }), ctx.sessionManager.getSessionId());
+      const inbound = status.exchangeId === undefined ? { status: "invalid" as const } : inspectNativeInboundPolicy(policyPath, {
+        runtimeSessionId: ctx.sessionManager.getSessionId(), endpointId: status.endpointId, exchangeId: status.exchangeId,
+      }, Date.now());
+      const native = inspectNativeReadiness();
+      let tunnel = "UNKNOWN";
+      try { tunnel = (await readTunnelUi(ctx)).runtimeState; } catch { /* Unknown is the truthful fallback. */ }
       const message = `ce-chat-exchange: piSession=${ctx.sessionManager.getSessionId()} exchange=${status.exchangeId ?? "none"} ` +
         `endpoint=${status.endpointId} registered=${status.registered} ` +
         `participant=${status.participantId ?? "none"} session=${status.sessionId ?? "none"} ` +
-        `lease=${status.lease} fencing=${status.fencingToken ?? "none"}`;
+        `lease=${status.lease} fencing=${status.fencingToken ?? "none"} ` +
+        `tunnel=${tunnel} native=${native.state} inbound=${inbound.status} mcpSource=UNKNOWN`;
       notify(ctx, message);
       if (ctx.mode === "tui" && ctx.hasUI && typeof ctx.ui.custom === "function" && managerUiTask === undefined && activationTask === undefined) {
         const controller = new AbortController(); managerUiCapture = controller;
@@ -1999,6 +2008,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           `Endpoint: ${status.endpointId}`, `Registered: ${status.registered}`,
           `Participant: ${status.participantId ?? "none"}`, `Session: ${status.sessionId ?? "none"}`,
           `Lease: ${status.lease}`, `Fencing: ${status.fencingToken ?? "none"}`,
+          `Tunnel: ${tunnel}`, `Native: ${native.state} (${native.code})`, `Inbound: ${inbound.status}`, "MCP source: UNKNOWN",
         ], { signal: controller.signal });
         managerUiTask = task;
         try { await task; } finally {
@@ -2006,7 +2016,10 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           if (managerUiCapture === controller) managerUiCapture = undefined;
         }
       }
-    },
+  };
+  pi.registerCommand("ce-status", {
+    description: "Compatibility command; use /ce status",
+    async handler(_args, ctx) { await runCeStatus(ctx); },
   });
   // Real setup persists an operator-confirmed profile; synthetic Keychain
   // capture remains reachable only through the explicit offline test harness.
@@ -3022,6 +3035,45 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     }
   };
 
+  /** Register/reload/activate the current Session without transport lifecycle work. */
+  const runSessionBind = async (ctx: ExtensionContextView): Promise<void> => {
+    if (dailyTask !== undefined || activationTask !== undefined || setupTask !== undefined || managerUiTask !== undefined || startCapture !== undefined) {
+      notify(ctx, "ce-session: bind refused CE_TUNNEL_MANAGER_BUSY", "warning"); return;
+    }
+    if (ctx.mode !== "tui" || !ctx.hasUI || !isRealBackground() || multiPolicy === undefined) {
+      notify(ctx, "ce-session: bind refused CE_TUNNEL_INPUT_UNAVAILABLE", "warning"); return;
+    }
+    const sessionId = ctx.sessionManager.getSessionId();
+    const environment = runtimeEnvironment();
+    const controller = new AbortController();
+    try {
+      const manager = activeManager();
+      if (!("kind" in manager)) throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID");
+      const profilePath = resolveTunnelProfilePath({ env: process.env });
+      const current = (): void => {
+        if (ctx.sessionManager.getSessionId() !== sessionId || runtimeEnvironment() !== environment || resolveTunnelProfilePath({ env: process.env }) !== profilePath) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+      };
+      const onboarding = await prepareSessionOnboarding(ctx, { profilePath, manager, signal: controller.signal });
+      current();
+      if (onboarding === "cancelled") { notify(ctx, "ce-session: bind cancelled; no transport action"); return; }
+      const selected = isLivePolicy(multiPolicy) ? readLivePolicy(multiPolicy.ref) : readSelectedMultiSessionPolicy(profilePath);
+      const projected = isLivePolicy(selected) ? projectLivePiRegistration(selected, sessionId) : projectPiRegistration(selected, sessionId);
+      if (onboarding === "registered" || !isDeepStrictEqual(projected, allowlist)) {
+        if (typeof ctx.reload !== "function") {
+          notify(ctx, "ce-session: registration saved; reload Pi explicitly, then run /ce session bind again to activate. Tunnel was not started.", "warning"); return;
+        }
+        notify(ctx, "ce-session: registration saved; reloading Pi policy. Run /ce session bind again after reload to activate. Tunnel is unchanged.");
+        await ctx.reload();
+        return;
+      }
+      await runMessagingActivation(ctx);
+    } catch (error) {
+      const code = error instanceof CeHostRefusal || error instanceof TunnelRefusal ? error.code
+        : error instanceof SessionOnboardingRefusal ? "CE_TUNNEL_PROFILE_INVALID" : "CE_HOST_UNAVAILABLE";
+      notify(ctx, `ce-session: bind refused ${code}; no transport action or Owner takeover`, "warning");
+    }
+  };
+
   let hooksDialogOpen = false;
   const runHooksCommand = async (ctx: ExtensionContextView, signal?: AbortSignal): Promise<void> => {
     if (ctx.mode !== "tui" || !ctx.hasUI) {
@@ -3273,15 +3325,16 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
               `authorize = synthetic Keychain fixture only with CE_TUNNEL_OFFLINE_TEST=1; ` +
               `connect = restore this registered Pi session, explicitly authorize persistent background startup if needed, then activate/start or measure selected transport; no shell variable required after grant. ` +
               `permission status|grant|revoke = inspect/confirm/revoke profile-scoped background startup permission; revoke overrides inherited env1 and does not stop an already running client. ` +
-              `disconnect = confirm release of this Pi binding and Stop of the selected shared tunnel (other sessions may lose transport); registration/history stay. ` +
+              `live connect may bind/resume this Pi Session and reuse an already running shared Tunnel; legacy connect may start the selected transport after authorization. ` +
+              `live disconnect releases only this Pi Session and retains the shared Tunnel, registration and history; legacy disconnect may stop the selected shared Tunnel. ` +
               `start/stop = with CE_TUNNEL_OFFLINE_TEST=1 the bundled OFFLINE simulator; otherwise the REAL background client ` +
                 `(detached, survives this session; ownership record + process-identity verified; manual only — no autostart/reconnect); ` +
               `migrate = repair a saved real profile in place (drop the rejected admin_ui keys + repoint the mcp node); ` +
               `deactivate = confirm normal release of this current Pi binding only, preserving registration/history and transport; explicitly activate afterward. ` +
               `doctor = read-only independent host/MCP child qualification and client metadata admission; no client execution, configuration/Store writes or transport operations. ` +
               `status = separate CE segment plus the measured tunnel state (real background or offline simulator). ` +
-              `sessions = exact selected active Endpoints, not loaded MCP evidence; liveSessions = own Endpoint only; register <endpoint> [--payload-read] [--ack] = current real Session only; revoke <endpoint> = exact stable registration; migrate-live = separate STOPPED confirmation, then explicit reload; convert = separate explicit legacy conversion with old-runtime acknowledgement. ` +
-              `Registration requires verified STOPPED transport and confirmations; never stops/starts it. Reload Pi explicitly; Stop then Start separately loads MCP grants. Shared ChatGPT inbox is not conversation isolation. ` +
+              `sessions = exact selected active Endpoints, not loaded MCP evidence; liveSessions = own Endpoint only; live register publishes current-Session policy without starting or stopping Tunnel; legacy register requires verified STOPPED transport; revoke <endpoint> = exact stable registration; migrate-live = separate STOPPED confirmation, then explicit reload; convert = separate explicit legacy conversion with old-runtime acknowledgement. ` +
+              `Registration requires confirmation and never proves a loaded runtime. Reload Pi explicitly; Stop then Start separately loads legacy MCP grants. Shared ChatGPT inbox is not conversation isolation. ` +
               `Transport only: never delivery, ACK, reconciliation or completion evidence. ` +
               `The client reads its key file via the profile's file: reference; lifecycle/status never read existing key contents. Configured != Connected.`,
           );
@@ -3455,10 +3508,117 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         // pasted secret. Fixed text only.
         notify(ctx, `ce-tunnel: unknown subcommand; try: ${SUBCOMMANDS.map((s) => s.value).join(", ")}`, "warning");
   };
+  const currentInboundIdentity = (ctx: ExtensionContextView) => {
+    const endpointId = guardedEndpoint(ctx);
+    const status = withHost("status", () => getHost().status(endpointId));
+    if (!status.exchangeId || status.lease !== "ACTIVE") throw new CeHostRefusal("CE_HOST_AUTHORITY_ABSENT");
+    return { runtimeSessionId: ctx.sessionManager.getSessionId(), endpointId, exchangeId: status.exchangeId };
+  };
+  const auditHighWater = (endpointId: string): number => {
+    let cursor = 0;
+    for (let page = 0; page < 10_000; page += 1) {
+      const result = withHost("inbox", () => getHost().listInbox(endpointId, { afterAuditSequence: cursor, pageSize: 20, rawScanLimit: 2000 }));
+      const next = result.continuationAuditSequence;
+      if (next === null) return cursor;
+      if (!Number.isSafeInteger(next) || next <= cursor) throw new CeHostRefusal("CE_HOST_UNAVAILABLE");
+      cursor = next;
+    }
+    throw new CeHostRefusal("CE_HOST_UNAVAILABLE");
+  };
+  const runInboundCommand = async (args: string, ctx: ExtensionContextView): Promise<void> => {
+    const tokens = args.trim().split(/\s+/).filter(Boolean);
+    const action = tokens[0] ?? "status";
+    let identity;
+    try { identity = currentInboundIdentity(ctx); }
+    catch { notify(ctx, "ce-inbound: status UNKNOWN (current Session authority unavailable)", "warning"); return; }
+    const path = nativeInboundPolicyPath(resolveTunnelProfilePath({ env: process.env }), identity.runtimeSessionId);
+    if (action === "status" && tokens.length === 1) {
+      const observed = inspectNativeInboundPolicy(path, identity, Date.now());
+      notify(ctx, `ce-inbound: inbound=${observed.status} session=${identity.runtimeSessionId} endpoint=${identity.endpointId} exchange=${identity.exchangeId}`,
+        observed.status === "invalid" ? "warning" : "info");
+      return;
+    }
+    if (ctx.mode !== "tui" || !ctx.hasUI || typeof ctx.ui.confirm !== "function") {
+      notify(ctx, "ce-inbound: change refused CE_TUNNEL_INPUT_UNAVAILABLE", "warning"); return;
+    }
+    const profilePath = resolveTunnelProfilePath({ env: process.env });
+    const environment = runtimeEnvironment();
+    if (action === "enable") {
+      if (tokens.length !== 3 || tokens[1] !== "--from" || !tokens[2]) {
+        notify(ctx, "ce-inbound: usage: /ce inbound enable --from <sender>", "warning"); return;
+      }
+      const from = tokens[2];
+      const boundary = auditHighWater(identity.endpointId);
+      const accepted = await ctx.ui.confirm("Enable CE native inbound for this Session?",
+        `Sender: ${from}\nSession: ${identity.runtimeSessionId}\nEndpoint: ${identity.endpointId}\nExchange: ${identity.exchangeId}\nOnly messages created after audit #${boundary} and activation time may wake this Pi Session. No history is replayed; Tunnel/MCP are unchanged.`);
+      if (!accepted) return;
+      const current = currentInboundIdentity(ctx);
+      if (!isDeepStrictEqual(current, identity) || runtimeEnvironment() !== environment || resolveTunnelProfilePath({ env: process.env }) !== profilePath || auditHighWater(identity.endpointId) !== boundary) {
+        notify(ctx, "ce-inbound: enable refused CE_HOST_MAPPING_INVALID; authority or audit boundary changed", "warning"); return;
+      }
+      enableNativeInboundPolicy({ path, identity, from, afterAuditSequence: boundary, now: Date.now() });
+      notify(ctx, "ce-inbound: enabled policy saved for this Session; reload Pi explicitly to start intake. Tunnel and MCP were not restarted.");
+      return;
+    }
+    if (action === "disable" && tokens.length === 1) {
+      const observed = inspectNativeInboundPolicy(path, identity, Date.now());
+      if (observed.status !== "enabled") { notify(ctx, `ce-inbound: disable refused; current policy is ${observed.status}`, "warning"); return; }
+      const accepted = await ctx.ui.confirm("Disable CE native inbound for this Session?", "This stops new intake after explicit Pi reload. It does not delete history, release Owner, ACK messages, or stop Tunnel/MCP.");
+      if (!accepted) return;
+      if (!isDeepStrictEqual(currentInboundIdentity(ctx), identity) || runtimeEnvironment() !== environment || resolveTunnelProfilePath({ env: process.env }) !== profilePath) {
+        notify(ctx, "ce-inbound: disable refused CE_HOST_MAPPING_INVALID; authority changed", "warning"); return;
+      }
+      disableNativeInboundPolicy({ path, identity, now: Date.now() });
+      notify(ctx, "ce-inbound: disabled policy saved for this Session; reload Pi explicitly to stop intake. History and Owner are unchanged.");
+      return;
+    }
+    notify(ctx, "ce-inbound: usage: /ce inbound status|enable --from <sender>|disable", "warning");
+  };
+  const CE_ROOTS = ["status", "setup", "session", "inbound", "advanced"] as const;
+  const CE_COMPLETIONS = [
+    "session bind", "session unbind", "session list", "inbound status", "inbound enable --from ", "inbound disable",
+    "advanced transport", "advanced native", "advanced hooks", "advanced bindings", "advanced maintenance",
+  ] as const;
   pi.registerCommand("ce", {
-    description: "Open Chat Exchange",
-    handler: async (_args, ctx) => {
+    description: "Chat Exchange status, setup, Session, inbound, and advanced management",
+    getArgumentCompletions: (prefix: string) => (prefix.includes(" ") ? CE_COMPLETIONS : CE_ROOTS)
+      .filter(value => value.startsWith(prefix)).map(value => ({ value, label: value })),
+    handler: async (args, ctx) => {
+      const command = args.trim();
+      if (command === "status") { await runCeStatus(ctx); return; }
+      if (command === "setup") { await runTunnelCommand("setup", ctx); return; }
+      if (command === "session bind") { await runSessionBind(ctx); return; }
+      if (command === "session unbind") { await runTunnelCommand("deactivate", ctx); return; }
+      if (command === "session list") { await runTunnelCommand("liveSessions", ctx); return; }
+      if (command === "inbound" || command.startsWith("inbound ")) { await runInboundCommand(command.slice("inbound".length), ctx); return; }
+      if (command === "advanced transport" || command.startsWith("advanced transport ")) { await runTunnelCommand(command.slice("advanced transport".length), ctx); return; }
+      if (command === "advanced native" || command.startsWith("advanced native ")) { await runNativeCommand(command.slice("advanced native".length), ctx); return; }
+      if (command === "advanced hooks") { await runHooksCommand(ctx); return; }
+      if (command === "advanced bindings" || command.startsWith("advanced bindings ")) { await runBindingsCommand(command.slice("advanced bindings".length), ctx); return; }
+      if (command === "advanced maintenance" || command.startsWith("advanced maintenance ")) { await runTunnelCommand(command.slice("advanced maintenance".length) || "help", ctx); return; }
+      if (command !== "") { notify(ctx, "Chat Exchange usage: /ce status|setup|session bind|unbind|list|inbound status|enable|disable|advanced transport|native|hooks|bindings|maintenance", "warning"); return; }
+      await runCeStatus(ctx);
       if (ctx.mode !== "tui" || !ctx.hasUI || typeof ctx.ui.select !== "function") { await runManager(ctx); return; }
+      const menu = ["Send target", "Setup", "Session bind", "Session unbind", "Session list", "Inbound status", "Inbound enable", "Inbound disable", "Transport", "Native", "Hooks", "Bindings", "Maintenance", "Close"];
+      const selectedMenu = await ctx.ui.select("Chat Exchange", menu);
+      if (selectedMenu === undefined || selectedMenu === "Close") return;
+      if (selectedMenu === "Setup") { await runTunnelCommand("setup", ctx); return; }
+      if (selectedMenu === "Session bind") { await runSessionBind(ctx); return; }
+      if (selectedMenu === "Session unbind") { await runTunnelCommand("deactivate", ctx); return; }
+      if (selectedMenu === "Session list") { await runTunnelCommand("liveSessions", ctx); return; }
+      if (selectedMenu === "Inbound status") { await runInboundCommand("status", ctx); return; }
+      if (selectedMenu === "Inbound enable") {
+        if (typeof ctx.ui.input !== "function") { notify(ctx, "ce-inbound: change refused CE_TUNNEL_INPUT_UNAVAILABLE", "warning"); return; }
+        const sender = (await ctx.ui.input("CE inbound sender Endpoint", "chatgpt/main"))?.trim();
+        if (sender === undefined) return;
+        await runInboundCommand(`enable --from ${sender}`, ctx); return;
+      }
+      if (selectedMenu === "Inbound disable") { await runInboundCommand("disable", ctx); return; }
+      if (selectedMenu === "Transport") { await runManager(ctx); return; }
+      if (selectedMenu === "Native") { await runNativeCommand("status", ctx); return; }
+      if (selectedMenu === "Hooks") { await runHooksCommand(ctx); return; }
+      if (selectedMenu === "Bindings") { await runBindingsCommand("status", ctx); return; }
+      if (selectedMenu === "Maintenance") { await runTunnelCommand("help", ctx); return; }
       const loaded = multiPolicy;
       if (loaded === undefined || !isLivePolicy(loaded)) { await runManager(ctx); return; }
       try {
@@ -3496,11 +3656,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     },
   });
   pi.registerCommand("ce-tunnel", {
-    description: "Tunnel Manager and real profile setup wizard; manual transport lifecycle only, never delivery/ACK evidence",
-    getArgumentCompletions: (prefix: string) =>
-      SUBCOMMANDS.filter((sub) => sub.value.startsWith(prefix)).map((sub) => ({
-        value: sub.value, label: sub.value, description: sub.description,
-      })),
+    description: "Compatibility command; use /ce advanced transport",
     handler: runTunnelCommand,
   });
 }

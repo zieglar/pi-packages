@@ -1,8 +1,8 @@
-import fs from "node:fs";
 import { createHash } from "node:crypto";
 import type { CeReadResult } from "../dist/endpoints/pi/session-host.js";
 import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { validateFeedbackClassification, validateFeedbackTerminal, type FeedbackAssociation, type OwnershipFeedbackPort } from "./ownership-feedback.js";
+import { readNativeInboundPolicy } from "./native-inbound-policy.js";
 
 type Metadata = Omit<CeReadResult, "state">;
 type Entries = ReadonlyArray<Record<string, unknown>>;
@@ -38,38 +38,6 @@ const metadataKeys = ["messageId", "exchangeId", "from", "to", "payloadDigest", 
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 const time = (text: string) => typeof text === "string" && /(?:Z|[+-]\d{2}:\d{2})$/.test(text) ? Date.parse(text) : NaN;
 function failure(code: string): never { throw new Error(code); }
-
-function readPolicy(file: string, session: string, endpoint: string, now: number): { policy: NativeInboundPolicy; revision: string } | undefined {
-  let raw: string | undefined;
-  let revision: string | undefined;
-  const stamp = (s: fs.BigIntStats): string => sha([s.dev, s.ino, s.mtimeNs, s.ctimeNs, s.size].join(":"));
-  try {
-    const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-    try {
-      const stat = fs.fstatSync(fd, { bigint: true });
-      if (!stat.isFile() || stat.uid !== BigInt(process.getuid!()) || (stat.mode & 0o077n) !== 0n || stat.nlink !== 1n || stat.size > 4096n) failure("INBOUND_POLICY_INVALID");
-      revision = stamp(stat);
-      raw = fs.readFileSync(fd, "utf8");
-      if (stamp(fs.fstatSync(fd, { bigint: true })) !== revision) failure("INBOUND_POLICY_CHANGED");
-    } finally { fs.closeSync(fd); }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    failure("INBOUND_POLICY_INVALID");
-  }
-  let value: unknown;
-  try { value = JSON.parse(raw!); } catch { failure("INBOUND_POLICY_INVALID"); }
-  if (!value || typeof value !== "object" || Array.isArray(value)) failure("INBOUND_POLICY_INVALID");
-  const policy = value as Record<string, unknown>;
-  const keys = ["version", "enabled", "runtimeSessionId", "endpointId", "exchangeId", "from", "activatedAt", "afterAuditSequence", "maxAgeSeconds"];
-  if (Object.keys(policy).sort().join() !== keys.sort().join() || policy.version !== 1 || typeof policy.enabled !== "boolean" ||
-    policy.runtimeSessionId !== session || policy.endpointId !== endpoint ||
-    !["exchangeId", "from", "activatedAt"].every(key => typeof policy[key] === "string" && (policy[key] as string).length > 0) ||
-    !Number.isSafeInteger(policy.afterAuditSequence) || (policy.afterAuditSequence as number) < 0 ||
-    !Number.isSafeInteger(policy.maxAgeSeconds) || (policy.maxAgeSeconds as number) < 1 || (policy.maxAgeSeconds as number) > 300 ||
-    !Number.isFinite(time(policy.activatedAt as string)) || time(policy.activatedAt as string) > now) failure("INBOUND_POLICY_INVALID");
-  // SAFETY: the closed-key and scalar checks above validate every policy field.
-  return policy.enabled ? { policy: policy as unknown as NativeInboundPolicy, revision: revision! } : undefined;
-}
 function metadata(input: unknown, policy: NativeInboundPolicy, messageId: string, now: number): Metadata | undefined {
   if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
   const value = input as Record<string, unknown>;
@@ -120,8 +88,8 @@ export function createNativeInbound(options: InboundOptions) {
     if (closed) failure("INBOUND_CLOSED");
     if (options.getSessionId() !== options.runtimeSessionId) failure("INBOUND_SESSION_CHANGED");
     if (typeof process.getuid !== "function") failure("INBOUND_POLICY_INVALID");
-    const observed = readPolicy(options.policyPath, options.runtimeSessionId, options.endpointId, options.now());
-    if (!observed) { if (expectedDigest) failure("INBOUND_DISABLED"); return undefined; }
+    const observed = readNativeInboundPolicy(options.policyPath, { runtimeSessionId: options.runtimeSessionId, endpointId: options.endpointId }, options.now());
+    if (!observed || !observed.policy.enabled) { if (expectedDigest) failure("INBOUND_DISABLED"); return undefined; }
     const policy = observed.policy;
     const policyDigest = sha(JSON.stringify(policy));
     if (expectedDigest !== undefined && policyDigest !== expectedDigest) failure("INBOUND_POLICY_CHANGED");
