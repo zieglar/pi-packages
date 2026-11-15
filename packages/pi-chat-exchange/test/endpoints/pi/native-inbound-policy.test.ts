@@ -51,4 +51,9 @@ it("fails closed for identity drift, links, unsafe permissions and invalid sende
   expect(inspectNativeInboundPolicy(f.path, f.identity, Date.now())).toEqual({ status: "invalid", code: "INBOUND_POLICY_INVALID" });
   fs.rmSync(f.path); fs.symlinkSync(f.profilePath, f.path);
   expect(inspectNativeInboundPolicy(f.path, f.identity, Date.now())).toEqual({ status: "invalid", code: "INBOUND_POLICY_INVALID" });
+  expect(() => enableNativeInboundPolicy({ path: f.path, identity: f.identity, from: "chatgpt/main", afterAuditSequence: 2, now: Date.now() })).toThrow("INBOUND_POLICY_INVALID");
+  fs.rmSync(f.path); fs.writeFileSync(f.path, "{}", { mode: 0o644 });
+  expect(() => enableNativeInboundPolicy({ path: f.path, identity: f.identity, from: "chatgpt/main", afterAuditSequence: 2, now: Date.now() })).toThrow("INBOUND_POLICY_INVALID");
+  fs.rmSync(f.path); const linked = join(f.root, "linked.json"); fs.writeFileSync(linked, "{}", { mode: 0o600 }); fs.linkSync(linked, f.path);
+  expect(() => enableNativeInboundPolicy({ path: f.path, identity: f.identity, from: "chatgpt/main", afterAuditSequence: 2, now: Date.now() })).toThrow("INBOUND_POLICY_INVALID");
 });

@@ -41,7 +41,7 @@ vi.mock("../../../dist/endpoints/pi/session-host.js", async (original) => {
   } };
 });
 type Entry = { type: string; customType: string; data: unknown };
-type Context = { mode: string; hasUI: boolean; cwd: string; executeTool?: import("../../../pi-extension/native-inbound.js").NativeInboundToolContext["executeTool"]; reload?: () => Promise<void>; sessionManager: { getSessionId(): string; getSessionFile(): string; getBranch(): Entry[]; getEntries(): Entry[] }; ui: { notify: ReturnType<typeof vi.fn>; confirm: ReturnType<typeof vi.fn<(title: string, message: string) => Promise<boolean>>>; custom: ReturnType<typeof vi.fn> } };
+type Context = { mode: string; hasUI: boolean; cwd: string; executeTool?: import("../../../pi-extension/native-inbound.js").NativeInboundToolContext["executeTool"]; reload?: () => Promise<void>; sessionManager: { getSessionId(): string; getSessionFile(): string; getBranch(): Entry[]; getEntries(): Entry[] }; ui: { notify: ReturnType<typeof vi.fn>; confirm: ReturnType<typeof vi.fn<(title: string, message: string) => Promise<boolean>>>; select: ReturnType<typeof vi.fn<(title: string, options: string[]) => Promise<string | undefined>>>; custom: ReturnType<typeof vi.fn> } };
 type Handler = (event: { reason: string }, ctx: Context) => Promise<void>;
 type Tool = { name: string; execute(id: string, input: unknown, signal: undefined, update: undefined, ctx: Context): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean; details: Record<string, unknown> }> };
 const dirs: string[] = []; const shutdowns: Array<() => Promise<void>> = [];
@@ -74,7 +74,7 @@ async function fixture(convert = true) {
   async function runtime(id: string, entries: Entry[] = []) {
     const events = new Map<string, Handler>(); const tools = new Map<string, Tool>(); const commands = new Map<string, { description: string; getArgumentCompletions?: (prefix: string) => Array<{ value: string }>; handler(args: string, ctx: Context): Promise<void> }>();
     let runtimeId = id; const messages: unknown[] = [];
-    const ctx: Context = { mode: "tui", hasUI: true, cwd: join(dir, id), sessionManager: { getSessionId: () => runtimeId, getSessionFile: () => "not-authority", getBranch: () => entries, getEntries: () => entries }, ui: { notify: vi.fn(), confirm: vi.fn(async () => true), custom: vi.fn() } };
+    const ctx: Context = { mode: "tui", hasUI: true, cwd: join(dir, id), sessionManager: { getSessionId: () => runtimeId, getSessionFile: () => "not-authority", getBranch: () => entries, getEntries: () => entries }, ui: { notify: vi.fn(), confirm: vi.fn(async () => true), select: vi.fn(async () => undefined), custom: vi.fn() } };
     const { default: factory } = await import(new URL("../../../pi-extension/index.ts", import.meta.url).href);
     const reloadFactory = () => factory({ on: (name: string, handler: Handler) => events.set(name, handler), registerTool: (tool: Tool) => tools.set(tool.name, tool), registerCommand: (name: string, command: { description: string; getArgumentCompletions?: (prefix: string) => Array<{ value: string }>; handler(args: string, ctx: Context): Promise<void> }) => commands.set(name, command), appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
       sendMessage: (message: unknown) => { messages.push(message); } });
@@ -101,12 +101,31 @@ it("exposes one canonical /ce tree while legacy commands remain compatibility sh
     expect(a.commands.get(legacy)?.getArgumentCompletions).toBeUndefined();
   }
   await a.ce("session list"); expect(a.notices()).toContain("pi/A");
-  a.ctx.ui.notify.mockClear(); await a.ce("status"); expect(a.notices()).toContain("mcpSource=UNKNOWN");
+  a.ctx.ui.notify.mockClear(); await a.ce("status"); expect(a.notices()).toContain("mcpSource=UNKNOWN"); expect(a.notices()).toContain("tunnel=STOPPED");
   a.ctx.ui.notify.mockClear(); await a.ce("advanced native status"); expect(a.notices()).toContain("CE_NATIVE_");
   a.ctx.ui.notify.mockClear(); await a.ce("advanced transport help");
   expect(a.notices()).toContain("live disconnect releases only this Pi Session and retains the shared Tunnel");
   expect(a.notices()).toContain("live register publishes current-Session policy without starting or stopping Tunnel");
   a.ctx.ui.notify.mockClear(); await a.ce("unknown"); expect(a.notices()).toContain("usage: /ce");
+});
+
+it("offers the canonical operations from the /ce TUI menu", async () => {
+  const f = await fixture(); const a = await f.runtime("real-A"); await a.start();
+  a.ctx.ui.select.mockImplementation(async (_title, options) => options.find(item => item === "Inbound status"));
+  await a.ce("");
+  const options = a.ctx.ui.select.mock.calls[0]?.[1] ?? [];
+  expect(options).toEqual(expect.arrayContaining(["Setup", "Session bind", "Session unbind", "Session list", "Inbound status", "Inbound enable", "Inbound disable", "Transport", "Native", "Hooks", "Bindings", "Maintenance", "Send target"]));
+  expect(a.notices()).toContain("inbound=missing");
+});
+
+it("session bind onboards a fresh Session without starting shared transport", async () => {
+  const f = await fixture(); const fresh = await f.runtime("fresh-session-bind"); await fresh.start();
+  const manager = seam.manager as ReturnType<typeof createBackgroundTunnelManager>;
+  const start = vi.spyOn(manager, "start"); fresh.ctx.reload = vi.fn(async () => undefined);
+  await fresh.ce("session bind");
+  expect(readSelectedMultiSessionPolicy(f.profilePath).manifest.registrations.some(r => r.runtimeSessionId === "fresh-session-bind")).toBe(true);
+  expect(fresh.ctx.reload).toHaveBeenCalledTimes(1);
+  expect(start).not.toHaveBeenCalled();
 });
 
 it("enables and disables native inbound only for the current Session after confirmation", async () => {

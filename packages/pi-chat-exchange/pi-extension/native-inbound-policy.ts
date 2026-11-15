@@ -84,6 +84,15 @@ function ensureDirectory(path: string): void {
 
 function writePolicy(path: string, policy: NativeInboundPolicy, now: number): NativeInboundPolicy {
   ensureDirectory(path);
+  // Replacement is permitted only for a policy that already passes the same
+  // ownership, link, mode, shape and current-Session identity checks. A bad
+  // target is evidence to stop, not something activation may erase.
+  try {
+    fs.lstatSync(path);
+    if (!readNativeInboundPolicy(path, policy, now)) fail();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") fail();
+  }
   const directory = dirname(path);
   const temporary = join(directory, `.${basename(path)}.${randomUUID()}.tmp`);
   let fd: number | undefined;

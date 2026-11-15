@@ -209,10 +209,12 @@ it("offers to connect a new live session without restarting the shared transport
   expect(session.entries.some(e => e.customType === "ce-mapping")).toBe(true);
   expect(seam.stores[0]!.database.prepare("SELECT * FROM native_session_binding WHERE runtime_session_id=?").get("new-auto-session")).toBeDefined();
   const target = registration!.endpointId;
-  session.ctx.ui.select.mockImplementation(async (_title, options) => options.find(option => option.includes("new-auto-session")));
+  session.ctx.ui.select.mockImplementation(async (title, options) => title === "Chat Exchange"
+    ? "Send target"
+    : options.find(option => option.includes("new-auto-session")));
   await session.ce();
-  expect(session.ctx.ui.select.mock.calls[0]![0]).toContain("所有使用此连接的 ChatGPT 对话共享");
-  expect(session.ctx.ui.select.mock.calls[0]![1].some(option => option.includes("new-auto-session") && option.includes("在线"))).toBe(true);
+  expect(session.ctx.ui.select.mock.calls[1]![0]).toContain("所有使用此连接的 ChatGPT 对话共享");
+  expect(session.ctx.ui.select.mock.calls[1]![1].some(option => option.includes("new-auto-session") && option.includes("在线"))).toBe(true);
   const selected = readLivePolicy(migrated.ref).manifest.selectedTarget;
   expect(selected?.endpointId).toBe(target);
   expect(seam.stores[0]!.database.prepare("SELECT * FROM selected_session_binding WHERE policy_id=? AND selection_version=?").get(migrated.ref.policyId, selected!.generation)).toBeDefined();
@@ -230,6 +232,7 @@ it("offers to connect a new live session without restarting the shared transport
     expect((await session.call("ce_read_payload", { messageId: (sent.structuredContent as { messageId: string }).messageId })).isError).not.toBe(true);
   } finally { await client.close(); await server.close(); }
   const policyApi = (await import("../../../dist/tunnel/live-session-policy.js")).createLivePolicyRegistration({ ref: migrated.ref });
+  session.ctx.ui.select.mockImplementationOnce(async () => "Send target");
   session.ctx.ui.select.mockImplementationOnce(async (_title, options) => {
     const snapshot = readLivePolicy(migrated.ref);
     policyApi.register({ expectedDigest: snapshot.digest, registration: { endpointId: "pi/concurrent", runtimeSessionId: "concurrent", payloadRead: false, ack: false, presenceDisclosure: false } });

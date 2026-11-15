@@ -1991,11 +1991,13 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         runtimeSessionId: ctx.sessionManager.getSessionId(), endpointId: status.endpointId, exchangeId: status.exchangeId,
       }, Date.now());
       const native = inspectNativeReadiness();
+      let tunnel = "UNKNOWN";
+      try { tunnel = (await readTunnelUi(ctx)).runtimeState; } catch { /* Unknown is the truthful fallback. */ }
       const message = `ce-chat-exchange: piSession=${ctx.sessionManager.getSessionId()} exchange=${status.exchangeId ?? "none"} ` +
         `endpoint=${status.endpointId} registered=${status.registered} ` +
         `participant=${status.participantId ?? "none"} session=${status.sessionId ?? "none"} ` +
         `lease=${status.lease} fencing=${status.fencingToken ?? "none"} ` +
-        `tunnel=UNKNOWN native=${native.state} inbound=${inbound.status} mcpSource=UNKNOWN`;
+        `tunnel=${tunnel} native=${native.state} inbound=${inbound.status} mcpSource=UNKNOWN`;
       notify(ctx, message);
       if (ctx.mode === "tui" && ctx.hasUI && typeof ctx.ui.custom === "function" && managerUiTask === undefined && activationTask === undefined) {
         const controller = new AbortController(); managerUiCapture = controller;
@@ -2004,7 +2006,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           `Endpoint: ${status.endpointId}`, `Registered: ${status.registered}`,
           `Participant: ${status.participantId ?? "none"}`, `Session: ${status.sessionId ?? "none"}`,
           `Lease: ${status.lease}`, `Fencing: ${status.fencingToken ?? "none"}`,
-          "Tunnel: UNKNOWN", `Native: ${native.state} (${native.code})`, `Inbound: ${inbound.status}`, "MCP source: UNKNOWN",
+          `Tunnel: ${tunnel}`, `Native: ${native.state} (${native.code})`, `Inbound: ${inbound.status}`, "MCP source: UNKNOWN",
         ], { signal: controller.signal });
         managerUiTask = task;
         try { await task; } finally {
@@ -3031,6 +3033,45 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     }
   };
 
+  /** Register/reload/activate the current Session without transport lifecycle work. */
+  const runSessionBind = async (ctx: ExtensionContextView): Promise<void> => {
+    if (dailyTask !== undefined || activationTask !== undefined || setupTask !== undefined || managerUiTask !== undefined || startCapture !== undefined) {
+      notify(ctx, "ce-session: bind refused CE_TUNNEL_MANAGER_BUSY", "warning"); return;
+    }
+    if (ctx.mode !== "tui" || !ctx.hasUI || !isRealBackground() || multiPolicy === undefined) {
+      notify(ctx, "ce-session: bind refused CE_TUNNEL_INPUT_UNAVAILABLE", "warning"); return;
+    }
+    const sessionId = ctx.sessionManager.getSessionId();
+    const environment = runtimeEnvironment();
+    const controller = new AbortController();
+    try {
+      const manager = activeManager();
+      if (!("kind" in manager)) throw new TunnelRefusal("CE_TUNNEL_PROFILE_INVALID");
+      const profilePath = resolveTunnelProfilePath({ env: process.env });
+      const current = (): void => {
+        if (ctx.sessionManager.getSessionId() !== sessionId || runtimeEnvironment() !== environment || resolveTunnelProfilePath({ env: process.env }) !== profilePath) throw new CeHostRefusal("CE_HOST_MAPPING_INVALID");
+      };
+      const onboarding = await prepareSessionOnboarding(ctx, { profilePath, manager, signal: controller.signal });
+      current();
+      if (onboarding === "cancelled") { notify(ctx, "ce-session: bind cancelled; no transport action"); return; }
+      const selected = isLivePolicy(multiPolicy) ? readLivePolicy(multiPolicy.ref) : readSelectedMultiSessionPolicy(profilePath);
+      const projected = isLivePolicy(selected) ? projectLivePiRegistration(selected, sessionId) : projectPiRegistration(selected, sessionId);
+      if (onboarding === "registered" || !isDeepStrictEqual(projected, allowlist)) {
+        if (typeof ctx.reload !== "function") {
+          notify(ctx, "ce-session: registration saved; reload Pi explicitly, then run /ce session bind again to activate. Tunnel was not started.", "warning"); return;
+        }
+        notify(ctx, "ce-session: registration saved; reloading Pi policy. Run /ce session bind again after reload to activate. Tunnel is unchanged.");
+        await ctx.reload();
+        return;
+      }
+      await runMessagingActivation(ctx);
+    } catch (error) {
+      const code = error instanceof CeHostRefusal || error instanceof TunnelRefusal ? error.code
+        : error instanceof SessionOnboardingRefusal ? "CE_TUNNEL_PROFILE_INVALID" : "CE_HOST_UNAVAILABLE";
+      notify(ctx, `ce-session: bind refused ${code}; no transport action or Owner takeover`, "warning");
+    }
+  };
+
   let hooksDialogOpen = false;
   const runHooksCommand = async (ctx: ExtensionContextView, signal?: AbortSignal): Promise<void> => {
     if (ctx.mode !== "tui" || !ctx.hasUI) {
@@ -3544,7 +3585,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       const command = args.trim();
       if (command === "status") { await runCeStatus(ctx); return; }
       if (command === "setup") { await runTunnelCommand("setup", ctx); return; }
-      if (command === "session bind") { await runTunnelCommand("activate", ctx); return; }
+      if (command === "session bind") { await runSessionBind(ctx); return; }
       if (command === "session unbind") { await runTunnelCommand("deactivate", ctx); return; }
       if (command === "session list") { await runTunnelCommand("liveSessions", ctx); return; }
       if (command === "inbound" || command.startsWith("inbound ")) { await runInboundCommand(command.slice("inbound".length), ctx); return; }
@@ -3556,6 +3597,21 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       if (command !== "") { notify(ctx, "Chat Exchange usage: /ce status|setup|session bind|unbind|list|inbound status|enable|disable|advanced transport|native|hooks|bindings|maintenance", "warning"); return; }
       await runCeStatus(ctx);
       if (ctx.mode !== "tui" || !ctx.hasUI || typeof ctx.ui.select !== "function") { await runManager(ctx); return; }
+      const menu = ["Send target", "Setup", "Session bind", "Session unbind", "Session list", "Inbound status", "Inbound enable", "Inbound disable", "Transport", "Native", "Hooks", "Bindings", "Maintenance", "Close"];
+      const selectedMenu = await ctx.ui.select("Chat Exchange", menu);
+      if (selectedMenu === undefined || selectedMenu === "Close") return;
+      if (selectedMenu === "Setup") { await runTunnelCommand("setup", ctx); return; }
+      if (selectedMenu === "Session bind") { await runSessionBind(ctx); return; }
+      if (selectedMenu === "Session unbind") { await runTunnelCommand("deactivate", ctx); return; }
+      if (selectedMenu === "Session list") { await runTunnelCommand("liveSessions", ctx); return; }
+      if (selectedMenu === "Inbound status") { await runInboundCommand("status", ctx); return; }
+      if (selectedMenu === "Inbound enable") { notify(ctx, "ce-inbound: sender must be explicit; run /ce inbound enable --from <sender>", "warning"); return; }
+      if (selectedMenu === "Inbound disable") { await runInboundCommand("disable", ctx); return; }
+      if (selectedMenu === "Transport") { await runManager(ctx); return; }
+      if (selectedMenu === "Native") { await runNativeCommand("status", ctx); return; }
+      if (selectedMenu === "Hooks") { await runHooksCommand(ctx); return; }
+      if (selectedMenu === "Bindings") { await runBindingsCommand("status", ctx); return; }
+      if (selectedMenu === "Maintenance") { await runTunnelCommand("help", ctx); return; }
       const loaded = multiPolicy;
       if (loaded === undefined || !isLivePolicy(loaded)) { await runManager(ctx); return; }
       try {
