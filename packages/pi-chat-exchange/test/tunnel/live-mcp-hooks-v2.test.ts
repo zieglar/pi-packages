@@ -18,7 +18,7 @@ function fixture(consented = true) {
   const profilePath = join(dir, "tunnel.yaml"); const keyFile = join(dir, "credential"); fs.writeFileSync(keyFile, "synthetic", { mode: 0o600 });
   const ref = { kind: "ce-live-session-v2" as const, root: dir, policyId: "policy-test", genesisDigest: "a".repeat(64), profilePath, upgradeSequence: 1 };
   const config = parseMcpBindingConfig({ version: 1, store: { directory: dir, file: "ce.sqlite" }, exchange: { namespace: "test", idempotencyKey: "test" }, endpoint: { adapter: "chatgpt", endpointId: "chatgpt/main" }, recipients: [{ adapter: "pi", endpointId: "pi/A" }], payloadRead: { enabled: true }, ack: { enabled: true }, admissionPolicy: ref,
-    hooks: [{ id: "incoming", event: "ce.message.committed.v1", recipient: { adapter: "pi", endpointId: "pi/A" }, command: "/usr/bin/true", args: [], timeoutMs: 1000, enabled: true }] });
+    hooks: [{ id: "incoming", event: "ce.message.committed.v1", recipient: { adapter: "pi", endpointId: "pi/A" }, command: "/usr/bin/true", args: [], timeoutMs: 1000, enabled: true, scope: "session" }] });
   const pair = publishMessagingGeneration(profilePath, config, { kind: "ce-live-launch-v2", version: 1, ref }, { credentialFile: keyFile });
   const profile = (bindingPath: string) => serializeTunnelProfile(buildTunnelProfile({ tunnelId: "tunnel_abcdefgh123456", keyFile, healthUrlFile: join(dir, "health.url"), mcpCommand: buildTunnelMcpCommand({ nodePath: "/abs/node", scriptPath: "/abs/mcp-stdio.js", bindingPath }) }));
   fs.writeFileSync(profilePath, profile(pair.bindingPath), { mode: 0o600 });

@@ -6,7 +6,7 @@ Pi Chat Exchange 自有代码使用 [MIT](../LICENSE)，Copyright (c) 2026 ziegl
 
 ## 依赖范围
 
-当前包声明运行时依赖 `@earendil-works/pi-tui@1.3.0`、`@modelcontextprotocol/sdk@1.30.1`、`@narumitw/pi-tui-kit@0.66.0`、`@sinclair/typebox@0.34.52`，以及 peer `@earendil-works/pi-coding-agent@1.3.0`。具体条款参见安装后的依赖 manifest 和许可证文本。既有依赖审查确认这些包为 MIT。部分上游 Pi 1.3.0 tarball 缺少独立 LICENSE 文件，许可证审查核对了其包元数据及对应上游 tag 的许可证；CE 不因此成为这些包的许可方。
+当前包声明运行时依赖 `@modelcontextprotocol/sdk@1.30.1`、`@narumitw/pi-tui-kit@0.66.0`、`@sinclair/typebox@0.34.52`，以及精确版本 peer `@earendil-works/pi-coding-agent@1.3.0`、`@earendil-works/pi-tui@1.3.0`。具体条款参见安装后的依赖 manifest 和许可证文本。既有依赖审查确认这些包为 MIT。部分上游 Pi 1.3.0 tarball 缺少独立 LICENSE 文件，许可证审查核对了其包元数据及对应上游 tag 的许可证；CE 不因此成为这些包的许可方。
 
 Native 源码使用固定 Rust 依赖图，许可证见 `Cargo.toml`、`Cargo.lock` 和依赖条款。Native 二进制与 npm 包是独立制品，npm0.2.1 不包含 Rust Native 二进制。Tunnel client 单独安装，遵循自己的许可证与来源检查要求。
 

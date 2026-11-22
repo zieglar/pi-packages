@@ -400,13 +400,12 @@ async function permissionManager(h: Awaited<ReturnType<typeof fixture>>, env: No
 }
 
 describe("persistent permission through real daily command handlers", () => {
-  it.each([false, true])("Manager Connect uses existing permission confirmation (accepted %s)", async accepted => {
+  it("Manager Connect binds without requesting service-start permission", async () => {
     const h = await fixture(); const f = await permissionManager(h); await h.start();
     const { createTuiHarness } = await import("@narumitw/pi-tui-kit/testing");
     const tui = createTuiHarness({ width: 100, rows: 40 });
     h.ctx.ui.custom.mockImplementation(tui.custom);
     vi.spyOn(f.manager, "refresh").mockResolvedValue(f.manager.status());
-    h.ctx.ui.confirm.mockResolvedValue(accepted);
     const task = h.command(""); await tui.waitForOpen();
     try {
       const rows = tui.render().filter(line => /^[❯ ] /.test(line) && line.trim());
@@ -415,10 +414,10 @@ describe("persistent permission through real daily command handlers", () => {
       expect(target).toBeGreaterThanOrEqual(0);
       for (let i = cursor; i < target; i++) tui.press("tui.select.down");
       tui.press("tui.select.confirm"); await task;
-      expect(tui.isOpen).toBe(false); expect(h.ctx.ui.confirm).toHaveBeenCalledTimes(1);
-      expect(f.manager.authorizationStatus()).toBe(accepted ? "granted" : "absent");
-      expect(f.start).toHaveBeenCalledTimes(accepted ? 1 : 0);
-      expect(counts().owners).toBe(accepted ? 1 : 0);
+      expect(tui.isOpen).toBe(false); expect(h.ctx.ui.confirm).not.toHaveBeenCalled();
+      expect(f.manager.authorizationStatus()).toBe("absent");
+      expect(f.start).not.toHaveBeenCalled();
+      expect(counts().owners).toBe(1);
     } finally { tui.dispose(); await task; }
   });
   it("ce-status opens the guarded status screen and Esc closes it", async () => {
@@ -426,10 +425,12 @@ describe("persistent permission through real daily command handlers", () => {
     const { createTuiHarness } = await import("@narumitw/pi-tui-kit/testing");
     const tui = createTuiHarness({ width: 60, rows: 12 });
     h.ctx.ui.custom.mockImplementation(tui.custom);
+    h.ctx.ui.notify.mockClear();
     const promise = h.ceStatus();
     for (let i = 0; i < 80; i++) await Promise.resolve();
     try {
       expect(tui.isOpen).toBe(true);
+      expect(h.ctx.ui.notify.mock.calls.some(([message]) => String(message).startsWith("ce-chat-exchange: piSession="))).toBe(false);
       expect(tui.render().at(-1)).toBe("Esc  Close");
       tui.send("\x1b"); await promise;
       expect(tui.isOpen).toBe(false);
@@ -504,31 +505,26 @@ describe("persistent permission through real daily command handlers", () => {
       expect(f.manager.authorizationStatus()).toBe("granted");
     } finally { tui.dispose(); await pending; }
   });
-  it("Stop cancels a pending Start permission prompt before a late acceptance", async () => {
+  it("real Start and Stop only provide system-service guidance", async () => {
     const h = await fixture(); const f = await permissionManager(h); await h.start();
     const deferred = vi.spyOn(f.manager, "startDeferred").mockImplementation(() => ({ ack: Promise.reject(new Error("synthetic refusal")), settled: Promise.reject(new Error("synthetic refusal")) }));
-    let accept!: (value: boolean) => void;
-    let entered!: () => void; const opened = new Promise<void>(resolve => { entered = resolve; });
-    h.ctx.ui.confirm.mockImplementationOnce(() => { entered(); return new Promise<boolean>(resolve => { accept = resolve; }); });
-    const starting = h.command("start"); await opened;
-    await h.command("stop"); accept(true); await starting;
+    await h.command("start"); await h.command("stop");
     expect(f.manager.authorizationStatus()).toBe("absent"); expect(deferred).not.toHaveBeenCalled();
-    h.ctx.ui.confirm.mockResolvedValue(false); await h.command("start");
-    expect(h.ctx.ui.confirm).toHaveBeenCalledTimes(2); expect(deferred).not.toHaveBeenCalled();
+    expect(h.ctx.ui.confirm).not.toHaveBeenCalled(); expect(h.notices()).toContain("Homebrew/launchd");
   });
-  it("grants without environment opt-in and reuses the durable grant in a new factory and manager", async () => {
+  it("connects without granting transport permission and preserves that boundary in a new factory", async () => {
     const h = await fixture(); const f = await permissionManager(h); await h.start();
     expect(process.env.CE_TUNNEL_BACKGROUND_ALLOW).toBeUndefined();
     expect(f.manager.authorizationStatus()).toBe("absent");
     await h.command("connect");
-    expect(f.manager.authorizationStatus()).toBe("granted");
-    expect(h.ctx.ui.confirm).toHaveBeenCalledTimes(1); expect(f.start).toHaveBeenCalledTimes(1);
-    expect(counts().owners).toBe(1); expect(h.notices()).toContain("current Pi endpoint pi/main bound; tunnel=");
+    expect(f.manager.authorizationStatus()).toBe("absent");
+    expect(h.ctx.ui.confirm).not.toHaveBeenCalled(); expect(f.start).not.toHaveBeenCalled();
+    expect(counts().owners).toBe(1); expect(h.notices()).toContain("current Pi endpoint pi/main bound; Homebrew/launchd manages services;");
     await h.shutdown(); const next = f.replace(); h.reloadFactory(); await h.start();
     h.ctx.ui.confirm.mockClear(); seam.confirm.mockClear();
-    expect(next.manager.authorizationStatus()).toBe("granted");
+    expect(next.manager.authorizationStatus()).toBe("absent");
     await h.command("connect");
-    expect(h.ctx.ui.confirm).not.toHaveBeenCalled(); expect(next.start).toHaveBeenCalledTimes(1);
+    expect(h.ctx.ui.confirm).not.toHaveBeenCalled(); expect(next.start).not.toHaveBeenCalled();
     expect(counts().owners).toBe(1);
   });
   it("explicit grant remains transport-free and revoke overrides inherited env1 after reload", async () => {
@@ -546,7 +542,7 @@ describe("persistent permission through real daily command handlers", () => {
     vi.mocked(background.createBackgroundTunnelManager).mockReturnValue(manager); await h.start();
     expect(manager.authorizationStatus()).toBe("revoked");
     h.ctx.ui.confirm.mockClear().mockResolvedValue(false); await h.command("connect");
-    expect(h.ctx.ui.confirm).toHaveBeenCalledTimes(1); expect(start).not.toHaveBeenCalled(); expect(counts().owners).toBe(0);
+    expect(h.ctx.ui.confirm).not.toHaveBeenCalled(); expect(start).not.toHaveBeenCalled(); expect(counts().owners).toBe(1);
     await h.command("permission status"); expect(h.notices()).toContain("permission=revoked");
   });
   it("direct permission revoke retains its untimed confirmation", async () => {
@@ -556,28 +552,21 @@ describe("persistent permission through real daily command handlers", () => {
     expect(h.ctx.ui.confirm.mock.calls[0]).toHaveLength(2);
     expect(f.manager.authorizationStatus()).toBe("revoked");
   });
-  it("malformed persistent storage fails closed without prompting, binding or transport", async () => {
+  it("malformed legacy permission storage does not block Session binding or start transport", async () => {
     const h = await fixture(); const f = await permissionManager(h); await h.start();
     await h.command("permission grant");
     const recordPath = join(h.authorizationDirectory, `${createHash("sha256").update(h.profilePath).digest("hex")}.json`);
     fs.writeFileSync(recordPath, "{malformed", { mode: 0o600 });
     h.ctx.ui.confirm.mockClear(); await h.command("connect");
     expect(f.manager.authorizationStatus()).toBe("invalid"); expect(h.ctx.ui.confirm).not.toHaveBeenCalled();
-    expect(f.start).not.toHaveBeenCalled(); expect(counts().owners).toBe(0); expect(h.mapping()).toBeUndefined();
-    expect(h.notices()).toContain("CE_TUNNEL_BACKGROUND_UNAUTHORIZED"); expect(fs.readFileSync(recordPath, "utf8")).toBe("{malformed");
+    expect(f.start).not.toHaveBeenCalled(); expect(counts().owners).toBe(1); expect(h.mapping()).toBeDefined();
+    expect(fs.readFileSync(recordPath, "utf8")).toBe("{malformed");
   });
-  it("permission revoke stays accessible while connect awaits Start and suppresses later connection success", async () => {
+  it("permission revoke remains independent from a completed Session connect", async () => {
     const h = await fixture(); const f = await permissionManager(h); await h.start();
-    let entered!: () => void; const opened = new Promise<void>(resolve => { entered = resolve; });
-    let finish!: () => void;
-    f.start.mockImplementation(() => new Promise(resolve => { finish = () => resolve({ runId: "synthetic", pid: 40001, tunnelId: "tunnel_abcdefgh123456", startedAt: new Date().toISOString(), health: "connected", alreadyRunning: false }); entered(); }));
-    const connecting = h.command("connect"); await opened;
-    try {
-      await h.command("permission revoke"); expect(f.manager.authorizationStatus()).toBe("revoked");
-      expect(h.notices()).toContain("background startup permission revoked");
-    } finally { finish(); await connecting; }
-    expect(f.start).toHaveBeenCalledTimes(1); expect(h.notices()).toContain("CE_TUNNEL_BACKGROUND_UNAUTHORIZED");
-    expect(h.notices()).not.toContain("current Pi endpoint pi/main bound; tunnel=");
+    await h.command("connect");
+    await h.command("permission revoke"); expect(f.manager.authorizationStatus()).toBe("revoked");
+    expect(f.start).not.toHaveBeenCalled(); expect(counts().owners).toBe(1);
   });
   it("refuses permission mutation when the cached Manager differs from current selection", async () => {
     const h = await fixture(); const f = await permissionManager(h); await h.start();
@@ -589,18 +578,14 @@ describe("persistent permission through real daily command handlers", () => {
 });
 
 describe("daily configured-session connection", () => {
-  it("asks for explicit persistent permission first; cancellation never grants, binds or spawns", async () => {
-    const h = await fixture(); await h.start(); const before = counts();
-    h.ctx.ui.confirm.mockResolvedValue(false);
+  it("connect binds without requesting persistent service-start permission", async () => {
+    const h = await fixture(); await h.start();
     await h.command("connect");
-    expect(h.ctx.ui.confirm).toHaveBeenCalledTimes(1);
-    const prompt = h.ctx.ui.confirm.mock.calls[0]!.join(" ");
-    for (const text of ["credential", "survives Pi exit", "disconnect", "stop", "permission revoke", "Profile/client changes", h.profilePath, h.clientPath, join(h.dir, "key")]) expect(prompt).toContain(text);
-    expect(prompt).not.toContain("SYNTHETIC-ONLY");
+    expect(h.ctx.ui.confirm).not.toHaveBeenCalled();
     const manager = createBackgroundTunnelManager({ env: {}, profilePath: h.profilePath });
     expect(manager.authorizationStatus()).toBe("absent");
-    expect(seam.confirm).not.toHaveBeenCalled(); expect(counts()).toEqual(before);
-    expect(h.mapping()).toBeUndefined(); expect(seam.defaultSpawn).not.toHaveBeenCalled();
+    expect(seam.confirm).toHaveBeenCalledTimes(1); expect(counts().owners).toBe(1);
+    expect(h.mapping()).toBeDefined(); expect(seam.defaultSpawn).not.toHaveBeenCalled();
   });
   it("connect activates the existing registration and disconnect releases it without changing configuration", async () => {
     const h = await fixture(); await h.start(); vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");
@@ -613,15 +598,15 @@ describe("daily configured-session connection", () => {
     vi.spyOn(background, "createBackgroundTunnelManager").mockReturnValue(manager);
     await h.command("connect");
     expect(h.mapping()?.endpointId).toBe("pi/main"); expect(counts().owners).toBe(1);
-    expect(connect).toHaveBeenCalledTimes(1); expect(seam.confirm).toHaveBeenCalledTimes(1);
+    expect(connect).not.toHaveBeenCalled(); expect(seam.confirm).toHaveBeenCalledTimes(1);
     const participants = seam.stores[0]!.database.prepare("SELECT * FROM participant").all();
     await h.command("disconnect");
-    expect(stop).toHaveBeenCalledTimes(1); expect(counts().owners).toBe(0);
+    expect(stop).not.toHaveBeenCalled(); expect(counts().owners).toBe(0);
     expect(fs.readFileSync(h.profilePath, "utf8")).toBe(profile);
     expect(seam.stores[0]!.database.prepare("SELECT * FROM participant").all()).toEqual(participants);
-    expect(h.notices()).toContain("disconnected");
+    expect(h.notices()).toContain("shared Tunnel retained under Homebrew/launchd");
     await h.command("connect");
-    expect(counts().owners).toBe(1); expect(connect).toHaveBeenCalledTimes(2);
+    expect(counts().owners).toBe(1); expect(connect).not.toHaveBeenCalled();
     expect(fs.readFileSync(h.profilePath, "utf8")).toBe(profile);
   });
   it("cancelled connect never starts transport or binds messaging", async () => {
@@ -655,9 +640,9 @@ describe("daily configured-session connection", () => {
     const h = await fixture(); await h.start(); await h.activate(); h.ctx.ui.confirm.mockResolvedValue(false);
     const before = counts(); await h.command("disconnect");
     expect(counts()).toEqual(before); expect(h.notices()).not.toContain("disconnected");
-    expect(h.ctx.ui.confirm.mock.calls[0]![1]).toContain("other sessions");
+    expect(h.ctx.ui.confirm.mock.calls[0]![1]).toContain("Homebrew/launchd");
   });
-  it("a failed shared stop still closes current CE admission and releases its owner", async () => {
+  it("disconnect never invokes a failing shared stop and still releases its owner", async () => {
     const h = await fixture(); await h.start();
     const manager = createBackgroundTunnelManager({ env: {}, profilePath: h.profilePath, listProcesses: async () => ({ kind: "ok", processes: [] }) });
     const { TunnelRefusal } = await import("../../../dist/tunnel/codes.js");
@@ -666,9 +651,8 @@ describe("daily configured-session connection", () => {
     vi.spyOn(background, "createBackgroundTunnelManager").mockReturnValue(manager);
     await h.activate();
     await h.command("disconnect");
-    expect(counts().owners).toBe(0); expect(h.notices()).toContain("disconnect incomplete");
-    expect(h.notices()).toContain("CE_TUNNEL_STOP_UNCONFIRMED");
-    expect(h.notices()).not.toContain("disconnected");
+    expect(counts().owners).toBe(0); expect(manager.stop).not.toHaveBeenCalled();
+    expect(h.notices()).toContain("shared Tunnel retained under Homebrew/launchd");
   });
   it("Stop aborts an in-flight connect confirmation without later binding or Start", async () => {
     const h = await fixture(); await h.start(); vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");

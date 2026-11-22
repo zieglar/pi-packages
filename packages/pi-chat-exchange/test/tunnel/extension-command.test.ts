@@ -121,23 +121,20 @@ describe("/ce-tunnel — B1 offline wiring (T18)", () => {
     expect(notifications[0]?.message).toContain("not delivery/ACK/completion evidence");
   });
 
-  // LOCAL-BACKGROUND-01 v2 contract (Lane S S1): without BOTH the offline
-  // opt-in and the explicit CE_TUNNEL_BACKGROUND_ALLOW=1 gate, `start` refuses
-  // before touching a profile, a process, or a credential.
-  it("refuses start (real mode gate) and setup with closed CE_TUNNEL_* codes", async () => {
+  it("delegates real service start to launchd and keeps setup fail-closed without masked input", async () => {
     vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", undefined as unknown as string);
     const start = makeCtx("tui");
     await (await ceTunnel()).handler("start", start.ctx);
-    // No permission-confirmation surface cannot silently authorize a background client.
-    expect(start.notifications[0]?.level).toBe("warning");
-    expect(start.notifications[0]?.message).toContain("CE_TUNNEL_INPUT_UNAVAILABLE");
+    expect(start.notifications[0]?.level).toBe("info");
+    expect(start.notifications[0]?.message).toContain("managed by Homebrew/launchd");
+    expect(start.notifications[0]?.message).toContain("CE only observes connectivity");
 
-    // With the gate open but no operator profile, the refusal is still clean.
+    // The retired CE startup gate cannot re-enable process management.
     vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");
     const start2 = makeCtx("tui");
     await (await ceTunnel()).handler("start", start2.ctx);
-    await vi.waitFor(() => expect(start2.notifications.some((n) => n.message.includes("CE_TUNNEL_PROFILE_INVALID"))).toBe(true));
-    expect(start2.notifications.map((n) => n.message).join(" ")).not.toContain("ce-ext-nonexistent");
+    expect(start2.notifications[0]?.level).toBe("info");
+    expect(start2.notifications[0]?.message).toContain("managed by Homebrew/launchd");
 
     // This mock UI port exposes no `ui.custom`, so masked capture is absent.
     const setup = makeCtx("tui");
@@ -178,11 +175,11 @@ describe("/ce-tunnel — B1 offline wiring (T18)", () => {
 });
 
 describe("/ce-tunnel — status bar (T19)", () => {
-  it("publishes the transport label on the ce-tunnel status key in TUI mode", async () => {
+  it("publishes one CE footer summary and clears the old transport key", async () => {
     const { ctx, status } = makeCtx("tui");
     await (await ceTunnel()).handler("status", ctx);
-    // B1.1: the tunnel segment is explicitly labelled offline/simulated.
-    expect(status.get("ce-tunnel")).toBe("Tunnel ○ stopped (offline simulated)");
+    expect(status.get("ce")).toBe("CE ○ Pair required");
+    expect(status.get("ce-tunnel")).toBeUndefined();
   });
 
   it("does NOT touch the status bar outside TUI mode (print/rpc/json)", async () => {

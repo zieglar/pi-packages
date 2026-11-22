@@ -28,13 +28,13 @@ it("ships a discoverable skill and example through the production packer", async
   const { loadSkills } = await import("@earendil-works/pi-coding-agent");
   const discovered = loadSkills({ cwd: packageRoot, agentDir: temporary(), includeDefaults: false, skillPaths: manifest.pi.skills.map((path: string) => resolve(packageRoot, path)) });
   expect(discovered.diagnostics).toEqual([]);
-  expect(discovered.skills.map(skill => skill.name)).toEqual(["ce-hook-script"]);
+  expect(discovered.skills.map(skill => skill.name).sort()).toEqual(["ce-hook-script", "pi-chat-exchange"]);
   // Exercise actual npm inventory and staging, using existing dist without rebuilding it.
   // @ts-expect-error Author-side JavaScript packer has no declaration file.
   const { buildPackageArtifact } = await import("../../scripts/package-pi-extension.mjs");
   const result = buildPackageArtifact({ root: packageRoot, out: temporary() });
   const members = execFileSync("tar", ["-tzf", result.artifactPath], { encoding: "utf8" });
-  for (const path of ["skills/ce-hook-script/SKILL.md", "skills/ce-hook-script/examples/file-notification.py"]) {
+  for (const path of ["skills/ce-hook-script/SKILL.md", "skills/ce-hook-script/examples/file-notification.py", "skills/pi-chat-exchange/SKILL.md", "skills/pi-chat-exchange/references/chatgpt-work.md", "skills/pi-chat-exchange/references/pi.md", "skills/pi-chat-exchange/references/e2e-smoke.md"]) {
     expect(result.inventory).toContain(path);
     expect(members.split("\n")).toContain(`package/${path}`);
   }
@@ -44,11 +44,11 @@ it("runs the Python example with exact runner metadata and isolates failure with
   expect(existsSync(script)).toBe(true);
   const directory = temporary();
   const output = join(directory, "notification.jsonl");
-  const runner = new CeHookRunner({ directory, rules: parseHookRules([{ id: "notify", event: event.event, recipient: event.recipient, command: python, args: [script, output] }]) });
+  const runner = new CeHookRunner({ directory, rules: parseHookRules([{ id: "notify", event: event.event, recipient: event.recipient, command: python, args: [script, output], scope: "session" }]) });
   runner.publish({ ...event, payloadText: "PAYLOAD_SECRET", capability: "CAPABILITY_SECRET" } as CeCommittedMessageEvent);
   await runner.close();
   expect(JSON.parse(readFileSync(output, "utf8"))).toEqual(event);
-  const failed = new CeHookRunner({ directory, rules: parseHookRules([{ id: "failure", event: event.event, recipient: event.recipient, command: python, args: [script, directory] }]) });
+  const failed = new CeHookRunner({ directory, rules: parseHookRules([{ id: "failure", event: event.event, recipient: event.recipient, command: python, args: [script, directory], scope: "session" }]) });
   failed.publish(event);
   await failed.close();
   const records = readFileSync(join(directory, "ce-hooks/executions.jsonl"), "utf8");

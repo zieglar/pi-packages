@@ -46,7 +46,7 @@ describe("pi-chat-exchange MCP smoke server (in-memory transport)", () => {
 
   it("advertises exactly one strictly read-only ping tool", async () => {
     const { tools } = await client.listTools();
-    expect(tools).toHaveLength(1);
+    expect(tools).toHaveLength(2);
     const tool = tools[0]!;
     expect(tool.name).toBe("ping");
     expect(tool.annotations?.readOnlyHint).toBe(true);
@@ -139,7 +139,7 @@ describe("pi-chat-exchange MCP stdio entrypoint (built artifact)", () => {
       const listed = JSON.parse(await call("tools/list", {})) as {
         result: { tools: Array<{ name: string; annotations?: { readOnlyHint?: boolean } }> };
       };
-      expect(listed.result.tools).toHaveLength(1);
+      expect(listed.result.tools).toHaveLength(2);
       expect(listed.result.tools[0]?.name).toBe("ping");
       expect(listed.result.tools[0]?.annotations?.readOnlyHint).toBe(true);
 

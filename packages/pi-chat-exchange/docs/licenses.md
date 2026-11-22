@@ -6,7 +6,7 @@ Pi Chat Exchange's own code is licensed under [MIT](../LICENSE), Copyright (c) 2
 
 ## Dependency scope
 
-The current package declares runtime dependencies `@earendil-works/pi-tui@1.3.0`, `@modelcontextprotocol/sdk@1.30.1`, `@narumitw/pi-tui-kit@0.66.0` and `@sinclair/typebox@0.34.52`, with peer `@earendil-works/pi-coding-agent@1.3.0`. Refer to the installed dependency manifests and license texts for their terms. The recorded dependency review identifies these packages as MIT. Some upstream Pi 1.3.0 tarballs omit a standalone LICENSE file; their package metadata and corresponding upstream tag license were checked during the license review. This does not make CE the licensor of those packages.
+The current package declares runtime dependencies `@modelcontextprotocol/sdk@1.30.1` and `@narumitw/pi-tui-kit@0.66.0`, exact peers `@earendil-works/pi-coding-agent@1.3.0` and `@earendil-works/pi-tui@1.3.0`, and Host-provided peer `@sinclair/typebox@*` (pinned to `0.34.52` for the author toolchain). Refer to the installed dependency manifests and license texts for their terms. The recorded dependency review identifies these packages as MIT. Some upstream Pi 1.3.0 tarballs omit a standalone LICENSE file; their package metadata and corresponding upstream tag license were checked during the license review. This does not make CE the licensor of those packages.
 
 Native source uses its pinned Rust dependency graph; consult `Cargo.toml`, `Cargo.lock` and dependency licenses. Native binaries and the npm package are separate artifacts; npm0.2.1 contains no Rust Native binary. Tunnel client is separately installed with its own license/provenance requirements.
 

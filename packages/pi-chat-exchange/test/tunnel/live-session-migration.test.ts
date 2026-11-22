@@ -93,7 +93,7 @@ describe("offline live-session migration", () => {
     const profileText = fs.readFileSync(legacy.profilePath, "utf8");
     const command = parseTunnelProfile(profileText).mcpCommand!;
     const hooks = parseHookRules([{ id: "notify-A", event: CE_MESSAGE_COMMITTED_EVENT,
-      recipient: { adapter: "pi", endpointId: "pi/A" }, command: join(legacy.dir, "NEVER-EXECUTE"), enabled: true }]);
+      recipient: { adapter: "pi", endpointId: "pi/A" }, command: join(legacy.dir, "NEVER-EXECUTE"), enabled: true, scope: "session" }]);
     const config = parseMcpBindingConfig({ version: 1, ...original.config, hooks });
     // Characterize candidate format/reader compatibility only. This primitive
     // stages immutable files; it is not a production Profile activation API.
@@ -195,7 +195,10 @@ describe("offline live-session migration", () => {
     const active = snapshot.manifest.registrations.find((r) => r.endpointId === "pi/A")!;
     expect(active.status).toBe("active");
     expect(active.epoch).toBe(3);
-    expect(active.hooks).toEqual(parseHookRules((legacy.manifest.registrations as { hooks?: unknown }[])[0]!.hooks));
+    // Immutable pre-scope history remains readable, but ambiguous legacy Hooks
+    // are deliberately absent from the executable projection.
+    expect((legacy.manifest.registrations as { hooks?: unknown }[])[0]!.hooks).toHaveLength(1);
+    expect(active.hooks).toEqual([]);
     const tombstone = snapshot.manifest.registrations.find((r) => r.endpointId === "pi/B")!;
     expect(tombstone.status).toBe("revoked");
   });

@@ -81,7 +81,7 @@ describe("Hook management boundaries", () => {
       const confirmed = readLivePolicy(selected.ref);
       const confirmedTarget = confirmed.manifest.registrations.find(r => r.endpointId === "pi/A")!;
       const hooks = parseHookRules([{ id: "notify-A", event: CE_MESSAGE_COMMITTED_EVENT,
-        recipient: { adapter: "pi", endpointId: "pi/A" }, command: join(live.dir, "NEVER-EXECUTE"), enabled: true }]);
+        recipient: { adapter: "pi", endpointId: "pi/A" }, command: join(live.dir, "NEVER-EXECUTE"), enabled: true, scope: "session" }]);
       const config = parseMcpBindingConfig({ version: 1, ...original.config, hooks });
       const oldProcess = createLiveMcpComposition(config);
       expect(oldProcess.hookAllowed(hooks[0]!)).toBe(true);
@@ -125,7 +125,7 @@ describe("Hook management boundaries", () => {
     const selected = await migration.migrate({ expectedRevision: migration.revision(), confirm: true });
     const loaded = readLivePolicy(selected.ref);
     const hooks = parseHookRules([{ id: "notify-peer", event: CE_MESSAGE_COMMITTED_EVENT,
-      recipient: { adapter: "chatgpt", endpointId: "chatgpt/main" }, command: join(live.dir, "NEVER-EXECUTE"), enabled: true }]);
+      recipient: { adapter: "chatgpt", endpointId: "chatgpt/main" }, command: join(live.dir, "NEVER-EXECUTE"), enabled: true, scope: "session" }]);
     // Exercise the real runtime guard with an otherwise unchanged typed snapshot.
     // This is not a claim that the current chain can publish the changed snapshot.
     const changed = { ...loaded, manifest: { ...loaded.manifest, registrations: loaded.manifest.registrations.map(r =>

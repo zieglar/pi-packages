@@ -111,6 +111,10 @@ cpSync(resolve(deployRoot, "node_modules"), resolve(stagedServer, "node_modules"
   // mirror. Skip it before dereferencing/copying to avoid shipping them twice.
   filter: (source) => source !== resolve(deployRoot, "node_modules/.pnpm"),
 });
+// The standalone Desktop server has no Pi host to supply this runtime peer.
+// Keep the Pi package peer contract, but include its installed TypeBox in the ZIP.
+cpSync(resolve(packageRoot, "node_modules/@sinclair/typebox"),
+  resolve(stagedServer, "node_modules/@sinclair/typebox"), { recursive: true, dereference: true });
 rmSync(resolve(stagedServer, "node_modules/.bin"), { recursive: true, force: true });
 // Never ship development-only host SDK/type packages in the plugin server. The
 // R5 Lane B fix moved the Pi key-protocol seam into `pi-extension/` (loaded by
@@ -140,7 +144,7 @@ writeFileSync(
     private: true,
     type: sourcePackage.type,
     engines: sourcePackage.engines,
-    dependencies: sourcePackage.dependencies,
+    dependencies: { ...sourcePackage.dependencies, "@sinclair/typebox": sourcePackage.devDependencies["@sinclair/typebox"] },
   }, undefined, 2)}\n`,
 );
 

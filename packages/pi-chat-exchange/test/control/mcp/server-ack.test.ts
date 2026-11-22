@@ -2,7 +2,7 @@
  * HANDOFF-CE-E2B-01 — the `ce_ack` MCP server surface (clause 5).
  *
  * `ce_ack` is advertised ONLY when the binding declares the ack opt-in. Bindings
- * without that opt-in keep exactly the four-tool surface and a
+ * without that opt-in keep the base messaging surface and a
  * `ce_ack` call there fails closed with MethodNotFound; argument-shape
  * violations stay JSON-RPC invalid params (-32602).
  */
@@ -51,7 +51,7 @@ function port(overrides: Partial<ExchangeMessagingPort> = {}): ExchangeMessaging
   };
 }
 
-const BASE_TOOLS = ["ping", "ce_send", "ce_inbox_list", "ce_read_payload"];
+const BASE_TOOLS = ["ping", "ce_send", "ce_inbox_list", "ce_read_payload", "ce_help"];
 
 async function connect(messaging?: { port: ExchangeMessagingPort; ackEnabled?: boolean }) {
   const client = new Client({ name: "vitest", version: "0.0.1" });
@@ -68,7 +68,7 @@ describe("MCP server ce_ack advertisement", () => {
     clients = [];
   });
 
-  it("keeps exactly the four-tool surface without the ack opt-in (default)", async () => {
+  it("keeps the base messaging and help surface without the ack opt-in (default)", async () => {
     const { client } = await connect({ port: port() });
     clients.push(client);
     const { tools } = await client.listTools();
@@ -79,7 +79,7 @@ describe("MCP server ce_ack advertisement", () => {
     const { client } = await connect({ port: port(), ackEnabled: true });
     clients.push(client);
     const { tools } = await client.listTools();
-    expect(tools.map((tool) => tool.name)).toEqual([...BASE_TOOLS, "ce_ack"]);
+    expect(tools.map((tool) => tool.name)).toEqual(["ping", "ce_send", "ce_inbox_list", "ce_read_payload", "ce_ack", "ce_help"]);
     const ack = tools[4]!;
     expect(ack.annotations).toEqual({ readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false });
     expect((ack.inputSchema as Record<string, unknown>).additionalProperties).toBe(false);

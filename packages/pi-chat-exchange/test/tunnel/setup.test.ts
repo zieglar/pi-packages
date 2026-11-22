@@ -553,7 +553,7 @@ describe("REAL-START-FIX-01 — profile migration", () => {
       "harpoon:", "  capture_payloads: false",
       "log:", "  level: info", "  format: json", "  http_raw_unsafe: false",
       "mcp:", "  commands:", "    - channel: main",
-      `      command: "${nodePath} /abs/mcp-stdio.js --config ${h.bindingPath} --channel main"`, "",
+      `      command: "${nodePath} /old/package/dist/bin/mcp-stdio.js --config ${h.bindingPath} --channel main"`, "",
     ].join("\n");
   }
 
@@ -570,7 +570,7 @@ describe("REAL-START-FIX-01 — profile migration", () => {
     expect(text).toContain('organization_id: "org-old"');
     expect(text).toContain(`api_key: "file:${h.key}"`);
     expect(text).toContain(`--config ${h.bindingPath} --channel main`);
-    expect(text).toContain("/abs/node /abs/mcp-stdio.js"); // node repointed to the approved path
+    expect(text).toContain("/abs/node /abs/mcp-stdio.js"); // node and package script repointed to the approved runtime
     expect(text).not.toContain("/old/node");
     expect(fs.readFileSync(h.key, "utf8")).toBe(credentialBefore);
     expect(names(h).some((n) => n.endsWith(".tmp") || n.includes("lock.d"))).toBe(false);

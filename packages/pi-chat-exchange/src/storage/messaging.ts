@@ -185,7 +185,10 @@ export function sendMessage(
           original.to.adapter !== request.from.adapter || original.to.endpointId !== request.from.endpointId ||
           messageCreatedAuditSequence(tx, original) <= membership.joinBoundarySeq) refuse("MESSAGE_READ_REJECTED");
       const originalLink = tx.prepare("SELECT request_message_id, target_owner_session_id, target_owner_fencing_token FROM message_association WHERE exchange_id=? AND message_id=?").get(request.exchangeId, original.messageId);
-      if (!originalLink || originalLink.request_message_id !== original.messageId || originalLink.target_owner_session_id !== authority.sessionId || originalLink.target_owner_fencing_token !== authority.fencingToken) refuse("MESSAGE_READ_REJECTED");
+      // A received reply may itself be replied to. The immediate parent's target
+      // Owner still fixes who may answer; endpoint reversal and membership above
+      // remain mandatory, without granting the sender read access to its own message.
+      if (!originalLink || originalLink.target_owner_session_id !== authority.sessionId || originalLink.target_owner_fencing_token !== authority.fencingToken) refuse("MESSAGE_READ_REJECTED");
     }
     const targetOwner = tx.prepare("SELECT p.participant_id, o.session_id, o.fencing_token, o.expires_at, o.lease_started_at FROM participant p JOIN participant_ownership o ON o.participant_id=p.participant_id JOIN exchange_membership m ON m.participant_id=p.participant_id WHERE p.endpoint_adapter=? AND p.endpoint_id=? AND m.exchange_id=?").get(request.to.adapter, request.to.endpointId, request.exchangeId);
     const ownerActive = targetOwner && typeof targetOwner.session_id === "string" && typeof targetOwner.fencing_token === "number" &&

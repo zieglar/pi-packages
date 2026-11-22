@@ -11,7 +11,7 @@ const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
 function fixture() {
   const dir = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "ce-hook-continuity-"))); dirs.push(dir); fs.chmodSync(dir, 0o700);
-  const hooks = parseHookRules([{ id: "notify", event: "ce.message.committed.v1", recipient: { adapter: "chatgpt", endpointId: "chatgpt/main" }, command: "/usr/bin/true", args: [], timeoutMs: 1000, enabled: true }]);
+  const hooks = parseHookRules([{ id: "notify", event: "ce.message.committed.v1", recipient: { adapter: "chatgpt", endpointId: "chatgpt/main" }, command: "/usr/bin/true", args: [], timeoutMs: 1000, enabled: true, scope: "session" }]);
   const loaded = { ref: { kind: "ce-live-session-v2", profilePath: join(dir, "tunnel.yaml"), root: dir, policyId: "test", genesisDigest: "a".repeat(64), upgradeSequence: 1 }, sequence: 1, digest: "b".repeat(64), manifest: {
     kind: "ce-multi-session-v1", version: 1, identity: { tunnelId: "tunnel_abcdefgh123456", organizationId: null }, store: { directory: dir, file: "ce.sqlite" }, exchange: { namespace: "test", idempotencyKey: "test" }, chatgptEndpoint: { adapter: "chatgpt", endpointId: "chatgpt/main" }, mcp: { payloadRead: true, ack: true },
     mcpHookConsent: { generation: 1, bindingGeneration: null, targets: [] }, registrations: [{ endpointId: "pi/A", runtimeSessionId: "native-A", epoch: 1, status: "active", payloadRead: true, ack: true, payloadReadGeneration: 0, ackGeneration: 0, presenceDisclosure: false, hooks, hookGeneration: 1 }],

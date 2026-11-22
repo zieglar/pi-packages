@@ -34,7 +34,7 @@ process.on('message', message => {
       else if (operation === 'replace') { await load(); result = await events.get('session_start')({ reason: 'reload' }, ctx); }
       else if (operation === 'tool') result = await tools.get(name).execute('synthetic-ipc', input ?? {}, undefined, undefined, ctx);
       else if (operation === 'command') result = await commands.get(name ?? 'ce-tunnel').handler(input ?? '', ctx);
-      else if (operation === 'heartbeat') { const count = intervals.size; for (const { callback } of [...intervals.values()]) await callback(); result = { callbacks: count, remaining: intervals.size }; }
+      else if (operation === 'heartbeat') { const heartbeats = () => [...intervals.values()].filter(timer => timer.delay === 30_000); const active = heartbeats(); for (const { callback } of active) await callback(); result = { callbacks: active.length, remaining: heartbeats().length }; }
       else if (operation === 'inspect') result = { entries, confirmations, timers: intervals.size, pid: process.pid, node: process.version };
       else if (operation === 'exit') { await events.get('session_shutdown')({ reason: 'quit' }, ctx); process.send({ id, result: { exited: true } }, () => process.disconnect()); return; }
       else throw Error('Unknown synthetic IPC operation');

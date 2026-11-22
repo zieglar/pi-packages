@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { AGENT_DESKTOP_HOOK_ID } from '../../../pi-extension/desktop-target.js';
 import type { OwnershipFeedbackPort } from '../../../pi-extension/ownership-feedback.js';
 import type { createNativeInbound } from '../../../pi-extension/native-inbound.js';
 
@@ -34,7 +35,7 @@ const association = { kind: 'FEEDBACK' as const, messageId: incoming, requestMes
 const terminal = { kind: 'TERMINAL' as const, messageId: incoming, requestMessageId: request, outgoingMessageId: outgoing,
   probeId: association.probeId, outcome: 'MATCH' as const, status: 'RECORDED' as const, suppressOrdinaryReply: true as const };
 type Result = { content: Array<{ type: 'text'; text: string }>; details?: unknown; isError?: boolean; terminate?: boolean };
-type Tool = { name: string; reachesTools?: () => string[]; execute(id: string, params: unknown, signal: undefined, update: undefined, ctx: unknown): Promise<Result> };
+type Tool = { name: string; description: string; reachesTools?: () => string[]; execute(id: string, params: unknown, signal: undefined, update: undefined, ctx: unknown): Promise<Result> };
 const roots: string[] = [], shutdowns: Array<() => Promise<void>> = [];
 beforeEach(() => {
   for (const key of Object.keys(process.env)) if (key.startsWith('CE_')) vi.stubEnv(key, undefined);
@@ -49,10 +50,18 @@ afterEach(async () => {
   expect(fake.forbidden).not.toHaveBeenCalled(); vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllEnvs(); vi.clearAllMocks();
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
-async function fixture(classification: unknown = association, options: { absent?: boolean; invalid?: boolean } = {}) {
+async function fixture(classification: unknown = association, options: { absent?: boolean; invalid?: boolean; desktop?: boolean } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), 'ce-extension-feedback-'))); roots.push(root);
   const session = '12345678-1234-4234-8234-123456789abc'; const policyPath = join(root, 'native.json');
-  const allowlist = { sessions: { [session]: { endpointId: 'pi/A' } }, store: { directory: root, file: 'ce-store.sqlite' }, payloadRead: { enabled: true } };
+  const nativeSessionFile = join(root, 'session.jsonl');
+  fs.writeFileSync(nativeSessionFile, '{}\n', { mode: 0o600 });
+  const autoWakeConfig = join(root, 'auto-wake.json'), config = join(root, 'config.json');
+  fs.writeFileSync(autoWakeConfig, JSON.stringify({ ownerDirectory: root, conversationGuard: { targetSelection: 'desktop-at-intake', captureAfterAuditSequence: 0 } }), { mode: 0o600 });
+  fs.writeFileSync(config, JSON.stringify({ autoWakeConfig }), { mode: 0o600 });
+  const hooks = [{ id: AGENT_DESKTOP_HOOK_ID, event: 'ce.message.committed.v1', scope: 'session', enabled: true,
+    recipient: { adapter: 'chatgpt', endpointId: 'chatgpt/main' }, command: '/usr/bin/python3',
+    args: ['-B', join(root, 'tools/ce-chatgpt-wake/wake.py'), '--config', config, '--hook'] }];
+  const allowlist = { sessions: { [session]: { endpointId: 'pi/A' } }, store: { directory: root, file: 'ce-store.sqlite' }, payloadRead: { enabled: true }, hooks };
   const allowlistPath = join(root, 'allowlist.json'); fs.writeFileSync(allowlistPath, JSON.stringify(allowlist));
   vi.stubEnv('CE_ALLOWLIST', allowlistPath); vi.stubEnv('CE_NATIVE_INBOUND_POLICY', policyPath);
   fs.writeFileSync(policyPath, JSON.stringify({ version: 1, enabled: true, runtimeSessionId: session, endpointId: 'pi/A', exchangeId: 'ex-1', from: 'chatgpt/main',
@@ -75,7 +84,7 @@ async function fixture(classification: unknown = association, options: { absent?
   let actualSession = session;
   const executeTool = vi.fn(async (name: string) => ({ toolCall: { type: 'toolCall' as const, id: 'nested', name, arguments: {} }, isError: false,
     result: { details: metadata, content: name === 'ce_read_payload' ? [{ type: 'text', text: 'untrusted' }, { type: 'text', text }] : [] } }));
-  const ctx = { mode: 'interactive', hasUI: false, cwd: root, executeTool, sessionManager: { getSessionId: () => actualSession, getSessionFile: () => undefined,
+  const ctx = { mode: 'interactive', hasUI: false, cwd: root, executeTool, sessionManager: { getSessionId: () => actualSession, getSessionFile: () => options.desktop === false ? undefined : nativeSessionFile,
     getBranch: () => [], getEntries: () => entries }, ui: { notify: vi.fn() } };
   await events.get('session_start')!({ reason: 'startup' }, ctx);
   shutdowns.push(() => events.get('session_shutdown')!({ reason: 'quit' }, ctx));
@@ -90,6 +99,9 @@ it('wires the fixed allowlist DB and dispatches dedicated control without deskto
   const [message, options] = f.sendMessage.mock.calls[0]!;
   expect(message.customType).toBe('ce-inbound-feedback-request'); expect(options).toEqual({ triggerTurn: true, deliverAs: 'followUp' });
   expect(message.content).toContain(`ce_receive_task`); expect(message.content).toContain(incoming);
+  expect(message.content).toContain('ctx_search');
+  expect(message.content).toContain('do not call ce_receive_task again');
+  expect(f.tool.description).toContain('ctx_search');
   expect(message.content).not.toContain('ce_send'); expect(message.content).not.toContain('ce_prepare_desktop_reply');
   expect(fake.capture).not.toHaveBeenCalled(); expect(fake.prepare).not.toHaveBeenCalled();
 });
@@ -129,6 +141,14 @@ it('no sidecar preserves ordinary wake, capture and nonterminating task text', a
   const f = await fixture({ kind: 'NONE' }, { absent: true }); await vi.advanceTimersByTimeAsync(1000);
   expect(fake.capture).toHaveBeenCalledTimes(1);
   const result = await f.receive(); expect(JSON.stringify(result)).toContain(f.text); expect(result.terminate).toBeUndefined();
+});
+it('without a desktop owner ordinary intake still works and desktop preparation stays disabled', async () => {
+  const f = await fixture({ kind: 'NONE' }, { absent: true, desktop: false }); await vi.advanceTimersByTimeAsync(1000);
+  expect(f.sendMessage).toHaveBeenCalledTimes(1); expect(fake.capture).not.toHaveBeenCalled();
+  expect(JSON.stringify(await f.receive())).toContain(f.text);
+  const prepare = f.tools.find(tool => tool.name === 'ce_prepare_desktop_reply')!;
+  expect(await prepare.execute('prepare', { messageId: incoming, taskId: 'task' }, undefined, undefined, f.ctx)).toMatchObject({ details: { status: 'DISABLED' } });
+  expect(fake.prepare).not.toHaveBeenCalled();
 });
 
 it('records current loaded feedback capability separately from E2E readiness', async () => {

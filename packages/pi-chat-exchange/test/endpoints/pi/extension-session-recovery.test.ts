@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { snapshotFixtureAcl } from "../../support/snapshot-fixture-acl.js";
 import { tmpdir } from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
@@ -24,6 +25,7 @@ afterEach(async () => { vi.restoreAllMocks(); syncBuiltinESMExports(); for (cons
 
 async function rig(options: { marker?: boolean; owner?: boolean; nativeId?: string; endpointId?: string; v1?: boolean; realSession?: boolean; policyExchangeKey?: string; missingIdentity?: "membership" | "participant" } = {}) {
   const dir = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "ce-extension-recovery-"))); fs.chmodSync(dir, 0o700);
+  snapshotFixtureAcl(dir);
   let manager = options.realSession !== false && options.nativeId === undefined ? SessionManager.create(dir, join(dir, "sessions")) : undefined;
   const nativeId = manager?.getSessionId() ?? options.nativeId ?? randomUUID();
   const endpointId = options.endpointId ?? "pi/A";

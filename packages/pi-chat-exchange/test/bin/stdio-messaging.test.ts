@@ -253,7 +253,7 @@ describe("MCP stdio entrypoint in --config mode (built artifact)", () => {
       const listed = (await server.call("tools/list", {})) as {
         result: { tools: Array<{ name: string }> };
       };
-      expect(listed.result.tools.map((tool) => tool.name)).toEqual(["ping", "ce_send", "ce_inbox_list", "ce_read_payload", "ce_find_replies"]);
+      expect(listed.result.tools.map((tool) => tool.name)).toEqual(["ping", "ce_send", "ce_inbox_list", "ce_read_payload", "ce_find_replies", "ce_help"]);
 
       const sent = (await server.call("tools/call", {
         name: "ce_send",
@@ -324,7 +324,7 @@ describe("MCP stdio entrypoint in --config mode (built artifact)", () => {
       const script = join(root, "notify.mjs");
       const output = join(root, "pi-notified.json");
       writeFileSync(script, `import { readFileSync, writeFileSync } from "node:fs";\nconst event = JSON.parse(readFileSync(0, "utf8"));\nwriteFileSync(process.argv[2], JSON.stringify(event));\nprocess.stdout.write("HOOK_STDOUT_MARKER");\nprocess.stderr.write("HOOK_STDERR_MARKER");\n`);
-      const configPath = writeConfig(root, [{ id: "hook-a", event: "ce.message.committed.v1", recipient: { adapter: "pi", endpointId: "pi/main" }, command: process.execPath, args: [script, output], timeoutMs: 5000 }]);
+      const configPath = writeConfig(root, [{ id: "hook-a", event: "ce.message.committed.v1", recipient: { adapter: "pi", endpointId: "pi/main" }, command: process.execPath, args: [script, output], timeoutMs: 5000, scope: "session" }]);
       const server = await launch(configPath);
       expect(server.stderr.some(line => line.includes("CE_HOOKS_ACTIVE active=1 configured=1"))).toBe(true);
       const sent = await server.call("tools/call", { name: "ce_send", arguments: { to: "pi/main", text: "PAYLOAD_NOT_FOR_HOOK", idempotencyKey: "hook-1" } });
@@ -353,7 +353,7 @@ describe("MCP stdio entrypoint in --config mode (built artifact)", () => {
       const started = join(root, "started");
       const finish = join(root, "finish");
       writeFileSync(script, `import { existsSync, writeFileSync } from "node:fs";\nwriteFileSync(process.argv[2], "started");\nconst timer = setInterval(() => { if (existsSync(process.argv[3])) { clearInterval(timer); process.exit(0); } }, 20);\n`);
-      server = await launch(writeConfig(root, [{ id: "slow", event: "ce.message.committed.v1", recipient: { adapter: "pi", endpointId: "pi/main" }, command: process.execPath, args: [script, started, finish], timeoutMs: 10000 }]));
+      server = await launch(writeConfig(root, [{ id: "slow", event: "ce.message.committed.v1", recipient: { adapter: "pi", endpointId: "pi/main" }, command: process.execPath, args: [script, started, finish], timeoutMs: 10000, scope: "session" }]));
       await server.call("tools/call", { name: "ce_send", arguments: { to: "pi/main", text: "metadata-only", idempotencyKey: "slow-hook" } });
       const deadline = Date.now() + 5000;
       while (!existsSync(started) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));

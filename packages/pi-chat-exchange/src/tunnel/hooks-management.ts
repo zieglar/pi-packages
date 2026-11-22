@@ -87,6 +87,8 @@ export interface HooksSaveResult {
   readonly operationId: string;
   readonly bindingPath?: string;
   readonly detail?: string;
+  /** Exact validated current-Session Hooks, present only after a synced Pi publication. */
+  readonly piHooks?: readonly CeHookRule[];
 }
 export interface HooksManagementOptions {
   readonly profilePath: string;
@@ -216,7 +218,7 @@ export function createHooksManagement(options: HooksManagementOptions) {
     return api;
   }
 
-  async function save(candidate: HooksPreview, confirmed: boolean, signal?: AbortSignal): Promise<HooksSaveResult> {
+  async function save(candidate: HooksPreview, confirmed: boolean, signal?: AbortSignal, requestedOperationId?: string): Promise<HooksSaveResult> {
     const assertCurrent = (): void => {
       if (signal?.aborted) return invalid("hooks.cancelled");
       options.assertCurrent();
@@ -225,7 +227,7 @@ export function createHooksManagement(options: HooksManagementOptions) {
     if (confirmed !== true || !captured || captured.fingerprint !== JSON.stringify(candidate)) return invalid("hooks.nativeConfirmation");
     previews.delete(candidate);
     assertCurrent();
-    const operationId = candidate.continuation?.operationId ?? randomUUID();
+    const operationId = candidate.continuation?.operationId ?? requestedOperationId ?? randomUUID();
     const base = { adopted: false, eligible: false, executed: false, operationId } as const;
 
     const perform = (guard?: { readonly profilePath: string; assertIntact(): void }): HooksSaveResult => {
@@ -324,7 +326,8 @@ export function createHooksManagement(options: HooksManagementOptions) {
       }
 
       const result = { ...base, configured: true, policyDurability: publication.durability, profileDurability: "not-attempted" as const };
-      if (candidate.kind === "pi") return { ...result, selection: publication.durability === "synced" ? "unchanged" : "pending" };
+      if (candidate.kind === "pi") return { ...result, selection: publication.durability === "synced" ? "unchanged" : "pending",
+        ...(publication.durability === "synced" ? { piHooks: candidate.hooks } : {}) };
       if (publication.durability !== "synced") return { ...result, selection: "pending", bindingPath: bindingPath! };
 
       try {

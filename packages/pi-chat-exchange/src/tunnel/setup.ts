@@ -212,7 +212,7 @@ export interface TunnelProfileSetup {
   validateBinding(path: string): { readonly path: string };
   save(input: TunnelSetupSaveInput): Promise<TunnelSetupSaveResult>;
   /** REAL-START-FIX-01: repair a saved profile in place (drop the rejected
-   *  admin_ui keys and repoint the mcp child node) without touching the
+   *  admin_ui keys and repoint the mcp child runtime) without touching the
    *  credential reference, tunnel/org identity, binding, store, or recipients.
    *  Atomic (temp + rename) under the SAME ownership lock; refuses when the
    *  daemon is running or its ownership is uncertain. */
@@ -684,7 +684,8 @@ export function createTunnelProfileSetup(options: TunnelProfileSetupOptions): Tu
       const text = readConfiguration(profilePath, MAX_PROFILE_BYTES, "profile", true);
       if (text === undefined) return { kind: "unchanged" };
       const nodePath = resolveSetupNodePath(options);
-      const { text: nextText, changed } = migrateTunnelProfileText(text, { nodePath });
+      const { text: nextText, changed } = migrateTunnelProfileText(text, { nodePath,
+        ...(options.mcpScriptPath === undefined ? {} : { scriptPath: options.mcpScriptPath }) });
       if (!changed) return { kind: "unchanged" };
       parseTunnelProfile(nextText); // Same decoder as real start, before any write.
       if (Buffer.byteLength(nextText, "utf8") > MAX_PROFILE_BYTES) throw invalid("profile.size");

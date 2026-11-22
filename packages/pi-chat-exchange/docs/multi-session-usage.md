@@ -68,6 +68,20 @@ This lists the exact active Endpoint IDs in the selected configuration for use a
 
 The list does not read the Inbox, prove the MCP child has loaded, or prove receipt of a message. `to` takes neither a native/CE Session ID nor an extra adapter prefix. ChatGPT still shares its own history/inbox; the operator must explicitly choose the recipient Endpoint for each message.
 
+### Discover the replacement after Pi `/new`
+
+In live-policy mode, ChatGPT can query the existing read-only tool with the old recipient it already knows:
+
+```json
+{"name":"ce_endpoints","arguments":{"previousEndpointId":"pi/project-A"}}
+```
+
+A reciprocal Pi `session_shutdown/new` and `session_start/new` observation can produce `sessionSwitch: {"status":"verified","previousEndpointId":"pi/project-A","successorEndpointId":"pi/project-B","source":"pi.new.lifecycle","observedAt":"..."}`. This describes a witnessed replacement, not permission inheritance, reachability or task receipt. Read the normal `targets` entries for registered/send-authorized/active/reachable state; `ce_send` independently rechecks authority. Empty-argument calls retain their existing projection.
+
+The new Session must be independently registered through the existing operator flow. Only its first registration incarnation is supported; revoke/reauthorize returns `unknown`. Both registrations must allow presence disclosure and remain visible to this caller. Missing file identities (including in-memory Sessions), missing/conflicting halves, multiple successors, or policy changes during the query return `sessionSwitch: {"status":"unknown","previousEndpointId":"pi/project-A"}`. Do not select by recent activity, guess a successor, or resend the old task. Old messages, ACKs, cancellation and task ownership are unchanged.
+
+Observations are private metadata files in the selected live-policy root. File identities are hashed and no transcript is read. The trusted local extension/OS user produces these observations; they are not signatures or protection from a malicious writer using the same OS account. This feature adds no background service and does not change Hooks or the explicit-only desktop guard.
+
 <a id="5-区分解绑撤销停止与-reload"></a>
 
 ## 5. Distinguish unbinding, revocation, Stop and reload

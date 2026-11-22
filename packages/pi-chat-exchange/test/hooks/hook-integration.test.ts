@@ -43,13 +43,13 @@ describe("real CE Store + Hook Runner two-way acceptance", () => {
     const chatgptRunner = new CeHookRunner({
       directory,
       rules: parseHookRules([
-        { id: "hook-a", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: PI }, command: process.execPath, args: [script, piOutput] },
-        { id: "hook-failure", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: PI }, command: process.execPath, args: [failing] },
+        { id: "hook-a", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: PI }, command: process.execPath, args: [script, piOutput], scope: "session" },
+        { id: "hook-failure", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: PI }, command: process.execPath, args: [failing], scope: "session" },
       ]),
     });
     const piRunner = new CeHookRunner({
       directory,
-      rules: parseHookRules([{ id: "hook-b", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "chatgpt", endpointId: CHATGPT }, command: process.execPath, args: [script, chatgptOutput] }]),
+      rules: parseHookRules([{ id: "hook-b", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "chatgpt", endpointId: CHATGPT }, command: process.execPath, args: [script, chatgptOutput], scope: "session" }]),
     });
     const fx = fixture("ce-hook-two-way-store-");
     const chatgpt = new CeEndpointHost(fx.store, {

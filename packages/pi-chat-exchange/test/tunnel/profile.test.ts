@@ -21,10 +21,12 @@ import {
   migrateTunnelProfileText,
   needsTunnelProfileMigration,
   replaceTunnelMcpNodePath,
+  replaceTunnelMcpScriptPath,
   resolveMcpNodePath,
   REQUIRED_MCP_NODE_VERSION,
   buildTunnelMcpCommand,
   parseTunnelMcpCommand,
+  classifyTunnelMcpRuntimeSource,
   TunnelConfigError,
 } from "../../src/tunnel/profile.js";
 
@@ -252,6 +254,12 @@ describe("REAL-START-FIX-01 — schema compatibility and migration", () => {
     expect(result.text).not.toContain("/Users/old/node");
   });
 
+  it("repoints the mcp script path while preserving node/binding/channel", () => {
+    const result = migrateTunnelProfileText(stale, { scriptPath: "/Users/current/package/dist/bin/mcp-stdio.js" });
+    expect(result.changed).toBe(true);
+    expect(result.text).toContain('command: "/Users/old/node /Users/current/package/dist/bin/mcp-stdio.js --config /abs/binding.yaml"');
+  });
+
   it("reports unchanged when a clean profile is migrated", () => {
     const clean = serializeTunnelProfile(buildTunnelProfile(base));
     expect(migrateTunnelProfileText(clean).changed).toBe(false);
@@ -270,6 +278,28 @@ describe("replaceTunnelMcpNodePath", () => {
   it("round-trips through buildTunnelMcpCommand", () => {
     const built = buildTunnelMcpCommand({ nodePath: "/a/node", scriptPath: "/b/mcp-stdio.js", bindingPath: "/c/binding.yaml" });
     expect(replaceTunnelMcpNodePath(built, "/d/node")).toBe("/d/node /b/mcp-stdio.js --config /c/binding.yaml");
+  });
+});
+
+describe("replaceTunnelMcpScriptPath", () => {
+  it("swaps only the script token and preserves --channel main", () => {
+    const cmd = "/old/node /old/package/dist/bin/mcp-stdio.js --config /abs/binding.json --channel main";
+    expect(replaceTunnelMcpScriptPath(cmd, "/new/package/dist/bin/mcp-stdio.js"))
+      .toBe("/old/node /new/package/dist/bin/mcp-stdio.js --config /abs/binding.json --channel main");
+  });
+});
+
+describe("classifyTunnelMcpRuntimeSource", () => {
+  const expected = "/Users/me/.local/share/ce-chat-exchange/pairing-aaaaaaa/node_modules/@zieglar/pi-chat-exchange/dist/bin/mcp-stdio.js";
+  it("matches the current package script exactly", () => {
+    expect(classifyTunnelMcpRuntimeSource(`/usr/bin/node ${expected} --config /abs/binding.json`, expected)).toBe("MATCH");
+  });
+  it("allows automatic repair only across managed pairing generations", () => {
+    const old = "/Users/me/.local/share/ce-chat-exchange/pairing-bbbbbbb/node_modules/@zieglar/pi-chat-exchange/dist/bin/mcp-stdio.js";
+    expect(classifyTunnelMcpRuntimeSource(`/usr/bin/node ${old} --config /abs/binding.json`, expected)).toBe("AUTO_ALIGNABLE");
+  });
+  it("does not automatically rewrite unrelated or development sources", () => {
+    expect(classifyTunnelMcpRuntimeSource("/usr/bin/node /tmp/mcp-stdio.js --config /abs/binding.json", expected)).toBe("MISMATCH");
   });
 });
 

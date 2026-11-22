@@ -1,7 +1,8 @@
 import fs from "node:fs";
+import { snapshotFixtureAcl } from "../support/snapshot-fixture-acl.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import * as policy from "../../src/tunnel/live-session-policy.js";
 import { createBackgroundTunnelManager } from "../../src/tunnel/background-manager.js";
 import { parseMcpBindingConfig } from "../../src/host/mcp-binding-config.js";
@@ -9,10 +10,11 @@ import { publishMessagingGeneration } from "../../src/tunnel/messaging-config.js
 import { buildTunnelMcpCommand, buildTunnelProfile, serializeTunnelProfile } from "../../src/tunnel/profile.js";
 import { createHooksManagement, replaceHookRule, runSafeHookFixture, type HooksManagementOptions } from "../../src/tunnel/hooks-management.js";
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
-const rule = { id: "notify", event: "ce.message.committed.v1" as const, recipient: { adapter: "chatgpt", endpointId: "chatgpt/main" }, command: "/never-execute-personal-command", args: [], timeoutMs: 1000, enabled: false };
+afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
+const rule = { id: "notify", event: "ce.message.committed.v1" as const, recipient: { adapter: "chatgpt", endpointId: "chatgpt/main" }, command: "/never-execute-personal-command", args: [], timeoutMs: 1000, enabled: false, scope: "session" as const };
 function fixture(io?: HooksManagementOptions["io"]) {
   const dir = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "ce-hooks-ui-"))); roots.push(dir); fs.chmodSync(dir, 0o700);
+  snapshotFixtureAcl(dir);
   const root = join(dir, "history"); fs.mkdirSync(root, { mode: 0o700 }); fs.mkdirSync(join(dir, ".ce-bindings"), { mode: 0o700 });
   const profilePath = join(dir, "tunnel.yaml"); const store = { directory: dir, file: "ce.sqlite" }; const exchange = { namespace: "ce", idempotencyKey: "exchange" };
   const endpoint = { adapter: "chatgpt", endpointId: "chatgpt/main" };
@@ -48,7 +50,7 @@ it("refuses v1 editing and upgrades the exact history only after explicit confir
   expect(current.snapshot.ref).toMatchObject({ kind: "ce-live-session-v2", root: f.ref.root, genesisDigest: f.ref.genesisDigest });
   expect(current.snapshot.manifest.registrations[0]?.endpointId).toBe("pi/A");
   const candidate = f.api.preview("pi", [rule]);
-  await f.api.save(candidate, true);
+  expect(await f.api.save(candidate, true)).toMatchObject({ policyDurability: "synced", piHooks: [rule] });
   expect(f.api.inspect().piHooks).toEqual([rule]);
 });
 it("publishes sender consent for full binding and exact target tuples, not receiving hooks", async () => {
@@ -240,7 +242,7 @@ it("approves a dynamically registered B without changing static A routing; exact
   const f = fixture(); await f.api.save(f.api.previewUpgrade(), true);
   let s = f.api.inspect().snapshot; const writer = policy.createLivePolicyRegistration({ ref: s.ref });
   s = writer.register({ expectedDigest: s.digest, registration: { endpointId: "pi/B", runtimeSessionId: "B", payloadRead: true, ack: true, presenceDisclosure: false } }).snapshot;
-  const incoming = { ...rule, enabled: true, recipient: { adapter: "pi", endpointId: "pi/B" } };
+  const incoming = { ...rule, enabled: true, recipient: { adapter: "pi", endpointId: "pi/B" }, scope: "session" as const };
   const candidate = f.api.preview("mcp", [incoming]);
   expect(candidate.config.recipients).toEqual([{ adapter: "pi", endpointId: "pi/A" }]);
   expect(candidate.targets).toEqual([{ ruleId: rule.id, endpointId: "pi/B", runtimeSessionId: "B", epoch: 1 }]);

@@ -4,7 +4,7 @@
 
 # Pi Chat Exchange: ChatGPT Desktop local plugin
 
-This Desktop-only stdio plugin starts the bundled CE MCP server. It provides `ping`, `ce_send`, `ce_inbox_list` and `ce_read_payload`; `ce_ack` is available only when the external binding's separate ACK opt-in is true. Availability of the payload tool does not authorize reading. The plugin is separate from the Tunnel client.
+This Desktop-only stdio plugin starts the bundled CE MCP server. It provides `ping`, read-only `ce_help`, `ce_send`, `ce_inbox_list` and `ce_read_payload`; `ce_ack` is available only when the external binding's separate ACK opt-in is true. Availability of the payload tool does not authorize reading. The plugin is separate from the Tunnel client.
 
 <a id="安装前配置"></a>
 

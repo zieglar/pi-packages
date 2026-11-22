@@ -2,6 +2,16 @@
 
 # Changelog
 
+## 0.4.0 (unreleased local candidate)
+
+- Include the reconciled post-0.3.6 CE line: one-step pairing, workspace Hooks, Session Plugins/status probes, runtime identity, `/cenew`, and current-Session Desktop controls. Preserve `ce_help` and the general CE Skill.
+- Permit an authorized confirmation to use `replyTo` on a received reply, retaining endpoint, membership, Owner/Session/fencing and recipient-only read checks.
+- Correct outbound send/read guidance, and preserve the existing Pi host, Store and lifecycle authority boundaries.
+- Close Session admission before reload pairing inspection can yield; cancel pending local dialogs on Stop without stopping the shared system-managed service.
+- Restore the default CE test lane: 3,895 passed, 0 failed, 18 existing opt-in/environment skips. Preserve the initial failures and replace obsolete fixtures without raising timeouts or adding skips.
+- Record local compatibility with the official Tunnel Client 0.0.21 artifact and source identity. Hosted CE and real Cloud qualification remain NOT_VERIFIED.
+- This is not a release-ready declaration; see [candidate scope, evidence and blockers](docs/releases/0.4.0.md).
+
 ## 0.3.6 (candidate)
 
 - Consolidate ordinary user operations under `/ce`, with compatibility-only legacy commands hidden from ordinary completion.

@@ -28,7 +28,7 @@ it.each(qualificationChildren)("actual MCP child %s intersects loaded/current gr
   const client = new Client({ name: "multi-session-fixture", version: "1" });
   try {
     await client.connect(transport);
-    expect((await client.listTools()).tools.map((t) => t.name)).toEqual(["ping", "ce_send", "ce_inbox_list", "ce_read_payload", "ce_ack", "ce_find_replies"]);
+    expect((await client.listTools()).tools.map((t) => t.name)).toEqual(["ping", "ce_send", "ce_inbox_list", "ce_read_payload", "ce_ack", "ce_find_replies", "ce_help"]);
     expect((await client.callTool({ name: "ping", arguments: {} })).isError).not.toBe(true);
     const send = (to: string, key: string) => client.callTool({ name: "ce_send", arguments: { to, text: "synthetic-chatgpt-text", idempotencyKey: key } });
     const a = await send("pi/A", "a"); const b = await send("pi/B", "b");
@@ -96,7 +96,7 @@ it("actual multi-session MCP Hook uses loaded rules and honors current removal",
     const command = parseTunnelProfile(text).mcpCommand!;
     fs.writeFileSync(f.profilePath, text.replace(command, replaceTunnelMcpBindingPath(command, pair.bindingPath)));
   };
-  select({ ...f.selected().config, hooks: [{ id: "mcp-notify", event: "ce.message.committed.v1", recipient: { adapter: "pi", endpointId: "pi/A" }, command: process.execPath, args: [script, output], timeoutMs: 5000, enabled: true }] });
+  select({ ...f.selected().config, hooks: [{ id: "mcp-notify", event: "ce.message.committed.v1", recipient: { adapter: "pi", endpointId: "pi/A" }, command: process.execPath, args: [script, output], timeoutMs: 5000, enabled: true, scope: "session" }] });
   const transport = new StdioClientTransport({ command: process.execPath, args: [resolve("dist/bin/mcp-stdio.js"), "--config", f.selected().bindingPath], stderr: "pipe" });
   const client = new Client({ name: "hook-multi", version: "1" });
   try {

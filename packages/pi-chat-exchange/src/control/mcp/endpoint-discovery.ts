@@ -72,9 +72,10 @@ const groupArgs = Type.Object({ group: Type.String({ minLength: 1, maxLength: 25
 const argsSchema = Type.Union([legacyArgs, boundArgs, groupArgs]);
 export const CE_ENDPOINTS_TOOL: Tool = {
   name: CE_ENDPOINTS_TOOL_NAME,
-  description: "Read this caller's authorized targets. Use group:<name> to explicitly resolve a local operator's named Runtime group to its independently authorized current Session. Alternatively use runtimeId or useRuntimeBinding:true; do not combine selectors. Groups and unnamed bindings are CE Endpoint scoped. A selectedTarget, when present, is shared across conversations; refresh its generation before selected sends. No permissions, receipt or task ownership are inferred; ce_send rechecks authority.",
-  inputSchema: { ...Type.Object({ ...legacyArgs.properties, useRuntimeBinding: Type.Optional(Type.Literal(true)), group: Type.Optional(groupArgs.properties.group) }, closed),
-    oneOf: [legacyArgs, boundArgs, groupArgs] },
+  description: "Read this caller's authorized targets. Use group:<name> to explicitly resolve a local operator's named Runtime group to its independently authorized current Session. Alternatively use runtimeId or useRuntimeBinding:true; do not combine selectors. A target returned by a Runtime-bound query can be passed as ce_send.to without prior Endpoint knowledge. Groups and unnamed bindings are CE Endpoint scoped. A selectedTarget, when present, is shared across conversations; refresh its generation before selected sends. No permissions, receipt or task ownership are inferred; ce_send rechecks authority.",
+  // Keep the connector-facing schema flat; exclusivity is enforced by argsSchema
+  // below. Some clients cannot disambiguate closed object branches in oneOf.
+  inputSchema: Type.Object({ ...legacyArgs.properties, useRuntimeBinding: Type.Optional(Type.Literal(true)), group: Type.Optional(groupArgs.properties.group) }, closed),
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 };
 

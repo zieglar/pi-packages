@@ -47,7 +47,7 @@ jobs:
         working-directory: packages/pi-chat-exchange
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/tunnel-compat.mjs run "$RUNNER_TEMP/tunnel-release/result.json" 0.0.20
+        run: node scripts/tunnel-compat.mjs run "$RUNNER_TEMP/tunnel-release/result.json" 0.0.21
       - name: Upload sanitized release compatibility result
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

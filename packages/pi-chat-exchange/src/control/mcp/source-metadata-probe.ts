@@ -35,7 +35,8 @@ export function createSourceMetadataProbe(
             const value: unknown = field.value;
             observation = { ...observation, present: true, type: value === null ? "null" : Array.isArray(value) ? "array" : typeof value };
             if (typeof value === "string" && value.length > 0 && value.length <= 4096) {
-              // The private key prevents dictionary matching and cross-probe correlation.
+              // A fresh private key prevents dictionary matching and correlation
+              // between probes; the trusted launch scopes the digest input too.
               const digest = createHmac("sha256", key)
                 .update(JSON.stringify(["ce.source-metadata.v1", launchDigest, value])).digest("hex");
               observation = { ...observation, digest };

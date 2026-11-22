@@ -57,7 +57,7 @@ describe("ChatGPT Desktop local plugin source package", () => {
     expect(launcher).not.toContain("process.env");
   });
 
-  it("ships only a redacted binding example and documents the four-tool surface", () => {
+  it("ships only a redacted binding example and documents the base tool surface", () => {
     const templateText = readFileSync(resolve(pluginRoot, "config/binding.example.json"), "utf8");
     const template = JSON.parse(templateText) as Record<string, unknown>;
     expect(template).toMatchObject({
@@ -69,7 +69,7 @@ describe("ChatGPT Desktop local plugin source package", () => {
     expect(templateText).not.toContain("/Users/");
 
     const readme = readFileSync(resolve(pluginRoot, "README.md"), "utf8");
-    for (const tool of ["ping", "ce_send", "ce_inbox_list", "ce_read_payload"]) {
+    for (const tool of ["ping", "ce_help", "ce_send", "ce_inbox_list", "ce_read_payload"]) {
       expect(readme).toContain(`\`${tool}\``);
     }
     expect(readme).toContain("~/.config/pi-chat-exchange/mcp-binding.json");
@@ -157,7 +157,7 @@ describe("ChatGPT Desktop local plugin source package", () => {
     }
   });
 
-  it.runIf(packageVerificationEnabled)("starts the packaged launcher, discovers four tools, and answers ping", async () => {
+  it.runIf(packageVerificationEnabled)("starts the packaged launcher, discovers the base tools, and answers ping", async () => {
     const root = mkdtempSync(join(realpathSync(tmpdir()), "ce-plugin-it-"));
     const configDirectory = resolve(root, ".config/pi-chat-exchange");
     mkdirSync(configDirectory, { recursive: true });
@@ -221,7 +221,7 @@ describe("ChatGPT Desktop local plugin source package", () => {
         "ce_send",
         "ce_inbox_list",
         "ce_read_payload",
-        "ce_find_replies",
+        "ce_find_replies", "ce_help",
       ]);
       const ping = await call("tools/call", { name: "ping", arguments: {} });
       expect((ping.result as { structuredContent: { status: string } }).structuredContent.status).toBe("reachable");
@@ -370,7 +370,7 @@ describe("ChatGPT Desktop local plugin source package", () => {
           "ce_send",
           "ce_inbox_list",
           "ce_read_payload",
-          "ce_find_replies",
+          "ce_find_replies", "ce_help",
         ]);
         for (const tool of tools) {
           expect(tool.inputSchema?.additionalProperties, `schema for ${tool.name}`).toBe(false);

@@ -14,7 +14,7 @@ function fixture() {
     mcp: { payloadRead: true, ack: true }, registrations: [{ endpointId: "pi/A", runtimeSessionId: "A", epoch: 1, status: "active", payloadRead: true, ack: true }] } });
   return { root, ref };
 }
-const rule = { id: "out", event: "ce.message.committed.v1" as const, recipient: { adapter: "chatgpt", endpointId: "chatgpt/main" }, command: "/usr/bin/true", args: [], timeoutMs: 1000, enabled: false };
+const rule = { id: "out", event: "ce.message.committed.v1" as const, recipient: { adapter: "chatgpt", endpointId: "chatgpt/main" }, command: "/usr/bin/true", args: [], timeoutMs: 1000, enabled: false, scope: "session" as const };
 function upgrade() {
   const f = fixture(); const before = policy.readLivePolicy(f.ref);
   const ref = policy.prepareLivePolicyUpgrade(f.ref, join(f.root, "profile.json"));
@@ -39,6 +39,16 @@ it("stamps every own hook replacement including ABA and preserves hooks across o
   s = api.register({ expectedDigest: s.digest, registration: { endpointId: "pi/A", runtimeSessionId: "A", payloadRead: false, ack: true, presenceDisclosure: true } }).snapshot;
   expect(s.manifest.registrations[0]).toMatchObject({ hookGeneration: 4, hooks: [rule] });
   for (const patch of [{ runtimeSessionId: "wrong" }, { epoch: 2 }, { endpointId: "pi/missing" }]) expect(() => api.setPiHooks({ expectedDigest: s.digest, runtimeSessionId: "A", endpointId: "pi/A", epoch: 1, hooks: [], ...patch })).toThrow();
+});
+it("reads exact published Pi Hook evidence by actor and operation", () => {
+  const { root, ref, api, result } = upgrade();
+  const published = api.setPiHooks({ expectedDigest: result.snapshot.digest, runtimeSessionId: "A", endpointId: "pi/A", epoch: 1, hooks: [rule], operationId: "pi-hook-op" });
+  expect(policy.readLivePiHookPublication({ ref, runtimeSessionId: "A", operationId: "pi-hook-op", credentialFile: join(root, "unused-key") })).toMatchObject({
+    sequence: published.snapshot.sequence,
+    intent: { kind: "set-pi-hooks", runtimeSessionId: "A", endpointId: "pi/A", epoch: 1, hooks: [rule] },
+    snapshot: { digest: published.snapshot.digest },
+  });
+  expect(() => policy.readLivePiHookPublication({ ref, runtimeSessionId: "A", operationId: "missing", credentialFile: join(root, "unused-key") })).toThrow();
 });
 it("binds MCP consent to exact active targets without recipient hooks and refuses stale consent", () => {
   const { api, result } = upgrade(); const target = { ruleId: "in", endpointId: "pi/A", runtimeSessionId: "A", epoch: 1 };

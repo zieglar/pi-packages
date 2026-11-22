@@ -32,7 +32,9 @@ it.skipIf(process.version !== "v24.21.0")("real launcher preserves JSON-RPC, log
     cpSync(join(pkg, "dist"), join(root, "server/dist"), { recursive: true });
     // Only the temporary test fixture uses a dependency link; deployable builder forbids links.
     symlinkSync(join(pkg, "node_modules"), join(root, "server/node_modules"));
-    writeFileSync(join(root, "server/package.json"), '{"type":"module"}');
+    writeFileSync(join(root, "server/package.json"), JSON.stringify({
+      type: "module", version: JSON.parse(readFileSync(join(pkg, "package.json"), "utf8")).version,
+    }));
     cpSync(join(pkg, "plugin/pi-chat-exchange/server/launch-config.mjs"), join(root, "server/launch-config.mjs"));
     const launcher = readFileSync(join(pkg, "plugin/pi-chat-exchange/server/launch.mjs"), "utf8").replace('[entrypoint, "--config", configPath]', '["--require", join(pluginRoot, "bin/version-guard.cjs"), entrypoint, "--config", configPath]');
     writeFileSync(join(root, "server/launch.mjs"), launcher);
@@ -62,7 +64,7 @@ it.skipIf(process.version !== "v24.21.0")("real launcher preserves JSON-RPC, log
       expect(initialized.result.serverInfo.name).toBe("pi-chat-exchange");
       child.stdin!.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n');
       const listed = await call("tools/list", {});
-      expect(listed.result.tools.map((t: any) => t.name).sort()).toEqual(["ping", "ce_send", "ce_inbox_list", "ce_read_payload", "ce_ack", "ce_find_replies"].sort());
+      expect(listed.result.tools.map((t: any) => t.name).sort()).toEqual(["ping", "ce_send", "ce_inbox_list", "ce_read_payload", "ce_ack", "ce_find_replies", "ce_help"].sort());
       expect((await call("tools/call", { name: "ping", arguments: {} })).result.isError).not.toBe(true);
       expect((await call("tools/call", { name: "ping", arguments: { secret: "SECRET_CANARY" } })).error).toBeDefined();
       child.kill("SIGTERM"); expect(await exited).toBe(0); lines.close();

@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "regressionVersion": "0.0.19",
-  "ciVerifiedVersions": ["0.0.19", "0.0.20"],
-  "releaseVersion": "0.0.20",
+  "ciVerifiedVersions": ["0.0.19", "0.0.20", "0.0.21"],
+  "releaseVersion": "0.0.21",
   "records": [
     {
       "ce": {
@@ -469,6 +469,50 @@
         "The first parallel Pi fixture start lost the exclusive empty-database creation race, exited before acquiring Owner, and then succeeded when started sequentially.",
         "The restored production MCP still runs from the pre-existing development worktree; npm installation does not update that command.",
         "A fresh official-client offline result from the same authorized publication workflow run remains mandatory."
+      ]
+    },
+    {
+      "ce": {
+        "version": "0.4.0",
+        "baselineCommit": "cbaf6168d4ad5f4c2409bc2181369f84d77432cb",
+        "runtimeSha256": "a8a36b992d7ca6dc335344f0fd4492db29b7cb37268a03502cf9d0b908ec597e",
+        "worktree": "clean"
+      },
+      "client": {
+        "version": "0.0.21",
+        "sourceCommit": "714f2d67844b660af25754f1d19b0360b346b13b",
+        "publishedAt": "2026-11-14T18:25:22Z",
+        "url": "https://github.com/openai/tunnel-client/releases/tag/v0.0.21"
+      },
+      "testedAt": "2026-11-22T14:46:31.442239+00:00",
+      "environment": {
+        "os": "linux",
+        "arch": "x64",
+        "node": "24.21.0",
+        "pi": "not-tested",
+        "native": "node-sqlite"
+      },
+      "offline": {
+        "status": "VERIFIED",
+        "kind": "automated-offline",
+        "evidence": "evidence/compat-ce-0.4.0-client-0.0.21.json"
+      },
+      "lifecycle": {
+        "status": "VERIFIED",
+        "kind": "real-client-local",
+        "evidence": "evidence/compat-ce-0.4.0-client-0.0.21.json"
+      },
+      "cloud": {
+        "status": "VERIFIED",
+        "kind": "manual-cloud",
+        "evidence": "evidence/compat-ce-0.4.0-client-0.0.21.json"
+      },
+      "limitations": [
+        "Qualification combines retained macOS arm64 local lifecycle evidence, Linux x64 Hosted offline evidence and real ChatGPT-to-Docker-QA Cloud communication; each scope is recorded separately.",
+        "The Docker host is OrbStack on arm64, with the supported linux/amd64 CE runtime. Native linux/arm64 was rejected by the fixed CE durable-storage boundary and is not qualified.",
+        "Windows, production Native driver qualification and permanent production Pi adoption are not established.",
+        "The earlier production maintenance interval received no QA requests and remains NOT_VERIFIED; it is not the source of this independent QA Cloud qualification.",
+        "A matching qualification runtime does not authorize publication or substitute for the eventual release workflow's fresh offline run identity."
       ]
     }
   ]

@@ -13,7 +13,7 @@ it("observes registration and tool outcomes without changing the real SDK protoc
   const [ct, st] = InMemoryTransport.createLinkedPair();
   try {
     await Promise.all([server.connect(st), client.connect(ct)]);
-    expect((await client.listTools()).tools.map((t) => t.name)).toEqual(["ping"]);
+    expect((await client.listTools()).tools.map((t) => t.name)).toEqual(["ping", "ce_help"]);
     expect((await client.callTool({ name: "ping", arguments: {} })).isError).toBe(false);
     await expect(client.callTool({ name: "ping", arguments: { text: "BODY_CANARY" } })).rejects.toMatchObject({ code: -32602 });
     const raw = readFileSync(file, "utf8").slice(offset);

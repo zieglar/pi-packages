@@ -59,7 +59,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        client: ["0.0.19", "0.0.20"]
+        client: ["0.0.19", "0.0.20", "0.0.21"]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
