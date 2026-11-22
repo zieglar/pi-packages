@@ -19,7 +19,7 @@ it("runs the real Pi extension Hook after a normal allowlist session switch", as
   writeFileSync(configPath, JSON.stringify({
     store: { directory: join(root, "store"), file: "store.sqlite" },
     sessions: { first: { endpointId: "pi/A" }, second: { endpointId: "pi/B" } },
-    hooks: [{ id: "notify", event: "ce.message.committed.v1", recipient: { adapter: "pi", endpointId: "pi/A" }, command: process.execPath, args: [script, output] }],
+    hooks: [{ id: "notify", event: "ce.message.committed.v1", recipient: { adapter: "pi", endpointId: "pi/A" }, command: process.execPath, args: [script, output], scope: "session" }],
   }));
   vi.stubEnv("CE_ALLOWLIST", configPath);
   vi.stubEnv("CE_STORE_DIR", ""); vi.stubEnv("CE_STORE_FILE", "");

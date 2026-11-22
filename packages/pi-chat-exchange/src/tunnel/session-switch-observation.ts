@@ -23,7 +23,15 @@ const Arrival = Type.Object({
   version: Type.Literal(1), source: Type.Literal("pi.session_start.new"),
   departureDigest: digest, runtimeSessionId: label, previousSessionFileDigest: digest, sessionFileDigest: digest, observedAt: time,
 }, closed);
+const SuccessionIntent = Type.Object({
+  version: Type.Literal(1), source: Type.Literal("pi.cenew.intent"),
+  policyId: label, genesisDigest: digest, operationId: Type.String({ pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" }),
+  predecessorRuntimeSessionId: label, predecessorEndpointId: label, predecessorEpoch: Type.Integer({ minimum: 1 }),
+  predecessorSessionFileDigest: digest, successorSessionFileDigest: digest, workspaceDigest: digest,
+  from: label, observedAt: time,
+}, closed);
 type DepartureRecord = Static<typeof Departure>;
+type SuccessionIntentRecord = Static<typeof SuccessionIntent>;
 const hash = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
 const key = (runtimeSessionId: string, endpointId: string, epoch: number): string => hash(JSON.stringify([runtimeSessionId, endpointId, epoch]));
 const unavailable = (): never => { throw new Error("session switch unavailable"); };
@@ -130,6 +138,107 @@ export function observeSessionArrival(ref: LivePolicyRef, input: {
       previousSessionFileDigest: d.sessionFileDigest, sessionFileDigest: current, observedAt: new Date().toISOString(),
     });
   } catch { return false; }
+}
+
+export function publishSessionSuccessionIntent(ref: LivePolicyRef, input: {
+  readonly runtimeSessionId: string; readonly endpointId: string; readonly epoch: number;
+  readonly sessionFile: string | undefined; readonly targetSessionFile: string | undefined;
+  readonly workspace: string; readonly from: string; readonly operationId: string;
+}): boolean {
+  try {
+    if (input.sessionFile === undefined || input.targetSessionFile === undefined || !isAbsolute(input.sessionFile) ||
+        !isAbsolute(input.targetSessionFile) || input.sessionFile === input.targetSessionFile || !isAbsolute(input.workspace)) return false;
+    const snapshot = readLivePolicy(ref);
+    const registration = snapshot.manifest.registrations.find(r => r.status === "active" && r.runtimeSessionId === input.runtimeSessionId &&
+      r.endpointId === input.endpointId && r.epoch === input.epoch);
+    if (registration === undefined) return false;
+    const targetDigest = hash(input.targetSessionFile);
+    const value: SuccessionIntentRecord = {
+      version: 1, source: "pi.cenew.intent", policyId: ref.policyId, genesisDigest: ref.genesisDigest, operationId: input.operationId,
+      predecessorRuntimeSessionId: input.runtimeSessionId, predecessorEndpointId: input.endpointId, predecessorEpoch: input.epoch,
+      predecessorSessionFileDigest: hash(input.sessionFile), successorSessionFileDigest: targetDigest,
+      workspaceDigest: hash(input.workspace), from: input.from, observedAt: new Date().toISOString(),
+    };
+    return publish(directory(ref, true), `${key(input.runtimeSessionId, input.endpointId, input.epoch)}-${targetDigest}.succession.json`, SuccessionIntent, value);
+  } catch { return false; }
+}
+
+export interface SessionSuccessionIntent {
+  readonly intentId: string;
+  readonly operationId: string;
+  readonly predecessorRuntimeSessionId: string;
+  readonly predecessorEndpointId: string;
+  readonly predecessorEpoch: number;
+  readonly from: string;
+}
+
+export function findSessionSuccessionIntent(snapshot: LiveSnapshot, input: {
+  readonly runtimeSessionId: string; readonly previousSessionFile: string | undefined;
+  readonly sessionFile: string | undefined; readonly workspace: string;
+}): SessionSuccessionIntent | undefined {
+  try {
+    if (!input.runtimeSessionId || input.previousSessionFile === undefined || input.sessionFile === undefined ||
+        !isAbsolute(input.previousSessionFile) || !isAbsolute(input.sessionFile) || !isAbsolute(input.workspace) ||
+        input.previousSessionFile === input.sessionFile) return undefined;
+    const parent = directory(snapshot.ref);
+    const previousDigest = hash(input.previousSessionFile);
+    const currentDigest = hash(input.sessionFile);
+    const names = candidates(parent, name => /^[a-f0-9]{64}-[a-f0-9]{64}\.succession\.json$/.test(name) && name.endsWith(`-${currentDigest}.succession.json`));
+    const matches = names.flatMap(name => {
+      const intentId = name.slice(0, -".succession.json".length);
+      if (fs.existsSync(join(parent, `${name}.conflict`)) || fs.existsSync(join(parent, `${intentId}.succession.consumed`))) return [];
+      const value = record(join(parent, name), SuccessionIntent).value;
+      if (value.policyId !== snapshot.ref.policyId || value.genesisDigest !== snapshot.ref.genesisDigest ||
+          value.predecessorSessionFileDigest !== previousDigest || value.successorSessionFileDigest !== currentDigest ||
+          value.workspaceDigest !== hash(input.workspace) || value.predecessorRuntimeSessionId === input.runtimeSessionId ||
+          name !== `${key(value.predecessorRuntimeSessionId, value.predecessorEndpointId, value.predecessorEpoch)}-${currentDigest}.succession.json`) return [];
+      const predecessor = snapshot.manifest.registrations.filter(r => r.status === "active" && r.runtimeSessionId === value.predecessorRuntimeSessionId &&
+        r.endpointId === value.predecessorEndpointId && r.epoch === value.predecessorEpoch);
+      return predecessor.length !== 1 ? [] : [{ intentId, operationId: value.operationId,
+        predecessorRuntimeSessionId: value.predecessorRuntimeSessionId, predecessorEndpointId: value.predecessorEndpointId,
+        predecessorEpoch: value.predecessorEpoch, from: value.from }];
+    });
+    return matches.length === 1 ? Object.freeze(matches[0]!) : undefined;
+  } catch { return undefined; }
+}
+
+export function consumeSessionSuccessionIntent(ref: LivePolicyRef, intentId: string): boolean {
+  try {
+    if (!/^[a-f0-9]{64}-[a-f0-9]{64}$/.test(intentId)) return false;
+    const parent = directory(ref);
+    if (!fs.existsSync(join(parent, `${intentId}.succession.json`))) return false;
+    const path = join(parent, `${intentId}.succession.consumed`);
+    const fd = fs.openSync(path, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+    try { fs.writeFileSync(fd, "consumed\n"); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    const dir = fs.openSync(parent, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+    try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
+    return true;
+  } catch { return false; }
+}
+
+/** Resolve only a uniquely witnessed direct `/new` predecessor. This is local
+ * lifecycle evidence, not a grant; callers must still publish successor authority. */
+export function findSessionSwitchPredecessor(snapshot: LiveSnapshot, runtimeSessionId: string): LiveSnapshot["manifest"]["registrations"][number] | undefined {
+  try {
+    if (typeof runtimeSessionId !== "string" || !runtimeSessionId.length || runtimeSessionId.length > 256) return undefined;
+    const parent = directory(snapshot.ref);
+    const arrivals = candidates(parent, name => /^[a-f0-9]{64}-[a-f0-9]{64}\.arrival\.json$/.test(name));
+    const matches = arrivals.flatMap(name => {
+      if (fs.existsSync(join(parent, `${name}.conflict`))) return [];
+      const arrival = record(join(parent, name), Arrival);
+      if (arrival.value.runtimeSessionId !== runtimeSessionId) return [];
+      const departureName = name.replace(".arrival.json", ".departure.json");
+      if (fs.existsSync(join(parent, `${departureName}.conflict`))) return [];
+      const departure = record(join(parent, departureName), Departure);
+      const d = departure.value;
+      if (!inPolicy(d, snapshot) || arrival.value.departureDigest !== hash(departure.bytes) ||
+          arrival.value.previousSessionFileDigest !== d.sessionFileDigest || arrival.value.sessionFileDigest !== d.targetSessionFileDigest ||
+          d.runtimeSessionId === runtimeSessionId) return [];
+      const registration = snapshot.manifest.registrations.find(r => r.status === "active" && r.runtimeSessionId === d.runtimeSessionId && r.endpointId === d.endpointId && r.epoch === d.epoch);
+      return registration === undefined ? [] : [registration];
+    });
+    return matches.length === 1 ? matches[0] : undefined;
+  } catch { return undefined; }
 }
 
 export function discoverSessionSwitch(snapshot: LiveSnapshot, previousEndpointId: string, visibleEndpoints: readonly string[]): SessionSwitchResult {

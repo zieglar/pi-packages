@@ -20,9 +20,9 @@ Pi Chat Exchange（CE）让 ChatGPT 和 Pi 通过显式工具交换持久化消�
 
 使用 **Pi 1.3.0**、**Node >=22.19.0**，以及 Store 支持的平台：**macOS arm64 或 Linux x64 GNU**。仍须通过文件系统、所有权和运行时准入检查。其他 Native 制品不代表 Store 支持相应平台；Windows Native 不受支持，WSL2 集成尚未验证。
 
-当前已发布的稳定包为 **0.3.0**。历史 0.2.1 Registry 安装检查在 macOS arm64 上通过隔离 Pi 1.3.0 / Node 22.19.0 加载与持久化验证；Linux x64 Native 在 Node 22.19.0、24.22.2 上各通过 227/227。这些特定版本的结果不认证当前候选。已测矩阵和限制见[运行时支持](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/runtime-support.zh-CN.md)，engine 范围不代表穷尽验证。
+2026-11-22 查询到的已发布稳定包为 **0.3.6**。历史 Registry 和 Native 安装结果仅适用于各自记录的版本与环境；已测矩阵和限制见[运行时支持](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/runtime-support.zh-CN.md)，engine 范围不代表穷尽验证。
 
-本工作区准备正式 **0.3.1** 候选，保留已发布 CE 0.3.0 Hooks 并整合已审查的本地变更，目前尚未发布到 Registry。详见[0.3.1范围与验证限制](https://github.com/zieglar/pi-packages/blob/main/packages/pi-chat-exchange/docs/releases/0.3.1.zh-CN.md)。显式 `CE_TUNNEL_CLIENT_PATH` 委托信任用户管理的安装（包括 Homebrew 可组写祖先目录），自动发现仍严格。先在新专用 prefix 验证已审查本地 tarball，再向 Pi 登记物理包目录。历史 Cloud 证据不认证本次变更后的运行时。
+本开发树准备尚未发布的 **0.4.0 本地候选**，源码说明位于 `packages/pi-chat-exchange/docs/releases/0.4.0.zh-CN.md`，不能作为已发布 npm 版本安装。候选包含已归并的 Session/Hook/runtime 功能和授权关联回复链修复。显式 `CE_TUNNEL_CLIENT_PATH` 委托信任用户管理的安装（包括 Homebrew 可组写祖先目录），自动发现仍严格。采用候选前先在独立 prefix 验证 tarball；历史 Cloud 证据不认证本次变更后的运行时。
 
 <a id="安装-pi-扩展"></a>
 <a id="选择连接方式"></a>
@@ -32,7 +32,7 @@ Pi Chat Exchange（CE）让 ChatGPT 和 Pi 通过显式工具交换持久化消�
 已安装 Pi 后，在**系统终端**执行：
 
 ```sh
-pi install npm:@zieglar/pi-chat-exchange@0.3.0
+pi install npm:@zieglar/pi-chat-exchange@0.3.6
 pi list
 pi
 ```
@@ -56,7 +56,7 @@ ACK 只记录接收回执，不证明送达、已读、处理或任务完成。C
 
 ## 可选桌面测试集成
 
-仓库另提供 [CE → Ovis](https://github.com/zieglar/pi-packages-dev/blob/main/tools/ce-ovis-desktop/README.md) 和 [Pi → ChatGPT 唤醒](https://github.com/zieglar/pi-packages-dev/blob/main/tools/ce-chatgpt-wake/README.md)。这些 macOS 操作工具不包含在 npm 制品中。本地 0.3.1 候选整合版保留 CE 0.3.0 Hooks 并加入已验收的 Daily UX，身份与原发布 0.3.0 制品不同。
+仓库另提供 [CE → Ovis](https://github.com/zieglar/pi-packages-dev/blob/main/tools/ce-ovis-desktop/README.md) 和 [Pi → ChatGPT 唤醒](https://github.com/zieglar/pi-packages-dev/blob/main/tools/ce-chatgpt-wake/README.md)。这些 macOS 操作工具不包含在 npm 制品中。0.4.0 候选保留归并后的共享控件与 Session 行为，尚未发布或切换到日常部署。
 
 唤醒通知只携带固定指令与消息标识，实际任务仍在 CE 中。每项集成都要求明确授权目标窗口及独立测试目录；已运行的 Tunnel Client 会使测试拒绝启动，请先按正常流程 Stop 并确认 STOPPED，再安排单独测试窗口。配置、停止与清理流程及既有 E2E 证据范围见各工具 README。
 

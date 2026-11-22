@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const seam = vi.hoisted(() => ({
   refresh: vi.fn(), stop: vi.fn(), hooks: vi.fn(), configure: vi.fn(),
   native: vi.fn(), onboarding: vi.fn(), live: false, projected: false,
-  manager: vi.fn(),
+  manager: vi.fn(), root: "",
 }));
 vi.mock("../../dist/runtime/native-readiness.js", async original => ({
   ...await original<object>(), assertNativeReadyForTunnel: vi.fn(),
@@ -20,6 +20,12 @@ vi.mock("../../dist/tunnel/background-manager.js", async original => ({
     refresh: seam.refresh, stop: seam.stop,
   }),
 }));
+vi.mock("../../dist/tunnel/manager.js", async original => ({
+  ...await original<object>(), createTunnelManager: () => ({
+    status: () => ({ label: "Tunnel · offline simulator", state: "RUNNING", running: true }),
+    stop: seam.stop,
+  }),
+}));
 vi.mock("../../dist/tunnel/manager-ui.js", async original => ({
   ...await original<object>(), runTunnelManagerUi: (...args: unknown[]) => seam.manager(...args),
 }));
@@ -30,8 +36,10 @@ vi.mock("../../pi-extension/session-onboarding.js", async original => ({
 }));
 vi.mock("../../pi-extension/live-session-profile.js", async original => ({
   ...await original<object>(), readLiveSelectedSessionPolicy: () => seam.live ? {
-    ref: { kind: "ce-live-session-v2" }, digest: "test-digest",
-    manifest: { registrations: [], mcp: {}, chatgptEndpoint: { adapter: "chatgpt", endpointId: "chatgpt/main" } },
+    ref: { kind: "ce-live-session-v2", root: seam.root, policyId: "test-policy", genesisDigest: "a".repeat(64),
+      profilePath: join(seam.root, "profile.yaml"), upgradeSequence: 1 }, digest: "test-digest",
+    manifest: { registrations: [], mcp: {}, store: { directory: join(seam.root, "store"), file: "exchange.sqlite" },
+      exchange: { namespace: "feedback", idempotencyKey: "test" }, chatgptEndpoint: { adapter: "chatgpt", endpointId: "chatgpt/main" } },
   } : undefined,
   projectLivePiRegistration: () => seam.projected ? { sessions: { "test-session": { endpointId: "pi/test" } } } : {},
 }));
@@ -49,7 +57,7 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllEnvs(); for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
 function pending<T>() { let resolve!: (x: T) => void; let reject!: (error: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 async function fixture(live = false) {
-  const dir = mkdtempSync(join(tmpdir(), "ce-feedback-")); dirs.push(dir);
+  const dir = mkdtempSync(join(tmpdir(), "ce-feedback-")); dirs.push(dir); seam.root = dir;
   const profile = join(dir, "profile.yaml"); writeFileSync(profile, "fixture", { mode: 0o600 });
   vi.stubEnv("CE_ALLOWLIST", "/dev/null"); vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", ""); vi.stubEnv("CE_TUNNEL_PROFILE", profile);
   if (live) { seam.live = true; vi.stubEnv("CE_ALLOWLIST", ""); }
@@ -64,13 +72,21 @@ async function fixture(live = false) {
 }
 const active = (ui: any) => ui.setStatus.mock.calls.filter(([key, text]: [string, unknown]) => key.startsWith("ce-operation") && typeof text === "string");
 
-it("shows Stop activity while exit verification is pending and clears it at completion", async () => {
-  const f = await fixture(); const wait = pending<void>(); seam.stop.mockReturnValue(wait.promise);
+it("shows offline Stop activity while exit verification is pending and clears it at completion", async () => {
+  const f = await fixture(); vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", "1"); const wait = pending<void>(); seam.stop.mockReturnValue(wait.promise);
   const task = f.command.handler("stop", f.ctx); await Promise.resolve();
+  expect(seam.stop).toHaveBeenCalledOnce();
   expect(active(f.ui).map(([, text]: any) => text).join(" ")).toMatch(/stop|exit/i);
   wait.resolve(); await task;
   const [key] = active(f.ui)[0]; expect(f.ui.setStatus).toHaveBeenLastCalledWith(key, undefined);
   expect(seam.stop).toHaveBeenCalledOnce();
+});
+it("gives real Stop guidance without calling the background stop or showing activity", async () => {
+  const f = await fixture();
+  await f.command.handler("stop", f.ctx);
+  expect(seam.stop).not.toHaveBeenCalled();
+  expect(active(f.ui)).toHaveLength(0);
+  expect(f.ui.notify).toHaveBeenCalledWith("ce-tunnel: real service stop is managed by Homebrew/launchd; CE will not stop Tunnel or MCP. Use /ce status before deciding on a system-service action.", "info");
 });
 it("reports a declined Disconnect exactly once without stopping transport", async () => {
   const f = await fixture(); await f.command.handler("disconnect", f.ctx);
@@ -124,9 +140,13 @@ it("clears in-flight feedback on teardown and suppresses late Native success", a
   expect(f.ui.setStatus).toHaveBeenCalledTimes(writes); expect(f.ui.notify).toHaveBeenCalledTimes(notices);
 });
 it("clears Stop activity and suppresses its late result after teardown", async () => {
-  const f = await fixture(); const wait = pending<void>(); seam.stop.mockReturnValue(wait.promise);
+  const f = await fixture(); vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", "1"); const wait = pending<void>(); seam.stop.mockReturnValue(wait.promise);
   const task = f.command.handler("stop", f.ctx); await Promise.resolve();
+  expect(seam.stop).toHaveBeenCalledOnce();
+  const [activityKey] = active(f.ui)[0];
+  expect(f.ui.setStatus).toHaveBeenCalledWith(activityKey, "CE Stop · Waiting for owned process exit verification");
   await f.events.get("session_shutdown")({ reason: "exit" }, f.ctx);
+  expect(f.ui.setStatus).toHaveBeenCalledWith(activityKey, undefined);
   const notices = f.ui.notify.mock.calls.length; const writes = f.ui.setStatus.mock.calls.length;
   wait.resolve(); await task;
   expect(f.ui.notify).toHaveBeenCalledTimes(notices); expect(f.ui.setStatus).toHaveBeenCalledTimes(writes);
@@ -156,16 +176,26 @@ it("suppresses Status state writes and notifications after teardown while Manage
 it.each(["next command", "teardown"])("retains a reload continuation terminal result until %s", async cleanup => {
   const f = await fixture(true); seam.projected = true; seam.onboarding.mockResolvedValue("cancelled");
   const { runtimeEnvironment } = await import("../../pi-extension/multi-session-runtime.js");
-  const entries: any[] = [{ id: "pending", type: "custom", customType: "ce-connect-reload", data: {
+  const mapping = { endpointId: "pi/test", participantId: "participant-test", sessionId: "session-test", exchangeId: "exchange-test" };
+  const entries: any[] = [
+    { id: "mapping", type: "custom", customType: "ce-mapping", data: mapping },
+    { id: "released", type: "custom", customType: "ce-messaging-released", data: { ...mapping, piSessionId: "test-session", intent: "deactivate" } },
+    { id: "pending", type: "custom", customType: "ce-connect-reload", data: {
     requestId: "reload-terminal", piSessionId: "test-session", policyDigest: "test-digest", requestedAt: Date.now(), environment: runtimeEnvironment(),
   } }];
   f.ctx.sessionManager.getBranch = () => entries; f.ctx.sessionManager.getEntries = () => entries;
   f.appendEntry.mockImplementation((customType, data) => entries.push({ id: `entry-${entries.length}`, type: "custom", customType, data }));
   await f.events.get("session_start")({ reason: "reload" }, f.ctx);
+  expect(seam.onboarding).toHaveBeenCalledOnce();
+  expect(entries.filter(entry => entry.customType === "ce-connect-reload-consumed")).toHaveLength(1);
   expect(f.ui.notify).toHaveBeenCalledWith(expect.stringContaining("connect cancelled"), "warning");
   expect(f.ui.setStatus).toHaveBeenCalledWith("ce-command-result", expect.stringMatching(/Last CE connect.*cancelled/));
   const before = f.ui.setStatus.mock.calls.length;
   if (cleanup === "next command") await f.commands.get("ce-native").handler("status", f.ctx);
   else await f.events.get("session_shutdown")({ reason: "exit" }, f.ctx);
   expect(f.ui.setStatus.mock.calls.slice(before)).toContainEqual(["ce-command-result", undefined]);
+  // A later reload sees the durable marker and cannot repeat onboarding.
+  await f.events.get("session_start")({ reason: "reload" }, f.ctx);
+  expect(seam.onboarding).toHaveBeenCalledOnce();
+  expect(entries.filter(entry => entry.customType === "ce-connect-reload-consumed")).toHaveLength(1);
 });

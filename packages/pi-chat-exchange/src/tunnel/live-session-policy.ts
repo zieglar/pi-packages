@@ -7,7 +7,7 @@ import { isDeepStrictEqual } from "node:util";
 import { parseMultiSessionManifest, type MultiSessionManifest, type SessionRegistration } from "./multi-session-policy.js";
 import { readPrivateMessagingFile, type MessagingPairOptions } from "./messaging-config.js";
 import { TunnelRefusal } from "./codes.js";
-import { parseHookRules, type CeHookRule } from "../hooks/config.js";
+import { isScopedHookRule, parseHookRules, parseStoredHookRules, type CeHookRule } from "../hooks/config.js";
 export interface LivePolicyV1Ref { readonly kind: "ce-live-session-v1"; readonly root: string; readonly policyId: string; readonly genesisDigest: string; }
 export interface LivePolicyV2Ref { readonly kind: "ce-live-session-v2"; readonly root: string; readonly policyId: string; readonly genesisDigest: string; readonly profilePath: string; readonly upgradeSequence: number; }
 export type LivePolicyRef = LivePolicyV1Ref | LivePolicyV2Ref;
@@ -121,7 +121,7 @@ function intent(raw: unknown, v2 = false): Intent {
   if (k === "revoke") { const r = closed(raw, ["kind", "endpointId"]); return { kind: k, endpointId: label(r.endpointId) }; }
   if (k === "select-target") { const r = closed(raw, ["kind", "actorRuntimeSessionId", "endpointId", "epoch"]); if (integer(r.epoch) < 1) return fail(); return { kind: k, actorRuntimeSessionId: label(r.actorRuntimeSessionId), endpointId: label(r.endpointId), epoch: r.epoch as number }; }
   if (v2 && k === "upgrade") { const r = closed(raw, ["kind", "actorRuntimeSessionId", "profileRevision", "bindingGeneration"]); return { kind: k, actorRuntimeSessionId: label(r.actorRuntimeSessionId), profileRevision: sha(r.profileRevision), bindingGeneration: sha(r.bindingGeneration) }; }
-  if (v2 && k === "set-pi-hooks") { const r = closed(raw, ["kind", "runtimeSessionId", "endpointId", "epoch", "hooks"]); if (integer(r.epoch) < 1 || !Array.isArray(r.hooks)) return fail(); let hooks: readonly CeHookRule[]; try { hooks = parseHookRules(r.hooks); } catch { return fail(); } return { kind: k, runtimeSessionId: label(r.runtimeSessionId), endpointId: label(r.endpointId), epoch: r.epoch as number, hooks }; }
+  if (v2 && k === "set-pi-hooks") { const r = closed(raw, ["kind", "runtimeSessionId", "endpointId", "epoch", "hooks"]); if (integer(r.epoch) < 1 || !Array.isArray(r.hooks)) return fail(); let hooks: readonly CeHookRule[]; try { hooks = Object.freeze(parseStoredHookRules(r.hooks).filter(isScopedHookRule)); } catch { return fail(); } return { kind: k, runtimeSessionId: label(r.runtimeSessionId), endpointId: label(r.endpointId), epoch: r.epoch as number, hooks }; }
   if (v2 && k === "set-mcp-hooks") { const r = closed(raw, ["kind", "actorRuntimeSessionId", "bindingGeneration", "targets"]); return { kind: k, actorRuntimeSessionId: label(r.actorRuntimeSessionId), bindingGeneration: sha(r.bindingGeneration), targets: targets(r.targets) }; }
   return fail();
 }
@@ -171,7 +171,7 @@ function envelope(bytes: Buffer, v2 = false): Envelope {
   if (r.kind !== (v2 ? "ce-live-session-v2" : KIND)) return fail();
   const seq = integer(r.sequence); const m = parseManifest(r.manifest, seq, v2);
   if (r.parentDigest !== null) sha(r.parentDigest);
-  if (sha(r.identityDigest) !== digest(fixedIdentity(m, v2)) || sha(r.manifestDigest) !== digest(m)) return fail();
+  if (sha(r.identityDigest) !== digest(fixedIdentity(m, v2)) || sha(r.manifestDigest) !== digest(r.manifest)) return fail();
   return { kind: v2 ? "ce-live-session-v2" : KIND, policyId: label(r.policyId), sequence: seq, parentDigest: r.parentDigest as string | null,
     identityDigest: sha(r.identityDigest), operationId: label(r.operationId), intent: intent(r.intent, v2), manifestDigest: sha(r.manifestDigest), manifest: m };
 }
@@ -313,6 +313,20 @@ export function readLiveHookPublication(input: { readonly ref: LivePolicyV2Ref; 
   if (!e || e.operationId !== operation || ownerOf(e) !== runtime || (e.intent.kind !== "upgrade" && e.intent.kind !== "set-mcp-hooks")) return fail();
   return Object.freeze({ sequence: record.sequence, intent: Object.freeze(e.intent), snapshot: h.snapshots[record.sequence]! });
 }
+export function readLivePiHookPublication(input: { readonly ref: LivePolicyV2Ref; readonly runtimeSessionId: string; readonly operationId: string; readonly credentialFile: string }): {
+  readonly sequence: number;
+  readonly intent: Extract<Intent, { kind: "set-pi-hooks" }>;
+  readonly snapshot: LiveSnapshot;
+} {
+  const ref = reference(input.ref);
+  if (ref.kind !== "ce-live-session-v2") return fail();
+  const runtime = label(input.runtimeSessionId); const operation = label(input.operationId);
+  const record = createLivePolicyRegistration({ ref, credentialFile: input.credentialFile }).reconcile({ runtimeSessionId: runtime }).find(r => r.operationId === operation);
+  if (!record || record.outcome !== "PUBLISHED") return fail();
+  const h = history(ref, input.credentialFile); const e = h.envelopes[record.sequence];
+  if (!h.upgraded || !e || e.operationId !== operation || ownerOf(e) !== runtime || e.intent.kind !== "set-pi-hooks") return fail();
+  return Object.freeze({ sequence: record.sequence, intent: Object.freeze(e.intent), snapshot: h.snapshots[record.sequence]! });
+}
 export function createLivePolicyRegistration(options: { readonly ref: LivePolicyRef; readonly credentialFile?: string; readonly io?: MessagingPairOptions["io"] }) {
   const ref = reference(options.ref); const io = { ...defaultIo(), ...options.io }; const watermark: LiveReaderWatermark = {};
   const load = (): LiveSnapshot => readLivePolicy(ref, { ...(options.credentialFile === undefined ? {} : { credentialFile: options.credentialFile }), watermark });
@@ -419,7 +433,7 @@ export function createLivePolicyRegistration(options: { readonly ref: LivePolicy
     revoke: (input: { readonly expectedDigest: string; readonly endpointId: string; readonly operationId?: string }): LivePublication => publish(input.expectedDigest, { kind: "revoke", endpointId: label(input.endpointId) }, input.operationId),
     upgrade,
     setPiHooks: (input: { readonly expectedDigest: string; readonly runtimeSessionId: string; readonly endpointId: string; readonly epoch: number; readonly hooks: readonly CeHookRule[]; readonly operationId?: string }): LivePublication =>
-      publish(input.expectedDigest, { kind: "set-pi-hooks", runtimeSessionId: label(input.runtimeSessionId), endpointId: label(input.endpointId), epoch: integer(input.epoch), hooks: input.hooks }, input.operationId),
+      publish(input.expectedDigest, { kind: "set-pi-hooks", runtimeSessionId: label(input.runtimeSessionId), endpointId: label(input.endpointId), epoch: integer(input.epoch), hooks: parseHookRules(input.hooks) }, input.operationId),
     setMcpHooks: (input: { readonly expectedDigest: string; readonly actorRuntimeSessionId: string; readonly bindingGeneration: string; readonly targets: readonly McpHookTarget[]; readonly operationId?: string }): LivePublication =>
       publish(input.expectedDigest, { kind: "set-mcp-hooks", actorRuntimeSessionId: label(input.actorRuntimeSessionId), bindingGeneration: sha(input.bindingGeneration), targets: input.targets }, input.operationId),
     reconcile,

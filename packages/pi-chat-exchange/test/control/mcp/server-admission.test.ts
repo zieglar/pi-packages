@@ -14,7 +14,7 @@ it("freshly gates discovery and every tool including ping/unknown without leakin
   const [c, s] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(s), client.connect(c)]);
   try {
-    expect((await client.listTools()).tools).toHaveLength(4);
+    expect((await client.listTools()).tools).toHaveLength(5);
     expect((await client.callTool({ name: "ping", arguments: {} })).isError).not.toBe(true);
     denied = true;
     for (const call of [() => client.listTools(), () => client.callTool({ name: "ping", arguments: {} }), () => client.callTool({ name: "unknown", arguments: {} }), () => client.callTool({ name: "ce_send", arguments: { to: "pi/A", text: "secret-text", idempotencyKey: "k" } })]) {

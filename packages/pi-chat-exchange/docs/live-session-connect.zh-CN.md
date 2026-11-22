@@ -10,6 +10,10 @@ legacy `ce-multi-session-v1` 保持原行为：首次 onboarding 注册仍为 pa
 
 ## 在各自 Session 中 Connect
 
+普通的新 Session 使用 Pi 输出的一步配对指令：把 `/ce pair ce_pair_… --from chatgpt/main` 发到目标 ChatGPT 会话。配对码只能使用一次、五分钟过期；再次执行 `/ce pair` 会替换旧码，`--from <endpoint>` 可把 inbound 精确绑定到其他发送方。Session 注册、当前 Session mapping、基于当前 audit high-water 的 inbound 策略、收据消费和一次 reload 都由 Pi 完成，MCP 只兑换收据；不会重放历史消息，也不会操作服务生命周期。
+
+`/ce session bind` 保留为高级后备。live 配对、Session 列表和 onboarding 直接使用 live policy，不依赖 legacy Manager 自己持有的 STOPPED 证据；legacy/offline 配置仍保留原有 Manager lock。
+
 在目标原生 Pi Session 内运行 `/ce-tunnel connect`。首次 live 注册，或将当前 Session 尚未启用的 read/ACK 升级时，确认框会展示精确 Endpoint、Store、Exchange 和 peer。接受后为当前 Session 启用 payload read 和 ACK；ACK 只表示接收确认。新注册没有 Hooks。此前独立授权的 Hooks 保持不变，消息授权不启用 Hook，也不执行任务。
 
 确认框明确披露：配置的 peer 可见精确 Endpoint 标签。即使不披露可选 presence，真实首次 send 的结果也可能暴露 first join 或可寻址状态变化。另一个独立、可拒绝的确认覆盖 Exchange membership/first join 以及当前 Owner/lease 活跃状态。拒绝此项会让依赖 presence 的 discovery 状态保持 unknown。有效的 true/true 注册复用已有权限，不重复请求消息 consent，也不会悄悄启用 presence。Connect 不恢复已撤销注册。

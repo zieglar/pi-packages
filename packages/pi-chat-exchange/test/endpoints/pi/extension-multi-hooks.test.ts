@@ -10,7 +10,7 @@ it("projects multi-session Hooks into the actual Pi Host and audits current revo
   fs.writeFileSync(script, `import fs from 'node:fs'; fs.writeFileSync(process.argv[2], fs.readFileSync(0,'utf8'));`);
   await f.api.register({ expectedRevision: f.api.revision(), registration: {
     endpointId: "pi/A", runtimeSessionId: "real-A", payloadRead: true, ack: true,
-    hooks: [{ id: "multi-notify", event: "ce.message.committed.v1", recipient: { adapter: "chatgpt", endpointId: "chatgpt/main" }, command: process.execPath, args: [script, output], timeoutMs: 5000, enabled: true }],
+    hooks: [{ id: "multi-notify", event: "ce.message.committed.v1", recipient: { adapter: "chatgpt", endpointId: "chatgpt/main" }, command: process.execPath, args: [script, output], timeoutMs: 5000, enabled: true, scope: "session" }],
   } });
   vi.stubEnv("CE_ALLOWLIST", ""); vi.stubEnv("CE_TUNNEL_PROFILE", f.profilePath);
   vi.stubEnv("CE_STORE_DIR", ""); vi.stubEnv("CE_STORE_FILE", "");

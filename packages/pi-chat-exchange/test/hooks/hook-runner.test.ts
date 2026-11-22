@@ -51,8 +51,8 @@ describe("real local Hook Runner", () => {
     const runner = new CeHookRunner({
       directory,
       rules: parseHookRules([
-        { id: "pi", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: "pi/main" }, command: process.execPath, args: [script, output] },
-        { id: "other", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "chatgpt", endpointId: "chatgpt/main" }, command: process.execPath, args: [script, unmatched] },
+        { id: "pi", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: "pi/main" }, command: process.execPath, args: [script, output], scope: "session" },
+        { id: "other", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "chatgpt", endpointId: "chatgpt/main" }, command: process.execPath, args: [script, unmatched], scope: "session" },
       ]),
     });
     const injected = join(directory, "remote-command-injected");
@@ -76,7 +76,7 @@ describe("real local Hook Runner", () => {
   it("starts a new drain after a previous batch has become idle", async () => {
     const directory = root();
     const output = join(directory, "event.json");
-    const runner = new CeHookRunner({ directory, rules: parseHookRules([{ id: "repeat", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: "pi/main" }, command: process.execPath, args: [notifyScript(directory), output] }]) });
+    const runner = new CeHookRunner({ directory, rules: parseHookRules([{ id: "repeat", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: "pi/main" }, command: process.execPath, args: [notifyScript(directory), output], scope: "session" }]) });
     try {
       runner.publish(event());
       await vi.waitFor(() => expect(records(directory).filter(row => row.status === "SUCCEEDED")).toHaveLength(1));
@@ -94,7 +94,7 @@ describe("real local Hook Runner", () => {
     const directory = root();
     const path = join(directory, "failure.mjs");
     writeFileSync(path, script);
-    const runner = new CeHookRunner({ directory, rules: parseHookRules([{ id: "failure", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: "pi/main" }, command: process.execPath, args: [path], timeoutMs }]) });
+    const runner = new CeHookRunner({ directory, rules: parseHookRules([{ id: "failure", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: "pi/main" }, command: process.execPath, args: [path], timeoutMs, scope: "session" }]) });
     runner.publish(event());
     await runner.close();
     const rows = records(directory);
@@ -108,7 +108,7 @@ describe("real local Hook Runner", () => {
 
   it("records an invalid executable as SPAWN_FAILED without throwing into the caller", async () => {
     const directory = root();
-    const runner = new CeHookRunner({ directory, rules: parseHookRules([{ id: "missing", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: "pi/main" }, command: join(directory, "missing", "node") }]) });
+    const runner = new CeHookRunner({ directory, rules: parseHookRules([{ id: "missing", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: "pi/main" }, command: join(directory, "missing", "node"), scope: "session" }]) });
     expect(() => runner.publish(event())).not.toThrow();
     await runner.close();
     expect(records(directory).some(row => row.status === "SPAWN_FAILED" && row.hookId === "missing")).toBe(true);
@@ -118,7 +118,7 @@ describe("real local Hook Runner", () => {
     const directory = root();
     const path = join(directory, "slow.mjs");
     writeFileSync(path, "setTimeout(() => {}, 10000)");
-    const runner = new CeHookRunner({ directory, rules: parseHookRules([{ id: "slow", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: "pi/main" }, command: process.execPath, args: [path], timeoutMs: 1000 }]) });
+    const runner = new CeHookRunner({ directory, rules: parseHookRules([{ id: "slow", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: "pi/main" }, command: process.execPath, args: [path], timeoutMs: 1000, scope: "session" }]) });
     for (let index = 0; index < 40; index += 1) runner.publish(event(undefined, String(index).padStart(2, "0")));
     await runner.close();
     const rows = records(directory);
@@ -130,7 +130,7 @@ describe("real local Hook Runner", () => {
     const directory = root();
     const script = notifyScript(directory);
     const output = join(directory, "event.json");
-    const rule = { id: "notify", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: "pi/main" }, command: process.execPath, args: [script, output] };
+    const rule = { id: "notify", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: "pi/main" }, command: process.execPath, args: [script, output], scope: "session" as const };
     const inert = new CeHookRunner({ directory, rules: parseHookRules([{ ...rule, enabled: false }]) });
     inert.publish(event());
     await inert.close();
@@ -152,7 +152,7 @@ describe("real local Hook Runner", () => {
     const directory = root();
     const output = join(directory, "event.json");
     let allowed = true;
-    const rule = parseHookRules([{ id: "gated", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: "pi/main" }, command: process.execPath, args: [notifyScript(directory), output] }])[0]!;
+    const rule = parseHookRules([{ id: "gated", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: "pi/main" }, command: process.execPath, args: [notifyScript(directory), output], scope: "session" }])[0]!;
     const runner = new CeHookRunner({ directory, rules: [rule], admit: () => allowed });
     try {
       runner.publish(event());
@@ -172,7 +172,7 @@ describe("real local Hook Runner", () => {
     const script = join(directory, "wait.mjs");
     writeFileSync(script, `import fs from "node:fs"; fs.writeFileSync(process.argv[2], "started"); const timer=setInterval(() => { if(fs.existsSync(process.argv[3])) { clearInterval(timer); process.exit(0); } }, 10);`);
     let allowed = true;
-    const rule = parseHookRules([{ id: "queued", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: "pi/main" }, command: process.execPath, args: [script, started, finish], timeoutMs: 5000 }])[0]!;
+    const rule = parseHookRules([{ id: "queued", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: "pi/main" }, command: process.execPath, args: [script, started, finish], timeoutMs: 5000, scope: "session" }])[0]!;
     const runner = new CeHookRunner({ directory, rules: [rule], admit: () => allowed });
     try {
       runner.publish(event());

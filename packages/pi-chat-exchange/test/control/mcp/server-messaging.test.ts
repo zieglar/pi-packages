@@ -64,7 +64,7 @@ describe("MCP server messaging mode", () => {
     const { client } = await connect({ port: port() });
     clients.push(client);
     const { tools } = await client.listTools();
-    expect(tools.map((tool) => tool.name)).toEqual(["ping", "ce_send", "ce_inbox_list", "ce_read_payload"]);
+    expect(tools.map((tool) => tool.name)).toEqual(["ping", "ce_send", "ce_inbox_list", "ce_read_payload", "ce_help"]);
     for (const tool of tools) {
       const schema = tool.inputSchema as Record<string, unknown>;
       expect(schema.additionalProperties).toBe(false);
@@ -127,7 +127,7 @@ describe("MCP server messaging mode", () => {
     const { client } = await connect();
     clients.push(client);
     const { tools } = await client.listTools();
-    expect(tools.map((tool) => tool.name)).toEqual(["ping"]);
+    expect(tools.map((tool) => tool.name)).toEqual(["ping", "ce_help"]);
     await expect(client.callTool({ name: "ce_send", arguments: { to: "x", text: "y", idempotencyKey: "z" } })).rejects.toMatchObject({
       code: -32601,
     });

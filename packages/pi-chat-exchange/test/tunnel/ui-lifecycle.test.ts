@@ -26,9 +26,7 @@ beforeEach(() => {
   vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", "1");
 });
 afterEach(() => vi.unstubAllEnvs());
-// B1.1 contract update: the transport now publishes THREE separate status keys
-// (CE runtime, offline tunnel health, observed client activity) instead of one,
-// so cleanup must clear all three. The FG-C3 lifecycle intent is unchanged.
+// The footer publishes only `ce`; old keys are cleared for reload compatibility.
 const KEYS = ["ce", "ce-client", "ce-tunnel"] as const;
 function keysOf(ctx: Context): Map<string, string | undefined> {
   const map = new Map<string, string | undefined>();
@@ -46,7 +44,9 @@ describe("FG-C3 real registered lifecycle handlers, instance-local UI", () => {
     const ctx = context();
     await api.event("session_start", "startup", ctx);
     await api.status(ctx);
-    expect(keysOf(ctx).get("ce-tunnel")).toBe("Tunnel ○ stopped (offline simulated)");
+    expect(keysOf(ctx).get("ce")).toBe("CE ○ Pair required");
+    expect(keysOf(ctx).get("ce-tunnel")).toBeUndefined();
+    expect(keysOf(ctx).get("ce-client")).toBeUndefined();
     ctx.ui.setStatus.mockClear();
     await api.event(reason === "reload" ? "session_start" : "session_shutdown", reason, ctx);
     expectAllCleared(ctx);

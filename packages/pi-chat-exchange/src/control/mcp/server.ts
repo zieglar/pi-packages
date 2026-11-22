@@ -15,6 +15,8 @@
  * Diagnostics go to stderr only.
  */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
@@ -39,10 +41,14 @@ import {
 } from "./messaging-tools.js";
 
 import { callEndpointDiscovery, CE_ENDPOINTS_TOOL, CE_ENDPOINTS_TOOL_NAME, type EndpointDiscoveryPort } from "./endpoint-discovery.js";
+import { CE_HELP_TOOL, CE_HELP_TOOL_NAME, CeHelpArgsSchema, createHelpResult } from "./help.js";
 import { callTaskOwner, CE_TASK_OWNER_TOOL, CE_TASK_OWNER_TOOL_NAME, type TaskOwnerPort } from "./task-owner.js";
+import { callSessionPairing, CE_PAIR_TOOL, CE_PAIR_TOOL_NAME, type SessionPairingPort } from "./session-pairing.js";
 
 export const SERVER_NAME = "pi-chat-exchange" as const;
-export const SERVER_VERSION = "0.3.6" as const;
+const packageMetadata = JSON.parse(readFileSync(fileURLToPath(new URL("../../../package.json", import.meta.url)), "utf8")) as { version?: unknown };
+if (typeof packageMetadata.version !== "string" || packageMetadata.version.length === 0) throw new Error("invalid package version");
+export const SERVER_VERSION = packageMetadata.version;
 
 const PING_TOOL = {
   name: PING_TOOL_NAME,
@@ -76,7 +82,7 @@ export interface MessagingServerBinding {
   readonly admission?: () => void;
   /** HANDOFF-CE-E2B-01: the operator ack opt-in from the validated binding
    * configuration. Absent (or not exactly `true`) means `ce_ack` is neither
-   * advertised nor callable; the base four-tool surface is unchanged. */
+   * advertised nor callable; the base messaging surface is unchanged. */
   readonly ackEnabled?: boolean;
   /** HANDOFF-CE-DIAG-06: development-only execution guard. When exactly
    * `true`, EVERY `tools/call` is refused at the unified dispatch entry
@@ -88,6 +94,8 @@ export interface MessagingServerBinding {
   readonly taskOwner?: TaskOwnerPort;
   /** Fresh deny-only authority check for each TaskOwner query. */
   readonly taskOwnerAdmission?: () => void;
+  /** Optional live-only one-time pairing receipt writer. Pi retains policy authority. */
+  readonly pairing?: SessionPairingPort;
 }
 
 export function createExchangeMcpServer(
@@ -105,12 +113,14 @@ export function createExchangeMcpServer(
   // default; messaging tools only through the injected MESSAGING_TOOLS) and
   // must keep its exact shape.
   const tools = messaging === undefined ? [PING_TOOL] : [PING_TOOL, ...MESSAGING_TOOLS];
-  // HANDOFF-CE-E2B-01: `ce_ack` is advertised last, and only on the explicit
+  // HANDOFF-CE-E2B-01: `ce_ack` is advertised after messaging tools, and only on the explicit
   // operator ack opt-in carried by the binding.
   const withAck = messaging?.ackEnabled === true ? [...tools, CE_ACK_TOOL] : tools;
   const withDiscovery = messaging?.discovery === undefined ? withAck : [...withAck, CE_ENDPOINTS_TOOL];
-  const withTaskOwner = messaging?.taskOwner === undefined ? withDiscovery : [...withDiscovery, CE_TASK_OWNER_TOOL];
-  const advertised = messaging?.port.findReplies === undefined ? withTaskOwner : [...withTaskOwner, FIND_REPLIES_TOOL];
+  const withPairing = messaging?.pairing === undefined ? withDiscovery : [...withDiscovery, CE_PAIR_TOOL];
+  const withTaskOwner = messaging?.taskOwner === undefined ? withPairing : [...withPairing, CE_TASK_OWNER_TOOL];
+  const withReplies = messaging?.port.findReplies === undefined ? withTaskOwner : [...withTaskOwner, FIND_REPLIES_TOOL];
+  const advertised = [...withReplies, CE_HELP_TOOL];
   for (const tool of advertised) debugEvent("tool", "TOOL_REGISTERED", { tool: tool.name });
 
   const admit = (): void => {
@@ -126,7 +136,7 @@ export function createExchangeMcpServer(
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
-    const tool = isMessagingToolName(name) || isAckToolName(name) || name === PING_TOOL_NAME || name === CE_TASK_OWNER_TOOL_NAME ? name : "unknown-tool";
+    const tool = isMessagingToolName(name) || isAckToolName(name) || name === PING_TOOL_NAME || name === CE_HELP_TOOL_NAME || name === CE_TASK_OWNER_TOOL_NAME || name === CE_PAIR_TOOL_NAME ? name : "unknown-tool";
     const started = Date.now();
     // HANDOFF-CE-DIAG-06: the single unified dispatch entry. When the
     // development execution guard is armed, refuse BEFORE any business
@@ -147,6 +157,13 @@ export function createExchangeMcpServer(
     admit();
     debugEvent("tool", "TOOL_CALL_STARTED", { tool, args: argumentShape(args) });
     try {
+    if (name === CE_HELP_TOOL_NAME) {
+      if (!Value.Check(CeHelpArgsSchema, args ?? {})) {
+        throw new McpError(ErrorCode.InvalidParams, "ce_help takes no arguments; unexpected argument shape rejected");
+      }
+      const result = createHelpResult(advertised, SERVER_VERSION);
+      return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, isError: false };
+    }
     if (name === "ce_find_replies") {
       if (!messaging?.port.findReplies) throw new McpError(ErrorCode.MethodNotFound, "unknown tool");
       if (!Value.Check(FIND_REPLIES_SCHEMA, args ?? {})) throw new McpError(ErrorCode.InvalidParams, "invalid request Message ID");
@@ -162,6 +179,10 @@ export function createExchangeMcpServer(
       try { messaging.taskOwnerAdmission?.(); }
       catch { throw new McpError(ErrorCode.InternalError, "runtime admission denied"); }
       return callTaskOwner(messaging.taskOwner, args ?? {});
+    }
+    if (name === CE_PAIR_TOOL_NAME) {
+      if (messaging?.pairing === undefined) throw new McpError(ErrorCode.MethodNotFound, `unknown tool: ${String(name)}`);
+      return callSessionPairing(messaging.pairing, args ?? {});
     }
     // HANDOFF-CE-E2B-01: `ce_ack` exists only behind the explicit opt-in; a
     // call without it fails closed exactly like an unadvertised tool.

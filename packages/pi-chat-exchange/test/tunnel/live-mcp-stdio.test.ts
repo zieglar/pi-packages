@@ -29,6 +29,7 @@ import { publishMessagingGeneration } from "../../src/tunnel/messaging-config.js
 import { createLivePolicyRegistration, initializeLivePolicy, readLivePolicy } from "../../src/tunnel/live-session-policy.js";
 
 const NODE24 = process.execPath;
+const MCP_ENTRY = process.env.CE_PUBLISHED_MCP_ENTRY ?? join(process.cwd(), "dist/bin/mcp-stdio.js");
 const EVIDENCE = join(fs.realpathSync(tmpdir()), "ce-live-stdio-evidence.json");
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
@@ -98,7 +99,7 @@ it("real live MCP child keeps one chatgpt Owner, serves A and B exactly, and ref
   hostA.beginSession("pi/A");
   const childEnv: Record<string, string> = { PATH: "/usr/bin:/bin" };
   if (process.env["HOME"] !== undefined) childEnv["HOME"] = process.env["HOME"];
-  const transport = new StdioClientTransport({ command: NODE24, args: [join(process.cwd(), "dist/bin/mcp-stdio.js"), "--config", f.bindingPath], env: childEnv, stderr: "pipe" });
+  const transport = new StdioClientTransport({ command: NODE24, args: [MCP_ENTRY, "--config", f.bindingPath], env: childEnv, stderr: "pipe" });
   let diagnostics = "";
   transport.stderr?.on("data", (b) => { diagnostics += String(b); });
   const client = new Client({ name: "live-stdio-fixture", version: "1" });
@@ -108,11 +109,14 @@ it("real live MCP child keeps one chatgpt Owner, serves A and B exactly, and ref
   const send = (to: string, key: string, text: string) => client.callTool({ name: "ce_send", arguments: { to, text, idempotencyKey: key } });
   try {
     await client.connect(transport);
-    expect((await client.listTools()).tools.map((t) => t.name)).toEqual(["ping", "ce_send", "ce_inbox_list", "ce_read_payload", "ce_ack", "ce_endpoints", "ce_find_replies"]);
+    expect((await client.listTools()).tools.map((t) => t.name)).toEqual(["ping", "ce_send", "ce_inbox_list", "ce_read_payload", "ce_ack", "ce_endpoints", "ce_pair", "ce_find_replies", "ce_help"]);
     expect((await client.callTool({ name: "ping", arguments: {} })).isError).not.toBe(true);
 
     childPid = transport.pid;
     expect(childPid).not.toBeNull();
+    expect(JSON.parse(fs.readFileSync(`${f.bindingPath}.runtime.json`, "utf8"))).toMatchObject({
+      version: 1, pid: childPid, packageVersion: "0.4.0", sourceDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
     const chatgptParticipant = readParticipantByEndpoint(f.store, "chatgpt", "chatgpt/main")!;
     const ownershipBefore = readCurrentOwnership(f.store, chatgptParticipant.participantId)!;
     expect(ownershipBefore).toBeDefined();
@@ -256,7 +260,7 @@ it("releases chatgpt ownership when TaskOwner composition rejects startup", { ti
 
   const env: Record<string, string> = { PATH: "/usr/bin:/bin" };
   if (process.env.HOME) env.HOME = process.env.HOME;
-  const child = spawn(NODE24, [join(process.cwd(), "dist/bin/mcp-stdio.js"), "--config", f.bindingPath], {
+  const child = spawn(NODE24, [MCP_ENTRY, "--config", f.bindingPath], {
     env,
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -280,7 +284,7 @@ it("real child permanently stops renewal after invalid policy; restored successo
   const host = piHost(f.store, "pi/A"); host.beginSession("pi/A");
   const env: Record<string, string> = { PATH: "/usr/bin:/bin" };
   if (process.env.HOME) env.HOME = process.env.HOME;
-  const transport = new StdioClientTransport({ command: NODE24, args: [join(process.cwd(), "dist/bin/mcp-stdio.js"), "--config", f.bindingPath], env, stderr: "pipe" });
+  const transport = new StdioClientTransport({ command: NODE24, args: [MCP_ENTRY, "--config", f.bindingPath], env, stderr: "pipe" });
   const client = new Client({ name: "terminal-live-stdio", version: "1" });
   let diagnostics = "";
   let stopped!: () => void;

@@ -7,7 +7,7 @@ import { expect, it, vi } from "vitest";
 it("actual /ce-hooks native menu lists loaded CE_ALLOWLIST rules independently of live editing", async () => {
   const dir = fs.mkdtempSync(join(tmpdir(), "ce-hooks-legacy-"));
   const path = join(dir, "allowlist.json");
-  const rules = [{ id: "legacy-loaded", event: "ce.message.committed.v1", recipient: { adapter: "chatgpt", endpointId: "chatgpt/main" }, command: "/never/execute/personal-script", args: ["literal"], timeoutMs: 1000, enabled: false }];
+  const rules = [{ id: "legacy-loaded", event: "ce.message.committed.v1", recipient: { adapter: "chatgpt", endpointId: "chatgpt/main" }, command: "/never/execute/personal-script", args: ["literal"], timeoutMs: 1000, enabled: false, scope: "session" }];
   fs.writeFileSync(path, JSON.stringify({ sessions: { A: { endpointId: "pi/A" } }, hooks: rules }), { mode: 0o600 });
   vi.stubEnv("CE_ALLOWLIST", path); vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", "1");
   const h = createTuiHarness({ rows: 60, width: 150 });

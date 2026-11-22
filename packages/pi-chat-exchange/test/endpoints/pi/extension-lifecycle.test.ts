@@ -39,6 +39,10 @@ type Tool = { name: string; execute(id: string, params: unknown, signal: undefin
 let fx: Fixture;
 let entries: Entry[];
 
+const intervals = new Map<ReturnType<typeof setInterval>, number | undefined>();
+const heartbeatCount = () => [...intervals.values()].filter(period => period === 30_000).length;
+const heartbeatCall = (spy: { mock: { calls: ReadonlyArray<readonly unknown[]> } }) =>
+  spy.mock.calls.findIndex(([, period]) => period === 30_000);
 async function runtime(sessionId = "piA", branch = entries) {
   const events = new Map<string, Handler>();
   const tools: Tool[] = [];
@@ -78,6 +82,20 @@ function durable() {
 }
 beforeEach(() => {
   vi.useFakeTimers();
+  // Connectivity/UI timers have independent lifetimes. Track the fixture's
+  // 30-second renewal handles rather than counting every timer in the process.
+  intervals.clear();
+  const schedule = globalThis.setInterval;
+  const cancel = globalThis.clearInterval;
+  vi.spyOn(globalThis, "setInterval").mockImplementation((...args: Parameters<typeof setInterval>) => {
+    const handle = schedule(...args);
+    intervals.set(handle, args[1]);
+    return handle;
+  });
+  vi.spyOn(globalThis, "clearInterval").mockImplementation(handle => {
+    if (handle !== undefined && typeof handle !== "string" && typeof handle !== "number") intervals.delete(handle);
+    cancel(handle);
+  });
   vi.setSystemTime(new Date("2026-10-10T00:00:00.000Z"));
   fx = fixture("ce-pi-lifecycle-");
   isolated.store = fx.store;
@@ -105,9 +123,9 @@ describe("Pi runtime generation lifecycle over an isolated Store", () => {
     const interval = vi.spyOn(globalThis, "setInterval");
     await h.start();
     const original = durable().owner!;
-    expect(vi.getTimerCount()).toBe(1);
-    expect(interval.mock.calls[0]![1]).toBe(30_000);
-    expect(interval.mock.results[0]!.value.hasRef()).toBe(false);
+    expect(heartbeatCount()).toBe(1);
+    expect(heartbeatCall(interval)).toBeGreaterThanOrEqual(0);
+    expect(interval.mock.results[heartbeatCall(interval)]!.value.hasRef()).toBe(false);
     for (let tick = 1; tick <= 9; tick++) {
       await vi.advanceTimersByTimeAsync(30_000);
       const owner = durable().owner!;
@@ -146,7 +164,7 @@ describe("Pi runtime generation lifecycle over an isolated Store", () => {
     const fresh = await runtime();
     await fresh.start("reload");
     expect(mapping()).toEqual(previous);
-    expect(vi.getTimerCount()).toBe(1);
+    expect(heartbeatCount()).toBe(1);
     await vi.advanceTimersByTimeAsync(30_000);
     expect(durable().owner!.private_revision).toBe(Number(before.owner!.private_revision) + 1);
     expect(durable().owner!.fencing_token).toBe(before.owner!.fencing_token);
@@ -181,7 +199,7 @@ describe("Pi runtime generation lifecycle over an isolated Store", () => {
     expect((await h.invoke()).details).toMatchObject({ code: "CE_HOST_AUTHORITY_ABSENT", retryable: false });
     await vi.advanceTimersByTimeAsync(120_000);
     expect(renew).toHaveBeenCalledTimes(1);
-    expect(vi.getTimerCount()).toBe(0);
+    expect(heartbeatCount()).toBe(0);
     await h.shutdown("reload");
     const fresh = await runtime();
     await fresh.start("reload");
@@ -224,7 +242,7 @@ describe("Pi runtime generation lifecycle over an isolated Store", () => {
     await fresh.start("reload");
     expect((await fresh.invoke()).details).toMatchObject({ code: "CE_HOST_AUTHORITY_ABSENT" });
     expect(durable()).toEqual(before);
-    expect(vi.getTimerCount()).toBe(0);
+    expect(heartbeatCount()).toBe(0);
   });
   // HANDOFF-CE-RELEASE-READINESS-01 C3: a resumed generation adopts the REMAINING
   // durable term, which can be shorter than the configured TTL/4 heartbeat. The
@@ -273,7 +291,7 @@ describe("Pi runtime generation lifecycle over an isolated Store", () => {
     expect(notices).toContain("no automatic recovery and no takeover");
     // Fail closed: the expired lease is never revived, adopted, or taken over.
     expect(durable()).toEqual(before);
-    expect(vi.getTimerCount()).toBe(0);
+    expect(heartbeatCount()).toBe(0);
     expect((await fresh.invoke()).details).toMatchObject({ code: "CE_HOST_AUTHORITY_ABSENT", reason: "EXPIRED" });
   });
   it.each([
@@ -299,13 +317,13 @@ describe("Pi runtime generation lifecycle over an isolated Store", () => {
     expect(notices.includes("operator-only stale-ownership recovery")).toBe(hinted);
     expect(notices).not.toContain("session-process mutex");
     expect((await h.invoke()).details).toMatchObject({ code: "CE_HOST_AUTHORITY_ABSENT", reason });
-    expect(vi.getTimerCount()).toBe(0);
+    expect(heartbeatCount()).toBe(0);
   });
   it("invalidates stale heartbeat and tools before a reentrant shutdown, then waits for renew to finish", async () => {
     const h = await runtime();
     const interval = vi.spyOn(globalThis, "setInterval");
     await h.start();
-    const callback = interval.mock.calls[0]?.[0] as (() => void) | undefined;
+    const callback = interval.mock.calls[heartbeatCall(interval)]?.[0] as (() => void) | undefined;
     expect(callback).toBeTypeOf("function");
     const host = isolated.hosts[0]!;
     const realRenew = host.renew.bind(host);
@@ -345,7 +363,7 @@ describe("Pi runtime generation lifecycle over an isolated Store", () => {
     await fresh.start("reload");
     expect((await fresh.invoke()).details).toMatchObject({ code: "CE_HOST_UNCERTAIN" });
     expect(durable()).toEqual(before);
-    expect(vi.getTimerCount()).toBe(0);
+    expect(heartbeatCount()).toBe(0);
   });
   it("blocks stale send/read contexts before invoking any Host operation", async () => {
     const h = await runtime();
@@ -373,7 +391,7 @@ describe("Pi runtime generation lifecycle over an isolated Store", () => {
     await fresh.start("reload");
     expect((await fresh.invoke()).details).toMatchObject({ code: "CE_HOST_UNAVAILABLE" });
     expect(durable()).toEqual(before);
-    expect(vi.getTimerCount()).toBe(0);
+    expect(heartbeatCount()).toBe(0);
   });
   it("does not renew or release a distinct MCP Owner sharing the isolated Store", async () => {
     const { CeEndpointHost } = await import("../../../dist/host/endpoint-host.js");
@@ -407,7 +425,7 @@ describe("Pi runtime generation lifecycle over an isolated Store", () => {
       pending = h.shutdown(reason);
       throw new Error("unknown commit");
     });
-    (interval.mock.calls[0]![0] as () => void)();
+    (interval.mock.calls[heartbeatCall(interval)]![0] as () => void)();
     await pending;
     expect(end).not.toHaveBeenCalled();
     const before = durable();
@@ -441,7 +459,7 @@ describe("Pi runtime generation lifecycle over an isolated Store", () => {
     await h.start();
     expect((await h.invoke()).details).toMatchObject({ code: "CE_HOST_UNAVAILABLE" });
     expect(isolated.hosts[0]!.status("local/A").registered).toBe(false);
-    expect(vi.getTimerCount()).toBe(0);
+    expect(heartbeatCount()).toBe(0);
     await h.shutdown("reload");
     const fresh = await runtime();
     await fresh.start("startup");
@@ -457,7 +475,7 @@ describe("Pi runtime generation lifecycle over an isolated Store", () => {
     await fresh.start("reload");
     expect((await fresh.invoke()).details).toMatchObject({ code: "CE_HOST_MAPPING_INVALID" });
     expect(durable()).toEqual(before);
-    expect(vi.getTimerCount()).toBe(0);
+    expect(heartbeatCount()).toBe(0);
   });
   it("an unknown end result is latched even when release and detach actually committed", async () => {
     const h = await runtime();
@@ -476,7 +494,7 @@ describe("Pi runtime generation lifecycle over an isolated Store", () => {
     const fresh = await runtime();
     await fresh.start("reload");
     expect((await fresh.invoke()).details).toMatchObject({ code: "CE_HOST_UNAVAILABLE" });
-    expect(vi.getTimerCount()).toBe(0);
+    expect(heartbeatCount()).toBe(0);
   });
   it("a reentrant end callback joins shutdown instead of ending twice", async () => {
     const h = await runtime();
@@ -499,7 +517,7 @@ describe("Pi runtime generation lifecycle over an isolated Store", () => {
     const h = await runtime();
     await h.start();
     expect((await h.invoke()).details).toMatchObject({ code: "CE_HOST_INVALID_REQUEST" });
-    expect(vi.getTimerCount()).toBe(0);
+    expect(heartbeatCount()).toBe(0);
   });
   it("reload waits for a successful in-flight renew before dropping capability and validated resume", async () => {
     const h = await runtime();
@@ -516,7 +534,7 @@ describe("Pi runtime generation lifecycle over an isolated Store", () => {
       expect(drop).not.toHaveBeenCalled();
       return realRenew(endpoint);
     });
-    (interval.mock.calls[0]![0] as () => void)();
+    (interval.mock.calls[heartbeatCall(interval)]![0] as () => void)();
     await pending;
     expect(drop).toHaveBeenCalledExactlyOnceWith("local/A");
     expect(end).not.toHaveBeenCalled();
@@ -525,7 +543,7 @@ describe("Pi runtime generation lifecycle over an isolated Store", () => {
     expect(durable().session!.detached_at).toBeNull();
     const fresh = await runtime();
     await fresh.start("reload");
-    expect(vi.getTimerCount()).toBe(1);
+    expect(heartbeatCount()).toBe(1);
     expect((await fresh.invoke()).isError).not.toBe(true);
     await fresh.shutdown();
   });

@@ -17,6 +17,7 @@ import { createEndpointRuntimeBinding, type RuntimeSelection } from "./endpoint-
 import type { DurableStore } from "../storage/store.js";
 import { readOwnershipObservation } from "../storage/ownership.js";
 import type { LiveObservationOwner } from "./live-adoption-observation.js";
+import { pairingExchangeIdentity, redeemPairingCapability } from "./session-pairing.js";
 
 const denied = (): never => { throw new CeHostRefusal("CE_HOST_AUTHORITY_ABSENT", false, "ADMISSION_POLICY_DENIED"); };
 
@@ -109,7 +110,13 @@ export function createLiveMcpComposition(config: McpBindingConfig, reader?: (ref
     if (!selected || !current.manifest.registrations.some(r => r.status === "active" && r.endpointId === selected.endpointId && r.runtimeSessionId === selected.runtimeSessionId && r.epoch === selected.epoch)) return undefined;
     return Object.freeze({ ...selected, policyId: ref.policyId });
   };
-  return Object.freeze({ ref, loaded, snapshot, recipients, admission, hookAllowed, runtimeSelection, selectedTarget });
+  const pairing = Object.freeze({ redeem: (token: string, from?: string) => redeemPairingCapability({
+    directory: ref.root,
+    secret: token,
+    exchangeId: pairingExchangeIdentity(loaded.manifest.exchange),
+    ...(from === undefined ? {} : { from }),
+  }) });
+  return Object.freeze({ ref, loaded, snapshot, recipients, admission, hookAllowed, runtimeSelection, selectedTarget, pairing });
 }
 
 /** Synchronous observation only; never renews or changes bound admission. */

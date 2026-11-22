@@ -10,6 +10,10 @@ Legacy `ce-multi-session-v1` remains unchanged: new onboarding registrations ret
 
 ## Connect each Session
 
+For ordinary new Sessions, use the one-step pairing instruction printed by Pi: send `/ce pair ce_pair_… --from chatgpt/main` to the intended ChatGPT conversation. The code is single-use, expires after five minutes, and `/ce pair` replaces any outstanding code. An optional `--from <endpoint>` binds inbound to that exact sender. Pi—not MCP—publishes the Session registration, establishes its own mapping, writes the inbound policy at the current audit high-water mark, consumes the receipt, and reloads once. No historical message is replayed and no service lifecycle action occurs.
+
+`/ce session bind` remains the advanced fallback. Live pairing, live session listing and live onboarding read/write the live policy directly and do not depend on legacy Manager-owned STOPPED evidence. Legacy/offline configuration continues to require its existing Manager lock.
+
 Run `/ce-tunnel connect` from the intended native Pi Session. A first live registration, or an explicit upgrade of that Session's disabled read/ACK bits, previews its exact Endpoint, Store, Exchange and peer. Accepting enables payload read and ACK for that Session; ACK acknowledges reception only. New registrations have no Hooks. Existing separately authorized Hooks are preserved; messaging consent enables no Hook or task execution.
 
 The dialog discloses that the exact Endpoint label is visible to the configured peer. Truthful first-send outcomes can reveal first join/addressability even when optional presence telemetry is withheld. A separate optional confirmation covers both Exchange membership/first join and current Owner/lease liveness. Declining that optional disclosure leaves presence-dependent discovery states unknown. A true/true active registration reuses its grants without repeating messaging consent or silently enabling presence disclosure. Revoked registrations are not restored by Connect.

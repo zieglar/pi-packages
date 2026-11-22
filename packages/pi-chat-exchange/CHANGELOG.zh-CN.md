@@ -2,6 +2,16 @@
 
 # 更新日志
 
+## 0.4.0（未发布本地候选）
+
+- 纳入已归并的 0.3.6 后续 CE 开发线：一步配对、workspace Hooks、Session Plugins/状态探针、运行时身份、`/cenew` 和当前会话 Desktop 操作；保留 `ce_help` 与通用 CE Skill。
+- 修复对已收到回复发送关联确认时的 `replyTo` 拒绝，继续保留端点、成员、Owner/Session/fencing 和仅收件方可读的权限检查。
+- 修正出站发送/读取指引，保持 Pi 宿主、Store 与生命周期的权限边界。
+- 修复 reload 关闭时配对检查先等待、旧 Session 尚未关闭的竞态；Stop 取消本地等待中的确认，但不停止由系统管理的共享服务。
+- 默认 CE 测试线恢复：3895 通过、0 失败、18 项既有 opt-in/环境 skip。保留首败证据，更新过期夹具，未提高超时或增加 skip。
+- 记录官方 Tunnel Client 0.0.21 制品及来源的本地兼容性；CE Hosted 和真实 Cloud 资格仍为 NOT_VERIFIED。
+- 本候选不代表已具备发布资格；详见[候选范围、证据与阻断](docs/releases/0.4.0.zh-CN.md)。
+
 ## 0.3.6（候选）
 
 - 将普通用户操作统一到 `/ce`，旧命令仅保留兼容且不再出现于普通补全。

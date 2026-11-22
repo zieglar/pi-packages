@@ -175,7 +175,7 @@ CE_PI_CLI="$HOME/ce-install/host/node_modules/@earendil-works/pi-coding-agent/di
 
 ### 依赖与 Host 提供的运行时包
 
-本包声明 `peerDependencies: { "@earendil-works/pi-coding-agent": "1.3.0" }`：tarball 前缀安装时 npm 会把该精确版本装入 consumer 树（原生 managed npm 使用 `--legacy-peer-deps` 抑制 peer 自动安装；Host 从独立 1.3.0 树提供），满足 `pi-tui-kit` 的 `"*"` peer，避免自动拉入与 Host 不同代的完整 Pi 运行时（例如 1.4.x）。`@earendil-works/pi-tui` 与 `@sinclair/typebox` 保留为**锁定版本的 dependencies**（不是 peer）：编译后的 ESM（TUI 键序、TypeBox 运行时校验）在本地包模式下必须能从安装树物理解析，盲改为 `"*"` peer 会让 npm 拉最新版本、引入与 1.3.0 Host 的代差。代价是 Pi 启动时会提示“Host 提供的包应声明为 peerDependencies”的警告——这是当前分发架构的已知权衡（两份同版本运行时代码副本），不影响加载与首次运行；重新设计 host 映射不属于本指南范围。
+本包把 `@earendil-works/pi-coding-agent` 与 `@earendil-works/pi-tui` 声明为精确的 `1.3.0` peer，并按 Host 规则将 `@sinclair/typebox` 声明为范围为 `*` 的 peer。tarball 前缀安装会在消费端解析这些 peer，包括独立 MCP 可执行文件需要的 TypeBox；原生 managed npm 使用 `--legacy-peer-deps`，由独立的 Pi 1.3.0 Host 提供并映射扩展模块，从而避免 Host 模块的重复实例。作者工具链仍以 development dependency 固定 TypeBox `0.34.52`，保证构建与测试可复现。
 
 ## 5. 安全卸载、升级与回滚
 

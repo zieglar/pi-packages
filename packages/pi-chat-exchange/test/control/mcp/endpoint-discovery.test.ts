@@ -30,10 +30,47 @@ it("accepts only a bounded explicit Runtime scope and passes it without a Sessio
   expect(calls).toHaveLength(1);
 });
 
+it("advertises a connector-compatible Runtime binding query and sends to its discovered target", async () => {
+  const queries: unknown[] = [];
+  const sends: unknown[] = [];
+  const target = projection().targets[0]!;
+  await connected({
+    port: {
+      send(input: unknown) { sends.push(input); return { disposition: "CREATED" as const, messageId: "msg_01M7J3HPF0JSAHQWN2AHGA52C8", auditSequence: 1, recipient: target.endpointId }; },
+    } as never,
+    discovery: {
+      discover(...args: unknown[]) {
+        queries.push(args);
+        return {
+          ...projection(),
+          targets: [target],
+          runtimeSelection: { scope: "ce-endpoint" as const, status: "bound" as const, revision: "b".repeat(64), runtimeId: "runtime-current" },
+          currentBinding: { status: "verified" as const, runtimeId: "runtime-current", endpointId: target.endpointId,
+            source: "pi.runtime.lifecycle" as const, observedAt: "2026-11-03T00:00:00.000Z", expiresAt: "2026-11-03T00:01:00.000Z" },
+        };
+      },
+    },
+  }, async client => {
+    const tool = (await client.listTools()).tools.find(candidate => candidate.name === "ce_endpoints")!;
+    expect(tool.inputSchema).not.toHaveProperty("oneOf");
+
+    const discovery = await client.callTool({ name: "ce_endpoints", arguments: { useRuntimeBinding: true } });
+    const discoveredTarget = (discovery.structuredContent as EndpointDiscoveryResult).targets[0]!.endpointId;
+    expect(discoveredTarget).toBe("B");
+    expect(queries).toEqual([[undefined, undefined, true]]);
+
+    const sent = await client.callTool({ name: "ce_send", arguments: {
+      to: discoveredTarget, text: "runtime-bound wake", idempotencyKey: "new-chat-no-preknown-endpoint",
+    } });
+    expect(sent.isError).toBe(false);
+    expect(sends).toEqual([{ to: "B", text: "runtime-bound wake", idempotencyKey: "new-chat-no-preknown-endpoint" }]);
+  });
+});
+
 it("keeps legacy tool order and refuses discovery without an explicit port", async () => {
   for (const binding of [undefined, base(), { ...base(), ackEnabled: true }]) {
     await connected(binding, async client => {
-      expect((await client.listTools()).tools.map(t => t.name)).toEqual(binding === undefined ? ["ping"] : ["ping", "ce_send", "ce_inbox_list", "ce_read_payload", ...(binding.ackEnabled ? ["ce_ack"] : [])]);
+      expect((await client.listTools()).tools.map(t => t.name)).toEqual(binding === undefined ? ["ping", "ce_help"] : ["ping", "ce_send", "ce_inbox_list", "ce_read_payload", ...(binding.ackEnabled ? ["ce_ack"] : []), "ce_help"]);
       await expect(client.callTool({ name: "ce_endpoints", arguments: {} })).rejects.toMatchObject({ code: -32601 });
     });
   }
@@ -43,8 +80,8 @@ it("advertises a closed optional-predecessor query after ACK and returns only va
   let calls = 0;
   await connected({ ...base(), ackEnabled: true, discovery: { discover: () => { calls++; return projection(); } } }, async client => {
     const tools = (await client.listTools()).tools;
-    expect(tools.map(t => t.name)).toEqual(["ping", "ce_send", "ce_inbox_list", "ce_read_payload", "ce_ack", "ce_endpoints"]);
-    expect(tools.at(-1)?.inputSchema).toMatchObject({ properties: { previousEndpointId: { type: "string", minLength: 1, maxLength: 256 } }, additionalProperties: false });
+    expect(tools.map(t => t.name)).toEqual(["ping", "ce_send", "ce_inbox_list", "ce_read_payload", "ce_ack", "ce_endpoints", "ce_help"]);
+    expect(tools.find(t => t.name === "ce_endpoints")?.inputSchema).toMatchObject({ properties: { previousEndpointId: { type: "string", minLength: 1, maxLength: 256 } }, additionalProperties: false });
     for (const field of ["sender", "target", "cursor", "session", "capability"]) {
       await expect(client.callTool({ name: "ce_endpoints", arguments: { [field]: "secret" } })).rejects.toMatchObject({ code: -32602 });
     }

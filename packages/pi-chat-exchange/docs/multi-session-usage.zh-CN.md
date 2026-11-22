@@ -73,6 +73,20 @@ Pi grants 在 factory 加载时捕获，Save/register 不自动扩大旧运行�
 请求被目标 Pi 接收后，`ce_receive_task` 会显示原始 Message ID。Pi 回复时在 `ce_send` 的 `replyTo` 填入该 ID；ChatGPT 可用 `ce_find_replies` 查询回复 ID，再按各 ID 读取内容。查询不读取正文、不消费消息，也不自动 ACK。结果每页最多 50 条；有更多结果时，将本页最后一条的 Message ID 作为 `afterMessageId` 继续查询。
 请求记录创建时的目标 Owner。相同 CE Session 在有效 Owner 下恢复后可以继续回复；Endpoint 重新绑定到新的 CE Session 后，旧请求不会自动转交。迁移前的旧消息没有可验证的新关联。
 
+### Pi `/new` 后发现新端点
+
+在 live-policy 模式下，ChatGPT 可用已知旧收件端点查询现有只读工具，无需人工复制新 ID：
+
+```json
+{"name":"ce_endpoints","arguments":{"previousEndpointId":"pi/project-A"}}
+```
+
+只有旧侧 `session_shutdown/new` 与新侧 `session_start/new` 的文件身份相互对应，且新端点已独立注册，才可能返回 `sessionSwitch.status = "verified"` 和 `successorEndpointId`。关联描述切换事实，不代表权限继承、可达或已接收任务；仍需核对 `targets` 中注册、发送授权、活跃及可达状态，实际发送继续独立检查权限。空参数查询保留原投影。
+
+双方 registration 必须允许 presence disclosure，且都在调用者可见范围内；只支持新 native UUID 的首次独立注册 incarnation，撤销再授权后返回 `unknown`。内存会话、文件身份或任一事件缺失、观察冲突、多个后继或查询期间策略变化也返回 `unknown`，不得靠名称、时间或活跃状态选择。新会话仍按现有流程单独授权；旧消息不自动 ACK、取消、迁移或重发，任务所有权不继承。
+
+观察记录保存在所选 live-policy 的私有目录，只包含元数据和文件身份哈希，不读取 transcript。它信任现有本地扩展及同一 OS 用户，不是签名或对同用户恶意写入者的防护。本功能没有新增常驻服务，不修改 Hook、Task Ownership Guard 或 explicit-only 桌面策略。
+
 ## 5. 区分解绑、撤销、停止与 reload
 
 | 操作 | 改变什么 | 不做什么 |

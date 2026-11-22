@@ -1,23 +1,25 @@
 import { beforeEach, expect, it, vi } from "vitest";
-const seam = vi.hoisted(() => ({ selected: vi.fn(), register: vi.fn(), revision: "revision-1", live: undefined as any, publish: vi.fn(), revoke: vi.fn(), reauthorize: vi.fn(), reconcile: vi.fn(), ceilingBlocked: false }));
+const seam = vi.hoisted(() => ({ selected: vi.fn(), register: vi.fn(), revision: "revision-1", live: undefined as any, publish: vi.fn(), setPiHooks: vi.fn(), predecessor: vi.fn(), readWorkspaceHooks: vi.fn(), writeWorkspaceHooks: vi.fn(), recordAdoption: vi.fn(), revoke: vi.fn(), reauthorize: vi.fn(), reconcile: vi.fn(), ceilingBlocked: false }));
 vi.mock("../../../dist/tunnel/multi-session-policy.js", () => ({ readSelectedMultiSessionPolicy: () => { if (seam.live) throw Error("live descriptor"); return seam.selected(); },
   createMultiSessionRegistration: () => ({ revision: () => seam.revision, register: seam.register }) }));
 vi.mock("node:fs", () => ({ readFileSync: () => "selected-profile" }));
 vi.mock("../../../pi-extension/live-session-profile.js", () => ({ readLiveSelectedSessionPolicy: () => { if (seam.ceilingBlocked) throw Error("ceiling"); return seam.live; } }));
-vi.mock("../../../dist/tunnel/live-session-policy.js", () => ({ readLivePolicy: () => seam.live, createLivePolicyRegistration: () => ({ register: seam.publish, revoke: seam.revoke, reauthorize: seam.reauthorize, reconcile: seam.reconcile }) }));
+vi.mock("../../../dist/tunnel/live-session-policy.js", () => ({ readLivePolicy: () => seam.live, createLivePolicyRegistration: () => ({ register: seam.publish, setPiHooks: seam.setPiHooks, revoke: seam.revoke, reauthorize: seam.reauthorize, reconcile: seam.reconcile }) }));
+vi.mock("../../../dist/tunnel/session-switch-observation.js", () => ({ findSessionSwitchPredecessor: (...args: unknown[]) => seam.predecessor(...args) }));
+vi.mock("../../../pi-extension/workspace-hook-profile.js", () => ({ readWorkspaceHookProfileSnapshot: (...args: unknown[]) => seam.readWorkspaceHooks(...args), writeWorkspaceHookProfile: (...args: unknown[]) => seam.writeWorkspaceHooks(...args), recordWorkspaceHookAdoption: (...args: unknown[]) => seam.recordAdoption(...args) }));
 vi.mock("../../../pi-extension/multi-session-runtime.js", () => ({ runtimeEnvironment: () => "fixed" }));
 vi.mock("../../../dist/tunnel/setup.js", () => ({ readGeneratedPiAllowlist: vi.fn() }));
 import { prepareSessionOnboarding } from "../../../pi-extension/session-onboarding.js";
 import { runSessionConfiguration } from "../../../pi-extension/multi-session-commands.js";
 function fixture() {
   const confirm = vi.fn(async (_title: string, _message: string) => true);
-  const ctx = { mode: "tui", hasUI: true, sessionManager: { getSessionId: () => "native-B" }, ui: { confirm, notify: vi.fn<(message: string, level: string) => void>() } };
+  const ctx = { mode: "tui", hasUI: true, cwd: "/isolated", sessionManager: { getSessionId: () => "native-B" }, ui: { confirm, notify: vi.fn<(message: string, level: string) => void>() } };
   const manager = { refresh: vi.fn(async () => ({ state: "STOPPED", running: false })),
     withProfileConfigurationLock: vi.fn(async (operation: () => unknown) => operation()) };
   return { ctx, confirm, options: { profilePath: "/isolated/profile", signal: new AbortController().signal, manager } };
 }
 beforeEach(() => {
-  vi.clearAllMocks(); seam.ceilingBlocked = false; seam.reconcile.mockReturnValue([]); seam.live = undefined; seam.revision = "revision-1";
+  vi.clearAllMocks(); seam.ceilingBlocked = false; seam.reconcile.mockReturnValue([]); seam.predecessor.mockReturnValue(undefined); seam.readWorkspaceHooks.mockReturnValue(undefined); seam.writeWorkspaceHooks.mockReturnValue({ revision: 1, digest: "c".repeat(64) }); seam.live = undefined; seam.revision = "revision-1";
   seam.selected.mockImplementation(() => ({ revision: seam.revision, config: {}, manifest: {
     mcp: { payloadRead: true, ack: true }, store: { directory: "/isolated", file: "store.sqlite" }, exchange: { namespace: "test", idempotencyKey: "test" },
     chatgptEndpoint: { endpointId: "chatgpt/main" }, registrations: [] } }));
@@ -31,6 +33,39 @@ it("first explicit live registration confirms read, ACK, labels and inherent fir
   expect(seam.publish).toHaveBeenCalledWith(expect.objectContaining({ registration: expect.objectContaining({ payloadRead: true, ack: true }) }));
   expect(f.confirm.mock.calls[0]?.[1]).toContain("first join");
   expect(f.confirm.mock.calls[0]?.[1]).toContain("Hooks: none");
+});
+
+it("direct /new successor migrates only workspace-scoped predecessor Hooks into its workspace profile", async () => {
+  const hooks = [
+    { id: "desktop", event: "ce.message.committed.v1", recipient: { adapter: "chatgpt", endpointId: "chatgpt/main" }, command: "/python3", args: [], timeoutMs: 1000, enabled: true, scope: "workspace" },
+    { id: "quiet-notice", event: "ce.message.committed.v1", recipient: { adapter: "chatgpt", endpointId: "chatgpt/main" }, command: "/usr/bin/true", args: [], timeoutMs: 1000, enabled: false, scope: "workspace" },
+    { id: "one-session", event: "ce.message.committed.v1", recipient: { adapter: "chatgpt", endpointId: "chatgpt/main" }, command: "/usr/bin/false", args: [], timeoutMs: 1000, enabled: true, scope: "session" },
+  ];
+  const workspaceHooks = hooks.filter(rule => rule.scope === "workspace");
+  const predecessor = { runtimeSessionId: "native-A", endpointId: "pi/A", epoch: 3, status: "active", hooks };
+  seam.live = { ref: { kind: "ce-live-session-v2" }, digest: "before", manifest: { ...seam.selected().manifest, mcpHookConsent: { generation: 1, bindingGeneration: null, targets: [] }, registrations: [predecessor] } };
+  seam.predecessor.mockReturnValue(predecessor);
+  seam.publish.mockImplementation(() => { seam.live = { ...seam.live, digest: "registered", manifest: { ...seam.live.manifest, registrations: [...seam.live.manifest.registrations, { runtimeSessionId: "native-B", endpointId: "pi/session-new", epoch: 1, status: "active", hooks: [] }] } }; return { durability: "synced", snapshot: seam.live }; });
+  seam.setPiHooks.mockImplementation(() => { seam.live = { ...seam.live, digest: "hooked" }; return { durability: "synced", snapshot: seam.live }; });
+  const f = fixture();
+  expect(await prepareSessionOnboarding(f.ctx, f.options as never)).toBe("registered");
+  expect(f.confirm.mock.calls[0]?.[1]).toContain("2 workspace Hooks");
+  expect(seam.setPiHooks).toHaveBeenCalledWith(expect.objectContaining({ expectedDigest: "registered", runtimeSessionId: "native-B", endpointId: expect.stringMatching(/^pi\/session-/), epoch: 1, hooks: workspaceHooks, operationId: expect.any(String) }));
+  expect(seam.writeWorkspaceHooks).toHaveBeenCalledWith(seam.live.ref, "/isolated", workspaceHooks, expect.objectContaining({ operationId: expect.any(String), policyDigest: "hooked" }));
+  expect(seam.recordAdoption).toHaveBeenCalledOnce();
+});
+
+it("saved workspace profile takes precedence without consulting historical Sessions", async () => {
+  const hooks = [{ id: "workspace", event: "ce.message.committed.v1", recipient: { adapter: "chatgpt", endpointId: "chatgpt/main" }, command: "/usr/bin/true", args: [], timeoutMs: 1000, enabled: false, scope: "workspace" as const }];
+  seam.readWorkspaceHooks.mockReturnValue({ revision: 2, digest: "d".repeat(64), hooks });
+  seam.live = { ref: { kind: "ce-live-session-v2" }, digest: "before", manifest: { ...seam.selected().manifest, mcpHookConsent: { generation: 1, bindingGeneration: null, targets: [] }, registrations: [] } };
+  seam.publish.mockImplementation(() => { seam.live = { ...seam.live, digest: "registered" }; return { durability: "synced", snapshot: seam.live }; });
+  seam.setPiHooks.mockImplementation(() => { seam.live = { ...seam.live, digest: "hooked" }; return { durability: "synced", snapshot: seam.live }; });
+  const f = fixture();
+  expect(await prepareSessionOnboarding(f.ctx, f.options as never)).toBe("registered");
+  expect(seam.predecessor).not.toHaveBeenCalled();
+  expect(seam.setPiHooks).toHaveBeenCalledWith(expect.objectContaining({ hooks }));
+  expect(seam.writeWorkspaceHooks).not.toHaveBeenCalled();
 });
 it("legacy existing registration retains its original grants without another consent", async () => {
   seam.selected.mockReturnValue({ manifest: { registrations: [{ runtimeSessionId: "native-B", status: "active", payloadRead: false, ack: false }] } });
@@ -65,7 +100,7 @@ it("live grant upgrade preserves Endpoint and omits Hooks, while presence declin
   seam.publish.mockImplementation(() => { seam.live = { ...seam.live, digest: "after" }; return { durability: "synced", snapshot: seam.live }; });
   const f = fixture(); f.confirm.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
   expect(await prepareSessionOnboarding(f.ctx, f.options as never)).toBe("registered");
-  expect(seam.publish).toHaveBeenCalledWith({ expectedDigest: "before", registration: { endpointId: "pi/stable", runtimeSessionId: "native-B", payloadRead: true, ack: true, presenceDisclosure: false } });
+  expect(seam.publish).toHaveBeenCalledWith({ expectedDigest: "before", operationId: expect.any(String), registration: { endpointId: "pi/stable", runtimeSessionId: "native-B", payloadRead: true, ack: true, presenceDisclosure: false } });
   expect(seam.live.manifest.registrations[0].hooks).toBe(hooks);
   expect(f.options.manager.refresh).not.toHaveBeenCalled(); expect(f.options.manager.withProfileConfigurationLock).not.toHaveBeenCalled();
 });

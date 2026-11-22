@@ -23,7 +23,7 @@ function fixture() {
   api.upgrade({ expectedDigest: readLivePolicy(v1).digest, actorRuntimeSessionId: "native-A", profileRevision: "a".repeat(64), bindingGeneration: "b".repeat(64) });
   const text = serializeTunnelProfile(buildTunnelProfile({ tunnelId: manifest.identity.tunnelId, keyFile, healthUrlFile: join(dir, "health.url"), mcpCommand: buildTunnelMcpCommand({ nodePath: "/abs/node", scriptPath: "/abs/mcp-stdio.js", bindingPath: pair.bindingPath }) }));
   fs.writeFileSync(profilePath, text, { mode: 0o600 });
-  return { dir, ref, api, profilePath, text, load: () => readLiveSelectedSessionPolicy(profilePath, text)!, hooks: parseHookRules([{ id: "outgoing", event: "ce.message.committed.v1", recipient: manifest.chatgptEndpoint, command: "/usr/bin/true", args: [], timeoutMs: 1000, enabled: true }]) };
+  return { dir, ref, api, profilePath, text, load: () => readLiveSelectedSessionPolicy(profilePath, text)!, hooks: parseHookRules([{ id: "outgoing", event: "ce.message.committed.v1", recipient: manifest.chatgptEndpoint, command: "/usr/bin/true", args: [], timeoutMs: 1000, enabled: true, scope: "session" }]) };
 }
 it("selects a verified v2 launch and preserves real policy reads and same-Owner reload continuity", async () => {
   const f = fixture(); const loaded = f.load(); expect(loaded?.ref.kind).toBe("ce-live-session-v2");

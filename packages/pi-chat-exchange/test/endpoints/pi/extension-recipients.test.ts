@@ -24,10 +24,11 @@ const fake = vi.hoisted(() => {
     allowlist: {} as Record<string, unknown>,
   };
 });
-vi.mock("node:fs", () => ({
-  existsSync: () => true,
-  readFileSync: () => JSON.stringify(fake.allowlist),
-}));
+vi.mock("node:fs", async original => {
+  const actual = await original<typeof import("node:fs")>();
+  const { operatorAllowlistFs } = await import("../../support/operator-allowlist-fs.js");
+  return operatorAllowlistFs(actual, () => JSON.stringify(fake.allowlist));
+});
 vi.mock("../../../dist/endpoints/pi/session-host.js", () => ({
   CeHostRefusal: fake.Refusal,
   CeSessionHost: class {

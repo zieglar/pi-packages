@@ -128,6 +128,31 @@ export function replaceTunnelMcpNodePath(command: string, nodePath: string): str
   return next;
 }
 
+/** Change only argv's MCP script token. Node, binding path, and the optional
+ * --channel main token remain byte-identical. */
+export function replaceTunnelMcpScriptPath(command: string, scriptPath: string): string {
+  const existing = parseTunnelMcpCommand(command);
+  const rebuilt = buildTunnelMcpCommand({ nodePath: existing.nodePath, scriptPath, bindingPath: existing.bindingPath });
+  const tokens = command.match(/'[^']*'|[^ ']+/g)!;
+  tokens[1] = rebuilt.match(/'[^']*'|[^ ']+/g)![1]!;
+  const next = tokens.join(" ");
+  parseTunnelMcpCommand(next);
+  return next;
+}
+
+export type TunnelMcpRuntimeSourceAlignment = "MATCH" | "AUTO_ALIGNABLE" | "MISMATCH";
+const MANAGED_PAIRING_SCRIPT = /^(.*\/ce-chat-exchange\/)pairing-[0-9a-f]+\/node_modules\/@zieglar\/pi-chat-exchange\/dist\/bin\/mcp-stdio\.js$/;
+
+/** Automatic alignment is limited to two generations of the same private CE
+ * installation family. Unrelated and development paths require operator review. */
+export function classifyTunnelMcpRuntimeSource(command: string, expectedScriptPath: string): TunnelMcpRuntimeSourceAlignment {
+  const actual = parseTunnelMcpCommand(command).scriptPath;
+  if (actual === expectedScriptPath) return "MATCH";
+  const from = MANAGED_PAIRING_SCRIPT.exec(actual);
+  const to = MANAGED_PAIRING_SCRIPT.exec(expectedScriptPath);
+  return from !== null && to !== null && from[1] === to[1] ? "AUTO_ALIGNABLE" : "MISMATCH";
+}
+
 /** Pure validation, shared by the wizard adapter and the persistence layer. */
 export function validateTunnelIdentity(tunnelId: string, organizationId?: string): void {
   if (typeof tunnelId !== "string" || !TUNNEL_ID_PATTERN.test(tunnelId)) throw new TunnelConfigError("control_plane.tunnel_id");
@@ -384,12 +409,10 @@ export function needsTunnelProfileMigration(text: string): boolean {
   return ADMIN_UI_ALLOW_REMOTE_LINE.test(text) || ADMIN_UI_LOG_BUFFER_LINE.test(text);
 }
 
-/** Rewrite a saved profile in place: drop the two rejected admin_ui keys and,
- *  when a node path is supplied, repoint the mcp command's node executable
- *  while preserving the script path, binding path, and --channel main token
- *  byte-for-byte. Never touches tunnel_id, organization_id, api_key, or any
- *  other line. */
-export function migrateTunnelProfileText(text: string, opts: { readonly nodePath?: string } = {}): TunnelProfileMigration {
+/** Rewrite a saved profile in place: drop the two rejected admin_ui keys and
+ * repoint only explicitly supplied MCP runtime tokens. Binding, channel,
+ * tunnel/org identity and credential reference remain unchanged. */
+export function migrateTunnelProfileText(text: string, opts: { readonly nodePath?: string; readonly scriptPath?: string } = {}): TunnelProfileMigration {
   let next = text;
   let changed = false;
   if (ADMIN_UI_ALLOW_REMOTE_LINE.test(next)) { next = next.replace(ADMIN_UI_ALLOW_REMOTE_LINE, ""); changed = true; }
@@ -398,6 +421,16 @@ export function migrateTunnelProfileText(text: string, opts: { readonly nodePath
     const match = MCP_COMMAND_LINE.exec(next);
     if (match !== null) {
       const rebuilt = replaceTunnelMcpNodePath(match[1]!, opts.nodePath);
+      if (rebuilt !== match[1]) {
+        next = next.replace(MCP_COMMAND_LINE, () => `      command: "${rebuilt}"`);
+        changed = true;
+      }
+    }
+  }
+  if (opts.scriptPath !== undefined) {
+    const match = MCP_COMMAND_LINE.exec(next);
+    if (match !== null) {
+      const rebuilt = replaceTunnelMcpScriptPath(match[1]!, opts.scriptPath);
       if (rebuilt !== match[1]) {
         next = next.replace(MCP_COMMAND_LINE, () => `      command: "${rebuilt}"`);
         changed = true;

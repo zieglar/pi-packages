@@ -12,7 +12,7 @@ function fixture(withHooks = false) {
   const manifest = { kind: "ce-multi-session-v1" as const, version: 1 as const,
     identity: { tunnelId: "tunnel_abcdefgh123456", organizationId: null }, store: { directory: root, file: "ce.sqlite" },
     exchange: { namespace: "ce", idempotencyKey: "exchange" }, chatgptEndpoint: { adapter: "chatgpt" as const, endpointId: "chatgpt/main" },
-    mcp: { payloadRead: true, ack: true }, registrations: [{ endpointId: "pi/A", runtimeSessionId: "A", epoch: 1, status: "active" as const, payloadRead: true, ack: true, ...(withHooks ? { hooks: [{ id: "retained", event: "ce.message.committed.v1" as const, recipient: { adapter: "chatgpt", endpointId: "chatgpt/main" }, command: "/usr/bin/true", args: [], timeoutMs: 1000, enabled: false }] } : {}) }] };
+    mcp: { payloadRead: true, ack: true }, registrations: [{ endpointId: "pi/A", runtimeSessionId: "A", epoch: 1, status: "active" as const, payloadRead: true, ack: true, ...(withHooks ? { hooks: [{ id: "retained", event: "ce.message.committed.v1" as const, recipient: { adapter: "chatgpt", endpointId: "chatgpt/main" }, command: "/usr/bin/true", args: [], timeoutMs: 1000, enabled: false, scope: "session" as const }] } : {}) }] };
   const ref = initializeLivePolicy({ root, manifest }); return { root, ref, api: createLivePolicyRegistration({ ref }) };
 }
 it("refuses missing committed locator rather than guessing recovery", () => {

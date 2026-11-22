@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { spawn, execFileSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -21,7 +21,8 @@ async function waitFor(predicate, ms) {
 export async function exerciseClient({ binary, root }) {
   const { buildTunnelProfile, serializeTunnelProfile, childEnvironment } = await import(pathToFileURL(join(root, 'dist/tunnel/profile.js')));
   const { parseHealthProbe } = await import(pathToFileURL(join(root, 'dist/tunnel/health.js')));
-  const work = mkdtempSync(join(tmpdir(), 'ce-tunnel-ci-'));
+  // macOS tmpdir() may use /var, a symlink; CE requires canonical Store ancestry.
+  const work = mkdtempSync(join(realpathSync(tmpdir()), 'ce-tunnel-ci-'));
   let cleanup = true;
   try {
     for (const [name, mode, id] of [

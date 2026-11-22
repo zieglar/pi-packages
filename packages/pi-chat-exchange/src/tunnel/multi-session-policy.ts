@@ -3,7 +3,7 @@
  * Runtime composition MUST apply these deny-only intersections before every operation.
  */
 import fs from "node:fs";
-import { parseHookRules, type CeHookRule } from "../hooks/config.js";
+import { isScopedHookRule, parseHookRules, parseStoredHookRules, type CeHookRule } from "../hooks/config.js";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join, normalize } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -69,6 +69,15 @@ function inputRegistration(raw: unknown): RegistrationInput {
   return Object.freeze({ endpointId: label(r.endpointId), runtimeSessionId: label(r.runtimeSessionId), payloadRead: bool(r.payloadRead), ack: bool(r.ack),
     ...(hooks === undefined ? {} : { hooks }) });
 }
+function storedRegistration(raw: unknown): RegistrationInput {
+  const r = object(raw, ["endpointId", "runtimeSessionId", "payloadRead", "ack"], ["hooks"]);
+  let hooks: readonly CeHookRule[] | undefined;
+  if (r.hooks !== undefined) {
+    try { hooks = Object.freeze(parseStoredHookRules(r.hooks).filter(isScopedHookRule)); } catch { throw invalid(); }
+  }
+  return Object.freeze({ endpointId: label(r.endpointId), runtimeSessionId: label(r.runtimeSessionId), payloadRead: bool(r.payloadRead), ack: bool(r.ack),
+    ...(hooks === undefined ? {} : { hooks }) });
+}
 /** Closed schema, including tombstones. Runtime IDs and stable endpoints are globally unique. */
 export function parseMultiSessionManifest(raw: unknown): MultiSessionManifest {
   const r = object(raw, ["kind", "version", "identity", "store", "exchange", "chatgptEndpoint", "mcp", "registrations"]);
@@ -88,7 +97,7 @@ export function parseMultiSessionManifest(raw: unknown): MultiSessionManifest {
   const endpoints = new Set<string>([endpointId]); const sessions = new Set<string>();
   const registrations = r.registrations.map((value: unknown) => {
     const entry = object(value, ["endpointId", "runtimeSessionId", "epoch", "status", "payloadRead", "ack"], ["hooks"]);
-    const registration = inputRegistration({ endpointId: entry.endpointId, runtimeSessionId: entry.runtimeSessionId, payloadRead: entry.payloadRead, ack: entry.ack, ...(entry.hooks === undefined ? {} : { hooks: entry.hooks }) });
+    const registration = storedRegistration({ endpointId: entry.endpointId, runtimeSessionId: entry.runtimeSessionId, payloadRead: entry.payloadRead, ack: entry.ack, ...(entry.hooks === undefined ? {} : { hooks: entry.hooks }) });
     if (registration.hooks?.some((rule) => rule.recipient.adapter !== "chatgpt" || rule.recipient.endpointId !== endpointId)) throw invalid();
     if (typeof entry.epoch !== "number" || !Number.isSafeInteger(entry.epoch) || entry.epoch < 1 ||
         (entry.status !== "active" && entry.status !== "revoked") || endpoints.has(registration.endpointId) || sessions.has(registration.runtimeSessionId)) throw invalid();

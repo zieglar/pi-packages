@@ -10,10 +10,11 @@ const fake = vi.hoisted(() => {
     allowlist: {} as Record<string, unknown>,
   };
 });
-vi.mock("node:fs", () => ({
-  existsSync: () => true,
-  readFileSync: () => { fake.reads += 1; return JSON.stringify(fake.allowlist); },
-}));
+vi.mock("node:fs", async original => {
+  const actual = await original<typeof import("node:fs")>();
+  const { operatorAllowlistFs } = await import("../../support/operator-allowlist-fs.js");
+  return operatorAllowlistFs(actual, () => { fake.reads += 1; return JSON.stringify(fake.allowlist); });
+});
 vi.mock("../../../dist/endpoints/pi/session-host.js", () => ({
   CeHostRefusal: fake.Refusal,
   CeSessionHost: class {
@@ -34,8 +35,8 @@ interface Context {
 
 function rules() {
   return [
-    { id: "pi-notify", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: "pi/main" }, command: "/opt/node/bin/node", args: ["/opt/hooks/pi.mjs", "--fixed"], timeoutMs: 5000 },
-    { id: "disabled-rule", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "chatgpt", endpointId: "chatgpt/main" }, command: "/opt/node/bin/node", args: [], enabled: false },
+    { id: "pi-notify", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "pi", endpointId: "pi/main" }, command: "/opt/node/bin/node", args: ["/opt/hooks/pi.mjs", "--fixed"], timeoutMs: 5000, scope: "session" },
+    { id: "disabled-rule", event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter: "chatgpt", endpointId: "chatgpt/main" }, command: "/opt/node/bin/node", args: [], enabled: false, scope: "session" },
   ];
 }
 

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { snapshotFixtureAcl } from "../support/snapshot-fixture-acl.js";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import assert from "node:assert/strict";
@@ -16,6 +17,7 @@ import { callEndpointDiscovery } from "../../src/control/mcp/endpoint-discovery.
 afterEach(() => {vi.restoreAllMocks();cleanupFixtures();});
 function setup() {
   const f = fixture("endpoint-runtime-");
+  snapshotFixtureAcl(f.directory);
   const root = join(f.directory, "policy");fs.mkdirSync(root, {mode: 0o700});
   const manifest = {kind: "ce-multi-session-v1" as const, version: 1 as const, identity: {tunnelId: "tunnel_abcdefgh123456", organizationId: null},
     store: {directory: f.directory, file: f.filename}, exchange: {namespace: "explicit", idempotencyKey: "test"},

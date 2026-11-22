@@ -1,0 +1,137 @@
+{
+  "schemaVersion": 1,
+  "ce": {
+    "version": "0.4.0",
+    "baselineCommit": "cbaf6168d4ad5f4c2409bc2181369f84d77432cb",
+    "runtimeSha256": "a8a36b992d7ca6dc335344f0fd4492db29b7cb37268a03502cf9d0b908ec597e",
+    "worktree": "clean"
+  },
+  "client": {
+    "version": "0.0.21",
+    "sourceCommit": "714f2d67844b660af25754f1d19b0360b346b13b",
+    "publishedAt": "2026-11-14T18:25:22Z",
+    "url": "https://github.com/openai/tunnel-client/releases/tag/v0.0.21"
+  },
+  "testedAt": "2026-11-22T14:46:31.442239+00:00",
+  "environment": {
+    "os": "linux",
+    "arch": "x64",
+    "node": "24.21.0",
+    "pi": "not-tested",
+    "native": "node-sqlite"
+  },
+  "offline": {
+    "status": "VERIFIED",
+    "kind": "automated-offline",
+    "checks": {
+      "profile": true,
+      "health": true,
+      "normalStop": true,
+      "childFailureExit": true,
+      "failureStop": true,
+      "cleanup": true,
+      "namespacedSyntheticLocal": true
+    },
+    "ciVerified": true,
+    "testedAt": "2026-11-22T13:58:01.620Z",
+    "environment": { "os": "linux", "arch": "x64", "node": "24.21.0" }
+  },
+  "lifecycle": {
+    "status": "VERIFIED",
+    "kind": "real-client-local",
+    "start": true,
+    "health": true,
+    "normalStop": true,
+    "childFailureExit": true,
+    "failureStop": true,
+    "cleanup": true,
+    "namespacedSyntheticLocal": true,
+    "originalTestedAt": "2026-11-22T10:14:42.508Z",
+    "originalEnvironment": { "os": "darwin", "arch": "arm64", "node": "24.21.0" },
+    "scope": "Existing real-client local lifecycle evidence retained; matching-source Linux x64 Hosted offline checks and Docker QA normal stop corroborate it. No lifecycle suite was repeated."
+  },
+  "cloud": {
+    "status": "VERIFIED",
+    "kind": "manual-cloud",
+    "resourceKind": "independent-qa-tunnel-docker-private-store",
+    "durableMatch": true,
+    "normalOwnershipRelease": true,
+    "hardStopCleanup": true,
+    "receptionOnly": true,
+    "verifiedAt": "2026-11-22T14:41:46.955Z",
+    "cleanupVerifiedAt": "2026-11-22T14:46:31.442239+00:00",
+    "scope": "ChatGPT's independent QA plugin called ce_help (softwareVersion 0.4.0, protocolVersion 2), ping, request/send replay, reply payload read, ACK and an explicit non-root associated confirmation over the real Cloud Tunnel. The exact-runtime Docker host cross-checked three durable messages, three receipts, both direct-parent links and all six related audits. No payload bodies or credentials are retained in repository evidence.",
+    "cleanupMeaning": "Bounded normal SIGTERM cleanup completed with container PID 0, exit code 0 and zero QA ownership rows. hardStopCleanup is the existing schema field, not a forced-kill or destructive recovery claim. The QA volume/configuration and ChatGPT plugin remain reusable; production was not operated on.",
+    "requestCorrelation": "Counterpart observations were reported through CE delegation audit 828 and independently matched to the existing QA Store and service PROTOCOL_MATCHED state. No test messages were resent during evidence collection.",
+    "exchangeId": "ho_01M81TRXEPBD94BQC1MWWCQ2WZ",
+    "forward": {
+      "direction": "Pi-to-ChatGPT",
+      "messageId": "msg_01M81V8ZCPQDR0D0E996HJGTXJ",
+      "receiptId": "rcpt_01M81V9C4NCVSNG2W92JAAYWCV",
+      "createdAudit": 7,
+      "receiptAudit": 8,
+      "payloadDigest": "fbc014841400193c53bc03f7b3e98d5549cb2f9cc5a400de3832b7c69f4b244b",
+      "payloadLength": 28
+    },
+    "reverse": {
+      "direction": "ChatGPT-to-Pi",
+      "messageId": "msg_01M81V8YX35TCMYQNADX1QJ3HQ",
+      "receiptId": "rcpt_01M81V8ZC39RKT6JZW1W7KQVQJ",
+      "createdAudit": 5,
+      "receiptAudit": 6,
+      "payloadDigest": "65e5c7f87c971b3e8626ab0bf598e03a8efbcfe87afe99dfb0a4a30b0e355932",
+      "payloadLength": 30,
+      "sendReplaySameMessage": true
+    },
+    "confirmation": {
+      "direction": "ChatGPT-to-Pi",
+      "messageId": "msg_01M81V9FJT5N7G8ABM6XSDNN30",
+      "receiptId": "rcpt_01M81V9FY4N6SJEY83SRBS265H",
+      "createdAudit": 9,
+      "receiptAudit": 10,
+      "payloadDigest": "c0536cb6ad01194d22191cbe9586e4f7ae23f970f0f3d6a827cabc28863ecc26",
+      "payloadLength": 30
+    },
+    "association": {
+      "requestMessageId": "msg_01M81V8YX35TCMYQNADX1QJ3HQ",
+      "rootSelfAssociationMatchesContract": true,
+      "replyMessageId": "msg_01M81V8ZCPQDR0D0E996HJGTXJ",
+      "confirmationMessageId": "msg_01M81V9FJT5N7G8ABM6XSDNN30",
+      "replyToRequestMatches": true,
+      "confirmationToReplyMatches": true,
+      "chatgptReplyToSend": "VERIFIED"
+    },
+    "durableCounts": { "messages": 3, "receptionReceipts": 3, "messageCreatedAudits": 3, "receiptAudits": 3 }
+  },
+  "hosted": {
+    "status": "VERIFIED",
+    "workflow": "Tunnel Client latest stable",
+    "event": "push",
+    "branch": "verify/ce-040-hosted-01",
+    "sha": "cbaf6168d4ad5f4c2409bc2181369f84d77432cb",
+    "runId": "45029450106",
+    "attempt": 1,
+    "conclusion": "success",
+    "tests": { "passed": 3884, "failed": 0, "skipped": 29, "total": 3913 },
+    "artifactId": "14756964925",
+    "artifactName": "tunnel-latest-result",
+    "resultSha256": "983ffc942cc813214951adc83d1f8313da9e7d6ba9805509b86a11edcccbf784",
+    "releaseRunIdentity": "Historical qualification run only; the eventual release workflow must produce its own fresh result bound to its dispatched SHA/run/attempt."
+  },
+  "installation": {
+    "archive": "tunnel-client-v0.0.21-linux-amd64.zip",
+    "source": "https://github.com/openai/tunnel-client/releases/tag/v0.0.21",
+    "sha256": "9e91a539e3ae1c436d499f216a1d7514b3c86cc7779032f41b2a05821d74b03a",
+    "binarySha256": "4919b37dc9da3dc6e39a78e271a6b6984c11b6f16b481d603b976f538a9ed87d",
+    "checksumsSha256": "7c1ea37ab3f0247cb31e6f68b3e06be1fd766a067ace4467143b87e92a592dae",
+    "provenance": "Official release workflow, tag, source/signer commit and hosted runner verified",
+    "npmTarballSha256": "dc78b059928bb95512b9de522628583436765a3d28ddb06e2574f1bbee444764"
+  },
+  "limitations": [
+    "Qualification combines retained macOS arm64 local lifecycle evidence, Linux x64 Hosted offline evidence and real ChatGPT-to-Docker-QA Cloud communication; each scope is recorded separately.",
+    "The Docker host is OrbStack on arm64, with the supported linux/amd64 CE runtime. Native linux/arm64 was rejected by the fixed CE durable-storage boundary and is not qualified.",
+    "Windows, production Native driver qualification and permanent production Pi adoption are not established.",
+    "The earlier production maintenance interval received no QA requests and remains NOT_VERIFIED; it is not the source of this independent QA Cloud qualification.",
+    "A matching qualification runtime does not authorize publication or substitute for the eventual release workflow's fresh offline run identity."
+  ]
+}

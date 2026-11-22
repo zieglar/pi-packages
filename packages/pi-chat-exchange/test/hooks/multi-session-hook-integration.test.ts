@@ -36,7 +36,7 @@ if (process.argv[3]) {
   const outputPi = join(dir, "pi.jsonl");
   const outputChatgpt = join(dir, "chatgpt.jsonl");
   const release = join(dir, "release");
-  const rule = (id: string, adapter: string, endpointId: string, args: string[]) => ({ id, event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter, endpointId }, command: process.execPath, args });
+  const rule = (id: string, adapter: string, endpointId: string, args: string[]) => ({ id, event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter, endpointId }, command: process.execPath, args, scope: "session" });
   const piRules = parseHookRules([rule("pi-notify", "chatgpt", CHATGPT, [script, outputChatgpt])]);
   const mcpRules = parseHookRules([
     rule("mcp-notify", "pi", PI, [script, outputPi, release]),

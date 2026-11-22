@@ -1,4 +1,6 @@
 import { tmpdir } from "node:os";
+import * as background from "../../dist/tunnel/background-manager.js";
+import * as childProcess from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createTuiHarness } from "@narumitw/pi-tui-kit/testing";
@@ -15,6 +17,7 @@ vi.mock("../../dist/runtime/native-readiness.js", async original => ({
 const extensionUrl = new URL("../../pi-extension/index.ts", import.meta.url).href;
 const directories: string[] = [];
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true });
 });
@@ -30,6 +33,12 @@ async function fixture() {
   const commands = new Map<string, { handler(args: string, ctx: unknown): Promise<void> }>();
   const events = new Map<string, (event: { reason: string }, ctx: unknown) => Promise<void>>();
   const appendEntry = vi.fn();
+  const start = vi.fn();
+  const actualManager = background.createBackgroundTunnelManager;
+  const manager = vi.spyOn(background, "createBackgroundTunnelManager").mockImplementation(options => ({
+    ...actualManager(options), startDeferred: start,
+  }));
+  const spawn = vi.spyOn(childProcess, "spawn");
   const { default: factory } = await import(extensionUrl);
   factory({ on: (name: string, handler: never) => events.set(name, handler), registerTool: vi.fn(), appendEntry,
     registerCommand: (name: string, command: never) => commands.set(name, command) });
@@ -37,8 +46,8 @@ async function fixture() {
   const notify = vi.fn();
   const ctx = { mode: "tui", hasUI: true, cwd: "/synthetic",
     sessionManager: { getSessionId: () => "unbound", getSessionFile: () => undefined, getBranch: () => [] },
-    ui: { custom, notify, setStatus: vi.fn(), input: vi.fn() } };
-  return { command: commands.get("ce-tunnel")!, ceCommand: commands.get("ce")!, ctx, custom, notify, appendEntry, directory, events };
+    ui: { custom, notify, setStatus: vi.fn(), input: vi.fn(), confirm: vi.fn() } };
+  return { command: commands.get("ce-tunnel")!, ceCommand: commands.get("ce")!, ctx, custom, notify, appendEntry, directory, events, manager, start, spawn };
 }
 
 async function flushUi() { for (let i = 0; i < 50; i++) await Promise.resolve(); }
@@ -51,7 +60,7 @@ async function inputUi(h: ReturnType<typeof createTuiHarness>, value: string) {
 }
 
 describe("real tunnel manager extension routing", () => {
-  it("Manager Setup saves a real isolated profile, returns fresh STOPPED, and Start still refuses the gate", async () => {
+  it("Manager Setup saves a real isolated profile, returns fresh STOPPED, and Start gives service guidance", async () => {
     const f = await fixture();
     // Hosted toolcache ancestors need not satisfy executable admission.
     const node = join(realpathSync(f.directory), "node");
@@ -108,10 +117,13 @@ describe("real tunnel manager extension routing", () => {
         await activateUi(h);
       };
       await choose("Advanced");
-      await choose("Start Tunnel"); // Existing permission gate still owns startup.
+      await choose("Start Tunnel");
       await vi.waitFor(() => expect(h.render().join("\n")).toContain("Chat Exchange Tunnel"));
-      await vi.waitFor(() => expect(f.notify.mock.calls.some(([text]) => String(text).includes("CE_TUNNEL_INPUT_UNAVAILABLE"))).toBe(true));
-      expect(existsSync(join(f.directory, "background-state.json"))).toBe(false);
+      expect(f.notify).toHaveBeenCalledWith("ce-tunnel: real service start is managed by Homebrew/launchd; CE only observes connectivity. Use /ce status, then operate the configured system service if needed.", "info");
+      expect(existsSync(join(f.directory, "state", "background-state.json"))).toBe(false);
+      expect(f.start).not.toHaveBeenCalled();
+      expect(f.spawn).not.toHaveBeenCalled();
+      expect(f.ctx.ui.confirm).not.toHaveBeenCalled();
       expect(f.notify.mock.calls.some(([text]) => String(text).includes(privateValue))).toBe(false);
       expect(f.appendEntry).not.toHaveBeenCalled();
       expect(f.ctx.ui.input).not.toHaveBeenCalled();
@@ -283,18 +295,28 @@ describe("real tunnel manager extension routing", () => {
     expect(f.appendEntry).not.toHaveBeenCalled();
   });
 
-  it("direct start still enforces the exact background authorization gate", async () => {
+  it("direct real Start gives service guidance without authorization, persistence or process startup", async () => {
     const f = await fixture();
-    await f.command.handler("start", f.ctx);
-    // Direct start needs permission confirmation rather than a silent legacy spawn.
-    await vi.waitFor(() => expect(f.notify.mock.calls.some(([text]) => String(text).includes("CE_TUNNEL_INPUT_UNAVAILABLE"))).toBe(true));
+    await expect(f.command.handler("start", f.ctx)).resolves.toBeUndefined();
+    expect(f.notify).toHaveBeenCalledWith("ce-tunnel: real service start is managed by Homebrew/launchd; CE only observes connectivity. Use /ce status, then operate the configured system service if needed.", "info");
     expect(f.custom).not.toHaveBeenCalled();
+    expect(f.ctx.ui.input).not.toHaveBeenCalled();
+    expect(f.ctx.ui.confirm).not.toHaveBeenCalled();
+    expect(f.appendEntry).not.toHaveBeenCalled();
+    expect(f.start).not.toHaveBeenCalled();
+    expect(f.spawn).not.toHaveBeenCalled();
+    expect(readdirSync(f.directory)).toEqual([]);
   });
   it("TUI start with a malformed CE_TUNNEL_PROFILE refuses closed and never rejects the handler", async () => {
     const f = await fixture();
     vi.stubEnv("CE_TUNNEL_PROFILE", "relative.yaml");
     await expect(f.command.handler("start", f.ctx)).resolves.toBeUndefined();
-    expect(f.notify.mock.calls.some(([text, level]) => level === "warning" && String(text).includes("start refused CE_TUNNEL_PROFILE_INVALID"))).toBe(true);
-    expect(f.ctx.ui.setStatus.mock.calls.some(([key, text]) => key === "ce-tunnel" && String(text).includes("unavailable"))).toBe(true);
+    expect(f.notify).toHaveBeenCalledWith("ce-tunnel: start refused CE_TUNNEL_PROFILE_INVALID", "warning");
+    expect(f.ctx.ui.setStatus).toHaveBeenCalledWith("ce-tunnel", undefined);
+    expect(f.ctx.ui.setStatus).toHaveBeenCalledWith("ce-client", undefined);
+    expect(f.ctx.ui.setStatus).toHaveBeenCalledWith("ce", expect.any(String));
+    expect(f.manager).not.toHaveBeenCalled();
+    expect(f.spawn).not.toHaveBeenCalled();
+    expect(f.start).not.toHaveBeenCalled();
   });
 });

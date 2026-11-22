@@ -1,5 +1,5 @@
 /** Configuration-only onboarding. Transport and messaging authority stay with Connect. */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { readLivePolicy, createLivePolicyRegistration, type LiveSnapshot } from "../dist/tunnel/live-session-policy.js";
@@ -8,6 +8,8 @@ import { sanitizeTerminalText } from "@narumitw/pi-tui-kit";
 import { createMultiSessionRegistration, readSelectedMultiSessionPolicy } from "../dist/tunnel/multi-session-policy.js";
 import type { BackgroundTunnelManager } from "../dist/tunnel/background-manager.js";
 import { runtimeEnvironment } from "./multi-session-runtime.js";
+import { findSessionSwitchPredecessor } from "../dist/tunnel/session-switch-observation.js";
+import { readWorkspaceHookProfileSnapshot, recordWorkspaceHookAdoption, writeWorkspaceHookProfile } from "./workspace-hook-profile.js";
 
 export type SessionOnboardingReason = "legacy-override" | "multi-session-policy-required" | "registration-revoked" |
   "global-ceiling-disabled" | "endpoint-collision" | "input-unavailable" | "context-changed" | "transport-running" | "transport-unknown" | "durability-uncertain";
@@ -28,9 +30,17 @@ interface OnboardingContext {
   };
 }
 const safe = (text: string): string => sanitizeTerminalText(text).replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+export function generatedLiveEndpoint(runtimeSessionId: string, cwd?: string): string {
+  if (!runtimeSessionId || runtimeSessionId.length > 256 || /[\x00-\x1f\x7f]/.test(runtimeSessionId) || /cap_[0-9a-f]{16,}/i.test(runtimeSessionId)) {
+    throw new SessionOnboardingRefusal("context-changed", "A valid current native Pi Session is required.");
+  }
+  const project = typeof cwd === "string" ? basename(cwd).replace(/[^\p{L}\p{N}._-]+/gu, "-").slice(0, 40) : "";
+  const visibleProject = /cap_[0-9a-f]{16,}/i.test(project) ? "" : project;
+  return "pi/session-" + createHash("sha256").update(JSON.stringify(["ce-session-onboarding-v1", runtimeSessionId])).digest("hex").slice(0, 32) + (visibleProject ? `-${visibleProject}` : "");
+}
 export async function prepareSessionOnboarding(ctx: OnboardingContext, options: {
   readonly profilePath: string;
-  readonly manager: Pick<BackgroundTunnelManager, "refresh" | "withProfileConfigurationLock">;
+  readonly manager?: Pick<BackgroundTunnelManager, "refresh" | "withProfileConfigurationLock">;
   readonly signal: AbortSignal;
   readonly onProgress?: (text: string) => void;
 }): Promise<"ready" | "registered" | "cancelled"> {
@@ -48,6 +58,8 @@ export async function prepareSessionOnboarding(ctx: OnboardingContext, options: 
   }
   catch { throw new SessionOnboardingRefusal("multi-session-policy-required", "A verified multi-session policy is required. Configure or explicitly convert the selected profile before Connect."); }
   const runtimeSessionId = ctx.sessionManager.getSessionId();
+  const manager = options.manager;
+  if (manager === undefined) throw new SessionOnboardingRefusal("transport-unknown", "Legacy onboarding requires verified transport management evidence.");
   if (typeof runtimeSessionId !== "string" || !runtimeSessionId.length || runtimeSessionId.length > 256 || /[\x00-\x1f\x7f]/.test(runtimeSessionId) || /cap_[0-9a-f]{16,}/i.test(runtimeSessionId)) {
     throw new SessionOnboardingRefusal("context-changed", "A valid current native Pi Session is required. Resume that Session and Connect again.");
   }
@@ -62,7 +74,7 @@ export async function prepareSessionOnboarding(ctx: OnboardingContext, options: 
   const environment = runtimeEnvironment();
   const expectedRevision = selected.revision;
   const api = createMultiSessionRegistration({ profilePath: options.profilePath, env: process.env, manager: {
-    withProfileConfigurationLock: operation => options.manager.withProfileConfigurationLock(guard => {
+    withProfileConfigurationLock: operation => manager.withProfileConfigurationLock(guard => {
       current(); // Lock acquisition includes an awaited process inventory; fence before publication.
       return operation(guard);
     }),
@@ -73,7 +85,7 @@ export async function prepareSessionOnboarding(ctx: OnboardingContext, options: 
     }
   };
   options.onProgress?.("Measuring transport before session registration");
-  const status = await options.manager.refresh();
+  const status = await manager.refresh();
   if (options.signal.aborted) return "cancelled";
   current();
   if (status.state === "UNKNOWN" || status.state === "STOPPED" && status.running) {
@@ -82,7 +94,7 @@ export async function prepareSessionOnboarding(ctx: OnboardingContext, options: 
   if (status.state !== "STOPPED") throw new SessionOnboardingRefusal("transport-running", "This current Pi Session is absent from the loaded recipient policy of the running transport. Coordinate Stop then Connect to register and load its Endpoint.");
   // A never-started profile has STOPPED/none; the existing lock verifies process absence.
   options.onProgress?.("Verifying the Profile configuration lock");
-  try { await options.manager.withProfileConfigurationLock(() => current()); }
+  try { await manager.withProfileConfigurationLock(() => current()); }
   catch (error) {
     if (error instanceof SessionOnboardingRefusal) throw error;
     throw new SessionOnboardingRefusal("transport-unknown", "STOPPED process absence and ownership could not be verified. Resolve transport inspection before Connect.");
@@ -118,9 +130,10 @@ async function prepareLiveSession(ctx: OnboardingContext, options: Parameters<ty
   const old = selected.manifest.registrations.find(r => r.runtimeSessionId === runtimeSessionId);
   if (old?.status === "revoked") throw new SessionOnboardingRefusal("registration-revoked", "Connect cannot restore a revoked registration. Fresh operator confirmation is required.");
   if (old?.payloadRead && old.ack) return "ready";
-  const project = typeof ctx.cwd === "string" ? basename(ctx.cwd).replace(/[^\p{L}\p{N}._-]+/gu, "-").slice(0, 40) : "";
-  const visibleProject = /cap_[0-9a-f]{16,}/i.test(project) ? "" : project;
-  const endpointId = old?.endpointId ?? "pi/session-" + createHash("sha256").update(JSON.stringify(["ce-session-onboarding-v1", runtimeSessionId])).digest("hex").slice(0, 32) + (visibleProject ? `-${visibleProject}` : "");
+  const endpointId = old?.endpointId ?? generatedLiveEndpoint(runtimeSessionId, ctx.cwd);
+  const savedProfile = old === undefined && ctx.cwd !== undefined ? readWorkspaceHookProfileSnapshot(selected.ref, ctx.cwd) : undefined;
+  const predecessor = old === undefined && savedProfile === undefined ? findSessionSwitchPredecessor(selected, runtimeSessionId) : undefined;
+  const inheritedHooks = savedProfile?.hooks ?? predecessor?.hooks?.filter(rule => rule.scope === "workspace") ?? [];
   if (selected.manifest.chatgptEndpoint.endpointId === endpointId || selected.manifest.registrations.some(r => r.endpointId === endpointId && r !== old)) throw new SessionOnboardingRefusal("endpoint-collision", "Endpoint collision; nothing was overwritten.");
   if (ctx.mode !== "tui" || !ctx.hasUI || typeof ctx.ui.confirm !== "function") throw new SessionOnboardingRefusal("input-unavailable", "Open an interactive Pi TUI to confirm live messaging grants.");
   const api = createLivePolicyRegistration({ ref: selected.ref });
@@ -141,7 +154,7 @@ async function prepareLiveSession(ctx: OnboardingContext, options: Parameters<ty
     `Store: ${safe(selected.manifest.store.directory)}/${safe(selected.manifest.store.file)}\n` +
     `Exchange: ${safe(selected.manifest.exchange.namespace)} / ${safe(selected.manifest.exchange.idempotencyKey)}\nPeer: ${safe(selected.manifest.chatgptEndpoint.endpointId)}\n` +
     "Enable payload read and ACK (reception only) for this current Session? Its exact Endpoint label is visible to the configured peer. Real first send outcomes may reveal first join/addressability even when optional presence disclosure is withheld.\n" +
-    (old?.hooks?.length ? "Separately authorized Hooks are preserved unchanged; no Hook is enabled by this consent.\n" : "Hooks: none.\n") +
+    (old?.hooks?.length ? "Separately authorized Hooks are preserved unchanged; no Hook is enabled by this consent.\n" : inheritedHooks.length ? `${inheritedHooks.length} workspace Hooks will be preserved unchanged.\n` : "Hooks: none.\n") +
     "Shared ChatGPT inbox; no conversation isolation. Configuration only: explicit reload/Start or transport reuse follows. This is not delivery or task completion evidence.", { signal: options.signal, timeout: 120_000 });
   if (options.signal.aborted) return "cancelled";
   current(); if (accepted !== true) return "cancelled";
@@ -150,9 +163,24 @@ async function prepareLiveSession(ctx: OnboardingContext, options: Parameters<ty
   if (options.signal.aborted) return "cancelled";
   current();
   options.onProgress?.("Publishing the live session registration");
-  const result = api.register({ expectedDigest: selected.digest,
+  const registrationOperationId = randomUUID();
+  let result = api.register({ expectedDigest: selected.digest, operationId: registrationOperationId,
     registration: { endpointId, runtimeSessionId, payloadRead: true, ack: true, presenceDisclosure } });
   if (result.durability !== "synced") throw new SessionOnboardingRefusal("durability-uncertain", "Live registration publication is uncertain. Reconcile the operation explicitly; do not retry automatically.");
+  let adoptionOperationId = registrationOperationId;
+  if (old === undefined && inheritedHooks.length) {
+    adoptionOperationId = randomUUID();
+    result = api.setPiHooks({ expectedDigest: result.snapshot.digest, runtimeSessionId, endpointId, epoch: 1, hooks: inheritedHooks, operationId: adoptionOperationId });
+    if (result.durability !== "synced") throw new SessionOnboardingRefusal("durability-uncertain", "Workspace Hook continuity publication is uncertain. Reconcile it explicitly; do not retry automatically.");
+  }
+  let adoptedProfile = savedProfile;
+  if (old === undefined && savedProfile === undefined && predecessor !== undefined && ctx.cwd !== undefined) {
+    adoptedProfile = writeWorkspaceHookProfile(result.snapshot.ref, ctx.cwd, inheritedHooks, { operationId: adoptionOperationId, policyDigest: result.snapshot.digest });
+  }
+  if (old === undefined && adoptedProfile !== undefined && ctx.cwd !== undefined) {
+    recordWorkspaceHookAdoption(result.snapshot.ref, ctx.cwd, { runtimeSessionId, endpointId, epoch: 1, revision: adoptedProfile.revision,
+      profileDigest: adoptedProfile.digest, policyDigest: result.snapshot.digest, operationId: adoptionOperationId });
+  }
   if (options.signal.aborted || ctx.sessionManager.getSessionId() !== runtimeSessionId || runtimeEnvironment() !== environment || readFileSync(options.profilePath, "utf8") !== profileText || readLivePolicy(selected.ref).digest !== result.snapshot.digest) throw new SessionOnboardingRefusal("context-changed", "Context changed after publication. Grants remain configured; explicitly Connect again.");
   return "registered";
 }

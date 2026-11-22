@@ -174,8 +174,9 @@ import { assertPrivateUnixSocket } from "../runtime/private-unix-socket.js";
 import { resolveWrapperIdentityEvidence } from "../runtime/wrapper-identity.js";
 import { createBackgroundAuthorizationStore } from "./background-authorization.js";
 import { captureBackgroundAuthorizationScope, type BackgroundAuthorizationScope } from "./background-scope.js";
-import { createHealthCompletionRecorder, type HealthProbe, type HealthProbeInput } from "./health.js";
-import { checkKeyFileRequirements, childEnvironment } from "./profile.js";
+import { createHealthCompletionRecorder, parseHealthProbe, type HealthProbe, type HealthProbeInput } from "./health.js";
+import { checkKeyFileRequirements, childEnvironment, parseTunnelMcpCommand } from "./profile.js";
+import { inspectMcpRuntimeMarker, type McpRuntimeInspection } from "./mcp-runtime-marker.js";
 import {
   DEFAULT_TUNNEL_TIMING, initialTunnelState, nextTunnelState,
   type TunnelState, type TunnelStateName, type TunnelTiming,
@@ -222,6 +223,10 @@ export interface BackgroundManagerOptions {
   readonly profilePath?: string;
   readonly stateFilePath?: string;
   readonly clientPath?: string;
+  /** Controlled client discovery seam; production uses resolveTunnelClient. */
+  readonly resolveClient?: typeof resolveTunnelClient;
+  /** Controlled wrapper identity seam; production uses resolveWrapperIdentityEvidence. */
+  readonly resolveWrapper?: typeof resolveWrapperIdentityEvidence;
   /** Isolated-test storage injection only; never selected from environment/configuration. */
   readonly authorizationDirectory?: string;
   readonly timing?: TunnelTiming;
@@ -281,6 +286,15 @@ export interface BackgroundManagerStatus {
   readonly note: string | undefined;
 }
 
+export interface ConfiguredServiceObservation {
+  readonly tunnelProcess: "RUNNING" | "STOPPED" | "UNKNOWN";
+  readonly tunnelHealth: "HEALTHY" | "UNHEALTHY" | "UNKNOWN";
+  readonly tunnelPid?: number;
+  readonly mcpProcess: "RUNNING" | "STOPPED" | "UNKNOWN";
+  readonly mcpSource: string;
+  readonly mcpRuntime?: McpRuntimeInspection;
+}
+
 export interface ProfileConfigurationGuard {
   readonly profilePath: string;
   /** Must be checked immediately before the synchronous profile commit. */
@@ -310,6 +324,8 @@ export interface BackgroundTunnelManager {
   refresh(): Promise<BackgroundManagerStatus>;
   /** Fresh identity/remote-poll evidence only; never reconciles or writes ownership. */
   observeLiveTransport(): Promise<LiveTransportObservation>;
+  /** Read-only configured command/process/health evidence; never adopts it. */
+  observeConfiguredService(): Promise<ConfiguredServiceObservation>;
   status(): BackgroundManagerStatus;
   /** Session teardown: NEVER stops the daemon; releases only this host's view. */
   dispose(): Promise<void>;
@@ -753,11 +769,30 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
   // Constructor overrides remain domain-test dependencies. Operator settings
   // and discovered production executables always cross the trust boundary.
   const selection = options.authorizationDirectory === undefined ? createBackgroundAuthorizationStore().readSelection() : createBackgroundAuthorizationStore({ directory: options.authorizationDirectory }).readSelection();
+  const resolveClient = options.resolveClient ?? resolveTunnelClient;
+  const resolveWrapper = options.resolveWrapper ?? resolveWrapperIdentityEvidence;
   const clientPath = options.clientPath ?? (() => {
     try {
-      if (env.CE_TUNNEL_CLIENT_PATH !== undefined) return resolveTunnelClient({ env });
-      if (selection.kind === "valid") return resolveTunnelClient({ env: { CE_TUNNEL_CLIENT_PATH: selection.clientPath } });
-      return resolveTunnelClient({ env });
+      if (env.CE_TUNNEL_CLIENT_PATH !== undefined) return resolveClient({ env });
+      if (selection.kind === "valid") {
+        try { return resolveClient({ env: { CE_TUNNEL_CLIENT_PATH: selection.clientPath } }); }
+        catch {
+          try { statSync(selection.clientPath); return undefined; }
+          catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
+            // A removed package-manager version must not prevent explicit re-authorization.
+          }
+          const homebrew = /^(\/opt\/homebrew|\/usr\/local)\/Cellar\/tunnel-client\/[^/]+\/libexec\/tunnel-client$/.exec(selection.clientPath);
+          if (homebrew !== null) {
+            try {
+              const wrapper = resolveClient({ env: { CE_TUNNEL_CLIENT_PATH: `${homebrew[1]}/opt/tunnel-client/bin/tunnel-client` } });
+              return wrapper === undefined ? undefined : resolveWrapper(wrapper)?.execTarget ?? wrapper;
+            }
+            catch { return undefined; }
+          }
+        }
+      }
+      return resolveClient({ env });
     } catch { return undefined; }
   })();
   const profilePath = resolveTunnelProfilePath(options);
@@ -1384,6 +1419,64 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
     return { kind: "UNAVAILABLE" };
   };
 
+  const observeConfiguredService = async (): Promise<ConfiguredServiceObservation> => {
+    const unverifiedRuntime = { state: "UNVERIFIED" as const };
+    let facts: ReturnType<typeof parseTunnelProfile>;
+    try {
+      facts = parseTunnelProfile(readFileSync(profilePath, "utf8"));
+    } catch {
+      return { tunnelProcess: "UNKNOWN", tunnelHealth: "UNKNOWN", mcpProcess: "UNKNOWN", mcpSource: "UNKNOWN", mcpRuntime: unverifiedRuntime };
+    }
+    const sourcePath = facts.mcpCommand?.match(/^\S+ (\/[^\s]+\/mcp-stdio\.js)(?:\s|$)/)?.[1];
+    let source = "UNKNOWN";
+    if (sourcePath !== undefined && normalize(sourcePath) === sourcePath) {
+      const origin = sourcePath.includes("/.pi/agent/npm/node_modules/") ? "managed-npm"
+        : sourcePath.includes("/.worktrees/") ? "development-worktree" : "unclassified";
+      let identity = "version=UNKNOWN";
+      try {
+        const manifest = JSON.parse(readFileSync(join(dirname(dirname(dirname(sourcePath))), "package.json"), "utf8")) as { name?: unknown; version?: unknown };
+        if (manifest.name === "@zieglar/pi-chat-exchange" && typeof manifest.version === "string" && /^\d+\.\d+\.\d+$/.test(manifest.version)) {
+          identity = `${manifest.name}@${manifest.version}`;
+        }
+      } catch { /* The exact executable path remains useful; identity is explicitly unknown. */ }
+      source = `${sourcePath} [${identity}; ${origin}]`;
+    }
+    let listed: Awaited<ReturnType<typeof listProcesses>>;
+    try { listed = await listProcesses(); } catch {
+      return { tunnelProcess: "UNKNOWN", tunnelHealth: "UNKNOWN", mcpProcess: "UNKNOWN", mcpSource: "UNKNOWN", mcpRuntime: unverifiedRuntime };
+    }
+    if (listed.kind !== "ok") {
+      return { tunnelProcess: "UNKNOWN", tunnelHealth: "UNKNOWN", mcpProcess: "UNKNOWN", mcpSource: "UNKNOWN", mcpRuntime: unverifiedRuntime };
+    }
+    const tunnelCommand = clientPath === undefined ? undefined : `${clientPath} run --profile-file ${profilePath}`;
+    const tunnels = tunnelCommand === undefined ? [] : listed.processes.filter(process => process.command === tunnelCommand);
+    const mcpMatches = facts.mcpCommand === undefined ? [] : listed.processes.filter(process => process.command === facts.mcpCommand);
+    const mcpProcess = facts.mcpCommand === undefined ? "STOPPED" as const
+      : mcpMatches.length === 1 ? "RUNNING" as const
+      : mcpMatches.length === 0 ? "STOPPED" as const : "UNKNOWN" as const;
+    let mcpRuntime: McpRuntimeInspection = unverifiedRuntime;
+    if (facts.mcpCommand !== undefined && mcpMatches.length === 1) {
+      try {
+        const command = parseTunnelMcpCommand(facts.mcpCommand);
+        mcpRuntime = inspectMcpRuntimeMarker({ bindingPath: command.bindingPath,
+          packageRoot: dirname(dirname(dirname(command.scriptPath))), process: mcpMatches[0]! });
+      } catch { /* Runtime identity remains explicitly unverified. */ }
+    }
+    if (tunnelCommand === undefined) return { tunnelProcess: "UNKNOWN", tunnelHealth: "UNKNOWN", mcpProcess, mcpSource: source, mcpRuntime };
+    if (tunnels.length === 0) return { tunnelProcess: "STOPPED", tunnelHealth: "UNKNOWN", mcpProcess, mcpSource: source, mcpRuntime };
+    if (tunnels.length !== 1) return { tunnelProcess: "UNKNOWN", tunnelHealth: "UNKNOWN", mcpProcess, mcpSource: source, mcpRuntime };
+    const tunnelPid = tunnels[0]!.pid;
+    try {
+      const probe = parseHealthProbe(await probeHealth(facts.urlFile, tunnelPid));
+      const tunnelHealth = probe.kind === "unverifiable" ? "UNKNOWN" as const
+        : probe.connectedEligible === true && probe.controlPlanePollObserved === true
+          ? "HEALTHY" as const : "UNHEALTHY" as const;
+      return { tunnelProcess: "RUNNING", tunnelHealth, tunnelPid, mcpProcess, mcpSource: source, mcpRuntime };
+    } catch {
+      return { tunnelProcess: "RUNNING", tunnelHealth: "UNKNOWN", tunnelPid, mcpProcess, mcpSource: source, mcpRuntime };
+    }
+  };
+
   const start = (expectedProfileSha256?: string): Promise<BackgroundStartResult> => {
     // R5/C-v2-2: the lifecycle generation is captured AT CALL TIME, so a stop
     // submitted before this start executes still invalidates it.
@@ -1831,6 +1924,7 @@ export function createBackgroundTunnelManager(options: BackgroundManagerOptions)
     stop,
     refresh,
     observeLiveTransport,
+    observeConfiguredService,
     status,
     runId: () => (record !== undefined && record.state !== "stopped" ? record.runId : undefined),
     async dispose(): Promise<void> {

@@ -8,7 +8,7 @@ import { parseTunnelProfile } from "../../src/tunnel/background-manager.js";
 import { replaceTunnelMcpBindingPath } from "../../src/tunnel/profile.js";
 import { multiSessionFixture } from "../tunnel/support/multi-session-fixture.js";
 
-const rule = (adapter = "chatgpt", endpointId = "chatgpt/main", id = "notify") => parseHookRules([{ id, event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter, endpointId }, command: "/usr/bin/true" }])[0]!;
+const rule = (adapter = "chatgpt", endpointId = "chatgpt/main", id = "notify") => parseHookRules([{ id, event: CE_MESSAGE_COMMITTED_EVENT, recipient: { adapter, endpointId }, command: "/usr/bin/true", scope: "session" }])[0]!;
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); });
 async function fixture() { const f = await multiSessionFixture(); cleanups.push(f.cleanup); return f; }

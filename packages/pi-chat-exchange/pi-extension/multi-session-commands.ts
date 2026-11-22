@@ -22,7 +22,7 @@ function cancelled(ctx: CommandPort, signal: AbortSignal, action: string): void 
 }
 export async function runSessionConfiguration(args: string, ctx: CommandPort, options: {
   readonly profilePath: string;
-  readonly manager: BackgroundTunnelManager;
+  readonly manager?: BackgroundTunnelManager;
   readonly signal: AbortSignal;
   readonly onProgress?: (text: string) => void;
   /** Trusted runtime composition keeps enumeration AND publication admitted. */
@@ -58,8 +58,10 @@ export async function runSessionConfiguration(args: string, ctx: CommandPort, op
     }
     if (command === "reauthorize") refuse();
   }
+  const manager = options.manager;
+  if (manager === undefined) throw new TunnelRefusal("CE_TUNNEL_HEALTH_UNAVAILABLE");
   const api = createMultiSessionRegistration({ profilePath: options.profilePath, env: process.env, manager: {
-    withProfileConfigurationLock: operation => options.manager.withProfileConfigurationLock(guard => {
+    withProfileConfigurationLock: operation => manager.withProfileConfigurationLock(guard => {
       current(); // lock acquisition/process inventory may await; fence again inside it
       return operation(guard);
     }),

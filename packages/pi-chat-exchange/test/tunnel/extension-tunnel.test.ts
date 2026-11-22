@@ -169,18 +169,16 @@ describe("B1.1 /ce-tunnel — setup never leaves the secure path", () => {
 });
 
 describe("B1.1 /ce-tunnel — start and stop stay offline", () => {
-  it("routes start to the gated real background manager without the offline opt-in (LOCAL-BACKGROUND-01 v2)", async () => {
+  it("leaves real service start to Homebrew/launchd", async () => {
     vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", undefined as unknown as string);
     const ctx = context();
     await (await tunnel()).handler("start", ctx);
-    // Permission prompting requires an interactive confirmation surface.
-    expect(messages(ctx)).toContain("CE_TUNNEL_INPUT_UNAVAILABLE");
-    expect(messages(ctx)).not.toContain("real background start requested");
-    // Even with the gate open, a missing operator profile refuses cleanly.
+    expect(messages(ctx)).toContain("managed by Homebrew/launchd");
+    expect(messages(ctx)).not.toContain("start requested");
     vi.stubEnv("CE_TUNNEL_BACKGROUND_ALLOW", "1");
     const ctx2 = context();
     await (await tunnel()).handler("start", ctx2);
-    await vi.waitFor(() => expect(messages(ctx2)).toContain("CE_TUNNEL_PROFILE_INVALID"));
+    expect(messages(ctx2)).toContain("managed by Homebrew/launchd");
   });
 
   it("stop with nothing running is a safe no-op, not a false success claim", async () => {
@@ -201,28 +199,27 @@ describe("LOCAL-BACKGROUND-01 /ce-tunnel — real background mode surface", () =
     expect(text).toContain("real background");
     expect(text).toContain("STOPPED");
     expect(text).toContain("not delivery/ACK/completion evidence");
-    expect(String(statuses(ctx).get("ce-tunnel"))).toContain("real background");
-    expect(String(statuses(ctx).get("ce-client"))).toContain("not observed");
+    expect(statuses(ctx).get("ce-tunnel")).toBeUndefined();
+    expect(statuses(ctx).get("ce-client")).toBeUndefined();
   });
 
   it("stop with no owned record is a safe no-op and signals nothing", async () => {
     vi.stubEnv("CE_TUNNEL_OFFLINE_TEST", undefined as unknown as string);
     const ctx = context();
     await (await tunnel()).handler("stop", ctx);
-    expect(messages(ctx)).toContain("no owned real background tunnel record");
+    expect(messages(ctx)).toContain("managed by Homebrew/launchd");
   });
 });
 
-describe("B1.1 /ce-tunnel — three separate status surfaces", () => {
-  it("publishes CE runtime, offline tunnel health and client activity separately", async () => {
+describe("CE footer — one stable connection surface", () => {
+  it("publishes only the CE summary and clears legacy keys", async () => {
     const ctx = context();
     await (await tunnel()).handler("status", ctx);
     const keys = statuses(ctx);
     expect([...keys.keys()].sort()).toEqual(["ce", "ce-client", "ce-tunnel"]);
-    expect(String(keys.get("ce-tunnel"))).toMatch(/offline|simulated/i);
-    expect(String(keys.get("ce-client"))).toMatch(/no activity observed/i);
-    // The CE segment must not be manufactured when CE is unavailable.
-    expect(String(keys.get("ce"))).not.toMatch(/✓|bound/);
+    expect(keys.get("ce-tunnel")).toBeUndefined();
+    expect(keys.get("ce-client")).toBeUndefined();
+    expect(keys.get("ce")).toBe("CE ○ Pair required");
   });
 
   it("states offline/simulated scope and never claims delivery, ACK or a client being online", async () => {

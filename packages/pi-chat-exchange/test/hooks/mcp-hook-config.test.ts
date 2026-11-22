@@ -20,6 +20,7 @@ const rule = {
   command: "/opt/node/bin/node",
   args: ["/opt/hooks/notify.mjs"],
   timeoutMs: 5000,
+  scope: "session",
 };
 
 describe("MCP binding Hook configuration", () => {
@@ -39,5 +40,10 @@ describe("MCP binding Hook configuration", () => {
     } catch (error) {
       expect(error).toMatchObject({ code: "CE_MCP_CONFIG_INVALID", field: "hooks[0].command" });
     }
+  });
+
+  it("preserves a validated Hook status probe", () => {
+    const status = { label: "Desktop", command: "/opt/hooks/status", args: [], timeoutMs: 2000 };
+    expect(parseMcpBindingConfig(valid([{ ...rule, status }])).hooks?.[0]?.status).toEqual(status);
   });
 });

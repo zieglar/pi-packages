@@ -24,7 +24,7 @@ it.each(["A", "B"])("real MCP process adopts sender consent once, denies ABA, an
   const targetEndpoint = `pi/${target}`;
   const fixturePath = join(dir, "fixture.cjs"); fs.writeFileSync(fixturePath, 'let data="";process.stdin.on("data",b=>data+=b);process.stdin.on("end",()=>require("node:fs").appendFileSync(process.argv[2],data+"\\n"));', { mode: 0o600 });
   const config = parseMcpBindingConfig({ version: 1, store: manifest.store, exchange: manifest.exchange, endpoint: manifest.chatgptEndpoint, recipients: [{ adapter: "pi", endpointId: "pi/A" }], payloadRead: { enabled: true }, ack: { enabled: true }, admissionPolicy: ref,
-    hooks: [{ id: "fixture", event: "ce.message.committed.v1", recipient: { adapter: "pi", endpointId: targetEndpoint }, command: process.execPath, args: [fixturePath, marker], timeoutMs: 2000, enabled: true }] });
+    hooks: [{ id: "fixture", event: "ce.message.committed.v1", recipient: { adapter: "pi", endpointId: targetEndpoint }, command: process.execPath, args: [fixturePath, marker], timeoutMs: 2000, enabled: true, scope: "session" }] });
   const pair = publishMessagingGeneration(profilePath, config, { kind: "ce-live-launch-v2", version: 1, ref }, { credentialFile: keyFile });
   const bindingGeneration = basename(pair.bindingPath).slice(10, -5);
   api.upgrade({ expectedDigest: readLivePolicy(v1).digest, actorRuntimeSessionId: "operator", profileRevision: "a".repeat(64), bindingGeneration });

@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { chmodSync, mkdtempSync, rmSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CeHookRule } from '../../../src/hooks/config.js';
-import { createCaptureScheduler, createDeliveryGuard, createDesktopTargetBridge, deliverAfterDesktopCapture } from '../../../pi-extension/desktop-target.js';
+import { bindDesktopTargetOwner, createCaptureScheduler, createDeliveryGuard, createDesktopTargetBridge, desktopFailureSummary, desktopPreparationStatus, deliverAfterDesktopCapture } from '../../../pi-extension/desktop-target.js';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -13,11 +13,55 @@ function fixture() {
   const auto = join(root, 'auto-wake.json');
   writeFileSync(config, JSON.stringify({ autoWakeConfig: auto }), { mode: 0o600 });
   writeFileSync(auto, JSON.stringify({ ownerDirectory: root, conversationGuard: { targetSelection: 'desktop-at-intake', captureAfterAuditSequence: 10, mode: 'explicit-only' } }), { mode: 0o600 });
-  const hook: { -readonly [K in keyof CeHookRule]: CeHookRule[K] } = { id: 'wake', enabled: true, event: 'ce.message.committed.v1', recipient: { adapter: 'chatgpt', endpointId: 'chatgpt/main' }, command: '/usr/bin/python3', args: ['-B', join(root, 'tools/ce-chatgpt-wake/wake.py'), '--config', config, '--hook'], timeoutMs: 30000 };
+  const hook: { -readonly [K in keyof CeHookRule]: CeHookRule[K] } = { id: 'ce-agent-desktop-wake', enabled: true, event: 'ce.message.committed.v1', recipient: { adapter: 'chatgpt', endpointId: 'chatgpt/main' }, command: '/usr/bin/python3', args: ['-B', join(root, 'tools/ce-chatgpt-wake/wake.py'), '--config', config, '--hook'], timeoutMs: 30000, scope: 'workspace' };
   const run = vi.fn(async () => ({ stdout: JSON.stringify({ status: 'CAPTURED', messageId: 'm' }) }));
   return { root, config, auto, hook, run, create: () => createDesktopTargetBridge({ hooks: [hook], runtimeSessionId: 's', endpointId: 'ep', run }) };
 }
 describe('desktop target bridge', () => {
+  it.each([
+    [{ generation: 'ABSENT', nativeInbound: false, desktopTarget: false }, 'DISABLED (NO_GENERATION)'],
+    [{ generation: 'STOPPING', nativeInbound: true, desktopTarget: true }, 'DISABLED (GENERATION_STOPPING)'],
+    [{ generation: 'FAILED', nativeInbound: true, desktopTarget: true }, 'DISABLED (GENERATION_FAILED)'],
+    [{ generation: 'ACTIVE', nativeInbound: false, desktopTarget: true }, 'DISABLED (NATIVE_INBOUND_UNAVAILABLE)'],
+    [{ generation: 'ACTIVE', nativeInbound: true, desktopTarget: false }, 'DISABLED (DESKTOP_BRIDGE_UNAVAILABLE)'],
+    [{ generation: 'ACTIVE', nativeInbound: true, desktopTarget: true }, 'READY'],
+  ] as const)('projects desktop preparation state %j as %s', (state, expected) => {
+    expect(desktopPreparationStatus(state)).toBe(expected);
+  });
+
+  it('formats only validated fixed failure diagnostics for status', () => {
+    expect(desktopFailureSummary({ status: 'UNAVAILABLE', messageId: 'msg_01M7Q8Y62Q0XTY2TRGNWQ0K3RQ', reason: 'INBOUND_CLAIM_REQUIRED', auditSequence: 614 }))
+      .toBe('INBOUND_CLAIM_REQUIRED (message=msg_01M7Q8Y62Q0XTY2TRGNWQ0K3RQ audit=614)');
+    expect(desktopFailureSummary({ status: 'UNAVAILABLE', messageId: 'msg_safe', reason: '/private/secret', auditSequence: 614 })).toBeUndefined();
+    expect(desktopFailureSummary({ status: 'CAPTURED', messageId: 'msg_safe', reason: 'INBOUND_CLAIM_REQUIRED', auditSequence: 614 })).toBeUndefined();
+  });
+
+  it('ignores unrelated enabled ChatGPT hooks when selecting the unique desktop target', () => {
+    const f = fixture();
+    const notification = { ...f.hook, id: 'ce-wake-system-notification' };
+
+    expect(createDesktopTargetBridge({ hooks: [notification, f.hook], runtimeSessionId: 's', endpointId: 'ep', run: f.run })).toBeDefined();
+  });
+
+  it('rebinds the validated owner to the current package and native session', () => {
+    const f = fixture();
+    writeFileSync(f.auto, JSON.stringify({
+      ownerDirectory: f.root,
+      packageRoot: '/old/package',
+      nativeSessionFile: '/old/session.jsonl',
+      stateDir: join(f.root, 'state'),
+      conversationGuard: { targetSelection: 'desktop-at-intake', captureAfterAuditSequence: 10, mode: 'explicit-only' },
+    }), { mode: 0o600 });
+
+    expect(bindDesktopTargetOwner({ hooks: [f.hook], packageRoot: '/current/package', nativeSessionFile: '/current/session.jsonl' })).toBe(true);
+    expect(JSON.parse(readFileSync(f.auto, 'utf8'))).toEqual({
+      ownerDirectory: f.root,
+      packageRoot: '/current/package',
+      nativeSessionFile: '/current/session.jsonl',
+      stateDir: join(f.root, 'state'),
+      conversationGuard: { targetSelection: 'desktop-at-intake', captureAfterAuditSequence: 10, mode: 'explicit-only' },
+    });
+  });
   it('captures with bound argv, limited environment and execution limits', async () => {
     const f = fixture(); const bridge = f.create()!;
     expect(bridge.ready).toEqual({ runtimeSessionId: 's', endpointId: 'ep', captureAfterAuditSequence: 10 });
@@ -80,12 +124,25 @@ describe('desktop target bridge', () => {
     await deliverAfterDesktopCapture(outcome, () => true, deliver, () => { throw new Error('record failed'); });
     expect(deliver).toHaveBeenCalledOnce();
   });
-  it('preserves only known capture refusal reasons from the helper', async () => {
+  it('preserves only known desktop refusal reasons from the helper', async () => {
     const f = fixture(); const bridge = f.create()!;
-    for (const reason of ['CAPTURE_LOCK_BUSY', 'CAPTURE_TOO_LATE', 'private credential detail']) {
+    for (const reason of ['CAPTURE_LOCK_BUSY', 'CAPTURE_TOO_LATE', 'INBOUND_CLAIM_REQUIRED', 'DESKTOP_COMMAND_FAILED', 'TARGET_BINDING_UNAVAILABLE', 'private credential detail', 'UNKNOWN_FIXED_CODE']) {
       f.run.mockResolvedValue({ stdout: JSON.stringify({ status: 'UNAVAILABLE', messageId: 'm', reason }) });
-      expect((await bridge.capture({ messageId: 'm', auditSequence: 11 })).reason).toBe(reason.startsWith('CAPTURE_') ? reason : 'unavailable');
+      expect((await bridge.capture({ messageId: 'm', auditSequence: 11 })).reason).toBe(
+        ['CAPTURE_LOCK_BUSY', 'CAPTURE_TOO_LATE', 'INBOUND_CLAIM_REQUIRED', 'DESKTOP_COMMAND_FAILED', 'TARGET_BINDING_UNAVAILABLE'].includes(reason) ? reason : 'unavailable',
+      );
     }
+  });
+  it('parses a safe refusal emitted with the helper nonzero exit', async () => {
+    const f = fixture();
+    const error = Object.assign(new Error('helper refused'), {
+      stdout: JSON.stringify({ status: 'UNAVAILABLE', messageId: 'm', reason: 'TARGET_WINDOW_CHANGED' }),
+    });
+    f.run.mockRejectedValue(error);
+
+    expect(await f.create()!.capture({ messageId: 'm', auditSequence: 11 })).toEqual({
+      status: 'UNAVAILABLE', messageId: 'm', reason: 'TARGET_WINDOW_CHANGED',
+    });
   });
   it('bounds pending captures and releases expired tasks without sampling later', async () => {
     vi.useFakeTimers();

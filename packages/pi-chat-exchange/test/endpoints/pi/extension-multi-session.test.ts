@@ -16,6 +16,7 @@ import { createHash } from "node:crypto";
 const seam = vi.hoisted(() => ({ hosts: [] as CeSessionHost[], stores: [] as DurableStore[], manager: undefined as unknown,
   defaultExec: vi.fn(() => { throw Error("FORBIDDEN default process inspection"); }),
   defaultSpawn: vi.fn(() => { throw Error("FORBIDDEN process spawn"); }),
+  generateLaunchAgent: vi.fn(),
   signal: vi.fn(() => { throw Error("FORBIDDEN process signal"); }),
 }));
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), execFile: seam.defaultExec, spawn: seam.defaultSpawn }));
@@ -29,6 +30,17 @@ vi.mock("../../../dist/runtime/native-readiness.js", async original => ({
   ...await original<typeof import("../../../dist/runtime/native-readiness.js")>(),
   assertNativeReadyForTunnel: () => ({ state: "READY", code: "CE_NATIVE_READY", driver: "rust-native" }),
 }));
+vi.mock("../../../dist/runtime/executables.js", async original => ({
+  ...await original<typeof import("../../../dist/runtime/executables.js")>(), resolveTunnelClient: () => "/trusted/tunnel-client",
+}));
+vi.mock("../../../dist/tunnel/launchagent-generator.js", () => {
+  const plan = (options: { account: string; homeDir: string; name: string; profilePath: string; clientPath: string }) => {
+    const label = `com.${options.account}.pi-chat-exchange.tunnel.${options.name}`;
+    return { ...options, label, path: `${options.homeDir}/Library/LaunchAgents/${label}.plist`, plist: "synthetic plist" };
+  };
+  return { currentLaunchAgentIdentity: () => ({ account: "test-user", homeDir: "/test-home" }), planLaunchAgent: plan,
+    generateLaunchAgent: (options: Parameters<typeof plan>[0]) => { seam.generateLaunchAgent(options); return plan(options); } };
+});
 vi.mock("../../../dist/tunnel/messaging-activation-ui.js", () => ({ confirmMessagingActivation: (ctx: Context) => ctx.ui.confirm("activate", "synthetic operator confirmation") }));
 vi.mock("../../../dist/tunnel/background-manager.js", async (original) => {
   const actual = await original<typeof import("../../../dist/tunnel/background-manager.js")>();
@@ -41,11 +53,11 @@ vi.mock("../../../dist/endpoints/pi/session-host.js", async (original) => {
   } };
 });
 type Entry = { type: string; customType: string; data: unknown };
-type Context = { mode: string; hasUI: boolean; cwd: string; executeTool?: import("../../../pi-extension/native-inbound.js").NativeInboundToolContext["executeTool"]; reload?: () => Promise<void>; sessionManager: { getSessionId(): string; getSessionFile(): string; getBranch(): Entry[]; getEntries(): Entry[] }; ui: { notify: ReturnType<typeof vi.fn>; confirm: ReturnType<typeof vi.fn<(title: string, message: string) => Promise<boolean>>>; select: ReturnType<typeof vi.fn<(title: string, options: string[]) => Promise<string | undefined>>>; input: ReturnType<typeof vi.fn<(title: string, placeholder?: string) => Promise<string | undefined>>>; custom: ReturnType<typeof vi.fn> } };
+type Context = { mode: string; hasUI: boolean; cwd: string; executeTool?: import("../../../pi-extension/native-inbound.js").NativeInboundToolContext["executeTool"]; reload?: () => Promise<void>; sessionManager: { getSessionId(): string; getSessionFile(): string; getBranch(): Entry[]; getEntries(): Entry[] }; ui: { notify: ReturnType<typeof vi.fn>; setStatus: ReturnType<typeof vi.fn>; confirm: ReturnType<typeof vi.fn<(title: string, message: string) => Promise<boolean>>>; select: ReturnType<typeof vi.fn<(title: string, options: string[]) => Promise<string | undefined>>>; input: ReturnType<typeof vi.fn<(title: string, placeholder?: string) => Promise<string | undefined>>>; custom: ReturnType<typeof vi.fn> } };
 type Handler = (event: { reason: string }, ctx: Context) => Promise<void>;
 type Tool = { name: string; execute(id: string, input: unknown, signal: undefined, update: undefined, ctx: Context): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean; details: Record<string, unknown> }> };
 const dirs: string[] = []; const shutdowns: Array<() => Promise<void>> = [];
-beforeEach(() => { for (const key of Object.keys(process.env)) if (key.startsWith("CE_")) vi.stubEnv(key, undefined); vi.spyOn(process, "kill").mockImplementation(seam.signal); vi.useFakeTimers(); seam.hosts.length = 0; seam.stores.length = 0; seam.manager = undefined; });
+beforeEach(() => { for (const key of Object.keys(process.env)) if (key.startsWith("CE_")) vi.stubEnv(key, undefined); vi.spyOn(process, "kill").mockImplementation(seam.signal); vi.useFakeTimers(); seam.hosts.length = 0; seam.stores.length = 0; seam.manager = undefined; seam.generateLaunchAgent.mockClear(); });
 afterEach(async () => {
   for (const stop of shutdowns.splice(0)) await stop();
   for (const store of new Set(seam.stores.splice(0))) store.close();
@@ -71,10 +83,10 @@ async function fixture(convert = true) {
   const api = createMultiSessionRegistration({ profilePath, manager });
   if (convert) { await api.convert({ expectedRevision: api.revision(), confirm: true }); await api.register({ expectedRevision: api.revision(), registration: { endpointId: "pi/B", runtimeSessionId: "real-B", payloadRead: true, ack: true } }); }
   for (const [key, value] of Object.entries({ CE_ALLOWLIST: "", CE_STORE_DIR: "", CE_STORE_FILE: "", CE_TUNNEL_PROFILE: profilePath, CE_LEASE_TTL_SECONDS: "", CE_TUNNEL_OFFLINE_TEST: "" })) vi.stubEnv(key, value);
-  async function runtime(id: string, entries: Entry[] = []) {
+  async function runtime(id: string, entries: Entry[] = [], options: { hasUI?: boolean; mode?: string } = {}) {
     const events = new Map<string, Handler>(); const tools = new Map<string, Tool>(); const commands = new Map<string, { description: string; getArgumentCompletions?: (prefix: string) => Array<{ value: string }>; handler(args: string, ctx: Context): Promise<void> }>();
     let runtimeId = id; const messages: unknown[] = [];
-    const ctx: Context = { mode: "tui", hasUI: true, cwd: join(dir, id), sessionManager: { getSessionId: () => runtimeId, getSessionFile: () => "not-authority", getBranch: () => entries, getEntries: () => entries }, ui: { notify: vi.fn(), confirm: vi.fn(async () => true), select: vi.fn(async () => undefined), input: vi.fn(async () => undefined), custom: vi.fn() } };
+    const ctx: Context = { mode: options.mode ?? "tui", hasUI: options.hasUI ?? true, cwd: join(dir, id), sessionManager: { getSessionId: () => runtimeId, getSessionFile: () => "not-authority", getBranch: () => entries, getEntries: () => entries }, ui: { notify: vi.fn(), setStatus: vi.fn(), confirm: vi.fn(async () => true), select: vi.fn(async () => undefined), input: vi.fn(async () => undefined), custom: vi.fn() } };
     const { default: factory } = await import(new URL("../../../pi-extension/index.ts", import.meta.url).href);
     const reloadFactory = () => factory({ on: (name: string, handler: Handler) => events.set(name, handler), registerTool: (tool: Tool) => tools.set(tool.name, tool), registerCommand: (name: string, command: { description: string; getArgumentCompletions?: (prefix: string) => Array<{ value: string }>; handler(args: string, ctx: Context): Promise<void> }) => commands.set(name, command), appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
       sendMessage: (message: unknown) => { messages.push(message); } });
@@ -86,27 +98,155 @@ async function fixture(convert = true) {
       command: (args: string) => commands.get("ce-tunnel")!.handler(args, ctx),
       ce: (args: string) => commands.get("ce")!.handler(args, ctx),
       commands,
-      ceStatus: () => commands.get("ce-status")!.handler("", ctx),
+      ceStatus: (commandContext: Context = ctx) => commands.get("ce-status")!.handler("", commandContext),
       switchSession: () => { runtimeId = "changed-runtime"; }, notices: () => ctx.ui.notify.mock.calls.map(([s]) => String(s)).join("\n") };
   }
   return { dir, profilePath, api, binding, runtime, setProcessState: (state: typeof processState) => { processState = state; } };
 }
 
+it("checks connectivity after binding, then every 60 seconds, and stops on shutdown", async () => {
+  const f = await fixture();
+  const manager = seam.manager as ReturnType<typeof createBackgroundTunnelManager>;
+  const observe = vi.spyOn(manager, "observeConfiguredService").mockResolvedValue({
+    tunnelProcess: "RUNNING", tunnelHealth: "HEALTHY", tunnelPid: 123,
+    mcpProcess: "RUNNING", mcpSource: "npm:@zieglar/pi-chat-exchange@0.3.6",
+  });
+  const a = await f.runtime("real-A");
+  await a.start();
+  expect(a.ctx.ui.setStatus).toHaveBeenCalledWith("ce", "CE ◐ Checking");
+  expect(observe).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(249);
+  expect(observe).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1);
+  await vi.waitFor(() => expect(a.ctx.ui.setStatus).toHaveBeenCalledWith("ce", "CE ● Connected"));
+  expect(a.notices()).toContain("Chat Exchange: Session bound; Tunnel/MCP connectivity connected");
+  expect(observe).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(observe).toHaveBeenCalledTimes(2);
+  await a.stop();
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(observe).toHaveBeenCalledTimes(2);
+});
+
+it("does not run connectivity probes when the Session UI is unavailable", async () => {
+  const f = await fixture();
+  const manager = seam.manager as ReturnType<typeof createBackgroundTunnelManager>;
+  const observe = vi.spyOn(manager, "observeConfiguredService");
+  const a = await f.runtime("real-A", [], { hasUI: false });
+  await a.start();
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(observe).not.toHaveBeenCalled();
+});
+
+it("announces the first confirmed connection when a later status check resolves startup UNKNOWN", async () => {
+  const f = await fixture();
+  const manager = seam.manager as ReturnType<typeof createBackgroundTunnelManager>;
+  const observe = vi.spyOn(manager, "observeConfiguredService")
+    .mockResolvedValueOnce({ tunnelProcess: "UNKNOWN", tunnelHealth: "UNKNOWN", mcpProcess: "UNKNOWN", mcpSource: "UNKNOWN" })
+    .mockResolvedValue({ tunnelProcess: "RUNNING", tunnelHealth: "HEALTHY", tunnelPid: 123,
+      mcpProcess: "RUNNING", mcpSource: "npm:@zieglar/pi-chat-exchange@0.3.6" });
+  const a = await f.runtime("real-A");
+  await a.start();
+  await vi.advanceTimersByTimeAsync(250);
+  await vi.waitFor(() => expect(observe).toHaveBeenCalledTimes(1));
+  expect(a.notices()).not.toContain("Tunnel/MCP connectivity connected");
+  delete (a.ctx.ui as Partial<Context["ui"]>).custom;
+  await a.ceStatus({ ...a.ctx });
+  expect(a.notices()).toContain("Chat Exchange: Session bound; Tunnel/MCP connectivity connected");
+});
+
+it("triggers the shared read-only connectivity check after a send failure", async () => {
+  const f = await fixture();
+  const manager = seam.manager as ReturnType<typeof createBackgroundTunnelManager>;
+  const observe = vi.spyOn(manager, "observeConfiguredService").mockResolvedValue({
+    tunnelProcess: "RUNNING", tunnelHealth: "HEALTHY", tunnelPid: 123,
+    mcpProcess: "RUNNING", mcpSource: "npm:@zieglar/pi-chat-exchange@0.3.6",
+  });
+  const a = await f.runtime("real-A");
+  await a.start();
+  const result = await a.call("ce_send", { to: "not-allowed", text: "test", idempotencyKey: "connectivity-event" });
+  expect(result.isError).toBe(true);
+  await vi.waitFor(() => expect(observe).toHaveBeenCalledTimes(1));
+  expect(a.messages).toHaveLength(0);
+});
+
+it("shares status and interval connectivity checks, debounces failures, and reports one recovery", async () => {
+  const f = await fixture();
+  const manager = seam.manager as ReturnType<typeof createBackgroundTunnelManager>;
+  let resolveProbe!: (value: Awaited<ReturnType<typeof manager.observeConfiguredService>>) => void;
+  const stopped = { tunnelProcess: "STOPPED" as const, tunnelHealth: "UNKNOWN" as const,
+    mcpProcess: "UNKNOWN" as const, mcpSource: "UNKNOWN" };
+  const observe = vi.spyOn(manager, "observeConfiguredService")
+    .mockImplementationOnce(() => new Promise(resolve => { resolveProbe = resolve; }))
+    .mockResolvedValue(stopped);
+  const a = await f.runtime("real-A");
+  await a.start();
+  a.ctx.ui.setStatus.mockClear();
+  delete (a.ctx.ui as Partial<Context["ui"]>).custom;
+  const status = a.ceStatus();
+  await vi.waitFor(() => expect(a.ctx.ui.setStatus).toHaveBeenCalledWith("ce", "CE ◐ Checking"));
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(observe).toHaveBeenCalledTimes(1);
+  resolveProbe(stopped);
+  await status;
+  expect(a.notices()).not.toContain("CE connectivity unavailable");
+
+  await a.ceStatus();
+  expect(a.notices()).toContain("CE connectivity unavailable");
+  const failureNotices = () => a.ctx.ui.notify.mock.calls.filter(([message]) => String(message).includes("CE connectivity unavailable"));
+  expect(failureNotices()).toHaveLength(1);
+  await a.ceStatus();
+  expect(failureNotices()).toHaveLength(1);
+
+  observe.mockResolvedValue({ tunnelProcess: "RUNNING", tunnelHealth: "HEALTHY", tunnelPid: 123,
+    mcpProcess: "RUNNING", mcpSource: "npm:@zieglar/pi-chat-exchange@0.3.6" });
+  await a.ceStatus();
+  expect(a.notices()).toContain("CE connectivity restored");
+  expect(a.notices()).toContain("connectivity=CONNECTED");
+  expect(a.notices()).toContain("lastConnectivitySuccess=");
+  expect(a.notices()).toContain("lastConnectivityFailureReason=CE_CONNECTIVITY_TUNNEL_STOPPED");
+});
+
 it("exposes one canonical /ce tree while legacy commands remain compatibility shims", async () => {
   const f = await fixture(); const a = await f.runtime("real-A"); await a.start();
-  expect(a.commands.get("ce")!.getArgumentCompletions!("").map(item => item.value)).toEqual(["status", "setup", "session", "inbound", "advanced"]);
+  expect(a.commands.get("ce")!.getArgumentCompletions!("").map(item => item.value)).toEqual(["status", "plugins", "pair", "setup", "session", "inbound", "advanced"]);
   expect(a.commands.get("ce")!.getArgumentCompletions!("session ").map(item => item.value)).toEqual(["session bind", "session unbind", "session list"]);
   for (const legacy of ["ce-status", "ce-tunnel", "ce-native", "ce-hooks", "ce-bind"]) {
     expect(a.commands.get(legacy)?.description).toContain("Compatibility");
     expect(a.commands.get(legacy)?.getArgumentCompletions).toBeUndefined();
   }
   await a.ce("session list"); expect(a.notices()).toContain("pi/A");
-  a.ctx.ui.notify.mockClear(); await a.ce("status"); expect(a.notices()).toContain("mcpSource=UNKNOWN"); expect(a.notices()).toContain("tunnel=STOPPED");
+  delete (a.ctx.ui as Partial<Context["ui"]>).custom;
+  a.ctx.ui.notify.mockClear(); await a.ce("status"); expect(a.notices()).toContain("mcpConfiguredSource="); expect(a.notices()).toContain("runtimeSourceAlignment=MISMATCH"); expect(a.notices()).toContain("tunnel=");
   a.ctx.ui.notify.mockClear(); await a.ce("advanced native status"); expect(a.notices()).toContain("CE_NATIVE_");
+  a.ctx.ui.notify.mockClear(); await a.ce("plugins"); expect(a.notices()).toContain("no actionable Desktop provider for the current Session");
   a.ctx.ui.notify.mockClear(); await a.ce("advanced transport help");
-  expect(a.notices()).toContain("live disconnect releases only this Pi Session and retains the shared Tunnel");
+  expect(a.notices()).toContain("disconnect releases only this Pi Session and retains the shared Tunnel");
   expect(a.notices()).toContain("live register publishes current-Session policy without starting or stopping Tunnel");
   a.ctx.ui.notify.mockClear(); await a.ce("unknown"); expect(a.notices()).toContain("usage: /ce");
+});
+
+it("generates a confirmed custom LaunchAgent without loading or restarting it", async () => {
+  const f = await fixture(); const a = await f.runtime("real-A"); await a.start();
+  await a.ce("advanced maintenance service generate --name work");
+  expect(a.ctx.ui.confirm).toHaveBeenCalledWith("Generate CE LaunchAgent?", expect.stringContaining("com.test-user.pi-chat-exchange.tunnel.work"));
+  expect(seam.generateLaunchAgent).toHaveBeenCalledWith({ account: "test-user", homeDir: "/test-home", name: "work",
+    profilePath: f.profilePath, clientPath: "/trusted/tunnel-client" });
+  expect(a.notices()).toContain("generated but not loaded");
+  expect(seam.defaultSpawn).not.toHaveBeenCalled(); expect(seam.signal).not.toHaveBeenCalled();
+
+  seam.generateLaunchAgent.mockClear(); a.ctx.ui.notify.mockClear();
+  await a.ce("advanced maintenance service generate --name ../escape");
+  expect(seam.generateLaunchAgent).not.toHaveBeenCalled(); expect(a.notices()).toContain("usage:");
+
+  a.ctx.ui.confirm.mockResolvedValue(false); a.ctx.ui.notify.mockClear();
+  await a.ce("advanced maintenance service generate --name cancelled");
+  expect(seam.generateLaunchAgent).not.toHaveBeenCalled();
+
+  a.ctx.mode = "rpc"; a.ctx.ui.confirm.mockClear(); a.ctx.ui.notify.mockClear();
+  await a.ce("advanced maintenance service generate --name non-tui");
+  expect(a.ctx.ui.confirm).not.toHaveBeenCalled(); expect(seam.generateLaunchAgent).not.toHaveBeenCalled();
+  expect(a.notices()).toContain("CE_TUNNEL_INPUT_UNAVAILABLE");
 });
 
 it("offers the canonical operations from the /ce TUI menu", async () => {
@@ -114,7 +254,7 @@ it("offers the canonical operations from the /ce TUI menu", async () => {
   a.ctx.ui.select.mockImplementation(async (_title, options) => options.find(item => item === "Inbound status"));
   await a.ce("");
   const options = a.ctx.ui.select.mock.calls[0]?.[1] ?? [];
-  expect(options).toEqual(expect.arrayContaining(["Setup", "Session bind", "Session unbind", "Session list", "Inbound status", "Inbound enable", "Inbound disable", "Transport", "Native", "Hooks", "Bindings", "Maintenance", "Send target"]));
+  expect(options).toEqual(expect.arrayContaining(["Plugins", "Setup", "Session bind", "Session unbind", "Session list", "Inbound status", "Inbound enable", "Inbound disable", "Transport", "Native", "Hooks", "Bindings", "Maintenance", "Send target"]));
   expect(a.notices()).toContain("inbound=missing");
 });
 
@@ -164,7 +304,7 @@ it("Connect offers a generated minimal Endpoint for a fresh trusted Session with
   expect(c.notices()).not.toContain("resume the registered Pi session");
 });
 
-it("Connect publishes once, uses official command reload, activates and keeps read/ACK off", async () => {
+it("Connect publishes once, uses official command reload, activates and never starts the service", async () => {
   const f = await fixture(); const c = await f.runtime("fresh-connect-runtime"); await c.start();
   const manager = seam.manager as ReturnType<typeof createBackgroundTunnelManager>;
   const clientPath = join(f.dir, "trusted-client");
@@ -188,12 +328,25 @@ it("Connect publishes once, uses official command reload, activates and keeps re
   expect(r).toMatchObject({ payloadRead: false, ack: false, status: "active" });
   expect(r.endpointId).toMatch(/^pi\/session-[a-f0-9]{32}$/); expect(r.hooks).toBeUndefined();
   expect(reload).toHaveBeenCalledTimes(1);
-  expect(start, c.notices()).toHaveBeenCalledTimes(1);
+  expect(start, c.notices()).not.toHaveBeenCalled();
+  expect(c.notices()).toContain("Homebrew/launchd");
   expect(c.entries.findLast(e => e.customType === "ce-mapping")?.data).toMatchObject({ endpointId: r.endpointId });
   expect((await c.call("ce_read_payload", { messageId: "msg_00000000000000000000000000" })).isError).toBe(true);
   await c.command("connect");
   expect(readSelectedMultiSessionPolicy(f.profilePath).manifest.registrations).toHaveLength(registrations.length);
-  expect(reload).toHaveBeenCalledTimes(1); expect(start).toHaveBeenCalledTimes(2);
+  expect(reload).toHaveBeenCalledTimes(1); expect(start).not.toHaveBeenCalled();
+});
+
+it("delegates real start and stop commands to Homebrew/launchd without process actions", async () => {
+  const f = await fixture(); const a = await f.runtime("real-A"); await a.start();
+  const manager = seam.manager as ReturnType<typeof createBackgroundTunnelManager>;
+  const start = vi.spyOn(manager, "startDeferred");
+  const stop = vi.spyOn(manager, "stop");
+  await a.command("start");
+  await a.command("stop");
+  expect(start).not.toHaveBeenCalled();
+  expect(stop).not.toHaveBeenCalled();
+  expect(a.notices()).toContain("Homebrew/launchd");
 });
 
 it("generated registration stays inactive after cancelled activation and later startup", async () => {
@@ -297,6 +450,11 @@ it("actual factory events bind independent A/B Hosts; exact ChatGPT messages/rep
 });
 it("opt-in native intake discovers and receives only a fresh message through the registered current-Session tools", async () => {
   const f = await fixture();
+  const manager = seam.manager as ReturnType<typeof createBackgroundTunnelManager>;
+  vi.spyOn(manager, "observeConfiguredService").mockResolvedValue({
+    tunnelProcess: "RUNNING", tunnelHealth: "HEALTHY", tunnelPid: 123,
+    mcpProcess: "RUNNING", mcpSource: "npm:@zieglar/pi-chat-exchange@0.3.6",
+  });
   const policyPath = join(f.dir, "native-inbound.json");
   vi.stubEnv("CE_NATIVE_INBOUND_POLICY", policyPath);
   const a = await f.runtime("real-A"); const b = await f.runtime("real-B");
@@ -313,6 +471,7 @@ it("opt-in native intake discovers and receives only a fresh message through the
   const read = await a.call("ce_read", { messageId: sent.messageId });
   vi.setSystemTime(Date.parse(read.details!.createdAt as string) + 1000);
   await vi.advanceTimersByTimeAsync(2000);
+  expect(a.notices()).toContain("Chat Exchange: Session bound; native inbound ready; Tunnel/MCP connectivity connected");
   expect(a.messages).toHaveLength(1);
   expect(a.entries.filter(e => e.customType === "ce-inbound-wake")).toHaveLength(1);
   const executeTool = async (name: string, args: unknown) => {
@@ -328,6 +487,24 @@ it("opt-in native intake discovers and receives only a fresh message through the
   fs.unlinkSync(policyPath);
   expect((await a.call("ce_receive_task", { messageId: sent.messageId }, { ...a.ctx, executeTool })).details).toMatchObject({ code: "INBOUND_DISABLED" });
   chatHost.end("chatgpt/main");
+});
+
+it("does not let a queued native inbound poll crash after its Session context becomes stale", async () => {
+  const f = await fixture();
+  const policyPath = join(f.dir, "native-inbound.json");
+  vi.stubEnv("CE_NATIVE_INBOUND_POLICY", policyPath);
+  const intervals = vi.spyOn(globalThis, "setInterval");
+  const a = await f.runtime("real-A");
+  await a.start();
+  const inboundPoll = intervals.mock.calls.findLast(([, delay]) => delay === 1000)?.[0] as (() => void) | undefined;
+  expect(inboundPoll).toBeTypeOf("function");
+  fs.writeFileSync(policyPath, "{}", { mode: 0o600 });
+  Object.defineProperty(a.ctx, "hasUI", {
+    configurable: true,
+    get() { throw new Error("stale Session context"); },
+  });
+
+  expect(() => inboundPoll!()).not.toThrow();
 });
 
 it("abandoned local mutex fails closed with operator hint; clean scope is unaffected", async () => {
@@ -615,8 +792,26 @@ it.each([false, true])("deactivate ends only current A, revoked=%s; B, registrat
 });
 it("ce-status displays native Pi and Exchange only through admission", async () => {
   const f = await fixture(); const a = await f.runtime("real-A"); await a.start();
+  delete (a.ctx.ui as Partial<Context["ui"]>).custom;
   const mapping = a.entries.findLast(e => e.customType === "ce-mapping")!.data as { exchangeId: string };
-  a.ctx.ui.notify.mockClear(); await a.ceStatus(); expect(a.notices()).toContain("piSession=real-A"); expect(a.notices()).toContain(`exchange=${mapping.exchangeId}`);
+  a.ctx.ui.notify.mockClear(); await a.ceStatus(); expect(a.notices()).toContain("Chat Exchange\n");
+  expect(a.notices()).toContain("piSession=real-A"); expect(a.notices()).toContain(`exchange=${mapping.exchangeId}`);
+  expect(a.notices()).toContain("Session Plugins: none");
+  expect(a.notices()).not.toContain("desktopPreparation=");
   await f.api.revoke({ expectedRevision: f.api.revision(), endpointId: "pi/A" });
   a.ctx.ui.notify.mockClear(); await a.ceStatus(); expect(a.notices()).not.toContain("real-A"); expect(a.notices()).not.toContain(mapping.exchangeId);
+});
+it("ce-status identifies a stale in-memory MCP runtime and gives the operator action", async () => {
+  const f = await fixture();
+  const manager = seam.manager as ReturnType<typeof createBackgroundTunnelManager>;
+  vi.spyOn(manager, "observeConfiguredService").mockResolvedValue({
+    tunnelProcess: "RUNNING", tunnelHealth: "HEALTHY", tunnelPid: 123,
+    mcpProcess: "RUNNING", mcpSource: "npm:@zieglar/pi-chat-exchange@0.3.6",
+    mcpRuntime: { state: "STALE", packageVersion: "0.3.6", launchSourceDigest: "a".repeat(64), currentSourceDigest: "b".repeat(64) },
+  });
+  const a = await f.runtime("real-A"); await a.start();
+  delete (a.ctx.ui as Partial<Context["ui"]>).custom;
+  a.ctx.ui.notify.mockClear(); await a.ceStatus();
+  expect(a.notices()).toContain("MCP runtime: STALE (@zieglar/pi-chat-exchange@0.3.6; launch=aaaaaaaaaaaa; current=bbbbbbbbbbbb)");
+  expect(a.notices()).toContain("Restart the configured Tunnel/MCP service");
 });

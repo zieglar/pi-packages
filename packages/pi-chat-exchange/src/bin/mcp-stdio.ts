@@ -21,7 +21,8 @@
  * tool arguments, payloads, or capability secrets.
  */
 import { readFileSync, statSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { startLiveAdoptionProbe } from "../tunnel/live-adoption-probe.js";
@@ -38,6 +39,7 @@ import {
   type McpBindingConfig,
 } from "../host/mcp-binding-config.js";
 import { debugEvent, errorSummary } from "../control/debug-log.js";
+import { createLaunchSourceMetadataProbe } from "./source-metadata-probe-launch.js";
 import { observeTransport } from "../control/mcp/debug-transport.js";
 import { startLocalMcpHttp } from "../control/mcp/http-transport.js";
 import { initializeStore, openStore } from "../storage/store.js";
@@ -47,8 +49,7 @@ import { isDeepStrictEqual } from "node:util";
 import { effectiveMcpHookRules, readLoadedMultiSessionPolicy, readSelectedMultiSessionPolicy } from "../tunnel/multi-session-policy.js";
 import { createLiveMcpComposition, discoverLiveEndpoints, observeLiveMcpRuntime } from "../tunnel/live-mcp-composition.js";
 import { createTaskOwnerComposition } from "./task-owner-composition.js";
-import { createSourceMetadataProbe } from "../control/mcp/source-metadata-probe.js";
-import { sourceMetadataProbeLaunchDigest } from "../runtime/source-metadata-probe-opt-in.js";
+import { mcpRuntimeSourceIdentity, writeMcpRuntimeMarker } from "../tunnel/mcp-runtime-marker.js";
 
 debugEvent("server", "SERVER_ENTRY", { version: process.version });
 // Monitor rather than handle exceptions: preserve Node's fatal exit behavior.
@@ -166,18 +167,29 @@ async function main(): Promise<void> {
   });
   bound = activeBound;
 
+  let processStartedKey: string | undefined;
+  try {
+    const output = execFileSync("/bin/ps", ["-p", String(process.pid), "-o", "lstart="], {
+      env: { PATH: "/usr/bin:/bin", LC_ALL: "C" }, timeout: 5000, maxBuffer: 4096, encoding: "utf8",
+    });
+    const match = /^\s*([A-Za-z]{3}\s+[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s*$/.exec(output);
+    if (match === null) throw new Error("process identity unavailable");
+    processStartedKey = match[1]!;
+    const packageRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+    const source = mcpRuntimeSourceIdentity(packageRoot);
+    writeMcpRuntimeMarker({ bindingPath: configPath, identity: { pid: process.pid, startedKey: processStartedKey }, source });
+    debugEvent("server", "MCP_RUNTIME_IDENTIFIED", { version: source.packageVersion });
+  } catch {
+    console.error("CE_MCP_RUNTIME_UNVERIFIED");
+  }
+
   debugEvent("authority", "OWNERSHIP_ACQUIRED", { owned: true });
   const taskOwner = createTaskOwnerComposition(configPath, config, live, host, activeBound);
-  const sourceMetadataProbe = createSourceMetadataProbe(launchDigest, sourceMetadataProbeLaunchDigest());
   if (live !== undefined) {
     try {
-      const output = execFileSync("/bin/ps", ["-p", String(process.pid), "-o", "lstart="], {
-        env: { PATH: "/usr/bin:/bin", LC_ALL: "C" }, timeout: 5000, maxBuffer: 4096, encoding: "utf8",
-      });
-      const match = /^\s*([A-Za-z]{3}\s+[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s*$/.exec(output);
-      if (match === null) throw new Error("process identity unavailable");
+      if (processStartedKey === undefined) throw new Error("process identity unavailable");
       probe = await startLiveAdoptionProbe({ ref: live.ref, launchDigest,
-        identity: { pid: process.pid, startedKey: match[1]! },
+        identity: { pid: process.pid, startedKey: processStartedKey },
         observe: () => observeLiveMcpRuntime(live, host, activeBound, store, config.endpoint.endpointId),
       });
     } catch {
@@ -194,8 +206,8 @@ async function main(): Promise<void> {
     ...(live === undefined
       ? admission === undefined ? {} : { admission: () => admission({ kind: "inbox" }) }
       : { discovery: { discover: (previousEndpointId?: string, runtimeId?: string, useRuntimeBinding?: true, group?: string) =>
-        discoverLiveEndpoints(live, activeBound, previousEndpointId, runtimeId, useRuntimeBinding, group) }, selectedTarget: live.selectedTarget }),
-  }, sourceMetadataProbe);
+        discoverLiveEndpoints(live, activeBound, previousEndpointId, runtimeId, useRuntimeBinding, group) }, selectedTarget: live.selectedTarget, pairing: live.pairing }),
+  }, socketPath === undefined ? createLaunchSourceMetadataProbe(configPath, launchDigest) : undefined);
   const server = socketPath === undefined ? createServer() : undefined;
   let http: Awaited<ReturnType<typeof startLocalMcpHttp>> | undefined;
   if (config.debugExecutionGuard.enabled) {
@@ -253,7 +265,7 @@ async function main(): Promise<void> {
     PING_TOOL_NAME,
     ...MESSAGING_TOOL_NAMES,
     ...(config.ack.enabled ? [CE_ACK_TOOL.name] : []),
-    ...(live === undefined ? [] : ["ce_endpoints"]),
+    ...(live === undefined ? [] : ["ce_endpoints", "ce_pair"]),
     ...(taskOwner === undefined ? [] : ["ce_task_owner"]),
   ];
   console.error(`CE_MCP_STARTED tools=${advertisedTools.join(",")}`);

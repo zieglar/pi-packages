@@ -43,6 +43,12 @@ function npmEnv(dir: string): NodeJS.ProcessEnv {
 function runValidator(dir: string, arg: string) {
   return spawnSync(process.execPath, [join(dir, "scripts/package-pi-extension.mjs"), arg], { cwd: dir, encoding: "utf8", env: npmEnv(dir) });
 }
+it("declares the host-provided TypeBox module as a peer while retaining an author toolchain version", () => {
+  const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  expect(manifest.dependencies?.["@sinclair/typebox"]).toBeUndefined();
+  expect(manifest.peerDependencies?.["@sinclair/typebox"]).toBe("*");
+  expect(manifest.devDependencies?.["@sinclair/typebox"]).toBe("0.34.52");
+});
 it("the documented local-prefix CLI points to the installed package entry", () => {
   const dir = mkdtempSync(join(tmpdir(), "ce-guide-cli-")); fixtures.push(dir);
   const entry = join(dir, "host/node_modules/@earendil-works/pi-coding-agent/dist/cli.js");
@@ -104,7 +110,13 @@ it("native pack carries the runtime closure and no author/private state", () => 
 });
 it("ships only the English basic README, LICENSE, runtime and metadata", () => {
   const files = pack(fixture());
-  expect(files.filter((p) => p.endsWith(".md"))).toEqual(["package/README.md", "package/skills/ce-hook-script/SKILL.md"]);
+  expect(files.filter((p) => p.endsWith(".md")).sort()).toEqual([
+    "package/README.md", "package/skills/ce-hook-script/SKILL.md",
+    "package/skills/pi-chat-exchange/SKILL.md",
+    "package/skills/pi-chat-exchange/references/chatgpt-work.md",
+    "package/skills/pi-chat-exchange/references/e2e-smoke.md",
+    "package/skills/pi-chat-exchange/references/pi.md",
+  ]);
   expect(files.some((p) => p.startsWith("package/docs/"))).toBe(false);
   expect(files).toContain("package/package.json");
 });

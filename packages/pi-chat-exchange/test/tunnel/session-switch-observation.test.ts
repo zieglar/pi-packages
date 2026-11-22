@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { cleanupFixtures, fixture } from "../storage/support/participant-fixture.js";
 import { initializeLivePolicy, readLivePolicy, createLivePolicyRegistration } from "../../src/tunnel/live-session-policy.js";
-import { observeSessionDeparture, observeSessionArrival, discoverSessionSwitch } from "../../src/tunnel/session-switch-observation.js";
+import { consumeSessionSuccessionIntent, findSessionSuccessionIntent, observeSessionDeparture, observeSessionArrival, discoverSessionSwitch, findSessionSwitchPredecessor, publishSessionSuccessionIntent } from "../../src/tunnel/session-switch-observation.js";
 
 // These records only observe lifecycle. Registration remains an independent act.
 afterEach(cleanupFixtures);
@@ -45,6 +45,23 @@ it("requires both reciprocal /new observations and independent successor authori
   if (result.status !== "verified") throw new Error("expected verified relationship");
   expect(result.observedAt).toMatch(/^\d{4}-\d\d-\d\dT/);
   expect(f.snapshot().manifest.registrations.find(r => r.endpointId === "pi/B")).toMatchObject({ payloadRead: false, ack: false });
+});
+
+it("resolves only the exact active predecessor before successor authorization", () => {
+  const f = setup();
+  expect(findSessionSwitchPredecessor(f.snapshot(), "native-B")).toBeUndefined();
+  expect(observeSessionDeparture(f.ref, f.departure)).toBe(true);
+  expect(findSessionSwitchPredecessor(f.snapshot(), "native-B")).toBeUndefined();
+  expect(observeSessionArrival(f.ref, f.arrival)).toBe(true);
+  expect(findSessionSwitchPredecessor(f.snapshot(), "native-B")).toMatchObject({ runtimeSessionId: "native-A", endpointId: "pi/A", epoch: 1 });
+});
+
+it("refuses ambiguous predecessor observations", () => {
+  const f = setup(); observeSessionDeparture(f.ref, f.departure); observeSessionArrival(f.ref, f.arrival);
+  const other = join(f.directory, "other-new.jsonl");
+  observeSessionDeparture(f.ref, { ...f.departure, targetSessionFile: other });
+  observeSessionArrival(f.ref, { ...f.arrival, sessionFile: other });
+  expect(findSessionSwitchPredecessor(f.snapshot(), "native-B")).toBeUndefined();
 });
 
 it("does not guess continuity from recent registrations or unrelated file paths", () => {
@@ -142,4 +159,43 @@ it("fails closed on a corrupt half or unsafe observation directory", () => {
   fs.symlinkSync(f.directory, join(g.ref.root, "session-switches"));
   expect(observeSessionDeparture(g.ref, g.departure)).toBe(false);
   expect(g.query().status).toBe("unknown");
+});
+
+it("publishes and consumes one exact /cenew succession intent before successor registration", () => {
+  const f = setup();
+  expect(publishSessionSuccessionIntent(f.ref, {
+    ...f.departure, workspace: f.directory, from: "chatgpt/main", operationId: "11111111-1111-4111-8111-111111111111",
+  })).toBe(true);
+  const intent = findSessionSuccessionIntent(f.snapshot(), {
+    runtimeSessionId: "native-B", previousSessionFile: f.departure.sessionFile,
+    sessionFile: f.departure.targetSessionFile, workspace: f.directory,
+  });
+  expect(intent).toMatchObject({
+    operationId: "11111111-1111-4111-8111-111111111111",
+    predecessorRuntimeSessionId: "native-A", predecessorEndpointId: "pi/A", predecessorEpoch: 1,
+    from: "chatgpt/main",
+  });
+  expect(consumeSessionSuccessionIntent(f.ref, intent!.intentId)).toBe(true);
+  expect(findSessionSuccessionIntent(f.snapshot(), {
+    runtimeSessionId: "native-B", previousSessionFile: f.departure.sessionFile,
+    sessionFile: f.departure.targetSessionFile, workspace: f.directory,
+  })).toBeUndefined();
+  expect(consumeSessionSuccessionIntent(f.ref, intent!.intentId)).toBe(false);
+});
+
+it("does not infer /cenew authority or accept a mismatched workspace and file pair", () => {
+  const f = setup();
+  const lookup = (overrides: Partial<{ runtimeSessionId: string; previousSessionFile: string; sessionFile: string; workspace: string }> = {}) =>
+    findSessionSuccessionIntent(f.snapshot(), {
+      runtimeSessionId: "native-B", previousSessionFile: f.departure.sessionFile!,
+      sessionFile: f.departure.targetSessionFile!, workspace: f.directory, ...overrides,
+    });
+  expect(lookup()).toBeUndefined();
+  expect(publishSessionSuccessionIntent(f.ref, {
+    ...f.departure, workspace: f.directory, from: "chatgpt/main", operationId: "22222222-2222-4222-8222-222222222222",
+  })).toBe(true);
+  expect(lookup({ workspace: join(f.directory, "other") })).toBeUndefined();
+  expect(lookup({ previousSessionFile: join(f.directory, "other.jsonl") })).toBeUndefined();
+  expect(lookup({ sessionFile: join(f.directory, "other-new.jsonl") })).toBeUndefined();
+  expect(lookup({ runtimeSessionId: "native-A" })).toBeUndefined();
 });

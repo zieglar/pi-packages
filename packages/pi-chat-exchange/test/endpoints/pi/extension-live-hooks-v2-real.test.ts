@@ -10,10 +10,10 @@ import { buildTunnelMcpCommand, buildTunnelProfile, serializeTunnelProfile } fro
 import { parseHookRules } from "../../../dist/hooks/config.js";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
-it.each([false, true])("actual Pi extension keeps outbound messaging through Hook ABA and reload; changed incarnation=%s", { timeout: 20_000 }, async changedIncarnation => {
+it.each([false, true])("actual Pi extension keeps outbound messaging through Hook ABA and reload, including an unsaved Session; changed incarnation=%s", { timeout: 20_000 }, async changedIncarnation => {
   const dir = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "ce-extension-hooks-v2-"))); fs.chmodSync(dir, 0o700);
   const sessionManager = SessionManager.create(dir, join(dir, "sessions"));
-  sessionManager.appendMessage({ role: "user", content: "Synthetic Hook persistence fixture", timestamp: Date.now() });
+  if (changedIncarnation) sessionManager.appendMessage({ role: "user", content: "Synthetic Hook persistence fixture", timestamp: Date.now() });
   const nativeId = sessionManager.getSessionId();
   const root = join(dir, "policy"); fs.mkdirSync(root, { mode: 0o700 }); fs.mkdirSync(join(dir, ".ce-bindings"), { mode: 0o700 });
   const profilePath = join(dir, "tunnel.yaml"); const keyFile = join(dir, "credential"); fs.writeFileSync(keyFile, "synthetic", { mode: 0o600 });
@@ -26,7 +26,7 @@ it.each([false, true])("actual Pi extension keeps outbound messaging through Hoo
   fs.writeFileSync(profilePath, serializeTunnelProfile(buildTunnelProfile({ tunnelId: manifest.identity.tunnelId, keyFile, healthUrlFile: join(dir, "health.url"), mcpCommand: buildTunnelMcpCommand({ nodePath: process.execPath, scriptPath: join(process.cwd(), "dist/bin/mcp-stdio.js"), bindingPath: pair.bindingPath }) })), { mode: 0o600 });
   const output = join(dir, "fixture-events.jsonl"); const script = join(dir, "fixture.cjs");
   fs.writeFileSync(script, 'let data="";process.stdin.on("data",b=>data+=b);process.stdin.on("end",()=>require("node:fs").appendFileSync(process.argv[2],data+"\\n"));', { mode: 0o600 });
-  const hooks = parseHookRules([{ id: "fixture", event: "ce.message.committed.v1", recipient: manifest.chatgptEndpoint, command: process.execPath, args: [script, output], timeoutMs: 2000, enabled: true }]);
+  const hooks = parseHookRules([{ id: "fixture", event: "ce.message.committed.v1", recipient: manifest.chatgptEndpoint, command: process.execPath, args: [script, output], timeoutMs: 2000, enabled: true, scope: "session" }]);
   const setHooks = (enabled: boolean) => api.setPiHooks({ expectedDigest: readLivePolicy(ref).digest, runtimeSessionId: nativeId, endpointId: "pi/A", epoch: 1, hooks: enabled ? hooks : [] });
   setHooks(true);
   vi.stubEnv("CE_ALLOWLIST", ""); vi.stubEnv("CE_TUNNEL_PROFILE", profilePath); vi.stubEnv("CE_STORE_DIR", ""); vi.stubEnv("CE_STORE_FILE", "");

@@ -68,7 +68,7 @@ describe("HTTP MCP bound runtime", () => {
       const init = await rpc(socket, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } });
       expect(init.result.serverInfo.name).toBe("pi-chat-exchange");
       const list = await rpc(socket, "tools/list", {});
-      expect(list.result.tools.map((tool: { name: string }) => tool.name)).toEqual(["ping", ...MESSAGING_TOOL_NAMES, "ce_find_replies"]);
+      expect(list.result.tools.map((tool: { name: string }) => tool.name)).toEqual(["ping", ...MESSAGING_TOOL_NAMES, "ce_find_replies", "ce_help"]);
       const denied = await rpc(socket, "tools/call", { name: "ce_send", arguments: { to: "pi/not-allowed", text: "no", idempotencyKey: "deny" } });
       expect(denied.result.isError).toBe(true);
       const sent = await rpc(socket, "tools/call", { name: "ce_send", arguments: { to: "pi/main", text: "hello", idempotencyKey: "once" } });

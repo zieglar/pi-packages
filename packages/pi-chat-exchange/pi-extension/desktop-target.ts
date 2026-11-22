@@ -1,13 +1,40 @@
 import { execFile } from 'node:child_process';
-import { constants, closeSync, fstatSync, openSync, readFileSync, realpathSync } from 'node:fs';
+import { constants, closeSync, fstatSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { basename, dirname, isAbsolute, join, normalize } from 'node:path';
 import type { CeHookRule } from '../dist/hooks/config.js';
 
+const DESKTOP_REFUSAL_REASONS = [
+  'AUTO_CONFIG_INVALID', 'AUTO_CONFIG_LIMIT_INVALID', 'AUTO_CONFIG_OWNER_INVALID', 'AUTO_CONFIG_PATH_INVALID',
+  'BEFORE_CAPTURE_CUTOFF', 'CAPTURE_LOCK_BUSY', 'CAPTURE_POLICY_CHANGED', 'CAPTURE_STATE_UNCERTAIN', 'CAPTURE_TOO_LATE',
+  'CHATGPT_BUSY', 'CONVERSATION_DENIED', 'CURRENT_TITLE_MISSING', 'DESKTOP_COMMAND_FAILED', 'DRAFT_NOT_EMPTY',
+  'DRAFT_STATE_UNKNOWN', 'GUARD_NOT_AUTOMATIC', 'INBOUND_AUDIT_DENIED', 'INBOUND_CLAIM_REQUIRED',
+  'INBOUND_MESSAGE_MISSING', 'INBOUND_METADATA_DENIED', 'INPUT_OR_SEND_AMBIGUOUS', 'INTAKE_OWNER_CHANGED',
+  'NATIVE_SESSION_CHANGED', 'NATIVE_SESSION_FILE_UNSAFE', 'OWNER_LEASE_EXPIRED', 'OWNING_ENTRY_CHANGED',
+  'PRIVATE_FILE_INVALID', 'PRIVATE_FILE_TOO_LARGE', 'PRIVATE_STATE_REQUIRED', 'RECEIPT_POLICY_REQUIRED',
+  'REPLY_ALREADY_COMMITTED', 'REPLY_ASSOCIATION_NOT_PRIOR', 'REPLY_BINDING_DENIED', 'REPLY_CONFIRMATION_DENIED',
+  'REPLY_KEY_CONFLICT', 'REPLY_KEY_INVALID', 'REPLY_KEY_UNCERTAIN', 'REQUEST_NOT_RECEIVED', 'RUNTIME_AUTHORITY_DENIED',
+  'SNAPSHOT_DENIED', 'SNAPSHOT_INCOMPLETE', 'TARGET_BINDING_UNAVAILABLE', 'TARGET_CURRENT_TITLE_MISSING',
+  'TARGET_SNAPSHOT_DENIED', 'TARGET_SOURCE_TITLE_MISSING', 'TARGET_TITLE_AMBIGUOUS', 'TARGET_TITLE_MISMATCH',
+  'TARGET_WINDOW_AMBIGUOUS', 'TARGET_WINDOW_CHANGED', 'UNIQUE_CHATGPT_WINDOW_REQUIRED', 'WAKE_ENTRY_CLOSED', 'WINDOW_DENIED',
+] as const;
+type DesktopRefusalReason = typeof DESKTOP_REFUSAL_REASONS[number];
+const desktopRefusalReasons = new Set<string>(DESKTOP_REFUSAL_REASONS);
+const desktopRefusalReason = (value: unknown): value is DesktopRefusalReason => typeof value === 'string' && desktopRefusalReasons.has(value);
+
+export function desktopFailureSummary(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (record.status !== 'UNAVAILABLE' || !desktopRefusalReason(record.reason) || !text(record.messageId) ||
+      !Number.isSafeInteger(record.auditSequence) || (record.auditSequence as number) < 0) return undefined;
+  return `${record.reason} (message=${record.messageId} audit=${record.auditSequence})`;
+}
+
 export type DesktopTargetOutcome = {
   readonly status: 'DISABLED' | 'CAPTURED' | 'UNAVAILABLE' | 'PREPARED';
   readonly messageId: string;
-  readonly reason?: 'disabled' | 'unavailable' | 'CAPTURE_LOCK_BUSY' | 'CAPTURE_TOO_LATE' | 'BEFORE_CAPTURE_CUTOFF' | 'CAPTURE_QUEUE_FULL' | 'CAPTURE_QUEUE_EXPIRED' | 'INBOUND_AUTHORITY_CHANGED';
+  readonly reason?: 'disabled' | 'unavailable' | DesktopRefusalReason | 'CAPTURE_QUEUE_FULL' | 'CAPTURE_QUEUE_EXPIRED' | 'INBOUND_AUTHORITY_CHANGED';
   readonly taskId?: string;
   readonly idempotencyKey?: string;
 };
@@ -22,6 +49,68 @@ export interface DesktopTargetBridge {
   readonly ready: { readonly runtimeSessionId: string; readonly endpointId: string; readonly captureAfterAuditSequence: number };
   capture(input: { messageId: string; auditSequence: number }): Promise<DesktopTargetOutcome>;
   prepare(input: { messageId: string; taskId: string }): Promise<DesktopTargetOutcome>;
+}
+
+export const AGENT_DESKTOP_HOOK_ID = 'ce-agent-desktop-wake';
+
+export function desktopPreparationStatus(state: {
+  readonly generation: 'ABSENT' | 'STOPPING' | 'FAILED' | 'ACTIVE';
+  readonly nativeInbound: boolean;
+  readonly desktopTarget: boolean;
+}): 'READY' | `DISABLED (${string})` {
+  if (state.generation === 'ABSENT') return 'DISABLED (NO_GENERATION)';
+  if (state.generation === 'STOPPING') return 'DISABLED (GENERATION_STOPPING)';
+  if (state.generation === 'FAILED') return 'DISABLED (GENERATION_FAILED)';
+  if (!state.nativeInbound) return 'DISABLED (NATIVE_INBOUND_UNAVAILABLE)';
+  if (!state.desktopTarget) return 'DISABLED (DESKTOP_BRIDGE_UNAVAILABLE)';
+  return 'READY';
+}
+
+export function findDesktopTargetHook(hooks: readonly CeHookRule[]): CeHookRule | undefined {
+  const selected = hooks.filter(hook => {
+    try {
+      if (hook.id !== AGENT_DESKTOP_HOOK_ID || !hook.enabled || hook.event !== 'ce.message.committed.v1' || hook.recipient.adapter !== 'chatgpt') return false;
+      const [flag, wake, configFlag, config, hookFlag] = hook.args;
+      if (!absolute(hook.command) || !/^python(?:3(?:\.\d+)?)?$/.test(basename(hook.command)) || hook.args.length !== 5 || flag !== '-B' || configFlag !== '--config' || hookFlag !== '--hook' || !absolute(wake) || !absolute(config)) return false;
+      const owner = dirname(config);
+      if (config !== join(owner, 'config.json') || wake !== join(owner, 'tools/ce-chatgpt-wake/wake.py')) return false;
+      const outer = privateJson(config);
+      if (Object.keys(outer).length !== 1 || outer.autoWakeConfig !== join(owner, 'auto-wake.json')) return false;
+      const auto = privateJson(outer.autoWakeConfig as string);
+      const guard = auto.conversationGuard as Record<string, unknown> | undefined;
+      const cutoff = guard?.captureAfterAuditSequence;
+      return auto.ownerDirectory === owner && guard?.targetSelection === 'desktop-at-intake' && typeof cutoff === 'number' && Number.isSafeInteger(cutoff) && cutoff >= 0;
+    } catch { return false; }
+  });
+  return selected.length === 1 ? selected[0] : undefined;
+}
+
+/** Rebinds a validated Agent Desktop owner to the authoritative current Pi runtime. */
+export function bindDesktopTargetOwner(options: {
+  readonly hooks: readonly CeHookRule[];
+  readonly packageRoot: string;
+  readonly nativeSessionFile: string;
+}): boolean {
+  let temporary: string | undefined;
+  try {
+    if (!absolute(options.packageRoot) || !absolute(options.nativeSessionFile)) return false;
+    const hook = findDesktopTargetHook(options.hooks);
+    if (hook === undefined) return false;
+    const config = hook.args[3]!;
+    const outer = privateJson(config);
+    const autoPath = outer.autoWakeConfig as string;
+    const auto = privateJson(autoPath);
+    temporary = join(dirname(autoPath), `.${basename(autoPath)}.${randomUUID()}.tmp`);
+    writeFileSync(temporary, JSON.stringify({ ...auto, packageRoot: options.packageRoot, nativeSessionFile: options.nativeSessionFile }), { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    renameSync(temporary, autoPath);
+    temporary = undefined;
+    return true;
+  } catch {
+    if (temporary !== undefined) {
+      try { unlinkSync(temporary); } catch { /* Best-effort cleanup; binding remains fail closed. */ }
+    }
+    return false;
+  }
 }
 
 /** Delivery guard: the generation must be current AND the inbound policy must still authorize it. */
@@ -76,7 +165,13 @@ function privateJson(path: string): Record<string, unknown> {
   } finally { closeSync(fd); }
 }
 const runPython: DesktopTargetRun = (command, args, options) => new Promise((resolve, reject) => {
-  execFile(command, [...args], { ...options, encoding: 'utf8' }, (error, stdout) => error ? reject(error) : resolve({ stdout }));
+  execFile(command, [...args], { ...options, encoding: 'utf8' }, (error, stdout) => {
+    if (error) {
+      reject(Object.assign(error, { stdout }));
+      return;
+    }
+    resolve({ stdout });
+  });
 });
 
 /** Observes desktop targets only; Python retains runtime and desktop authority. */
@@ -89,9 +184,8 @@ export function createDesktopTargetBridge(options: {
   try {
     const { runtimeSessionId, endpointId } = options;
     if (!text(runtimeSessionId) || !text(endpointId)) return undefined;
-    const selected = options.hooks.filter(hook => hook.enabled && hook.event === 'ce.message.committed.v1' && hook.recipient.adapter === 'chatgpt');
-    if (selected.length !== 1) return undefined;
-    const hook = selected[0]!;
+    const hook = findDesktopTargetHook(options.hooks);
+    if (hook === undefined) return undefined;
     const [flag, wake, configFlag, config, hookFlag] = hook.args;
     if (!absolute(hook.command) || !/^python(?:3(?:\.\d+)?)?$/.test(basename(hook.command)) || hook.args.length !== 5 || flag !== '-B' || configFlag !== '--config' || hookFlag !== '--hook' || !absolute(wake) || !absolute(config)) return undefined;
     const owner = dirname(config);
@@ -108,10 +202,17 @@ export function createDesktopTargetBridge(options: {
     async function invoke(messageId: string, args: string[], prepare?: { taskId: string }): Promise<DesktopTargetOutcome> {
       const unavailable: DesktopTargetOutcome = { status: 'UNAVAILABLE', messageId, reason: 'unavailable' };
       if (!text(messageId) || (prepare && !text(prepare.taskId))) return unavailable;
+      let stdout: string;
       try {
         const env: NodeJS.ProcessEnv = {};
         for (const key of ['HOME', 'PATH', 'LANG']) if (process.env[key] !== undefined) env[key] = process.env[key];
-        const { stdout } = await run(command, [...base, ...args], { env, timeout: 20000, maxBuffer: 16384, shell: false });
+        ({ stdout } = await run(command, [...base, ...args], { env, timeout: 20000, maxBuffer: 16384, shell: false }));
+      } catch (error) {
+        const candidate = error && typeof error === 'object' ? (error as { stdout?: unknown }).stdout : undefined;
+        if (typeof candidate !== 'string') return unavailable;
+        stdout = candidate;
+      }
+      try {
         if (Buffer.byteLength(stdout) > 16384) return unavailable;
         const value: unknown = JSON.parse(stdout);
         if (!value || typeof value !== 'object' || Array.isArray(value)) return unavailable;
@@ -120,8 +221,7 @@ export function createDesktopTargetBridge(options: {
         if (result.status === 'DISABLED') return { status: 'DISABLED', messageId, reason: 'disabled' };
         if (result.status === 'UNAVAILABLE') {
           const reason = result.reason;
-          return reason === 'CAPTURE_LOCK_BUSY' || reason === 'CAPTURE_TOO_LATE' || reason === 'BEFORE_CAPTURE_CUTOFF'
-            ? { status: 'UNAVAILABLE', messageId, reason } : unavailable;
+          return desktopRefusalReason(reason) ? { status: 'UNAVAILABLE', messageId, reason } : unavailable;
         }
         if (!prepare && result.status === 'CAPTURED') return { status: 'CAPTURED', messageId };
         if (prepare && result.status === 'PREPARED' && result.taskId === prepare.taskId && typeof result.idempotencyKey === 'string' && /^ce-desktop-[a-f0-9]{64}$/.test(result.idempotencyKey)) return { status: 'PREPARED', messageId, taskId: prepare.taskId, idempotencyKey: result.idempotencyKey };

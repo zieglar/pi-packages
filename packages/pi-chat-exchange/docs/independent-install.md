@@ -191,7 +191,7 @@ The first-run sequence was tested with real installation, independent Pi 1.3.0 a
 
 ### Dependencies and Host-provided runtime packages
 
-The package declares `peerDependencies: { "@earendil-works/pi-coding-agent": "1.3.0" }`. For tarball prefix installation, npm installs that exact version in the consumer tree. Native managed npm uses `--legacy-peer-deps` to suppress automatic peers, and the independent 1.3.0 Host tree supplies them. This satisfies `pi-tui-kit`'s `"*"` peer without pulling a different full Pi generation such as 1.4.x. `@earendil-works/pi-tui` and `@sinclair/typebox` remain **pinned dependencies**, not peers: compiled ESM (TUI key handling and TypeBox runtime validation) must physically resolve from the installation tree in local-package mode. Changing them blindly to `"*"` peers could pull latest versions incompatible with the 1.3.0 Host. Pi warns that Host-provided packages should be peerDependencies. This known distribution tradeoff means two copies of same-version runtime code; recorded loading/first-run checks passed. Redesigning Host mapping is outside this guide.
+The package declares exact `1.3.0` peers for `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui`, plus the Host-provided `@sinclair/typebox` peer with the required `*` range. For tarball prefix installation, npm installs the peers in the consumer tree, including TypeBox for the standalone MCP executable. Native managed npm uses `--legacy-peer-deps`; the independent Pi 1.3.0 Host supplies and aliases these modules for extensions, avoiding duplicate Host module instances. The author toolchain pins TypeBox `0.34.52` as a development dependency so builds and tests remain reproducible.
 
 <a id="5-安全卸载升级与回滚"></a>
 

@@ -95,7 +95,11 @@ Storage 在读取任何正文 bytes 前检查 payload_read scope、ATTACHED Sess
 
 `/ce-tunnel permission status|grant|revoke` 分别检查、明确授予或撤销后续启动。connect/start 需要许可时先询问；取消不授权、不激活、不启动。撤销不终止已运行 client。固定 OS home 存储、精确范围、信任检查、旧版兼容与不确定写入处理见[持久启动许可](../docs/tunnel-manager-background.zh-CN.md#persistent-startup-permission)。记住的选择不是授权；profile、binding、script、client 变化须重新确认。此变更的真实 Pi 重启、云端、桌面与生产验收仍未验证。
 
-`/ce` 是普通用户入口：`/ce status`、`/ce setup`、`/ce session bind|unbind|list`、`/ce inbound status|enable|disable`、`/ce advanced transport|native|hooks|bindings|maintenance`。综合状态展示 native Pi Session、Endpoint、Participant、CE Session/Owner、Exchange、Tunnel、Native、inbound 策略和 MCP 来源；无法验证的证据明确显示 `UNKNOWN`。旧 `/ce-status`、`/ce-tunnel`、`/ce-native`、`/ce-hooks`、`/ce-bind` 仅保留兼容，不再出现在普通补全中。
+`/ce` 是普通用户入口。新的未绑定 live Session 会显示一条五分钟有效、只能使用一次的 `/ce pair ce_pair_… --from chatgpt/main` 指令；把它发到目标 ChatGPT 会话后运行 `/ce pair complete`，也可以直接 `/reload`，插件会在该次 reload 中应用精确匹配的已兑换 receipt。`/ce pair` 会生成新码并使旧码失效，`/ce pair --from <endpoint>` 可指定其他发送方；`/ce status` 只读。兑换后只注册当前 Pi Session，启用 payload read、ACK 和该发送方的 native inbound，并至多执行一次 Pi reload；不会重启 Tunnel/MCP、接管其他 Owner 或重放历史。`/ce session bind` 仍作为高级交互式后备入口。
+
+`/cenew` 是显式的已配对 Session 替换命令。它通过 Pi 官方 Session API 新建会话，并只让这个精确的直接后继一次性继承当前 sender 授权和工作区 Hooks；新会话仍获得全新的 CE 身份、lease 与 fencing。普通 `/new` 行为不变，不继承 CE 配对。
+
+底栏保留一个稳定的 `ce` 状态：`Checking`、`Connected`、`Pair required`、`Degraded` 或 `Unknown`。当前 Session 启用的 Hook 可独立贡献有界状态项，例如 `Desktop ● Ready`；插件失败不会改变 CE 联通状态。`/ce status` 将传输/绑定证据放在 `Chat Exchange` 区域，将每个声明了探针的当前 Session 插件放在 `Session Plugins` 区域并执行一次新检查；CE Connected、插件 Ready 与端到端消息投递是不同证据。没有状态声明的 Hook 不占据信息栏。其他入口包括 `/ce setup`、`/ce session bind|unbind|list`、`/ce inbound status|enable|disable`、`/ce advanced transport|native|hooks|bindings|maintenance`。旧 `/ce-status`、`/ce-tunnel`、`/ce-native`、`/ce-hooks`、`/ce-bind` 仅保留兼容，不再出现在普通补全中。
 
 - `session_start` 从可信 `ctx.sessionManager.getSessionId()` 查 allowlist。startup/reload/resume 有 mapping 时经 `resume()` 校验；reload 缺 mapping 拒绝，其他初始化分支可调用初始 beginSession。新/fork 不继承旧 mapping。
 - 成功绑定后 `pi.appendEntry("ce-mapping", ...)` 只保存 identifiers；capability 明文仅在 Host 内存。Heartbeat 默认 30 秒 / TTL 120 秒，仅维持自身 Ownership，不收发消息。

@@ -75,7 +75,7 @@ it("does not report fixture success after external cancellation", async () => {
 });
 it("preserves all pending save evidence", async () => {
   const s = await start(); await saveCandidate(s);
-  expect(await s.task).toEqual({ status: "saved", ...pending });
+  expect(await s.task).toEqual({ status: "saved", saveMode: "session", ...pending });
 });
 it("distinguishes the explicit Cancel action from ordinary Close", async () => {
   const s = await start();

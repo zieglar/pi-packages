@@ -24,6 +24,8 @@ import {
   type ProcessIdentity,
 } from "../../src/tunnel/background-manager.js";
 import type { HealthProbeInput } from "../../src/tunnel/health.js";
+import { mcpRuntimeSourceIdentity, writeMcpRuntimeMarker } from "../../src/tunnel/mcp-runtime-marker.js";
+import { createBackgroundAuthorizationStore } from "../../src/tunnel/background-authorization.js";
 
 const TUNNEL_ID = "tunnel_abcdef1234567890";
 const SELF_KEY = "Mon Oct 12 00:00:00 2026";
@@ -284,6 +286,119 @@ describe("BACKGROUND-05 default background startup budget", () => {
     expect(recordState(h).state).toBe("stopped");
     expect(recordState(h).note).toBe("startup not confirmed; verified stop");
     await m.stop();
+  });
+});
+
+describe("read-only configured service observation", () => {
+  it("falls back to current trusted discovery when the saved client path disappeared", async () => {
+    const h = makeHarness();
+    const authorizationDirectory = join(realpathSync(h.dir), "authorization");
+    createBackgroundAuthorizationStore({ directory: authorizationDirectory })
+      .writeSelection(h.profilePath, "/opt/homebrew/Cellar/tunnel-client/0.0.20/libexec/tunnel-client");
+    const stableClient = "/opt/homebrew/opt/tunnel-client/bin/tunnel-client";
+    const wrapperClient = "/opt/homebrew/Cellar/tunnel-client/0.0.21/bin/tunnel-client";
+    const currentClient = "/opt/homebrew/Cellar/tunnel-client/0.0.21/libexec/tunnel-client";
+    const resolutions: Array<NodeJS.ProcessEnv | undefined> = [];
+    const { clientPath: _clientPath, ...options } = h.options;
+    const manager = createBackgroundTunnelManager({
+      ...options,
+      authorizationDirectory,
+      resolveClient: (input?: { env?: NodeJS.ProcessEnv }) => {
+        const env = input?.env;
+        resolutions.push(env);
+        if (env?.CE_TUNNEL_CLIENT_PATH?.includes("/0.0.20/")) throw new Error("saved client disappeared");
+        return env?.CE_TUNNEL_CLIENT_PATH === stableClient ? wrapperClient : undefined;
+      },
+      resolveWrapper: (path: string) => path === wrapperClient ? { execTarget: currentClient } : undefined,
+      listProcesses: async () => ({ kind: "ok", processes: [
+        { pid: 51001, command: `${currentClient} run --profile-file ${h.profilePath}`, startedKey: "external-tunnel" },
+      ] }),
+      probeHealth: async () => healthyProbe(),
+    });
+
+    await expect(manager.observeConfiguredService()).resolves.toMatchObject({
+      tunnelProcess: "RUNNING", tunnelHealth: "HEALTHY", tunnelPid: 51001,
+    });
+    expect(resolutions).toEqual([
+      { CE_TUNNEL_CLIENT_PATH: "/opt/homebrew/Cellar/tunnel-client/0.0.20/libexec/tunnel-client" },
+      { CE_TUNNEL_CLIENT_PATH: stableClient },
+    ]);
+  });
+
+  it("reports an exactly matched external Tunnel and MCP without adopting either process", async () => {
+    const h = makeHarness();
+    const tunnelCommand = `${h.client} run --profile-file ${h.profilePath}`;
+    const mcpCommand = `/usr/bin/node /tmp/mcp-stdio.js --config ${join(h.dir, "binding.json")}`;
+    const m = createBackgroundTunnelManager({
+      ...h.options,
+      listProcesses: async () => ({ kind: "ok", processes: [
+        { pid: 51001, command: tunnelCommand, startedKey: "external-tunnel" },
+        { pid: 51002, command: mcpCommand, startedKey: "external-mcp" },
+      ] }),
+      probeHealth: async (_urlFile, pid) => {
+        expect(pid).toBe(51001);
+        return healthyProbe();
+      },
+    });
+
+    await expect(m.observeConfiguredService()).resolves.toEqual({
+      tunnelProcess: "RUNNING",
+      tunnelHealth: "HEALTHY",
+      tunnelPid: 51001,
+      mcpProcess: "RUNNING",
+      mcpSource: expect.stringContaining("mcp-stdio"),
+      mcpRuntime: { state: "UNVERIFIED" },
+    });
+    expect(m.status().state).toBe("STOPPED");
+    expect(m.status().runId).toBeUndefined();
+  });
+
+  it("keeps process and health uncertainty distinct", async () => {
+    const h = makeHarness();
+    const m = createBackgroundTunnelManager({ ...h.options,
+      listProcesses: async () => ({ kind: "unknown" }),
+      probeHealth: async () => { throw new Error("must not probe an unknown process"); },
+    });
+    await expect(m.observeConfiguredService()).resolves.toEqual({
+      tunnelProcess: "UNKNOWN", tunnelHealth: "UNKNOWN", mcpProcess: "UNKNOWN", mcpSource: "UNKNOWN", mcpRuntime: { state: "UNVERIFIED" },
+    });
+  });
+
+  it("reports the launch-time MCP version and detects replaced runtime code", async () => {
+    const h = makeHarness();
+    const packageRoot = join(h.dir, "package");
+    const sourcePath = join(packageRoot, "dist", "bin", "mcp-stdio.js");
+    mkdirSync(dirname(sourcePath), { recursive: true, mode: 0o700 });
+    writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "@zieglar/pi-chat-exchange", version: "0.3.6" }), { mode: 0o600 });
+    writeFileSync(sourcePath, "export const runtime = 1;\n", { mode: 0o600 });
+    const bindingPath = join(h.dir, "binding.json");
+    writeFileSync(bindingPath, "{}\n", { mode: 0o600 });
+    const mcpCommand = `/usr/bin/node ${sourcePath} --config ${bindingPath}`;
+    writeFileSync(h.profilePath, readFileSync(h.profilePath, "utf8").replace(/\/usr\/bin\/node \/tmp\/mcp-stdio\.js --config [^\"]+/, mcpCommand));
+    writeMcpRuntimeMarker({ bindingPath, identity: { pid: 51002, startedKey: "external-mcp" }, source: mcpRuntimeSourceIdentity(packageRoot) });
+    writeFileSync(sourcePath, "export const runtime = 2;\n", { mode: 0o600 });
+    const m = createBackgroundTunnelManager({ ...h.options,
+      listProcesses: async () => ({ kind: "ok", processes: [
+        { pid: 51001, command: `${h.client} run --profile-file ${h.profilePath}`, startedKey: "external-tunnel" },
+        { pid: 51002, command: mcpCommand, startedKey: "external-mcp" },
+      ] }),
+      probeHealth: async () => healthyProbe(),
+    });
+
+    await expect(m.observeConfiguredService()).resolves.toMatchObject({
+      mcpProcess: "RUNNING",
+      mcpRuntime: { state: "STALE", packageVersion: "0.3.6" },
+    });
+  });
+
+  it("does not turn an unparseable health result into unhealthy evidence", async () => {
+    const h = makeHarness();
+    const m = createBackgroundTunnelManager({ ...h.options,
+      listProcesses: async () => ({ kind: "ok", processes: [{ pid: 51001,
+        command: `${h.client} run --profile-file ${h.profilePath}`, startedKey: "external" }] }),
+      probeHealth: async () => ({ stdout: "not-json", exitCode: 2 }),
+    });
+    await expect(m.observeConfiguredService()).resolves.toMatchObject({ tunnelProcess: "RUNNING", tunnelHealth: "UNKNOWN" });
   });
 });
 
