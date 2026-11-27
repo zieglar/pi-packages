@@ -2030,6 +2030,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
         text: { type: "string", description: "Message text; stored as the private payload" },
         idempotencyKey: { type: "string", description: "Stable key; replays return the original message" },
         replyTo: { type: "string", pattern: "^msg_[0-9A-HJKMNP-TV-Z]{26}$", description: "Original request Message ID for a reply; the sender and recipient are verified" },
+        deliveryMode: { type: "string", enum: ["followUp", "steer"], description: "Requested delivery mode; defaults to followUp" },
       },
       required: ["to", "text", "idempotencyKey"],
       additionalProperties: false,

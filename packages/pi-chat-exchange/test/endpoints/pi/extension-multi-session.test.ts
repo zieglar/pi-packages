@@ -56,7 +56,7 @@ vi.mock("../../../dist/endpoints/pi/session-host.js", async (original) => {
 type Entry = { type: string; customType: string; data: unknown };
 type Context = { mode: string; hasUI: boolean; cwd: string; executeTool?: import("../../../pi-extension/native-inbound.js").NativeInboundToolContext["executeTool"]; reload?: () => Promise<void>; sessionManager: { getSessionId(): string; getSessionFile(): string; getBranch(): Entry[]; getEntries(): Entry[] }; ui: { notify: ReturnType<typeof vi.fn>; setStatus: ReturnType<typeof vi.fn>; confirm: ReturnType<typeof vi.fn<(title: string, message: string) => Promise<boolean>>>; select: ReturnType<typeof vi.fn<(title: string, options: string[]) => Promise<string | undefined>>>; input: ReturnType<typeof vi.fn<(title: string, placeholder?: string) => Promise<string | undefined>>>; custom: ReturnType<typeof vi.fn> } };
 type Handler = (event: { reason: string }, ctx: Context) => Promise<void>;
-type Tool = { name: string; execute(id: string, input: unknown, signal: undefined, update: undefined, ctx: Context): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean; details: Record<string, unknown> }> };
+type Tool = { name: string; parameters: { properties: Record<string, unknown> }; execute(id: string, input: unknown, signal: undefined, update: undefined, ctx: Context): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean; details: Record<string, unknown> }> };
 const dirs: string[] = []; const shutdowns: Array<() => Promise<void>> = [];
 beforeEach(() => { for (const key of Object.keys(process.env)) if (key.startsWith("CE_")) vi.stubEnv(key, undefined); vi.spyOn(process, "kill").mockImplementation(seam.signal); vi.useFakeTimers(); seam.hosts.length = 0; seam.stores.length = 0; seam.manager = undefined; seam.generateLaunchAgent.mockClear(); });
 afterEach(async () => {
@@ -449,6 +449,21 @@ it("actual factory events bind independent A/B Hosts; exact ChatGPT messages/rep
   expect((await a.call("ce_send", { to: "pi/B", text: "no", idempotencyKey: "no-pi-pi" })).isError).toBe(true);
   await a.stop(); expect((await b.call("ce_inbox_list")).isError).not.toBe(true); chat.end();
 });
+it("exposes delivery mode on Pi send and preserves it in the idempotent request", async () => {
+  const f = await fixture(); const a = await f.runtime("real-A"); await a.start();
+  const store = openStore({ directory: f.binding.config.store.directory, filename: f.binding.config.store.file }); seam.stores.push(store);
+  const config = readSelectedMultiSessionPolicy(f.profilePath).config;
+  const chatHost = new CeEndpointHost(store, { adapter: "chatgpt", exchangeNamespace: config.exchange.namespace, exchangeIdempotencyKey: config.exchange.idempotencyKey,
+    allowlist: [{ endpointId: "chatgpt/main" }], recipients: config.recipients, payloadRead: { enabled: true }, ack: { enabled: true } });
+  chatHost.beginSession("chatgpt/main");
+  expect(a.tools.get("ce_send")!.parameters.properties.deliveryMode).toMatchObject({ type: "string", enum: ["followUp", "steer"] });
+  const input = { to: "chatgpt/main", text: "mode test", idempotencyKey: "pi-mode", deliveryMode: "steer" };
+  expect((await a.call("ce_send", input)).isError).not.toBe(true);
+  expect((await a.call("ce_send", { ...input, deliveryMode: "followUp" })).isError).toBe(true);
+  expect((await a.call("ce_send", { ...input, idempotencyKey: "invalid-mode", deliveryMode: "invalid" })).isError).toBe(true);
+  chatHost.end("chatgpt/main");
+});
+
 it("opt-in native intake discovers and receives only a fresh message through the registered current-Session tools", async () => {
   const f = await fixture();
   const manager = seam.manager as ReturnType<typeof createBackgroundTunnelManager>;
