@@ -22,10 +22,14 @@ export type StoreLifecycleErrorCode =
 
 export class StoreLifecycleError extends Error {
   readonly code: StoreLifecycleErrorCode;
+  readonly observedSchemaVersion?: number;
+  readonly supportedSchemaVersion?: number;
 
-  constructor(code: StoreLifecycleErrorCode, message: string, options?: ErrorOptions) {
+  constructor(code: StoreLifecycleErrorCode, message: string, options?: ErrorOptions & { observedSchemaVersion?: number; supportedSchemaVersion?: number }) {
     super(message, options);
     this.name = "StoreLifecycleError";
     this.code = code;
+    if (options?.observedSchemaVersion !== undefined) this.observedSchemaVersion = options.observedSchemaVersion;
+    if (options?.supportedSchemaVersion !== undefined) this.supportedSchemaVersion = options.supportedSchemaVersion;
   }
 }

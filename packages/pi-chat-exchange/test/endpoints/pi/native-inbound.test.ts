@@ -42,6 +42,70 @@ it("records a metadata-only claim before requesting one native follow-up", () =>
   expect(f.wake.mock.calls[0]![0]).toMatchObject({ messageId: "msg_fresh" });
   expect(JSON.stringify(f.entries) + JSON.stringify(f.wake.mock.calls)).not.toContain(f.text);
 });
+it.each([undefined, "followUp", "steer"] as const)("binds delivery mode %s to the claim and wake", async mode => {
+  const f = fixture(); if (mode !== undefined) Object.assign(f.metadata, { deliveryMode: mode });
+  const c = f.create(); c.poll(); f.create().poll();
+  expect(f.wake).toHaveBeenCalledTimes(1);
+  expect(f.wake).toHaveBeenCalledWith(expect.objectContaining({ deliveryMode: mode ?? "followUp" }));
+  expect(f.entries[0]?.data).toMatchObject({ deliveryMode: mode ?? "followUp" });
+  await expect(c.receive("msg_fresh", { executeTool: f.executeTool })).resolves.toMatchObject({ text: f.text });
+});
+it("rechecks target, metadata and mode before deferred wake delivery", () => {
+  const f = fixture(); Object.assign(f.metadata, { deliveryMode: "steer" }); let admitted = true;
+  const c = f.create(() => admitted); c.poll();
+  const { policyDigest, policyRevision } = f.wake.mock.calls[0]![0];
+  expect(c.canDeliver("msg_fresh", policyDigest, policyRevision, "steer")).toBe(true);
+  admitted = false; expect(c.canDeliver("msg_fresh", policyDigest, policyRevision, "steer")).toBe(false);
+  admitted = true; Object.assign(f.metadata, { deliveryMode: "followUp" });
+  expect(c.canDeliver("msg_fresh", policyDigest, policyRevision, "steer")).toBe(false);
+  Object.assign(f.metadata, { deliveryMode: "steer" }); f.switchSession();
+  expect(c.canDeliver("msg_fresh", policyDigest, policyRevision, "steer")).toBe(false);
+});
+it("does not deliver a deferred wake after the message was already received", async () => {
+  const f = fixture(); const c = f.create(); c.poll();
+  const { policyDigest, policyRevision } = f.wake.mock.calls[0]![0];
+  await c.receive("msg_fresh", { executeTool: f.executeTool });
+  expect(c.canDeliver("msg_fresh", policyDigest, policyRevision, "followUp")).toBe(false);
+});
+it.each([undefined, null, "", "STEER", "other", 1, false])("rejects invalid explicit delivery mode %j before wake", mode => {
+  const f = fixture(); Object.assign(f.metadata, { deliveryMode: mode }); f.create().poll();
+  expect(f.wake).not.toHaveBeenCalled(); expect(f.append).not.toHaveBeenCalled();
+});
+it.each(["ce_read", "ce_read_payload"])("rejects delivery mode changed in %s", async changedTool => {
+  const f = fixture(); Object.assign(f.metadata, { deliveryMode: "steer" }); const c = f.create(); c.poll();
+  f.executeTool.mockImplementation(async name => outcome({ details: { ...f.metadata, deliveryMode: name === changedTool ? "followUp" : "steer" },
+    content: name === "ce_read_payload" ? [{ type: "text", text: "header" }, { type: "text", text: f.text }] : [] }));
+  await expect(c.receive("msg_fresh", { executeTool: f.executeTool })).rejects.toThrow(/INBOUND_METADATA_(CHANGED|MISMATCH)/);
+});
+it.each(["ce_read", "ce_read_payload"])("rejects invalid or missing steer mode in %s", async changedTool => {
+  for (const mode of [null, undefined]) {
+    const f = fixture(); Object.assign(f.metadata, { deliveryMode: "steer" }); const c = f.create(); c.poll();
+    f.executeTool.mockImplementation(async name => {
+      const details: Record<string, unknown> = { ...f.metadata };
+      if (name === changedTool) { if (mode === undefined) delete details.deliveryMode; else details.deliveryMode = mode; }
+      return outcome({ details, content: name === "ce_read_payload" ? [{ type: "text", text: "header" }, { type: "text", text: f.text }] : [] });
+    });
+    await expect(c.receive("msg_fresh", { executeTool: f.executeTool })).rejects.toThrow(/INBOUND_METADATA_/);
+  }
+});
+it.each(["policy", "session"])("revokes a steer claim when %s changes", async boundary => {
+  const f = fixture(); Object.assign(f.metadata, { deliveryMode: "steer" }); const c = f.create(); c.poll();
+  if (boundary === "policy") fs.unlinkSync(f.policyPath); else f.switchSession();
+  await expect(c.receive("msg_fresh", { executeTool: f.executeTool })).rejects.toThrow();
+  expect(f.executeTool).not.toHaveBeenCalled();
+});
+it("accepts old persisted claims and nested results without a delivery mode", async () => {
+  const f = fixture(); const c = f.create(); c.poll();
+  delete (f.entries[0]!.data as Record<string, unknown>).deliveryMode;
+  delete ((f.entries[0]!.data as Record<string, unknown>).metadata as Record<string, unknown>).deliveryMode;
+  await expect(f.create().receive("msg_fresh", { executeTool: f.executeTool })).resolves.toMatchObject({ text: f.text });
+});
+it("rejects a tampered persisted claim mode", async () => {
+  const f = fixture(); Object.assign(f.metadata, { deliveryMode: "steer" }); const c = f.create(); c.poll();
+  (f.entries[0]!.data as Record<string, unknown>).deliveryMode = "followUp";
+  await expect(c.receive("msg_fresh", { executeTool: f.executeTool })).rejects.toThrow();
+  expect(f.executeTool).not.toHaveBeenCalled();
+});
 it("does not wake a task assigned to a different Owner", () => {
   const f = fixture();
   f.create(() => false).poll();

@@ -262,14 +262,15 @@ export function classifyStoreShape(db: DatabaseSync, currentOnly = false): Store
   if (typeof sqliteSchemaVersion !== "number") {
     throw new StoreLifecycleError("STORAGE_CORRUPT", "SQLite did not return a schema version");
   }
+  if (sqliteApplicationId !== SQLITE_APPLICATION_ID) {
+    throw new StoreLifecycleError("STORAGE_FOREIGN_STORE", "SQLite application identity is not Chat Exchange");
+  }
   if (sqliteSchemaVersion > CURRENT_SCHEMA_VERSION) {
     throw new StoreLifecycleError(
       "STORAGE_SCHEMA_TOO_NEW",
       `store schema ${sqliteSchemaVersion} is newer than supported schema ${CURRENT_SCHEMA_VERSION}`,
+      { observedSchemaVersion: sqliteSchemaVersion, supportedSchemaVersion: CURRENT_SCHEMA_VERSION },
     );
-  }
-  if (sqliteApplicationId !== SQLITE_APPLICATION_ID) {
-    throw new StoreLifecycleError("STORAGE_FOREIGN_STORE", "SQLite application identity is not Chat Exchange");
   }
 
   const tables = new Set(

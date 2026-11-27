@@ -333,8 +333,40 @@ describe("private durable store schema and lifecycle", () => {
     db.exec(`PRAGMA user_version=${CURRENT_SCHEMA_VERSION + 1}`);
     db.close();
     expect(() => openStore(location)).toThrowError(
-      expect.objectContaining({ code: "STORAGE_SCHEMA_TOO_NEW" }),
+      expect.objectContaining({ code: "STORAGE_SCHEMA_TOO_NEW", observedSchemaVersion: CURRENT_SCHEMA_VERSION + 1, supportedSchemaVersion: CURRENT_SCHEMA_VERSION }),
     );
+  });
+
+  it("refuses a newer version without interpreting its migration ledger", () => {
+    const location = storeLocation();
+    initializeStore({ ...location, storeUuid: () => STORE_UUID }).close();
+    const db = openStorageConnection(location);
+    db.exec("DROP TABLE schema_migrations; PRAGMA user_version=9");
+    db.close();
+    expect(() => openStore(location)).toThrowError(expect.objectContaining({
+      code: "STORAGE_SCHEMA_TOO_NEW",
+      observedSchemaVersion: CURRENT_SCHEMA_VERSION + 1,
+      supportedSchemaVersion: CURRENT_SCHEMA_VERSION,
+    }));
+  });
+
+  it("reports integrity failures before a newer schema version", () => {
+    const location = storeLocation();
+    initializeStore({ ...location, storeUuid: () => STORE_UUID }).close();
+    const db = openStorageConnection(location);
+    db.exec(`PRAGMA foreign_keys=OFF; CREATE TABLE integrity_parent (id INTEGER PRIMARY KEY);
+      CREATE TABLE integrity_child (parent_id INTEGER REFERENCES integrity_parent(id));
+      INSERT INTO integrity_child VALUES (1); PRAGMA user_version=9`);
+    db.close();
+    expect(() => openStore(location)).toThrowError(expect.objectContaining({ code: "STORAGE_CORRUPT" }));
+  });
+
+  it("does not report a foreign database as a schema upgrade", () => {
+    const location = storeLocation();
+    const foreign = openStorageConnection(location);
+    foreign.exec(`PRAGMA user_version=${CURRENT_SCHEMA_VERSION + 1}; CREATE TABLE unrelated (id TEXT PRIMARY KEY)`);
+    foreign.close();
+    expect(() => openStore(location)).toThrowError(expect.objectContaining({ code: "STORAGE_FOREIGN_STORE" }));
   });
 
   it("rejects a migration checksum mismatch", () => {

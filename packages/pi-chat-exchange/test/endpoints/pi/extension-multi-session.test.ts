@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -85,14 +86,14 @@ async function fixture(convert = true) {
   for (const [key, value] of Object.entries({ CE_ALLOWLIST: "", CE_STORE_DIR: "", CE_STORE_FILE: "", CE_TUNNEL_PROFILE: profilePath, CE_LEASE_TTL_SECONDS: "", CE_TUNNEL_OFFLINE_TEST: "" })) vi.stubEnv(key, value);
   async function runtime(id: string, entries: Entry[] = [], options: { hasUI?: boolean; mode?: string } = {}) {
     const events = new Map<string, Handler>(); const tools = new Map<string, Tool>(); const commands = new Map<string, { description: string; getArgumentCompletions?: (prefix: string) => Array<{ value: string }>; handler(args: string, ctx: Context): Promise<void> }>();
-    let runtimeId = id; const messages: unknown[] = [];
+    let runtimeId = id; const messages: unknown[] = []; const deliveries: unknown[] = [];
     const ctx: Context = { mode: options.mode ?? "tui", hasUI: options.hasUI ?? true, cwd: join(dir, id), sessionManager: { getSessionId: () => runtimeId, getSessionFile: () => "not-authority", getBranch: () => entries, getEntries: () => entries }, ui: { notify: vi.fn(), setStatus: vi.fn(), confirm: vi.fn(async () => true), select: vi.fn(async () => undefined), input: vi.fn(async () => undefined), custom: vi.fn() } };
     const { default: factory } = await import(new URL("../../../pi-extension/index.ts", import.meta.url).href);
     const reloadFactory = () => factory({ on: (name: string, handler: Handler) => events.set(name, handler), registerTool: (tool: Tool) => tools.set(tool.name, tool), registerCommand: (name: string, command: { description: string; getArgumentCompletions?: (prefix: string) => Array<{ value: string }>; handler(args: string, ctx: Context): Promise<void> }) => commands.set(name, command), appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
-      sendMessage: (message: unknown) => { messages.push(message); } });
+      sendMessage: (message: unknown, options: unknown) => { messages.push(message); deliveries.push(options); } });
     reloadFactory();
     const stop = (reason = "quit") => events.get("session_shutdown")!({ reason }, ctx); shutdowns.push(stop);
-    return { ctx, entries, events, tools, messages, stop, start: (reason = "startup") => events.get("session_start")!({ reason }, ctx),
+    return { ctx, entries, events, tools, messages, deliveries, stop, start: (reason = "startup") => events.get("session_start")!({ reason }, ctx),
       reloadFactory,
       call: (name: string, input: unknown = {}, toolContext = ctx) => tools.get(name)!.execute("test", input, undefined, undefined, toolContext),
       command: (args: string) => commands.get("ce-tunnel")!.handler(args, ctx),
@@ -484,6 +485,12 @@ it("opt-in native intake discovers and receives only a fresh message through the
   expect(a.entries.filter(e => e.customType === "ce-inbound-receive" && (e.data as { status?: string }).status === "STARTED")).toHaveLength(1);
   expect((await b.call("ce_receive_task", { messageId: sent.messageId }, { ...b.ctx, executeTool })).isError).toBe(true);
   await vi.advanceTimersByTimeAsync(10000); expect(a.messages).toHaveLength(1);
+  expect(a.deliveries).toEqual([{ triggerTurn: true, deliverAs: "followUp" }]);
+  const steered = chatHost.send("chatgpt/main", { to: "pi/A", text: "steer task", idempotencyKey: "fresh-steer", deliveryMode: "steer" });
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(a.deliveries).toEqual([{ triggerTurn: true, deliverAs: "followUp" }, { triggerTurn: true, deliverAs: "steer" }]);
+  const steerRead = await a.call("ce_receive_task", { messageId: steered.messageId }, { ...a.ctx, executeTool });
+  expect(steerRead.isError).not.toBe(true); expect(steerRead.content[0]?.text).toContain("steer task");
   fs.unlinkSync(policyPath);
   expect((await a.call("ce_receive_task", { messageId: sent.messageId }, { ...a.ctx, executeTool })).details).toMatchObject({ code: "INBOUND_DISABLED" });
   chatHost.end("chatgpt/main");
@@ -507,6 +514,46 @@ it("does not let a queued native inbound poll crash after its Session context be
   expect(() => inboundPoll!()).not.toThrow();
 });
 
+
+it.each(["tui", "rpc"])("reports a too-new Store schema at startup and through ce-status in %s", async mode => {
+  const f = await fixture(false);
+  const config = f.binding.config.store;
+  initializeStore({ directory: config.directory, filename: config.file }).close();
+  const db = new DatabaseSync(join(config.directory, config.file));
+  try { db.exec("PRAGMA user_version=9"); } finally { db.close(); }
+  const a = await f.runtime("real-A", [], { mode }); await a.start();
+  expect(a.notices()).toContain("STORAGE_SCHEMA_TOO_NEW");
+  expect(a.notices()).toContain("9"); expect(a.notices()).toContain("8");
+  expect(a.notices()).toMatch(/upgrade|update/i);
+  const frames: string[][] = [];
+  if (mode === "tui") a.ctx.ui.custom.mockImplementation((async (factory: any) => {
+    const component = await factory({ terminal: { rows: 24 }, requestRender() {} }, { fg: (_: string, value: string) => value, bold: (value: string) => value }, { matches: () => false }, () => {});
+    frames.push(component.render(140));
+    await component.waitForPending?.();
+    frames.push(component.render(140));
+  }) as any);
+  a.ctx.ui.notify.mockClear(); await a.ceStatus();
+  expect(a.notices()).toContain("STORAGE_SCHEMA_TOO_NEW");
+  expect(a.notices()).toContain("9"); expect(a.notices()).toContain("8");
+  expect(a.notices()).toMatch(/reload/i);
+  if (mode === "tui") {
+    expect(a.ctx.ui.custom).toHaveBeenCalled();
+    expect(frames).toHaveLength(2);
+    for (const frame of frames) expect(frame.join("\n")).toContain("STORAGE_SCHEMA_TOO_NEW");
+  } else expect(a.ctx.ui.notify.mock.calls.length).toBeGreaterThan(0);
+});
+
+it("does not advise upgrading for a mismatched Store version and ledger", async () => {
+  const f = await fixture(false);
+  const config = f.binding.config.store;
+  initializeStore({ directory: config.directory, filename: config.file }).close();
+  const db = new DatabaseSync(join(config.directory, config.file));
+  try { db.exec("PRAGMA user_version=7"); } finally { db.close(); }
+  const a = await f.runtime("real-A"); await a.start();
+  expect(a.notices()).toContain("CE_HOST_UNAVAILABLE");
+  expect(a.notices()).not.toContain("STORAGE_SCHEMA_TOO_NEW");
+  expect(a.notices()).not.toMatch(/upgrade the CE plugin/i);
+});
 it("abandoned local mutex fails closed with operator hint; clean scope is unaffected", async () => {
   vi.useRealTimers();
   const f = await fixture();

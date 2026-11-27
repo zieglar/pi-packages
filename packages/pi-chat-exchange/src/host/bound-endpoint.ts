@@ -190,7 +190,7 @@ export class CeBoundEndpoint {
     }
   }
 
-  send(input: { readonly to: string; readonly text: string; readonly idempotencyKey: string; readonly replyTo?: string }, selection?: { readonly policyId: string; readonly selectionVersion: number; readonly targetRuntimeSessionId: string; readonly bindingEpoch: number }): CeSendResult {
+  send(input: { readonly to: string; readonly text: string; readonly idempotencyKey: string; readonly replyTo?: string; readonly deliveryMode?: "followUp" | "steer" }, selection?: { readonly policyId: string; readonly selectionVersion: number; readonly targetRuntimeSessionId: string; readonly bindingEpoch: number }): CeSendResult {
     return this.#run(true, { kind: "send", to: input.to }, () =>
       this.#host.send(this.#endpointId, input, selection),
     );

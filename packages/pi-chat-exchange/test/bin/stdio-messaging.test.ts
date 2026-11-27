@@ -7,7 +7,8 @@
  * bidirectional cross-adapter delivery, payload exposure shape, clean lease
  * release on SIGTERM, clean restart, and fail-closed restart after a crash.
  */
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -102,6 +103,21 @@ describe("MCP stdio entrypoint in --config mode (built artifact)", () => {
     }
   });
 
+  it("reports a too-new Store schema from the actual MCP process", () => {
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ce-mcp-schema-"));
+    try {
+      const configPath = writeConfig(root);
+      const directory = join(root, "store"), filename = "ce-store.sqlite";
+      initializeStore({ directory, filename }).close();
+      const db = new DatabaseSync(join(directory, filename));
+      try { db.exec("PRAGMA user_version=9"); } finally { db.close(); }
+      const child = spawnSync(process.execPath, [stdioEntry, "--config", configPath], { encoding: "utf8", timeout: 15_000 });
+      expect(child.status).toBe(1);
+      expect(child.stderr).toContain("STORAGE_SCHEMA_TOO_NEW observedSchemaVersion=9 supportedSchemaVersion=8");
+      expect(child.stdout).toBe("");
+      expect(child.stderr).not.toContain(root);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it("releases ownership and detaches the Session when the client closes stdin", { timeout: 30_000 }, async () => {
     const root = mkdtempSync(join(realpathSync(tmpdir()), "ce-mcp-eof-"));
     try {

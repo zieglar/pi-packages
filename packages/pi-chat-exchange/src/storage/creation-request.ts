@@ -19,6 +19,7 @@ export interface CreateMessageRequest {
   readonly to: EndpointRef;
   readonly payload: Uint8Array;
   readonly idempotencyKey: string;
+  readonly deliveryMode?: "followUp" | "steer";
 }
 
 export interface NormalizedExchangeRequest {
@@ -134,7 +135,7 @@ class CapturedMessage implements NormalizedMessageRequest {
   readonly payloadDigest: string;
   readonly payloadLength: number;
 
-  constructor(exchangeId: string, idempotencyKey: string, from: EndpointRef, to: EndpointRef, copiedBytes: Uint8Array) {
+  constructor(exchangeId: string, idempotencyKey: string, from: EndpointRef, to: EndpointRef, copiedBytes: Uint8Array, deliveryMode: "followUp" | "steer") {
     this.#payload = copiedBytes;
     this.exchangeId = exchangeId;
     this.idempotencyKey = idempotencyKey;
@@ -145,10 +146,7 @@ class CapturedMessage implements NormalizedMessageRequest {
     this.toEndpointJson = JSON.stringify(to);
     this.payloadLength = this.#payload.byteLength;
     this.payloadDigest = createHash("sha256").update(this.#payload).digest("hex");
-    this.requestDigest = canonicalDigest({
-      op: "chat-exchange/message.create", v: 1, exchangeId, from, to,
-      payloadDigest: this.payloadDigest, payloadLength: this.payloadLength,
-    });
+    this.requestDigest = messageRequestDigest(this, deliveryMode);
     Object.freeze(this);
   }
 
@@ -175,17 +173,29 @@ export function normalizeCreateExchangeRequest(input: unknown): NormalizedExchan
   });
 }
 
+/** The v1 fingerprint stays unchanged for follow-ups, preserving legacy replays.
+ * The steer fingerprint commits to the requested mode without changing Message or Store schema. */
+export function messageRequestDigest(message: { exchangeId: string; from: EndpointRef; to: EndpointRef; payloadDigest: string; payloadLength: number }, mode: "followUp" | "steer"): string {
+  return canonicalDigest({
+    op: "chat-exchange/message.create", v: 1, exchangeId: message.exchangeId, from: message.from, to: message.to,
+    payloadDigest: message.payloadDigest, payloadLength: message.payloadLength,
+    ...(mode === "steer" ? { deliveryMode: "steer" } : {}),
+  });
+}
+
 /** Does not retain the original request, EndpointRefs, or caller byte storage. */
 export function normalizeCreateMessageRequest(input: unknown): NormalizedMessageRequest {
-  const names = ["exchangeId", "from", "to", "payload", "idempotencyKey"];
-  const fields = capture(input, names, names, "request");
+  const names = ["exchangeId", "from", "to", "payload", "idempotencyKey", "deliveryMode"];
+  const fields = capture(input, names, ["exchangeId", "from", "to", "payload", "idempotencyKey"], "request");
+  const deliveryMode = fields.deliveryMode === undefined ? "followUp" : fields.deliveryMode;
+  if (deliveryMode !== "followUp" && deliveryMode !== "steer") reject("deliveryMode: invalid mode");
   const exchangeId = text(fields.exchangeId, "exchangeId", 29);
   if (!EXCHANGE_ID_PATTERN.test(exchangeId)) reject("exchangeId: invalid identity");
   const idempotencyKey = text(fields.idempotencyKey, "idempotencyKey", IDEMPOTENCY_KEY_MAX_LENGTH, true);
   const from = normalizeEndpoint(fields.from, "from");
   const to = normalizeEndpoint(fields.to, "to");
   const copiedBytes = copyPayload(fields.payload);
-  return new CapturedMessage(exchangeId, idempotencyKey, from, to, copiedBytes);
+  return new CapturedMessage(exchangeId, idempotencyKey, from, to, copiedBytes, deliveryMode);
 }
 
 /**

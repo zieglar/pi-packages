@@ -67,6 +67,21 @@ it("advertises a connector-compatible Runtime binding query and sends to its dis
   });
 });
 
+it("retains delivery mode when resolving the shared selected target", async () => {
+  const calls: unknown[] = [];
+  const selection = { endpointId: "B", policyId: "p1", generation: 2, runtimeSessionId: "s1", epoch: 3 };
+  await connected({
+    port: { send(input: unknown, metadata: unknown) { calls.push([input, metadata]); return { disposition: "CREATED" as const, messageId: "msg_1", auditSequence: 1, recipient: "B" }; } } as never,
+    selectedTarget: () => selection,
+    discovery: { discover: () => ({ ...projection(), targets: [{ ...projection().targets[0]!, active: "true" as const }] }) },
+  }, async client => {
+    const sent = await client.callTool({ name: "ce_send", arguments: { selectionVersion: 2, text: "hello", idempotencyKey: "k", deliveryMode: "steer" } });
+    expect(sent.isError).toBe(false);
+    expect(calls).toEqual([[{ to: "B", text: "hello", idempotencyKey: "k", deliveryMode: "steer" },
+      { policyId: "p1", selectionVersion: 2, targetRuntimeSessionId: "s1", bindingEpoch: 3 }]]);
+  });
+});
+
 it("keeps legacy tool order and refuses discovery without an explicit port", async () => {
   for (const binding of [undefined, base(), { ...base(), ackEnabled: true }]) {
     await connected(binding, async client => {

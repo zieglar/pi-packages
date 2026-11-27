@@ -7,7 +7,7 @@
  * exactly as the trust boundary requires (warning first, text only in the
  * second content item, never in structured output).
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   callMessagingTool,
   isMessagingToolName,
@@ -89,6 +89,32 @@ describe("ce_send", () => {
       recipient: "pi/main",
     });
     expect(JSON.parse(result.content[0]!.text)).toEqual(result.structuredContent);
+  });
+
+  it.each(["followUp", "steer"] as const)("passes deliveryMode %s and existing send fields to the port", deliveryMode => {
+    const send = vi.fn(() => ({ disposition: "REPLAYED" as const, messageId: "msg_1", auditSequence: 7, recipient: "pi/main" }));
+    const input = { to: "pi/main", text: "private payload", idempotencyKey: "k1", replyTo: "msg_01ARZ3NDEKTSV4RRFFQ69G5FAV", deliveryMode };
+    const selection = { policyId: "p1", selectionVersion: 1, targetRuntimeSessionId: "s1", bindingEpoch: 2 };
+
+    const result = callMessagingTool(port({ send }), "ce_send", input, selection);
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(send).toHaveBeenCalledWith(input, selection);
+    expect(result.structuredContent?.disposition).toBe("REPLAYED");
+  });
+
+  it("preserves the port call shape when deliveryMode is omitted", () => {
+    const send = vi.fn(() => ({ disposition: "CREATED" as const, messageId: "msg_1", auditSequence: 7, recipient: "pi/main" }));
+    const input = { to: "pi/main", text: "hi", idempotencyKey: "k1" };
+
+    expect(callMessagingTool(port({ send }), "ce_send", input).isError).toBe(false);
+    expect(send).toHaveBeenCalledWith(input, undefined);
+  });
+
+  it.each(["", "followup", "STEER", "other", null, 1, true, {}])("rejects invalid deliveryMode %s before calling the port", deliveryMode => {
+    const send = vi.fn();
+    expect(() => callMessagingTool(port({ send }), "ce_send", { to: "pi/main", text: "hi", idempotencyKey: "k1", deliveryMode })).toThrow(MessagingArgsError);
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("rejects every authority-selecting field as invalid arguments", () => {

@@ -17,7 +17,7 @@
  *   tunnel-client run --profile pi-chat-exchange   (with --mcp-command "node .../mcp-stdio.js")
  *
  * stdout is reserved for MCP protocol frames; diagnostics go to stderr and
- * carry status codes only — never configuration values, identifiers from
+ * carry status codes and safe schema versions only — never configuration values, identifiers from
  * tool arguments, payloads, or capability secrets.
  */
 import { readFileSync, statSync, existsSync } from "node:fs";
@@ -43,6 +43,7 @@ import { createLaunchSourceMetadataProbe } from "./source-metadata-probe-launch.
 import { observeTransport } from "../control/mcp/debug-transport.js";
 import { startLocalMcpHttp } from "../control/mcp/http-transport.js";
 import { initializeStore, openStore } from "../storage/store.js";
+import { StoreLifecycleError } from "../storage/errors.js";
 import { createMcpPolicyAdmission } from "../tunnel/multi-session-admission.js";
 import { CeHookRunner } from "../hooks/runner.js";
 import { isDeepStrictEqual } from "node:util";
@@ -98,9 +99,20 @@ function loadBindingConfig(path: string): { config: McpBindingConfig; launchDige
 function openBindingStore(config: McpBindingConfig) {
   const options = { directory: config.store.directory, filename: config.store.file, busyTimeoutMs: 5_000 };
   debugEvent("store", "STORE_OPEN_STARTED");
-  const store = existsSync(join(options.directory, options.filename)) ? openStore(options) : initializeStore(options);
-  debugEvent("store", "STORE_OPEN_COMPLETED");
-  return store;
+  try {
+    const store = existsSync(join(options.directory, options.filename)) ? openStore(options) : initializeStore(options);
+    debugEvent("store", "STORE_OPEN_COMPLETED");
+    return store;
+  } catch (error) {
+    if (error instanceof StoreLifecycleError && error.code === "STORAGE_SCHEMA_TOO_NEW") {
+      const versions = error as StoreLifecycleError & { readonly observedSchemaVersion?: unknown; readonly supportedSchemaVersion?: unknown };
+      const detail = (["observedSchemaVersion", "supportedSchemaVersion"] as const)
+        .flatMap(key => typeof versions[key] === "number" && Number.isSafeInteger(versions[key]) && versions[key] >= 0
+          ? [`${key}=${versions[key]}`] : []).join(" ");
+      return fail("STORAGE_SCHEMA_TOO_NEW", detail || undefined);
+    }
+    throw error;
+  }
 }
 
 async function main(): Promise<void> {

@@ -134,6 +134,8 @@ Tool JSON below is an argument example, not a slash command or shell command. As
 
 Success: `CREATED` returns a `messageId` and audit sequence. `REPLAYED` refers to an existing Message. Both describe a local Store result; continue by observing the recipient.
 
+For Pi native inbound, `ce_send` optionally accepts `"deliveryMode": "steer"` or `"followUp"`; omitted means `followUp`. A supporting Pi queues steer for the next model boundary after its current tool batch. Older Pi clients may use follow-up for either request. The stored mode records the sender's request, not proof of actual delivery or execution; steer does not stop a running tool or grant control authority. Reusing an idempotency key with a different mode is refused.
+
 **Pi**: explicitly ask it to list a bounded page with `ce_inbox_list`:
 
 ```json

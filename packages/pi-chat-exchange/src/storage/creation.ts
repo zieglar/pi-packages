@@ -12,7 +12,7 @@ import {
 import { canonicalDigest, type IdempotentCreateRecord } from "../protocol/idempotency.js";
 import {
   copyCapturedMessagePayloadForPersistence, normalizeCreateExchangeRequest,
-  normalizeCreateMessageRequest,
+  messageRequestDigest, normalizeCreateMessageRequest,
   type NormalizedExchangeRequest, type NormalizedMessageRequest,
 } from "./creation-request.js";
 import type { DurableStore } from "./store.js";
@@ -309,12 +309,9 @@ function replayMessage(tx: TransactionHandle, request: NormalizedMessageRequest)
   }
   // Recompute the stored request identity from the durable row: a stored digest
   // that no valid stored request can produce is corruption, never a conflict.
-  const storedDigest = canonicalDigest({
-    op: "chat-exchange/message.create", v: 1, exchangeId: candidate.exchangeId,
-    from: candidate.from, to: candidate.to,
-    payloadDigest: candidate.payloadDigest, payloadLength: candidate.payloadLength,
-  });
-  if (row.request_digest !== storedDigest) corrupt();
+  const followUpDigest = messageRequestDigest(candidate, "followUp");
+  const steerDigest = messageRequestDigest(candidate, "steer");
+  if (row.request_digest !== followUpDigest && row.request_digest !== steerDigest) corrupt();
   if (row.request_digest !== request.requestDigest) {
     throw new CreationDomainError("IDEMPOTENCY_KEY_CONFLICT");
   }

@@ -276,7 +276,7 @@ describe("CE-0002 B3-P3A authorized durable messaging", () => {
       readRequest(w, sent.message.messageId),
       { now: () => AT_SEND },
     );
-    expect(read).toEqual({ message: sent.message, auditSequence: sent.auditSequence });
+    expect(read).toEqual({ message: sent.message, auditSequence: sent.auditSequence, deliveryMode: "followUp" });
     expect(Object.isFrozen(read)).toBe(true);
     expect(Object.isFrozen(read.message)).toBe(true);
 
@@ -296,6 +296,17 @@ describe("CE-0002 B3-P3A authorized durable messaging", () => {
     } finally {
       view.close();
     }
+  });
+
+  it("refuses protected reads if the durable mode commitment is inconsistent", () => {
+    const w = messagingWorld();
+    const sent = sendMessage(w.active.store, sendRequest(w), { now: () => AT_SEND });
+    const db = privileged(w.active);
+    try {
+      db.prepare("UPDATE idempotency_record SET request_digest=? WHERE namespace=? AND idempotency_key=?")
+        .run("0".repeat(64), JSON.stringify(["message.create", w.exchangeId]), "message-1");
+    } finally { db.close(); }
+    expectRefusal(() => readMessageMetadata(w.active.store, readRequest(w, sent.message.messageId), { now: () => AT_SEND }), "MESSAGE_READ_REJECTED");
   });
 
   it("checks exact send authority before a protected idempotency replay", () => {

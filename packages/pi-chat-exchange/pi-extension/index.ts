@@ -77,6 +77,7 @@ import {
 } from "../dist/endpoints/pi/session-host.js";
 import { PI_ADAPTER_KIND } from "../dist/endpoints/pi/contract.js";
 import { initializeStore, openStore } from "../dist/storage/store.js";
+import { StoreLifecycleError } from "../dist/storage/errors.js";
 import { parseHookRules, type CeHookRule } from "../dist/hooks/config.js";
 import { CeHookRunner, type CeHookAuditSnapshot } from "../dist/hooks/runner.js";
 import { RuntimeEligibilityError } from "../dist/storage/runtime.js";
@@ -198,7 +199,7 @@ interface ExtensionApiView {
     },
   ): void;
   appendEntry(customType: string, data?: unknown): void;
-  sendMessage(message: { customType: string; content: string; display: boolean }, options: { triggerTurn: boolean; deliverAs: "followUp" }): void;
+  sendMessage(message: { customType: string; content: string; display: boolean }, options: { triggerTurn: boolean; deliverAs: "followUp" | "steer" }): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -926,17 +927,17 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
           content: `收到一条 Chat Exchange 控制反馈。仅调用 ce_receive_task 读取 messageId=${messageId}。${RECEIVE_TASK_OFFLOAD_GUIDANCE} 除按该提示读取同一次返回外，无论结果如何都停止处理：不执行业务任务，不发送 CE 回复，不 ACK，也不调用其他工具。` },
         { triggerTurn: true, deliverAs: "followUp" });
       },
-      wake: ({ messageId, auditSequence, policyDigest, policyRevision }) => {
+      wake: ({ messageId, auditSequence, policyDigest, policyRevision, deliveryMode }) => {
         // A revoked or replaced policy must not deliver a deferred wake.
         const isCurrent = createDeliveryGuard({
           isCurrent: () => generation === state && !state.stopping && state.failure === undefined && state.ctx.sessionManager.getSessionId() === state.piSessionId && state.desktopTarget === desktopTarget && nativeInbound !== undefined,
-          isAuthorized: () => nativeInbound!.stillAuthorized(policyDigest, policyRevision),
+          isAuthorized: () => nativeInbound!.canDeliver(messageId, policyDigest, policyRevision, deliveryMode),
         });
         if (!isCurrent()) throw Error("INBOUND_SESSION_CHANGED");
         const deliver = (): void => {
           pi.sendMessage({ customType: "ce-inbound-request", display: true,
             content: `ChatGPT 已通过 Chat Exchange 委托一条新需求。调用 ce_receive_task 读取 messageId=${messageId}（audit #${auditSequence}）。${RECEIVE_TASK_OFFLOAD_GUIDANCE} 若工具拒绝，停止处理，不通过其他工具绕过。根据成功返回的任务内容继续工作，保留当前 Agent 的工具权限与审批要求。唤醒、读取与任务完成分别记录。回复前可调用 ce_prepare_desktop_reply，提供本条原始 Message ID 和任务标签；仅在准备成功后使用其返回的幂等键调用 ce_send。未准备成功仍可提交 CE 回复，桌面效果会被抑制。` },
-          { triggerTurn: true, deliverAs: "followUp" });
+          { triggerTurn: true, deliverAs: deliveryMode });
         };
         if (desktopTarget === undefined) { deliver(); return; }
         // Captures run one at a time so a same-batch message cannot lose its target to lock contention.
@@ -979,6 +980,16 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
   /** Truthful startup failure (e.g. authority absent after lease expiry).
    * Tools report this instead of a misleading not-registered refusal. */
   let startupFailure: CeHostRefusal | undefined;
+  let startupSchemaFailure: { failure: CeHostRefusal; observed: number; supported: number } | undefined;
+  const startupSchemaLines = (): string[] | undefined => {
+    const schema = startupSchemaFailure;
+    if (!schema || schema.failure !== startupFailure) return undefined;
+    return [
+      `STORAGE_SCHEMA_TOO_NEW: Store reports schema ${schema.observed}; this CE plugin supports schema ${schema.supported}.`,
+      "The future schema and migration ledger could not be verified. Check the Store and installed CE versions.",
+      "If the Store was intentionally upgraded, upgrade this Pi Session’s CE plugin and reload. The Store was not migrated.",
+    ];
+  };
   let startupRuntimeRepair: string | undefined;
   let advisoryState: {
     readonly generation: object;
@@ -1636,6 +1647,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
     host = undefined;
     currentEndpoint = undefined;
     startupFailure = undefined;
+    startupSchemaFailure = undefined;
     startupRuntimeRepair = undefined;
     inboxBinding = undefined;
     advisoryState = undefined;
@@ -1909,11 +1921,15 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
       startupFailure = generation?.failure ??
         (error instanceof CeHostRefusal ? error : new CeHostRefusal("CE_HOST_UNAVAILABLE"));
       startupRuntimeRepair = error instanceof RuntimeEligibilityError ? hostRuntimeRepairMessage() : undefined;
+      startupSchemaFailure = error instanceof StoreLifecycleError && error.code === "STORAGE_SCHEMA_TOO_NEW" &&
+        Number.isSafeInteger(error.observedSchemaVersion) && Number.isSafeInteger(error.supportedSchemaVersion) &&
+        error.observedSchemaVersion! > error.supportedSchemaVersion!
+        ? { failure: startupFailure, observed: error.observedSchemaVersion!, supported: error.supportedSchemaVersion! } : undefined;
       // C1: the sanitized domain `reason` is the only thing that distinguishes an
       // expired lease (EXPIRED/LEASE_EXPIRED) from OWNERSHIP_HELD,
       // ADMISSION_POLICY_DENIED or FENCING_STALE for the operator. Fixed
       // secret-free strings only (the `toRefusal` contract).
-      notify(ctx, `ce-chat-exchange: session start failed closed (${startupFailure.code}${startupFailure.reason ? ` / ${startupFailure.reason}` : ""})${startupRuntimeRepair === undefined ? "" : `; ${startupRuntimeRepair}`}${mutexRefusalHint(error)}${staleOwnershipHint(error)}`, "warning");
+      notify(ctx, startupSchemaLines()?.join(" ") ?? `ce-chat-exchange: session start failed closed (${startupFailure.code}${startupFailure.reason ? ` / ${startupFailure.reason}` : ""})${startupRuntimeRepair === undefined ? "" : `; ${startupRuntimeRepair}`}${mutexRefusalHint(error)}${staleOwnershipHint(error)}`, "warning");
     }
     // Preserve existing mapping/mutex transfer before any continuation UI or refusal.
     await continueConnect();
@@ -2260,6 +2276,7 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
               payloadLength: result.payloadLength,
               createdAt: result.createdAt,
               auditSequence: result.auditSequence,
+              ...("deliveryMode" in result ? { deliveryMode: result.deliveryMode } : {}),
             },
           });
         } catch (error) {
@@ -2388,7 +2405,17 @@ export default function ceChatExchange(pi: ExtensionApiView): void {
 
   const runCeStatus = async (ctx: ExtensionContextView) => {
       if (startupFailure !== undefined) {
-        notify(ctx, `ce-chat-exchange: session start failed closed (${startupFailure.code})${startupRuntimeRepair === undefined ? "" : `; ${startupRuntimeRepair}`}`, "warning");
+        const schemaLines = startupSchemaLines();
+        notify(ctx, schemaLines?.join(" ") ?? `ce-chat-exchange: session start failed closed (${startupFailure.code})${startupRuntimeRepair === undefined ? "" : `; ${startupRuntimeRepair}`}`, "warning");
+        if (schemaLines && ctx.mode === "tui" && ctx.hasUI && typeof ctx.ui.custom === "function" && managerUiTask === undefined && activationTask === undefined) {
+          const controller = new AbortController(); managerUiCapture = controller;
+          const task = presentCeStatus({ ...ctx, mode: "tui" }, "Chat Exchange Status", schemaLines, { signal: controller.signal });
+          managerUiTask = task;
+          try { await task; } finally {
+            if (managerUiTask === task) managerUiTask = undefined;
+            if (managerUiCapture === controller) managerUiCapture = undefined;
+          }
+        }
         return;
       }
       if (currentEndpoint === undefined) {

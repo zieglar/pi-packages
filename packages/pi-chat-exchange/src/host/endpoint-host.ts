@@ -236,6 +236,7 @@ export interface CeSendResult {
 }
 
 export interface CeReadResult {
+  readonly deliveryMode?: "followUp" | "steer";
   readonly messageId: string;
   readonly exchangeId: string;
   readonly from: string;
@@ -252,6 +253,7 @@ export interface CeReadResult {
  * caller's explicit successful output and never in logs, mappings, or
  * failure details. */
 export interface CeReadPayloadResult {
+  readonly deliveryMode: "followUp" | "steer";
   readonly messageId: string;
   readonly exchangeId: string;
   readonly from: string;
@@ -902,10 +904,11 @@ export class CeEndpointHost {
   send(endpointId: string, input: unknown, selection?: { readonly policyId: string; readonly selectionVersion: number; readonly targetRuntimeSessionId: string; readonly bindingEpoch: number }): CeSendResult {
     const authority = this.#authority(endpointId);
     if (!isPlainObject(input)) throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
-    if (Reflect.ownKeys(input).some(key => typeof key !== "string" || !["to", "text", "idempotencyKey", "replyTo"].includes(key))) {
+    if (Reflect.ownKeys(input).some(key => typeof key !== "string" || !["to", "text", "idempotencyKey", "replyTo", "deliveryMode"].includes(key))) {
       throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
     }
-    const { to, text, idempotencyKey, replyTo } = input;
+    const { to, text, idempotencyKey, replyTo, deliveryMode } = input;
+    if (deliveryMode !== undefined && deliveryMode !== "followUp" && deliveryMode !== "steer") throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
     if (replyTo !== undefined && (typeof replyTo !== "string" || selection !== undefined)) throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
     if (typeof to !== "string" || to.length === 0 || to.length > 256) {
       throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
@@ -941,6 +944,7 @@ export class CeEndpointHost {
             to: { adapter: recipient.adapter, endpointId: recipient.endpointId },
             payload: new TextEncoder().encode(text),
             idempotencyKey,
+            ...(deliveryMode !== undefined ? { deliveryMode } : {}),
           },
         },
         this.#seams,
@@ -972,7 +976,7 @@ export class CeEndpointHost {
     if (typeof messageId !== "string" || !MESSAGE_ID_PATTERN.test(messageId)) {
       throw new CeHostRefusal("CE_HOST_INVALID_REQUEST");
     }
-    let metadata: ProtectedMessageMetadata;
+    let metadata: ProtectedMessageMetadata & { readonly deliveryMode: "followUp" | "steer" };
     try {
       const fencingToken = this.#currentFencing(authority);
       metadata = readMessageMetadata(
@@ -1001,6 +1005,7 @@ export class CeEndpointHost {
       payloadLength: message.payloadLength,
       createdAt: message.createdAt,
       auditSequence: metadata.auditSequence,
+      deliveryMode: metadata.deliveryMode,
     });
   }
 
@@ -1066,6 +1071,7 @@ export class CeEndpointHost {
       payloadLength: message.payloadLength,
       createdAt: message.createdAt,
       auditSequence: authorized.auditSequence,
+      deliveryMode: authorized.deliveryMode,
       payloadText,
     });
   }

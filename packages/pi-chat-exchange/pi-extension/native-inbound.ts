@@ -4,7 +4,11 @@ import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { validateFeedbackClassification, validateFeedbackTerminal, type FeedbackAssociation, type OwnershipFeedbackPort } from "./ownership-feedback.js";
 import { readNativeInboundPolicy } from "./native-inbound-policy.js";
 
-type Metadata = Omit<CeReadResult, "state">;
+type DeliveryMode = "followUp" | "steer";
+/** Raw trusted metadata. `deliveryMode` is absent for messages created before
+ * the mode existed, so the field is optional here and normalized later. */
+type MetadataSource = Omit<CeReadResult, "state"> & { readonly deliveryMode?: DeliveryMode };
+type Metadata = Omit<CeReadResult, "state"> & { readonly deliveryMode: DeliveryMode };
 type Entries = ReadonlyArray<Record<string, unknown>>;
 export interface NativeInboundPolicy {
   readonly version: 1;
@@ -25,15 +29,15 @@ interface InboundOptions {
   getEntries(): Entries;
   append(customType: string, data: unknown): void;
   listInbox(input: { afterAuditSequence: number; pageSize: number; rawScanLimit: number }): { messages: ReadonlyArray<{ messageId: string; auditSequence: number }>; continuationAuditSequence: number | null; scanBudgetExhausted: boolean };
-  readMetadata(input: { messageId: string }): Metadata;
+  readMetadata(input: { messageId: string }): MetadataSource;
   canReceiveTask(messageId: string): boolean;
-  wake(input: { messageId: string; auditSequence: number; policyDigest: string; policyRevision: string }): void;
+  wake(input: { messageId: string; auditSequence: number; policyDigest: string; policyRevision: string; deliveryMode: DeliveryMode }): void;
   readonly feedback?: OwnershipFeedbackPort | undefined;
   controlWake?(input: { messageId: string; auditSequence: number; policyDigest: string; policyRevision: string }): void;
   now(): number;
 }
 export type NativeInboundToolContext = Pick<ExtensionToolContext, "executeTool">;
-interface Claim { readonly policyDigest: string; readonly messageId: string; readonly auditSequence: number; readonly admittedAt: number; readonly metadata: Metadata; readonly association?: FeedbackAssociation }
+interface Claim { readonly policyDigest: string; readonly messageId: string; readonly auditSequence: number; readonly admittedAt: number; readonly metadata: Metadata; readonly deliveryMode?: DeliveryMode; readonly association?: FeedbackAssociation }
 const metadataKeys = ["messageId", "exchangeId", "from", "to", "payloadDigest", "payloadLength", "createdAt", "auditSequence"] as const;
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 const time = (text: string) => typeof text === "string" && /(?:Z|[+-]\d{2}:\d{2})$/.test(text) ? Date.parse(text) : NaN;
@@ -41,6 +45,10 @@ function failure(code: string): never { throw new Error(code); }
 function metadata(input: unknown, policy: NativeInboundPolicy, messageId: string, now: number): Metadata | undefined {
   if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
   const value = input as Record<string, unknown>;
+  // A missing mode means an old message: keep the legacy followUp delivery.
+  // An explicit unsupported mode is refused instead of silently downgraded.
+  const deliveryMode = Object.hasOwn(value, "deliveryMode") ? value.deliveryMode : "followUp";
+  if (deliveryMode !== "followUp" && deliveryMode !== "steer") return undefined;
   if (value.messageId !== messageId || value.exchangeId !== policy.exchangeId || value.from !== policy.from || value.to !== policy.endpointId ||
     typeof value.payloadDigest !== "string" || !/^[0-9a-f]{64}$/.test(value.payloadDigest) ||
     !Number.isSafeInteger(value.payloadLength) || (value.payloadLength as number) < 1 || (value.payloadLength as number) > 65_536 ||
@@ -48,7 +56,7 @@ function metadata(input: unknown, policy: NativeInboundPolicy, messageId: string
   const created = time(value.createdAt as string);
   if (!Number.isFinite(created) || created < time(policy.activatedAt) || created > now || now - created > policy.maxAgeSeconds * 1000) return undefined;
   // SAFETY: route, scalar fields and creation time were validated above.
-  return Object.fromEntries(metadataKeys.map(key => [key, value[key]])) as unknown as Metadata;
+  return { ...Object.fromEntries(metadataKeys.map(key => [key, value[key]])), deliveryMode } as Metadata;
 }
 function historyEntries(entries: Entries): Array<{ customType: string; data: Record<string, unknown> }> {
   if (!Array.isArray(entries)) failure("INBOUND_HISTORY_INVALID");
@@ -101,7 +109,7 @@ export function createNativeInbound(options: InboundOptions) {
     close() { closed = true; },
     /** Feedback history is deny-only for desktop preparation, including out-of-order terminal records. */
     canPrepareDesktopReply(messageId: string): boolean {
-      authorized() ?? failure("INBOUND_DISABLED");
+      if (!authorized()) failure("INBOUND_DISABLED");
       return !isNativeFeedback(options.getEntries(), messageId);
     },
     poll() {
@@ -118,13 +126,16 @@ export function createNativeInbound(options: InboundOptions) {
         if (!fresh) continue;
         let classification: ReturnType<typeof validateFeedbackClassification> = { kind: "NONE" };
         if (options.feedback) {
-          try { classification = validateFeedbackClassification(options.feedback.classify(fresh), candidate.messageId); }
+          try {
+            const { deliveryMode: _deliveryMode, ...feedbackMetadata } = fresh;
+            classification = validateFeedbackClassification(options.feedback.classify(feedbackMetadata), candidate.messageId);
+          }
           catch { failure("INBOUND_FEEDBACK_UNAVAILABLE"); }
         }
         // Full append history is deny-only across reloads and branch rollback.
         // This is a wake attempt, not a lock or an exactly-once execution guarantee.
         const data = { version: 1, runtimeSessionId: options.runtimeSessionId, endpointId: options.endpointId,
-          policyDigest: current.policyDigest, messageId: candidate.messageId, auditSequence: candidate.auditSequence, admittedAt, metadata: fresh };
+          policyDigest: current.policyDigest, messageId: candidate.messageId, auditSequence: candidate.auditSequence, admittedAt, metadata: fresh, deliveryMode: fresh.deliveryMode };
         if (classification.kind === "BLOCKED") {
           options.append("ce-inbound-feedback-blocked", { ...data, reason: classification.reason });
           continue;
@@ -138,7 +149,7 @@ export function createNativeInbound(options: InboundOptions) {
           continue;
         }
         options.append("ce-inbound-wake", data);
-        try { options.wake({ messageId: candidate.messageId, auditSequence: candidate.auditSequence, policyDigest: current.policyDigest, policyRevision: current.policyRevision }); }
+        try { options.wake({ messageId: candidate.messageId, auditSequence: candidate.auditSequence, policyDigest: current.policyDigest, policyRevision: current.policyRevision, deliveryMode: fresh.deliveryMode }); }
         catch { failure("INBOUND_WAKE_UNKNOWN"); }
       }
       watermark.cursor = Math.max(watermark.cursor, result.continuationAuditSequence ?? watermark.cursor);
@@ -155,6 +166,19 @@ export function createNativeInbound(options: InboundOptions) {
         return false;
       }
     },
+    /** Deferred wakes must still target the same authorized Message and mode. */
+    canDeliver(messageId: string, policyDigest: string, policyRevision: string, mode: DeliveryMode): boolean {
+      try {
+        const current = authorized(policyDigest);
+        if (!current || current.policyRevision !== policyRevision || receiveAttempt(messageId).length || !options.canReceiveTask(messageId)) return false;
+        const original = claim(messageId);
+        if (original.policyDigest !== policyDigest) return false;
+        const expected = metadata(original.metadata, current.policy, messageId, original.admittedAt);
+        const actual = metadata(options.readMetadata({ messageId }), current.policy, messageId, original.admittedAt);
+        return !!expected && !!actual && expected.deliveryMode === mode && actual.deliveryMode === mode &&
+          (original.deliveryMode ?? "followUp") === mode && metadataKeys.every(key => expected[key] === actual[key]);
+      } catch { return false; }
+    },
     async receive(messageId: string, ctx: NativeInboundToolContext) {
       const current = authorized() ?? failure("INBOUND_DISABLED");
       const records = history();
@@ -162,6 +186,8 @@ export function createNativeInbound(options: InboundOptions) {
       if (receiveAttempt(messageId).length || records.some(entry => entry.data.messageId === messageId && entry.customType === "ce-inbound-feedback-result")) failure("INBOUND_ALREADY_ATTEMPTED");
       const original = claim(messageId); if (original.policyDigest !== current.policyDigest) failure("INBOUND_POLICY_CHANGED");
       const currentMetadata = metadata(original.metadata, current.policy, messageId, original.admittedAt); if (!currentMetadata) failure("INBOUND_NOT_FRESH");
+      const claimedMode = Object.hasOwn(original, "deliveryMode") ? original.deliveryMode : "followUp";
+      if (claimedMode !== currentMetadata.deliveryMode) failure("INBOUND_CLAIM_INVALID");
       // Persist before the first uncertain read. Read refusal and crashes are not retried.
       options.append("ce-inbound-receive", { version: 1, runtimeSessionId: options.runtimeSessionId, endpointId: options.endpointId,
         policyDigest: current.policyDigest, messageId, auditSequence: original.auditSequence, status: "STARTED" });
@@ -174,11 +200,11 @@ export function createNativeInbound(options: InboundOptions) {
         const read = await ctx.executeTool("ce_read", { messageId }).catch(() => failure(code = "INBOUND_READ_REFUSED"));
         authorized(current.policyDigest); if (read.isError) failure(code = "INBOUND_READ_REFUSED");
         const actual = metadata(read.result.details, current.policy, messageId, original.admittedAt) ?? failure(code = "INBOUND_METADATA_DENIED");
-        if (metadataKeys.some(key => actual[key] !== currentMetadata[key])) failure(code = "INBOUND_METADATA_CHANGED");
+        if (actual.deliveryMode !== currentMetadata.deliveryMode || metadataKeys.some(key => actual[key] !== currentMetadata[key])) failure(code = "INBOUND_METADATA_CHANGED");
         const payload = await ctx.executeTool("ce_read_payload", { messageId }).catch(() => failure(code = "INBOUND_READ_REFUSED"));
         authorized(current.policyDigest); if (payload.isError) failure(code = "INBOUND_READ_REFUSED");
         const readPayload = metadata(payload.result.details, current.policy, messageId, original.admittedAt) ?? failure(code = "INBOUND_METADATA_DENIED");
-        if (metadataKeys.some(key => readPayload[key] !== actual[key])) failure(code = "INBOUND_METADATA_MISMATCH");
+        if (readPayload.deliveryMode !== actual.deliveryMode || metadataKeys.some(key => readPayload[key] !== actual[key])) failure(code = "INBOUND_METADATA_MISMATCH");
         if (!Array.isArray(payload.result.content)) failure(code = "INBOUND_PAYLOAD_INVALID");
         const part = payload.result.content[1];
         if (part?.type !== "text") failure(code = "INBOUND_PAYLOAD_INVALID");
@@ -190,7 +216,10 @@ export function createNativeInbound(options: InboundOptions) {
         if (original.association) {
           if (!options.feedback) failure(code = "INBOUND_FEEDBACK_UNAVAILABLE");
           let terminal;
-          try { terminal = validateFeedbackTerminal(await options.feedback.consume({ metadata: actual, association: original.association, text }), original.association); }
+          try {
+            const { deliveryMode: _deliveryMode, ...feedbackMetadata } = actual;
+            terminal = validateFeedbackTerminal(await options.feedback.consume({ metadata: feedbackMetadata, association: original.association, text }), original.association);
+          }
           catch { failure(code = "INBOUND_FEEDBACK_UNAVAILABLE"); }
           options.append("ce-inbound-feedback-result", terminal);
           return terminal;

@@ -25,9 +25,9 @@ function setup() {
     };
   });
   const [sender, recipient, outsider] = actors as [typeof actors[number], typeof actors[number], typeof actors[number]];
-  const send = (from: typeof sender, to: typeof sender, key: string, replyTo?: string) => sendMessage(active.store, {
+  const send = (from: typeof sender, to: typeof sender, key: string, replyTo?: string, deliveryMode?: "followUp" | "steer") => sendMessage(active.store, {
     ...from.authority, capability: from.sendCapability,
-    message: { exchangeId, from: from.endpoint, to: to.endpoint, payload: new TextEncoder().encode(key), idempotencyKey: key },
+    message: { exchangeId, from: from.endpoint, to: to.endpoint, payload: new TextEncoder().encode(key), idempotencyKey: key, ...(deliveryMode === undefined ? {} : { deliveryMode }) },
     ...(replyTo === undefined ? {} : { association: { requestMessageId: replyTo } }),
   }, { now: () => "2026-10-10T00:00:10.000Z" });
   const read = (actor: typeof sender, messageId: string) => readMessageMetadata(active.store, {
@@ -47,6 +47,18 @@ it("accepts an authorized confirmation replying to a received reply and preserve
   const view = f.active.store.database.prepare("SELECT request_message_id FROM message_association WHERE message_id=?").get(confirmation.message.messageId);
   expect(view).toEqual({ request_message_id: reply.message.messageId });
   expect(f.send(f.sender, f.recipient, "confirmation", reply.message.messageId)).toMatchObject({ disposition: "REPLAYED", message: { messageId: confirmation.message.messageId } });
+});
+
+it("preserves reply association and recipient authority for steer", () => {
+  const f = setup();
+  const request = f.send(f.sender, f.recipient, "request");
+  const reply = f.send(f.recipient, f.sender, "reply", request.message.messageId, "steer");
+  expect(f.read(f.sender, reply.message.messageId).deliveryMode).toBe("steer");
+  expectRefusal(() => f.read(f.outsider, reply.message.messageId), "MESSAGE_READ_REJECTED");
+  expect(f.active.store.database.prepare("SELECT request_message_id FROM message_association WHERE message_id=?").get(reply.message.messageId))
+    .toEqual({ request_message_id: request.message.messageId });
+  expect(f.send(f.recipient, f.sender, "reply", request.message.messageId, "steer").disposition).toBe("REPLAYED");
+  expect(() => f.send(f.recipient, f.sender, "reply", request.message.messageId, "followUp")).toThrow();
 });
 
 it("keeps sender read denial and cross-endpoint reply rejection for every chain link", () => {

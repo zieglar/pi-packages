@@ -52,6 +52,22 @@ function expectRefusal(run: () => unknown, code: string): CeHostRefusal {
   throw new Error(`expected CeHostRefusal ${code}`);
 }
 
+it("persists requested delivery mode without changing payload or idempotency semantics", () => {
+  const { host } = rig({ allowlist: [{ endpointId: "chatgpt/a" }, { endpointId: "chatgpt/b" }] });
+  host.beginSession("chatgpt/a");
+  host.beginSession("chatgpt/b");
+  const base = { to: "chatgpt/b", text: "original text", idempotencyKey: "mode-1" };
+  const sent = host.send("chatgpt/a", { ...base, deliveryMode: "steer" });
+  expect(host.readMetadata("chatgpt/b", { messageId: sent.messageId })).toMatchObject({ deliveryMode: "steer" });
+  expect(host.readPayload("chatgpt/b", { messageId: sent.messageId })).toMatchObject({ deliveryMode: "steer", payloadText: "original text" });
+  expect(host.send("chatgpt/a", { ...base, deliveryMode: "steer" })).toMatchObject({ messageId: sent.messageId });
+  expect(() => host.send("chatgpt/a", { ...base, deliveryMode: "followUp" })).toThrow();
+  const legacy = host.send("chatgpt/a", { ...base, idempotencyKey: "mode-2" });
+  expect(host.readMetadata("chatgpt/b", { messageId: legacy.messageId })).toMatchObject({ deliveryMode: "followUp" });
+  expect(host.send("chatgpt/a", { ...base, idempotencyKey: "mode-2", deliveryMode: "followUp" })).toMatchObject({ messageId: legacy.messageId });
+  expect(() => host.send("chatgpt/a", { ...base, idempotencyKey: "mode-3", deliveryMode: "invalid" })).toThrow();
+});
+
 describe("shared host: adapter neutrality", () => {
 describe("shared host: adapter neutrality", () => {
   it("operates a non-Pi adapter end to end over one store", () => {

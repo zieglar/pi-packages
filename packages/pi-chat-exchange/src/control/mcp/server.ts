@@ -217,7 +217,7 @@ export function createExchangeMcpServer(
             return { content: [{ type: "text", text: "Selected target unavailable or changed; refresh the shared selection." }], isError: true };
           }
           selectionMetadata = { policyId: selection.policyId, selectionVersion: selection.generation, targetRuntimeSessionId: selection.runtimeSessionId, bindingEpoch: selection.epoch };
-          input = { to: selection.endpointId, text: input.text, idempotencyKey: input.idempotencyKey, ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }) };
+          input = { to: selection.endpointId, text: input.text, idempotencyKey: input.idempotencyKey, ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }), ...(input.deliveryMode === undefined ? {} : { deliveryMode: input.deliveryMode }) };
         }
         const result = callMessagingTool(messaging.port, name, input, selectionMetadata);
         debugEvent("tool", "TOOL_CALL_COMPLETED", { tool, isError: result.isError, durationMs: Date.now() - started });

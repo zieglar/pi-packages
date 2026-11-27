@@ -10,7 +10,7 @@ import {
   type MessageCreation,
   type MessageTransactionHooks,
 } from "./creation.js";
-import { normalizeCreateMessageRequest } from "./creation-request.js";
+import { messageRequestDigest, normalizeCreateMessageRequest } from "./creation-request.js";
 import { StoreLifecycleError } from "./errors.js";
 import { authorizeCurrentOwner } from "./ownership.js";
 import {
@@ -46,6 +46,7 @@ export interface AuthorizedMessageCreation extends MessageCreation {
 export interface ProtectedMessageMetadata {
   readonly message: Message;
   readonly auditSequence: number;
+  readonly deliveryMode?: "followUp" | "steer";
 }
 
 export interface MessagingSeams extends ClockSeam, MessageTransactionHooks {}
@@ -316,7 +317,7 @@ export function readMessageMetadata(
   store: DurableStore,
   input: unknown,
   seams: ClockSeam = {},
-): ProtectedMessageMetadata {
+): ProtectedMessageMetadata & { readonly deliveryMode: "followUp" | "steer" } {
   return runMessageRead(
     store,
     messageReadRequest(input),
@@ -334,6 +335,7 @@ export function readMessageMetadata(
 export interface ProtectedMessagePayload {
   readonly message: Message;
   readonly auditSequence: number;
+  readonly deliveryMode: "followUp" | "steer";
   readonly payload: Uint8Array;
 }
 
@@ -390,6 +392,17 @@ function messageReadRequest(input: unknown): MessageReadRequest {
   return { authority, exchangeId, messageId };
 }
 
+/** The creation fingerprint commits the mode; legacy messages without a key default to followUp. */
+function readDeliveryMode(tx: TransactionHandle, message: Message): "followUp" | "steer" {
+  if (message.idempotencyKey === undefined) return "followUp";
+  const row = tx.prepare("SELECT request_digest, entity_id FROM idempotency_record WHERE namespace=? AND idempotency_key=?")
+    .get(JSON.stringify(["message.create", message.exchangeId]), message.idempotencyKey);
+  if (!row || row.entity_id !== message.messageId) refuse("MESSAGE_READ_REJECTED");
+  if (row.request_digest === messageRequestDigest(message, "followUp")) return "followUp";
+  if (row.request_digest === messageRequestDigest(message, "steer")) return "steer";
+  refuse("MESSAGE_READ_REJECTED");
+}
+
 /** The one shared recipient-eligibility chain, written once for the metadata
  * and payload reads. `read` selects the caller's Message reader (the metadata
  * read revalidates payload integrity; the payload read stays metadata-only
@@ -405,7 +418,7 @@ function runMessageRead<T>(
   scope: "read" | "payload_read",
   label: string,
   read: (tx: TransactionHandle, exchangeId: string, messageId: string) => Message | undefined,
-  extend: (tx: TransactionHandle, eligible: { message: Message; auditSequence: number }) => T,
+  extend: (tx: TransactionHandle, eligible: { message: Message; auditSequence: number; deliveryMode: "followUp" | "steer" }) => T,
 ): T {
   const { authority, exchangeId, messageId } = request;
   return runMessagingTransaction(store, label, (tx) => {
@@ -417,6 +430,7 @@ function runMessageRead<T>(
     if (!stableEndpointMatches(tx, authority.participantId, message.to)) refuse("MESSAGE_READ_REJECTED");
     const auditSequence = messageCreatedAuditSequence(tx, message);
     if (auditSequence <= membership.joinBoundarySeq) refuse("MESSAGE_READ_REJECTED");
-    return extend(tx, { message, auditSequence });
+    const deliveryMode = readDeliveryMode(tx, message);
+    return extend(tx, { message, auditSequence, deliveryMode });
   });
 }

@@ -35,6 +35,7 @@ export const SendArgsSchema = Type.Object(
     to: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Explicit recipient; never overridden by a selected target" })),
     selectionVersion: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER, description: "Version returned by ce_endpoints for the shared selected target" })),
     replyTo: Type.Optional(Type.String({ pattern: "^msg_[0-9A-HJKMNP-TV-Z]{26}$", description: "Request Message ID for a reply; use an explicit recipient" })),
+    deliveryMode: Type.Optional(Type.Union([Type.Literal("followUp"), Type.Literal("steer")], { description: "Requested recipient mode; defaults to followUp. Legacy clients may use followUp and creation does not prove delivery." })),
     text: Type.String({ minLength: 1, description: "Text to deliver; stored as the private payload" }),
     idempotencyKey: Type.String({ minLength: 1, maxLength: 256, description: "Stable key; a replay returns the original record" }),
   },
@@ -80,7 +81,7 @@ export type AckArgs = Static<typeof AckArgsSchema>;
 /** The only capability the MCP server holds: an Endpoint-bound port. */
 export interface ExchangeMessagingPort {
   findReplies?(input: { readonly requestMessageId: string; readonly afterMessageId?: string }): { readonly requestMessageId: string; readonly target: string; readonly replies: readonly { readonly messageId: string }[]; readonly hasMore: boolean };
-  send(input: { readonly to: string; readonly text: string; readonly idempotencyKey: string; readonly replyTo?: string }, selection?: { readonly policyId: string; readonly selectionVersion: number; readonly targetRuntimeSessionId: string; readonly bindingEpoch: number }): {
+  send(input: { readonly to: string; readonly text: string; readonly idempotencyKey: string; readonly replyTo?: string; readonly deliveryMode?: "followUp" | "steer" }, selection?: { readonly policyId: string; readonly selectionVersion: number; readonly targetRuntimeSessionId: string; readonly bindingEpoch: number }): {
     readonly disposition: "CREATED" | "REPLAYED";
     readonly messageId: string;
     readonly auditSequence: number;
@@ -99,6 +100,7 @@ export interface ExchangeMessagingPort {
     readonly payloadLength: number;
     readonly createdAt: string;
     readonly auditSequence: number;
+    readonly deliveryMode?: "followUp" | "steer";
     readonly payloadText: string;
   };
   /** HANDOFF-CE-E2B-01 delivery ACK: returns durable receipt evidence only. */
@@ -266,7 +268,7 @@ export function callMessagingTool(port: ExchangeMessagingPort, name: MessagingTo
     case CE_SEND_TOOL_NAME: {
       if (!Value.Check(SendArgsSchema, input) || input.to === undefined || input.selectionVersion !== undefined) throw new MessagingArgsError(name);
       try {
-        const sent = port.send({ to: input.to, text: input.text, idempotencyKey: input.idempotencyKey, ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }) }, selection);
+        const sent = port.send({ to: input.to, text: input.text, idempotencyKey: input.idempotencyKey, ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }), ...(input.deliveryMode === undefined ? {} : { deliveryMode: input.deliveryMode }) }, selection);
         const evidence = {
           disposition: sent.disposition,
           messageId: sent.messageId,
@@ -319,6 +321,7 @@ export function callMessagingTool(port: ExchangeMessagingPort, name: MessagingTo
           payloadLength: read.payloadLength,
           createdAt: read.createdAt,
           auditSequence: read.auditSequence,
+          ...(read.deliveryMode !== undefined ? { deliveryMode: read.deliveryMode } : {}),
         };
         // Deliberately no structuredContent: payload text lives only in the
         // second content item, behind an explicit untrusted-content warning.
