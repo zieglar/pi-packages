@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { validateMatrix, parseRelease, releaseDecision, runtimeDigest } from '../tunnel-compat.mjs';
 const sha = 'a'.repeat(40), digest = 'b'.repeat(64);
 const release = { version: '0.0.19', sourceCommit: sha, publishedAt: '2026-10-30T20:26:10Z', url: 'https://github.com/openai/tunnel-client/releases/tag/v0.0.19' };
@@ -42,6 +44,36 @@ test('official stable release metadata and source commit validated at boundary',
   const raw = { tag_name: 'v0.0.19', draft: false, prerelease: false, published_at: release.publishedAt, html_url: release.url };
   assert.equal(parseRelease(raw, sha).version, '0.0.19');
   for (const bad of [{ ...raw, tag_name: 'v0.0.19;touch x' }, { ...raw, prerelease: true }, { ...raw, html_url: 'https://evil.test/release' }]) assert.throws(() => parseRelease(bad, sha));
+});
+test('release discovery exposes only bounded failure categories without sensitive errors', async () => {
+  const { discoverRelease, discoveryFailure } = await import('../tunnel-compat.mjs');
+  const cases = [
+    { fetcher: async () => ({ ok: false, status: 429 }), expected: { phase: 'release', category: 'http', status: 429 } },
+    { fetcher: async () => { throw new Error('sensitive token or URL'); }, expected: { phase: 'release', category: 'network' } },
+    { fetcher: async () => ({ ok: true, json: async () => { throw new SyntaxError('sensitive response'); } }), expected: { phase: 'release', category: 'invalid_json' } },
+    { fetcher: async () => ({ ok: true, json: async () => { throw Object.assign(new Error('private'), { name: 'AbortError' }); } }), expected: { phase: 'release', category: 'timeout' } },
+    { fetcher: async () => ({ ok: true, json: async () => { throw new TypeError('private connection'); } }), expected: { phase: 'release', category: 'network' } },
+    { fetcher: async () => ({ ok: true, json: async () => ({ tag_name: 'bad' }) }), expected: { phase: 'release', category: 'invalid_metadata' } },
+    { fetcher: async url => url.includes('/releases/') ? ({ ok: true, json: async () => ({ tag_name: 'v0.0.21' }) }) : ({ ok: false, status: 503 }), expected: { phase: 'commit', category: 'http', status: 503 } },
+  ];
+  for (const { fetcher, expected } of cases) {
+    await assert.rejects(discoverRelease('0.0.21', fetcher), error => {
+      const info = discoveryFailure(error); assert.deepEqual(info, expected);
+      assert.doesNotMatch(JSON.stringify(info), /sensitive|token|URL/); return true;
+    });
+  }
+  assert.equal(discoveryFailure(new Error('secret')), undefined);
+});
+test('CLI writes bounded discovery diagnostics and retains failure status', () => {
+  const root = mkdtempSync(join(tmpdir(), 'ce-discovery-diagnostic-'));
+  const preload = join(root, 'preload.mjs'), output = join(root, 'result.json');
+  writeFileSync(preload, "globalThis.fetch = async () => { throw new Error('private token and URL'); };\n");
+  const script = fileURLToPath(new URL('../tunnel-compat.mjs', import.meta.url));
+  const child = spawnSync(process.execPath, ['--import', preload, script, 'run', output, '0.0.21'], { encoding: 'utf8', env: {} });
+  assert.equal(child.status, 1);
+  const text = readFileSync(output, 'utf8'), result = JSON.parse(text);
+  assert.equal(result.status, 'FAILED'); assert.deepEqual(result.discovery, { phase: 'release', category: 'network' });
+  assert.doesNotMatch(text + child.stdout + child.stderr, /private token|URL/);
 });
 test('runtime digest covers package metadata, source and Pi extension bytes deterministically', () => {
   const root = mkdtempSync(join(tmpdir(), 'ce-digest-')); mkdirSync(join(root, 'src')); mkdirSync(join(root, 'pi-extension')); mkdirSync(join(root, 'native')); writeFileSync(join(root, 'package.json'), '{}'); writeFileSync(join(root, 'src/a.ts'), 'a'); writeFileSync(join(root, 'pi-extension/index.ts'), 'b'); writeFileSync(join(root, 'native/tunnel-keychain.swift'), 'helper'); const first = runtimeDigest(root); assert.equal(first, runtimeDigest(root)); writeFileSync(join(root, 'src/a.ts'), 'changed'); assert.notEqual(first, runtimeDigest(root));

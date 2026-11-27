@@ -83,17 +83,34 @@ export function parseRelease(raw, commit) {
   const value = { version: raw.tag_name.slice(1), sourceCommit: commit, publishedAt: raw.published_at, url: raw.html_url };
   client(value); return value;
 }
-async function api(path, fetcher = fetch) {
-  const response = await fetcher(`https://api.github.com/repos/${repository}/${path}`, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'pi-chat-exchange-compat' }, signal: AbortSignal.timeout(30_000) });
-  if (!response.ok) throw new Error(`Official Tunnel release lookup failed: HTTP ${response.status}`);
-  return response.json();
+class ReleaseDiscoveryError extends Error {
+  constructor(phase, category, status) {
+    super('Official Tunnel release discovery failed');
+    this.diagnostic = { phase, category, ...(status === undefined ? {} : { status }) };
+  }
+}
+export function discoveryFailure(error) {
+  return error instanceof ReleaseDiscoveryError ? error.diagnostic : undefined;
+}
+async function api(path, phase, fetcher) {
+  let response;
+  try {
+    response = await fetcher(`https://api.github.com/repos/${repository}/${path}`, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'pi-chat-exchange-compat' }, signal: AbortSignal.timeout(30_000) });
+  } catch (error) {
+    throw new ReleaseDiscoveryError(phase, error?.name === 'TimeoutError' || error?.name === 'AbortError' ? 'timeout' : 'network');
+  }
+  if (!response.ok) throw new ReleaseDiscoveryError(phase, 'http', Number.isInteger(response.status) && response.status >= 100 && response.status <= 599 ? response.status : undefined);
+  try { return await response.json(); } catch (error) {
+    const category = error?.name === 'TimeoutError' || error?.name === 'AbortError' ? 'timeout' : error instanceof SyntaxError ? 'invalid_json' : 'network';
+    throw new ReleaseDiscoveryError(phase, category);
+  }
 }
 export async function discoverRelease(version = 'latest', fetcher = fetch) {
   requireValue(version === 'latest' || semver.test(version), 'requested version');
-  const raw = await api(version === 'latest' ? 'releases/latest' : `releases/tags/v${version}`, fetcher);
-  requireValue(object(raw) && /^v\d+\.\d+\.\d+$/.test(raw.tag_name), 'release tag');
-  const commit = await api(`commits/${raw.tag_name}`, fetcher);
-  return parseRelease(raw, commit.sha);
+  const raw = await api(version === 'latest' ? 'releases/latest' : `releases/tags/v${version}`, 'release', fetcher);
+  if (!object(raw) || !/^v\d+\.\d+\.\d+$/.test(raw.tag_name)) throw new ReleaseDiscoveryError('release', 'invalid_metadata');
+  const commit = await api(`commits/${raw.tag_name}`, 'commit', fetcher);
+  try { return parseRelease(raw, commit.sha); } catch { throw new ReleaseDiscoveryError('metadata', 'invalid_metadata'); }
 }
 export function releaseDecision({ matrix, offline, selected, ceVersion, runtimeSha256, now = Date.now() }) {
   validateMatrix(matrix); client(selected);
@@ -174,9 +191,10 @@ async function main() {
       const { exerciseClient } = await import('./tunnel-compat-lifecycle.mjs');
       const checks = await exerciseClient({ binary: installed.binary, root: packageRoot });
       writeResult(output, { schemaVersion: 1, status: 'VERIFIED', kind: 'automated-offline', ceVersion: JSON.parse(readFileSync(join(packageRoot, 'package.json'))).version, runtimeSha256: runtimeDigest(), testedAt, client: release, installation: installed, checks, ci: { sha: process.env.GITHUB_SHA ?? null, runId: process.env.GITHUB_RUN_ID ?? null, attempt: process.env.GITHUB_RUN_ATTEMPT ?? null }, environment: { os: process.platform, arch: process.arch, node: process.version }, cloud: { status: 'NOT_VERIFIED' } });
-    } catch {
+    } catch (error) {
       // Raw client/network logs can contain configuration. Upload only this closed result.
-      writeResult(output, { schemaVersion: 1, status: 'FAILED', kind: 'automated-offline', testedAt, client: release, reason: 'Official discovery, verification, install or lifecycle check failed; no fallback performed', cloud: { status: 'NOT_VERIFIED' } });
+      const diagnostic = discoveryFailure(error);
+      writeResult(output, { schemaVersion: 1, status: 'FAILED', kind: 'automated-offline', testedAt, client: release, ...(diagnostic ? { discovery: diagnostic } : {}), reason: 'Official discovery, verification, install or lifecycle check failed; no fallback performed', cloud: { status: 'NOT_VERIFIED' } });
       process.exitCode = 1;
     }
   } else throw new Error('usage: tunnel-compat.mjs validate | gate | run OUTPUT [latest|VERSION]');
